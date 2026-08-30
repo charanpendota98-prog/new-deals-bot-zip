@@ -1,0 +1,17 @@
+{
+  "name": "bestgaa-tg-wa-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node bridge.js",
+    "pair": "node bridge.js --pair",
+    "pair:qr": "node bridge.js --qr"
+  },
+  "dependencies": {
+    "baileys": "7.0.0-rc14",
+    "pino": "9.9.4",
+    "qrcode-terminal": "0.12.0"
+  }
+}

@@ -1,0 +1,23 @@
+[Unit]
+Description=BestGAA Telegram to WhatsApp Channel Bridge
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tg-wa-bridge
+ExecStart=/usr/bin/node /home/ubuntu/tg-wa-bridge/bridge.js
+Restart=always
+RestartSec=15
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/ubuntu/tg-wa-bridge
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

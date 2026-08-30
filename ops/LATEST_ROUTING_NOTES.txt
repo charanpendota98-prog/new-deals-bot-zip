@@ -1,0 +1,40 @@
+LATEST ROUTING — 2026-08-19
+
+NEW/CONFIRMED SOURCES TO NON-TRICKS MAIN TARGETS
+- vaasutechdeals
+- SB_Loots_And_Deals
+- dealsvelocity
+- Magixdeals_Magix
+- techglaredeals
+- lootsxpert
+- https://t.me/+WvEWEYf7j3MyYzNl
+- https://t.me/+FpXKV70NYNY0NzQ1
+- https://telegram.me/+sRe5uRLTK55kZWU1
+- Only_discount_Deals
+Targets: SecretLootIndia1, LootZoneIndia11, PowerLoots1 (PowerLoots1 remains eligibility-filtered).
+
+OZ LOOT BAZAAR PRIVATE SOURCE
+- https://t.me/+vZKuuHCZcX44M2I1
+Targets: SecretLootIndia1, LootZoneIndia11, PowerLoots1 (filtered); no LootzoneTricks.
+It also participates in Under99/Under499 price routing and the dynamic Premiumlootsdeals filter.
+
+LOOTZONETRICKS DEDICATED SOURCES
+- TrickXpert
+- Offerzone_deals
+All legacy sources are removed from LootzoneTricks.
+Source Telegram/WhatsApp/folder links are removed and replaced by:
+- https://t.me/addlist/5V7_ViAGDxAwNTI1
+- https://t.me/SecretLootIndia1
+- https://t.me/LootZoneIndia11
+Photo/video is preserved. Merchant links, when present, still require authenticated affiliate conversion.
+
+PREMIUM TARGET
+- Premiumlootsdeals
+- Eligible from all configured non-Tricks sources.
+- Balanced filter: >=85% OFF; or <=Rs99; or Rs100–499 with >=70% OFF / clear lowest-price claim.
+- Fixed IST windows: 06:00–08:00, 13:00–14:00, and 18:00–01:00.
+- Maximum 12 per window; random 15–35 minute gaps naturally limit actual volume.
+- Highest score among rendered pending premium deals first.
+
+FOLDER
+Add @Premiumlootsdeals to the existing Loots Family folder and refresh/share its invite. Verify the folder preview lists the new total before promoting it.

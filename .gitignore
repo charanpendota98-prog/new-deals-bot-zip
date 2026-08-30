@@ -1,0 +1,33 @@
+# --- secrets & credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+auth/
+*.session
+*.session-journal
+
+# --- python ---
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+
+# --- node ---
+node_modules/
+tg-wa-bridge/package-lock.json
+
+# --- runtime state / data ---
+bestgaa/bestgaa.sqlite3*
+*.sqlite3
+*.sqlite3-journal
+bestgaa/logs/
+bestgaa/media/
+tg-wa-bridge/bridge-state*.json
+tg-wa-bridge/bridge.backup.*.js
+tg-wa-bridge/.env.backup.*
+*.log
+
+# --- regenerable deploy bundles (built by ops/repack_bundles.sh) ---
+ops/bestgaa_final_bundle.zip
+ops/tg_wa_bridge_bundle.zip

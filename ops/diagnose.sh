@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# ============================================================================
+# ONE-COMMAND DIAGNOSIS: run on the server ->  bash diagnose.sh
+# Prints exactly WHY posting issues happen: old code? service down? stuck
+# queue? FloodWait ban? provenance skips? missing env? groups not configured?
+# night window active? intake stopped?
+#
+# Telegram bot (bestgaa) and WhatsApp bridge (tg-wa-bridge) are INDEPENDENT:
+# the bot posts to Telegram on its own; the bridge only reads the bot's posts
+# (and raw sources) to mirror them to WhatsApp. WhatsApp can never block the
+# Telegram bot. If Telegram is silent, the cause is in the bestgaa service,
+# queue or Telegram account — sections 1,2,6,8,9 cover it.
+# ============================================================================
+set -uo pipefail
+HOME_DIR=/home/ubuntu
+BESTGAA_DIR="$HOME_DIR/bestgaa-bot/bestgaa-bot"
+BRIDGE_DIR="$HOME_DIR/tg-wa-bridge"
+BOT_LOG="$BESTGAA_DIR/logs/bot.log"
+G='\033[0;32m'; R='\033[0;31m'; Y='\033[1;33m'; N='\033[0m'
+ok()   { echo -e "  ${G}OK${N}  $*"; }
+bad()  { echo -e "  ${R}PROBLEM${N}  $*"; }
+warn() { echo -e "  ${Y}CHECK${N}  $*"; }
+
+echo "==== 1. SERVICES RUNNING? ===="
+for svc in bestgaa tg-wa-bridge; do
+  if systemctl is-active --quiet "$svc"; then ok "$svc is running"
+  else bad "$svc is NOT running -> sudo systemctl restart $svc && sudo journalctl -u $svc -n 40 --no-pager"; fi
+done
+echo -n "  bestgaa restart count: "; systemctl show -p NRestarts --value bestgaa 2>/dev/null || echo "?"
+echo -n "  bestgaa since: "; systemctl show -p ActiveEnterTimestamp --value bestgaa 2>/dev/null || echo "?"
+
+echo ""
+echo "==== 2. IS THE NEW CODE ACTUALLY DEPLOYED? (the #1 reason issues persist) ===="
+if grep -q "AMAZON_EARNKARO_RATIO" "$BESTGAA_DIR/main_bot.py" 2>/dev/null \
+   || grep -q "AMAZON_EARNKARO_RATIO" "$BESTGAA_DIR/main_bot_new.py" 2>/dev/null; then
+  ok "Telegram bot has the NEW code"
+else
+  bad "Telegram bot is running OLD code -> cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh"
+fi
+# Provenance-leak fix markers (our-tag amazon links skip the link_cache gate).
+if grep -q "is_our_amazon_tag_link" "$BESTGAA_DIR/main_bot.py" 2>/dev/null \
+   || grep -q "is_our_amazon_tag_link" "$BESTGAA_DIR/main_bot_new.py" 2>/dev/null; then
+  ok "Telegram bot has the our-tag provenance fix (false provenance drops fixed)"
+else
+  warn "Telegram bot is MISSING the our-tag provenance fix -> deploy; old code may drop direct-Amazon posts with 'final provenance recheck failed'"
+fi
+if grep -q "isOurAmazonTagLink" "$BRIDGE_DIR/bridge.js" 2>/dev/null; then
+  ok "WhatsApp bridge has the our-tag provenance fix + full invite links"
+else
+  bad "WhatsApp bridge is running OLD code -> cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh"
+fi
+
+echo ""
+echo "==== 3. WHATSAPP GROUPS CONFIGURED? ===="
+GROUPS_LINE=$(grep -E '^WA_GROUPS=' "$BRIDGE_DIR/.env" 2>/dev/null | cut -d= -f2-)
+if [[ -n "${GROUPS_LINE:-}" ]]; then
+  ok "WA_GROUPS is set: $(echo "$GROUPS_LINE" | tr ',' '\n' | wc -l) group(s) (JIDs/phones/codes/full chat.whatsapp.com links)"
+else
+  bad "WA_GROUPS is EMPTY -> groups posting is OFF. Add to $BRIDGE_DIR/.env: WA_GROUPS=<number/invite-link/jid,comma separated> then: sudo systemctl restart tg-wa-bridge"
+fi
+
+echo ""
+echo "==== 4. KEY .ENV VALUES PRESENT? ===="
+for pair in "BITLY_TOKENS:$BESTGAA_DIR/.env" "AMAZON_TAG:$BESTGAA_DIR/.env" "EARNKARO_API_KEY:$BESTGAA_DIR/.env" "TELEGRAM_API_ID:$BESTGAA_DIR/.env" "TELEGRAM_API_HASH:$BESTGAA_DIR/.env" "WA_BITLY_TOKENS:$BRIDGE_DIR/.env" "QUIET_START:$BRIDGE_DIR/.env" "POST_QUIET_START:$BESTGAA_DIR/.env"; do
+  key="${pair%%:*}"; file="${pair#*:}"
+  if grep -qE "^${key}=.+" "$file" 2>/dev/null; then ok "$key set in $(basename "$(dirname "$file")")/.env"
+  else warn "$key missing/empty in $file"; fi
+done
+
+echo ""
+echo "==== 5. NIGHT QUIET WINDOW ACTIVE RIGHT NOW? ===="
+HOUR=$(TZ=Asia/Kolkata date +%H)
+if (( HOUR >= 2 && HOUR < 6 )); then
+  warn "It is $(TZ=Asia/Kolkata date +%H:%M) IST -> inside 02:00-06:00 quiet window. NO posting now is CORRECT, not a bug (deals queue and flush after 06:00)."
+else
+  ok "Outside the quiet window ($(TZ=Asia/Kolkata date +%H:%M) IST) - posting should be active"
+fi
+
+echo ""
+echo "==== 6. TELEGRAM BOT QUEUE HEALTH (real columns: status / next_at) ===="
+DB="$BESTGAA_DIR/bestgaa.sqlite3"
+if [[ -f "$DB" ]]; then
+  echo "  queue rows by status:"
+  sqlite3 -line "$DB" "SELECT status, COUNT(*) AS n FROM queue GROUP BY status;" 2>/dev/null | grep -E "status|n" | sed 's/^/    /' || warn "could not read queue table"
+  # A job is 'processing' while a worker holds it; claim timestamp = next_at.
+  STUCK=$(sqlite3 "$DB" "SELECT COUNT(*) FROM queue WHERE status='processing' AND next_at < strftime('%s','now')-1800;" 2>/dev/null || echo "?")
+  PENDING=$(sqlite3 "$DB" "SELECT COUNT(*) FROM queue WHERE status='pending' AND next_at <= strftime('%s','now');" 2>/dev/null || echo "?")
+  [[ "$STUCK" == "0" ]] && ok "no stuck processing jobs" || warn "$STUCK job(s) stuck 'processing' >30min (reclaimed on restart: sudo systemctl restart bestgaa)"
+  echo "  pending jobs ready to post NOW: $PENDING"
+  echo "  most recent queue activity (last 5):"
+  sqlite3 -header -column "$DB" "SELECT id, source, status, attempts, datetime(created_at,'unixepoch','+5 hours','+30 minutes') AS created_ist, substr(COALESCE(last_error,''),1,48) AS last_error FROM queue ORDER BY id DESC LIMIT 5;" 2>/dev/null | sed 's/^/    /' || true
+else
+  warn "bot DB not found at $DB (bot may never have started / wrong path)"
+fi
+
+echo ""
+echo "==== 7. WHATSAPP BRIDGE QUEUE + CONNECTION ===="
+if [[ -f "$BRIDGE_DIR/bridge-state.json" ]]; then
+  python3 - "$BRIDGE_DIR/bridge-state.json" <<'PY' 2>/dev/null || echo "  (state parse failed)"
+import json,sys,time
+s=json.load(open(sys.argv[1]))
+jobs=s.get('jobs',[])
+print(f"  queued jobs waiting: {len(jobs)}")
+sent=s.get('sentTimes',[])
+recent=[t for t in sent if t > (time.time()-3600)*1000]
+print(f"  WhatsApp posts in the last hour: {len(recent)}")
+PY
+else
+  warn "bridge-state.json not found (bridge may not have started)"
+fi
+sudo journalctl -u tg-wa-bridge -n 200 --no-pager 2>/dev/null | grep -q "WhatsApp connected" \
+  && ok "bridge connected at least once (see: sudo journalctl -u tg-wa-bridge -n 40 --no-pager)" \
+  || warn "no 'WhatsApp connected' in recent logs -> run with sudo: sudo journalctl -u tg-wa-bridge -n 60 --no-pager"
+
+echo ""
+echo "==== 8. TELEGRAM BOT: LOGIN + INTAKE + FLOOD/BAN (why Telegram is silent) ===="
+# 8a. Did the bot log in and map sources this boot?
+if sudo journalctl -u bestgaa -n 400 --no-pager 2>/dev/null | grep -q "LIVE | sources="; then
+  sudo journalctl -u bestgaa -n 400 --no-pager 2>/dev/null | grep "LIVE | sources=" | tail -1 | sed 's/^/  /'
+  ok "bot logged in and mapped sources"
+else
+  bad "no 'LIVE | sources=' marker -> bot never finished login/startup. Check for API_ID/API_HASH/session errors:"
+  sudo journalctl -u bestgaa -n 60 --no-pager 2>/dev/null | grep -iE "error|traceback|exception|auth|login|api|missing" | tail -8 | sed 's/^/    /' || true
+fi
+# 8b. FloodWait / banned / not-admin = a hard Telegram-side block on posting.
+FLOOD=$(sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -icE "floodwait|flood wait|too many requests|chatadminrequired|channelprivate|user.*banned|peer.*invalid|could not find the input" || echo 0)
+if [[ "$FLOOD" -gt 0 ]]; then
+  bad "$FLOOD FloodWait/permission/banned hits in recent bot logs -> Telegram is rate-limiting or the account is not admin in a target:"
+  sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -iE "floodwait|flood wait|chatadminrequired|channelprivate|banned|could not find the input" | tail -6 | sed 's/^/    /'
+  echo "    -> Wait out the flood (seconds shown in the log), ensure the bot/admin is still admin in every target channel."
+else
+  ok "no FloodWait/ban/permission errors in recent bot logs"
+fi
+# 8c. Is intake still seeing source posts? (QUEUED lines) -> event stream health.
+QUEUED_LAST=$(sudo journalctl -u bestgaa -n 400 --no-pager 2>/dev/null | grep -c "QUEUED |" || echo 0)
+if [[ "$QUEUED_LAST" -gt 0 ]]; then
+  ok "bot is ingesting source posts ($QUEUED_LAST QUEUED in recent logs) -> problem is downstream (render/provenance/send), see section 9"
+else
+  warn "no QUEUED lines recently -> the bot is not receiving source posts (not admin in source channels, or session/event stream dead). Restart fixes: sudo systemctl restart bestgaa"
+fi
+
+echo ""
+echo "==== 9. LAST REASONS A DEAL DID NOT POST (both sides) ===="
+echo "  -- Telegram bot (SKIP / DEDUP / FAIL / provenance), last 12 --"
+sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -E "SKIP \||DEDUP \||JOB FAIL|JOB [0-9]+ \|" | tail -12 | sed 's/^/    /' || echo "    (none in recent journal; checking log file)"
+if [[ -f "$BOT_LOG" ]]; then
+  grep -E "SKIP \||DEDUP \||JOB FAIL|provenance|FloodWait" "$BOT_LOG" 2>/dev/null | tail -12 | sed 's/^/    [log] /' || true
+  echo "  -- bot log last lines --"
+  tail -n 8 "$BOT_LOG" 2>/dev/null | sed 's/^/    /'
+fi
+echo "  -- WhatsApp bridge (skip/err), last 8 --"
+sudo journalctl -u tg-wa-bridge -n 800 --no-pager 2>/dev/null | grep -oE '"(reason|err|msg)":"[^"]{0,110}"' | tail -8 | sed 's/^/    /' || true
+
+echo ""
+echo "==== QUICK FIXES ===="
+echo "  * Telegram totally silent?  sudo systemctl restart bestgaa && sleep 12 && sudo journalctl -u bestgaa -n 30 --no-pager"
+echo "  * Deploy latest fixes:       cd $(dirname "$0") && ./repack_bundles.sh && ./apply_dual_hotfix.sh"
+echo "  * Section 2 shows OLD code = THE reason for almost every issue."
+echo "  * Telegram and WhatsApp post independently — WhatsApp NEVER blocks Telegram."

@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+APP_DIR="/home/ubuntu/bestgaa-bot/bestgaa-bot"
+SERVICE="bestgaa"
+NEW_FILE="$APP_DIR/main_bot_new.py"
+LIVE_FILE="$APP_DIR/main_bot.py"
+ENV_FILE="$APP_DIR/.env"
+STAMP="$(date +%Y%m%d_%H%M%S)"
+BACKUP="$APP_DIR/main_bot.backup.$STAMP.py"
+
+cd "$APP_DIR"
+
+echo "[1/9] Checking uploaded files..."
+[[ -f "$NEW_FILE" ]] || { echo "ERROR: main_bot_new.py not found"; exit 1; }
+[[ -f "$APP_DIR/migrate_legacy_env.py" ]] || { echo "ERROR: migrate_legacy_env.py not found"; exit 1; }
+
+# Zero-manual-config path: create .env locally from the currently working
+# hardcoded v13/v14 bot. Secret values are never printed.
+if [[ ! -f "$ENV_FILE" ]] || grep -q "REPLACE_WITH_NEW_" "$ENV_FILE"; then
+  echo "[2/9] Creating .env from existing working bot..."
+  [[ -f "$LIVE_FILE" ]] || { echo "ERROR: old working main_bot.py not found for migration"; exit 1; }
+  python3 "$APP_DIR/migrate_legacy_env.py" "$LIVE_FILE"
+else
+  echo "[2/9] Existing .env found"
+fi
+
+for key in TELEGRAM_API_ID TELEGRAM_API_HASH EARNKARO_API_KEY AMAZON_TAG; do
+  grep -qE "^${key}=.+" "$ENV_FILE" || { echo "ERROR: $key missing in .env"; exit 1; }
+done
+if grep -q "REPLACE_WITH_NEW_" "$ENV_FILE"; then
+  echo "ERROR: .env migration left placeholders"
+  exit 1
+fi
+chmod 600 "$ENV_FILE"
+
+echo "[3/9] Compiling new bot..."
+python3 -m py_compile "$NEW_FILE"
+
+echo "[4/9] Installing dependencies..."
+python3 -m pip install --user --quiet -r "$APP_DIR/requirements.txt"
+
+echo "[5/9] Backing up current working bot..."
+if [[ -f "$LIVE_FILE" ]]; then
+  cp -a "$LIVE_FILE" "$BACKUP"
+  echo "Backup: $BACKUP"
+fi
+
+rollback() {
+  echo "DEPLOY FAILED — rolling back..."
+  if [[ -f "$BACKUP" ]]; then
+    cp -a "$BACKUP" "$LIVE_FILE"
+    sudo systemctl restart "$SERVICE" || true
+  fi
+}
+trap rollback ERR
+
+echo "[6/9] Activating new bot..."
+cp -a "$NEW_FILE" "$LIVE_FILE"
+python3 -m py_compile "$LIVE_FILE"
+
+if [[ -f "$APP_DIR/bestgaa.service" ]]; then
+  sudo cp "$APP_DIR/bestgaa.service" "/etc/systemd/system/$SERVICE.service"
+fi
+sudo systemctl daemon-reload
+sudo systemctl enable "$SERVICE" >/dev/null
+sudo systemctl restart "$SERVICE"
+
+sleep 12
+
+echo "[7/9] Checking service..."
+sudo systemctl is-active --quiet "$SERVICE"
+
+sleep 12
+
+echo "[8/9] Verifying installed code and startup marker..."
+# Verify the LIVE file really is the code we just shipped. A hash mismatch means
+# the old bot is still running and the channel would keep showing old bugs.
+sha256sum "$LIVE_FILE" | awk '{print "       live main_bot.py sha256 = " $1}'
+sha256sum "$NEW_FILE"    | awk '{print "       bundled main_bot_new.py sha256 = " $1}'
+if ! cmp -s "$LIVE_FILE" "$NEW_FILE"; then
+  echo "ERROR: live main_bot.py != bundled main_bot_new.py"
+  exit 1
+fi
+if ! tail -n 300 "$APP_DIR/logs/bot.log" | grep -Eq "BestGAA Production Bot v15 starting|LIVE \| sources="; then
+  echo "WARNING: startup marker not yet visible in last 300 lines"
+  echo "         (service may still be starting). Continuing but check logs below."
+fi
+
+trap - ERR
+
+echo "[9/9] DEPLOY SUCCESS (verified: live file == shipped code)"
+sudo systemctl status "$SERVICE" --no-pager --lines=10
+printf '\nLive logs:\n  tail -f %s/logs/bot.log\n' "$APP_DIR"
