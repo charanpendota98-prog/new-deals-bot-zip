@@ -519,6 +519,23 @@ async def main():
                   and bot.SOURCE_TO_TARGETS[new_source] == list(bot.NO_TRICKS_TARGETS))
         check("FlashDealsUnlimited registered as a source",
               "FlashDealsUnlimited" in bot.SOURCE_TO_TARGETS)
+        # USER SOURCE LIST (2026-08-30): every deal source must fan out to the
+        # main non-Tricks targets (Secret + LootZoneIndia11 + PowerLoots1) so
+        # best deals ALWAYS reach the main feed and the rest get their share.
+        user_sources = (
+            "SB_Loots_And_Deals", "pricehistory", "deals", "loot_alerts",
+            "Flipkarthiik", "telugutechtvdeals", "indian_online_offer",
+            "powerloot", "idoffers", "idoffers2", "icoolzTricks",
+            "TeluguTechworld", "https://t.me/+LP6MYEpCwi0zOGYx",
+            "dealsvelocity", "iamprasadtech",
+        )
+        for src in user_sources:
+            check(f"source {src} -> non-tricks main targets",
+                  src in bot.SOURCE_TO_TARGETS
+                  and bot.SOURCE_TO_TARGETS[src] == list(bot.NO_TRICKS_TARGETS))
+        check("Under99Deals11 is a TARGET, not a source",
+              "Under99Deals11" in bot.ALL_OWNED_TARGETS
+              and "Under99Deals11" not in bot.SOURCE_TO_TARGETS)
         check("strip_inline_cta keeps a normal line",
               bot.strip_inline_cta("Premium cotton slim fit shirt") == "Premium cotton slim fit shirt")
         # STRICT global sweep: CTA anywhere in the line is removed; real deal

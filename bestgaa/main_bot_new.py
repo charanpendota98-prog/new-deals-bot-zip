@@ -253,6 +253,14 @@ for _source in (
     "https://t.me/+WvEWEYf7j3MyYzNl", "https://t.me/+FpXKV70NYNY0NzQ1",
     "https://t.me/+vZKuuHCZcX44M2I1", "https://telegram.me/+sRe5uRLTK55kZWU1",
     "Only_discount_Deals", "amazinglootsdealsoffers", "FlashDealsUnlimited",
+    # Full user source list (2026-08-30): every deal source fans out to the
+    # main non-Tricks targets — best deals ALWAYS reach LootZoneIndia11, the
+    # rest (Secret, PowerLoots1) get their share; premium/under-99/under-499/
+    # card routes are layered on automatically. Previously several of these
+    # had EMPTY target lists (dead sources) or an older partial route.
+    "deals", "powerloot", "pricehistory", "telugutechtvdeals",
+    "indian_online_offer", "idoffers2", "https://t.me/+LP6MYEpCwi0zOGYx",
+    "iamprasadtech",
 ):
     SOURCE_TO_TARGETS[_source] = list(NO_TRICKS_TARGETS)
 
