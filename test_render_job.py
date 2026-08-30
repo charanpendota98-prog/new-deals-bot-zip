@@ -464,6 +464,52 @@ async def main():
         plus_text = bot.clean_source_text("Air Purifier X1+ Filter Set ₹2999")
         check("single plus in product text survives emphasis sweep",
               "X1+ Filter Set" in plus_text)
+
+        # USER REPORTS 3+4: emphasis (++) woven INSIDE the markdown brackets —
+        # "++**[[url](url)++**]([url](url))**" (2 layers) and a 4-layer nest
+        # with TRIPLE &amp;amp; escaping, 7 URL copies per line. Both must
+        # render as ONE neat short line per product.
+        hk_url = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V"
+                  "+%7C+B0F4NDZ2VC+%7C+B0G1SVRWG3+%7C+B0FMF6X8Z5+%7C+B0FMNXX9QS"
+                  "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1&tag=deals0911-21")
+        def _dp(a, smid="A1WYWER0W24N8S"):
+            return f"https://www.amazon.in/dp/{a}?psc=1&smid={smid}&tag=deals0911-21"
+        e1 = lambda u: u.replace("&", "&amp;")
+        e3 = lambda u: u.replace("&", "&amp;amp;")
+        def _shallow(u):
+            # user's exact shape: emphasis INSIDE the brackets, 2 layers
+            return "++**[[" + e1(u) + "](" + e1(u) + ")++**]([" + e1(u) + "](" + u + "))**"
+        def _deep(u):
+            return (f"++**[[{e3(u)}++**](++**{e3(u)}++**](++**{e1(u)}++**)]"
+                    f"([{e1(u)}]({e1(u)}]({e1(u)}]({u}))))")
+        p_asins = ["B0DQPT85TB", "B0F4NFCHX8", "B0FMF6X8Z5",
+                   "B0FMNXX9QS", "B0G1SVRWG3", "B0FJ7D2KBQ"]
+        for tag, wrap in (("shallow-2layer", _shallow), ("deep-4layer", _deep)):
+            wp = "\n".join(["More | Apply coupon", wrap(hk_url)] +
+                           [wrap(_dp(a, "AJ6SIZC8YQDZX" if a in ("B0G1SVRWG3", "B0FJ7D2KBQ")
+                                   else "A1WYWER0W24N8S")) for a in p_asins])
+            wc = bot.clean_source_text(wp)
+            wl = wc.splitlines()
+            ok_shape = (len(wl) == 8 and wl[0] == "More | Apply coupon"
+                        and all(len(bot.URL_RE.findall(l)) == 1 for l in wl[1:]))
+            ok_urls = all(f"/dp/{a}?" in wc for a in p_asins) and "hidden-keywords" in wc
+            ok_junk = (not re.search(r"[\[\]*/]", re.sub(r"https?://\S+", "", wc))
+                       and "&amp" not in wc)
+            check(f"user {tag} post: 8 neat lines, 1 URL each, no *+/brackets/amp",
+                  ok_shape and ok_urls and ok_junk)
+            class DeepAff(bot.AffiliateClient):
+                def __init__(self): self.calls = 0
+                async def shorten(self, u):
+                    self.calls += 1
+                    return "https://bit.ly/hkdeals" if "hidden-keywords" in u else None
+                async def cache_link(self, *a, **k): pass
+            da = DeepAff()
+            wf = await da.shorten_long_urls_in_text(wc)
+            check(f"user {tag} post final: bitly list + 6 compact dp, 1 bitly call",
+                  wf == ("More | Apply coupon\nhttps://bit.ly/hkdeals\n" +
+                         "\n".join(f"https://www.amazon.in/dp/{a}?tag=deals0911-21"
+                                   for a in p_asins))
+                  and da.calls == 1)
         # New source channels are registered and fan out to the non-Tricks main
         # targets (Secret + LootZoneIndia11 + PowerLoots1); premium/price/card
         # routes are added dynamically on top.

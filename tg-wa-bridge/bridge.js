@@ -2021,16 +2021,18 @@ function under99Eligible(job) {
   const explicitUnder99 = /\b(?:under|below|less\s*than|only)\s*[₹]?\s*99\b/i.test(text)
   const priceOk = (cheapest != null && cheapest <= UNDER99_MAX_PRICE) || explicitUnder99
   if (isList) {
-    // The list must actually FEATURE under-₹99 products, and either be a
-    // best-discount/special/photo list OR be MAJORITY under-₹99 (most priced
-    // products are ≤ ₹99 — not every item must be ₹99, but the cheap items
-    // must dominate). Ordinary/expensive lists are skipped.
+    // STRICT USER RULE: the Under-₹99 channel features ONLY under-₹99
+    // products. A list qualifies only when it actually contains under-₹99
+    // items AND the MAJORITY of its priced items are under-₹99. A "best
+    // discount" headline, special flag or photos never justify posting a
+    // mostly-expensive list on the under-₹99 channel.
     const { under, total } = under99LineItems(text)
-    const hasUnder99Items = under >= 1 || priceOk
-    if (!hasUnder99Items) return false
-    const majorityUnder99 = total >= 2 && under >= Math.ceil(total / 2)
-    const bestList = discount >= UNDER99_LIST_MIN_DISCOUNT || special || hasMedia
-    return Boolean(majorityUnder99 || bestList)
+    // A list that explicitly says "under/below/only 99" but prints no
+    // per-item prices is an under-₹99 feature by definition.
+    if (explicitUnder99 && total === 0) return true
+    if (under < 1) return false
+    if (total <= 1) return true // the single priced item IS under-₹99
+    return under >= Math.ceil(total / 2)
   }
   // Single deal: a best signal helps, but an explicit ≤₹99 price is enough.
   if (priceOk) return true
@@ -3499,11 +3501,19 @@ if (process.argv.includes('--self-test')) {
       'A ₹89 https://a.test/x1', 'B ₹1299 https://a.test/x2',
       'C ₹1499 https://a.test/x3', 'D ₹999 https://a.test/x4'].join('\n')
     if (under99Eligible({ text: mostlyExpensive, media: [], largeList: true })) throw new Error('mostly-expensive list (one cheap item, weak discount) must NOT go to under-99 channel')
-    // But a single cheap item + a BEST (60%+) discount list DOES qualify.
+    // STRICT: a single cheap item + a BEST (60%+) discount headline does NOT
+    // qualify — the list is mostly expensive, and the under-₹99 channel
+    // features ONLY under-₹99 products.
     const oneCheapBestDiscount = ['Mega Sale 65% OFF',
       'A ₹89 https://a.test/y1', 'B ₹599 https://a.test/y2',
       'C ₹649 https://a.test/y3', 'D ₹799 https://a.test/y4'].join('\n')
-    if (!under99Eligible({ text: oneCheapBestDiscount, media: [], largeList: true })) throw new Error('best-discount list with an under-₹99 item must go to under-99 channel')
+    if (under99Eligible({ text: oneCheapBestDiscount, media: [], largeList: true })) throw new Error('mostly-expensive best-discount list must NOT go to under-99 channel (strict under-₹99-only)')
+    // An explicit "under ₹99" feature list with no per-item prices IS an
+    // under-₹99 list by definition.
+    const explicitU99 = ['UNDER ₹99 LOOTS',
+      'Mystery loot https://a.test/z1', 'More loot https://a.test/z2',
+      'Extra loot https://a.test/z3'].join('\n')
+    if (!under99Eligible({ text: explicitU99, media: [], largeList: true })) throw new Error('explicit under-₹99 feature list must go to under-99 channel')
     // Targets: eligible single -> both channels; non-eligible -> main only;
     // digest (job=null) -> main only.
     const tBoth = targetsFor(single99).sort().join(',')
@@ -3580,6 +3590,20 @@ if (process.argv.includes('--self-test')) {
     const plusLine = 'Air Purifier X1+ Filter Set \u20b92999'
     if (normalizeNestedLinks(plusLine) !== plusLine) {
       throw new Error('single plus in product text was damaged')
+    }
+    // DEEP nesting (4 layers, TRIPLE &amp;amp; escaping, emphasis woven in
+    // between the brackets, 7 URL copies per line) must also collapse to one.
+    const ddp = a => `https://www.amazon.in/dp/${a}?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21`
+    const e1 = u => u.replace(/&/g, '&amp;')
+    const e3 = u => u.replace(/&/g, '&amp;amp;')
+    const deepWrap = u => '++**[[' + e3(u) + '++**](++**' + e3(u) + '++**](++**' + e1(u) +
+      '++**)]([' + e1(u) + '](' + e1(u) + '](' + e1(u) + '](' + u + '))))'
+    const deepOut = normalizeNestedLinks('More | Apply coupon\n' + deepWrap(ddp('B0DQPT85TB')))
+    const deepLines = deepOut.split('\n').filter(Boolean)
+    if (deepLines.length !== 2 || (deepLines[1].match(/B0DQPT85TB/g) || []).length !== 1 ||
+        /[\[\]*/]/.test(deepLines[1].replace(/https?:\/\/\S+/g, '')) ||
+        deepOut.includes('&amp')) {
+      throw new Error('deep 4-layer nest did not collapse: ' + deepOut)
     }
   }
   if (!stateFilePreExisted) fs.rmSync(STATE_FILE, { force: true })
