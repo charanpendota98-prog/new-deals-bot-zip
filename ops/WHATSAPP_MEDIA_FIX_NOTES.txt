@@ -1,0 +1,127 @@
+WHATSAPP CHANNEL FIX — 2026-08-22
+=================================
+
+REPORTED PROBLEM
+- WhatsApp Channel lo 2:09 AM oka post vachindi, aa tarvata chala Telegram posts
+  vachina WhatsApp lo em post avvaledu.
+- Photos/videos WhatsApp lo asalu kanipinchatledu (logs lo "sent" ani unna).
+- under499loots ni main feed ga kavali, photo unna deals ki preference kavali.
+
+ROOT CAUSE 1 — CHANNEL MEDIA INVISIBLE (asalu bug)
+--------------------------------------------------
+Baileys 7.0.0-rc14 lo confirmed upstream bug.
+Reference: WhiskeySockets/Baileys issue #2199, fix PR #2434 (inka merge avvaledu).
+
+Verified inside the installed package:
+  node_modules/baileys/lib/Utils/messages.js:99-105
+      isNewsletter branch -> options.upload(...)
+  node_modules/baileys/lib/Utils/messages-media.js:665
+      const url = `https://${hostname}${MEDIA_PATH_MAP[mediaType]}/...`
+  node_modules/baileys/lib/Defaults/index.js:84
+      MEDIA_PATH_MAP = { image: '/mms/image', video: '/mms/video', ... }
+
+Ante: Channel (newsletter) media kuda normal chat path `/mms/image` ki upload
+avutundi. WhatsApp daaniki `/o1/...` directPath istundi. Channel renderer
+`/o1/` ni accept cheyyadu -> stanza ki ack error 479 vastundi -> subscribers ki
+photo kanipinchadu. Kaani `sendMessage()` success ga resolve avutundi, andhuke
+log lo `"result":"sent","media":1` ani vachedi. Log correct, delivery kaadu.
+
+Official WhatsApp Web client vaadedi:
+  /newsletter/newsletter-image  +  ?server_thumb_gen=1   -> /m1/... directPath
+
+FIX APPLIED (bridge.js) — node_modules ni touch cheyyaledu
+  - NEWSLETTER_MEDIA_PATH_MAP: /newsletter/newsletter-{image,video,...}
+  - newsletterUpload(): server_thumb_gen=1, video ki server_transcode=1,
+    anni media hosts meeda failover.
+  - sendNewsletterMedia(): prepareWAMessageMedia() ki custom upload isthundi,
+    stale `url` field ni remove chestundi (official client laage directPath
+    only), thumbnailDirectPath/thumbnailSha256 set chestundi, taruvata
+    <message type="media"><plaintext mediatype="image"> stanza ni relay chestundi.
+  - watchAck(): aa exact stanza id ki ack ni chustundi. Ack error vaste
+    THROW avutundi. Ika "sent but invisible" jaragadu.
+  - 3 media attempts fail aithe deal ni podam — cleaned source text + mana
+    affiliate links tho text-only ga post avutundi (miss avvakudadhu).
+  - Env kill switch: NEWSLETTER_MEDIA_FIX=false
+
+ROOT CAUSE 2 — 2:09 AM TARVATA QUEUE AAGIPOVADAM
+------------------------------------------------
+Modati karanam: warm-up tier reset.
+  warmupPolicy() lo day = (now - state.warmupStartedAt) / 1 day.
+  bridge-state.json rebuild/reset aithe warmupStartedAt "ippudu" avutundi,
+  ala day-1 tier ki padipotundi: hourCap 8, dayCap 18.
+  Aa 18 posts aipoyaka rojanta silence. Idi exact ga "2:09 am post, tarvata
+  emi ledu" symptom.
+  FIX: WA_WARMUP_DONE=true (default) -> mature tier pin. Day 8+ tier ippudu
+  hourCap 45, dayCap 700 (mundu 40/160).
+
+Rendo karanam: nextAllowedAt future lo cake avvadam.
+  Retry backoff + break gap + cap multiplier kalisi chala gantalu munduku
+  vellochu, aa timestamp state file lo save avutundi.
+  FIX: nextAllowedAt ki plausibility ceiling. Policy max + 5 min kanna ekkuva
+  unte 60s hard floor ki reset, log:
+    "implausible nextAllowedAt reset to hard floor"
+
+Moodo karanam: silent hang.
+  telegramFile() / sendMessage() / upload ekkada aina infinite ga vela dispatch
+  loop apeyyachu — process alive, service "active", kaani em jaragadu.
+  FIX: withTimeout() prati network step meeda; one dispatch ki 10 min hard
+  ceiling; poller/worker/watchdog crash aithe 10s lo restart.
+
+Nalgo karanam: dead socket.
+  Baileys socket "open" ga undi ws chachipovachu, disconnect event raadu.
+  FIX: connectionWatchdog() — deals ready unna 25 nimishalu em move avvakapote
+  force reconnect. Prati nimisham heartbeat log:
+    "WhatsApp dispatcher heartbeat" (readyCount, waReady, nextAllowedInSeconds,
+     sentLastHour)
+  Cap valla aagithe idi silent kaadu, ippudu log vastundi:
+    "WhatsApp send paused by safety cap; queue retained"
+
+DISPATCH ORDER (kotta)
+----------------------
+  1. under499loots  (WA_PRIMARY_SOURCE, main feed)
+  2. photo/video    (WA_MEDIA_FIRST)
+  3. <=99 / <=199 / <=499
+  4. media
+  5. 4+ lists, tarvata 2+ links
+  6. highest discount
+  7. women-focused
+  8. shopsy/home/electronics/clothing/footwear
+  9. ageing
+  Starvation guard: 45 nimishalu wait chesina deal (WA_PROMOTE_AFTER_MINUTES)
+  lead tiers loki vastundi. Ante vere sources, text-only deals eppatiki
+  permanent ga vెనakaki podu — best-first, kaani miss avvadu.
+
+TELEGRAM SIDE (main_bot.py)
+---------------------------
+  eligible_for_under499_best() add chesanu.
+  under499loots ippudu anni configured sources nunchi best deals teeskuntundi:
+    - price parse aithe: <=499 anthaa (mundu laage)
+    - price print avvakapote: >=80% off, or lowest-price claim + >=60%,
+      or card offer + >=70%
+    - visible price 499 daatithe raadu (channel name honest ga untundi)
+    - weak unpriced promo raadu
+
+PROOF / TESTS
+-------------
+  Bridge:   node bridge.js --self-test   -> "bridge self-test PASS"
+    kotta checks: newsletter upload path, server_thumb_gen, /m1/ directPath,
+    dispatch timeout guard, 24/7 cap, media-first order, under499loots primary,
+    starvation guard.
+  Telegram: python3 -m pytest test_main_bot.py -q -> 52 passed
+    kotta check: test_under499_main_feed_takes_best_deals_from_all_sources
+
+EMI GUARANTEE CHEYYALENU
+------------------------
+  Ee fix ni fake upload server tho verify chesanu (path, directPath, stanza
+  shape, ack handling anni correct). Kaani nee real WhatsApp account meeda
+  photo kanipinchindi ani nenu ippudu cheppalenu — deploy chesaka modati
+  photo deal vachinapudu, ee log line vaste confirm:
+      "Channel media accepted"
+  Ack error vaste log lo:
+      "Channel media delivery failed"  (reason tho)
+  Appudu naaku aa line pampu, taruvata step chestanu.
+
+=== UPDATE 2026-08-22 (card posts) ===
+new zip: 51c3791bb7442aab1c3036d43e4e60d671152125d97b7e30f8b39f6d735732f0
+main_bot.py: 5d8e1f50d5dcdbff91aae721424adc11921efad8090abc60f644fa4d582016b1
+bridge.js unchanged: 28656d7441257406f647ffba080f1639c52b4a3a1345fc2a4bb5e43b56351858
