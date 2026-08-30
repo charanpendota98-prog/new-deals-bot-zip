@@ -136,6 +136,11 @@ MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TA
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
 TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals"}
+# Sources the user wants posted FIRST on every non-Tricks channel. Their queue
+# jobs get a +1 priority boost (capped at the top tier) so an equivalent deal
+# from one of these sources renders/delivers ahead of the same tier from any
+# other source. "pricehistory" = user's explicit first-preference source.
+PRIORITY_SOURCES = {"pricehistory"}
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
@@ -261,6 +266,10 @@ for _source in (
     "deals", "powerloot", "pricehistory", "telugutechtvdeals",
     "indian_online_offer", "idoffers2", "https://t.me/+LP6MYEpCwi0zOGYx",
     "iamprasadtech",
+    # 2026-08-30 (source list pt.2): fresh sources + the +qhlEwwkhb2hlNWZl
+    # private channel (user wants it feeding LootZone + PowerLoots + the
+    # under-₹99 / under-₹499 price channels, which layer on automatically).
+    "tech24deals", "Offer_Xpress", "https://t.me/+qhlEwwkhb2hlNWZl",
 ):
     SOURCE_TO_TARGETS[_source] = list(NO_TRICKS_TARGETS)
 
@@ -1577,6 +1586,10 @@ class Store:
         # Best-lists first, then super discounts, then photos — so the highest
         # value Telegram post is rendered/delivered ahead of ordinary ones.
         priority = classify_priority(text, has_media)
+        # User rule: first-preference sources (e.g. pricehistory) post ahead of
+        # the same content tier from other sources on every non-Tricks channel.
+        if source in PRIORITY_SOURCES:
+            priority = min(priority + 1, 5)
         async with self.lock:
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority) "
@@ -2800,11 +2813,18 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         premium_rank = max(1, premium_score(text, routing_price, discount))
     elif row["source"] not in TRICKS_SOURCES:
         if multi_product_list:
-            # Latest rule: 3+ product lists fan out to every owned non-Tricks
-            # destination regardless of individual price bands.
-            for target in (
-                POWER_FILTER_TARGET, UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET
-            ):
+            # 3+ product lists fan out to the curated non-Tricks destinations.
+            # The under-₹99 / under-₹499 PRICE channels receive a list only
+            # when it actually FEATURES items in that band (at least one priced
+            # item <= band) — user rule "price tho": a priced product or priced
+            # list from ANY source posts there, but an all-expensive list must
+            # not flood the under-99 channel. POWER + PREMIUM take every list.
+            if list_prices:
+                if any(p <= 99 for p in list_prices) and UNDER99_TARGET not in base_targets:
+                    base_targets.append(UNDER99_TARGET)
+                if any(p <= 499 for p in list_prices) and UNDER499_TARGET not in base_targets:
+                    base_targets.append(UNDER499_TARGET)
+            for target in (POWER_FILTER_TARGET, PREMIUM_TARGET):
                 if target not in base_targets:
                     base_targets.append(target)
             premium_rank = max(1, premium_score(text, routing_price, discount))

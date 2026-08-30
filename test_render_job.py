@@ -231,6 +231,57 @@ async def main():
         targets99 = await store.pending_targets(row99["id"])
         check("over-99 item withheld from Under99 channel only", "Under99Deals11" not in targets99)
 
+        # 7d. Price-aware under-₹99 / under-₹499 LIST routing (user rule
+        # "price tho"): a 3+ product list from ANY source reaches the under-99
+        # channel only when it features an under-99 item, and under-499 only
+        # when it features a sub-499 item; an all-expensive list stays out of
+        # BOTH price channels but still gets Power + Premium + the main feed.
+        def mk_list(prefix):
+            resolve, convert, urls = {}, {}, []
+            for n in range(1, 4):
+                asin = f"B0{prefix}{n}"
+                u = f"https://amzn.to/{prefix.lower()}{n}"
+                resolve[u] = f"https://www.amazon.in/dp/{asin}"
+                convert[u] = bot.LinkResult(
+                    source=u, resolved=f"https://www.amazon.in/dp/{asin}",
+                    affiliate=f"https://www.amazon.in/dp/{asin}?tag=deals0911-21",
+                    deal_key=f"amazon:{asin}")
+                urls.append(u)
+            return resolve, convert, urls
+        rU, cU, uU = mk_list("U99")
+        await case(store, "under-99 list -> under99 + under499",
+                   f"Mega Under-99 Loot\nA ₹89 {uU[0]}\nB ₹95 {uU[1]}\nC ₹79 {uU[2]}",
+                   rU, cU,
+                   expect_targets_superset=["Under99Deals11", "under499loots", "LootZoneIndia11"],
+                   msg_id=80)
+        rE, cE, uE = mk_list("EXP")
+        await case(store, "expensive list skips the price channels",
+                   f"Premium Gadgets\nA ₹2999 {uE[0]}\nB ₹3499 {uE[1]}\nC ₹4999 {uE[2]}",
+                   rE, cE,
+                   expect_targets_superset=["PowerLoots1", "Premiumlootsdeals", "LootZoneIndia11"],
+                   msg_id=81)
+        row81 = store.conn.execute("SELECT id FROM queue WHERE msg_id=81").fetchone()
+        targets81 = await store.pending_targets(row81["id"])
+        check("expensive list NOT in under99/under499 (stays honest)",
+              "Under99Deals11" not in targets81 and "under499loots" not in targets81)
+        rM, cM, uM = mk_list("MID")
+        await case(store, "mid (₹399-499) list -> under499 only",
+                   f"Home Loots\nA ₹399 {uM[0]}\nB ₹449 {uM[1]}\nC ₹499 {uM[2]}",
+                   rM, cM,
+                   expect_targets_superset=["under499loots", "LootZoneIndia11"],
+                   msg_id=82)
+        row82 = store.conn.execute("SELECT id FROM queue WHERE msg_id=82").fetchone()
+        targets82 = await store.pending_targets(row82["id"])
+        check("mid list NOT in under99", "Under99Deals11" not in targets82)
+
+        # 7e. First-preference source (pricehistory): its queue jobs get a +1
+        # priority boost so the same content tier delivers ahead of others.
+        await store.enqueue(333, 101, "other_source", "Deal ₹500 30% off https://a.test/p1")
+        pri_other = store.conn.execute("SELECT priority FROM queue WHERE msg_id=101").fetchone()[0]
+        await store.enqueue(333, 102, "pricehistory", "Deal ₹500 30% off https://a.test/p2")
+        pri_ph = store.conn.execute("SELECT priority FROM queue WHERE msg_id=102").fetchone()[0]
+        check("pricehistory first-preference priority boost", pri_ph == pri_other + 1)
+
         # 8. Provenance leak fix: an Amazon link carrying OUR Associates tag is
         # self-proving — it passes the final provenance gate even though the
         # link_cache (empty store here) never saw a conversion-API row for it.
@@ -527,7 +578,8 @@ async def main():
             "Flipkarthiik", "telugutechtvdeals", "indian_online_offer",
             "powerloot", "idoffers", "idoffers2", "icoolzTricks",
             "TeluguTechworld", "https://t.me/+LP6MYEpCwi0zOGYx",
-            "dealsvelocity", "iamprasadtech",
+            "dealsvelocity", "iamprasadtech", "tech24deals", "Offer_Xpress",
+            "https://t.me/+qhlEwwkhb2hlNWZl",
         )
         for src in user_sources:
             check(f"source {src} -> non-tricks main targets",
