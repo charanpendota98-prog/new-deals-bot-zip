@@ -422,6 +422,48 @@ async def main():
         check("user md post final: zero junk (smid/psc/amp/brackets)",
               "smid=" not in user_final and "psc=1" not in user_final
               and "&amp" not in user_final and not re.search(r"[\[\]()]", user_final))
+
+        # USER'S SECOND REPORT: markdown with BOLD/HIGHLIGHT debris —
+        # "Men : ++**[[url](url)]([url](url))**" / "**Women : ++**[url](url)**++".
+        # Must render as clean "Men : <one short link>" lines, zero */+/brackets.
+        men_url = ("https://www.amazon.in/s?i=watches&k=sonata"
+                   "&linkId=d1ed8305142355ade29af769ae53ffd5"
+                   "&rh=n%3A1350387031%2Cn%3A2563504031&s=price-asc-rank"
+                   "&xpid=amZH9R9-GxtvF&tag=deals0911-21")
+        women_url = men_url.replace("2563504031", "2563505031").replace(
+            "d1ed8305142355ade29af769ae53ffd5", "600920435a84f32e3ac84659fd83d23e")
+        amp = lambda u: u.replace("&", "&amp;")
+        bold_post = ("Starts At ₹407🔥\n"
+                     f"Men : ++**[[{amp(men_url)}]({amp(men_url)})]([{amp(men_url)}]({men_url}))**\n"
+                     f"**Women : ++**[{amp(women_url)}]({women_url})**++\n")
+        cleaned_bold = bot.clean_source_text(bold_post)
+        bold_lines = cleaned_bold.splitlines()
+        check("bold-md post: Men/Women labels kept, one URL each, zero */+/amp/brackets",
+              bold_lines[0] == "Starts At ₹407🔥"
+              and len(bold_lines) == 3
+              and all(len(bot.URL_RE.findall(l)) == 1 for l in bold_lines[1:])
+              and not re.search(r"[*+\[\]]", cleaned_bold.replace("+", ""))
+              and "&amp" not in cleaned_bold
+              and bold_lines[1].startswith("Men : ")
+              and bold_lines[2].startswith("Women : "))
+        class BoldAff(bot.AffiliateClient):
+            def __init__(self): self.calls = 0
+            async def shorten(self, u):
+                self.calls += 1
+                return ("https://bit.ly/menwatches" if "2563504031" in u
+                        else "https://bit.ly/womenwatches")
+            async def cache_link(self, *a, **k): pass
+        bold_aff = BoldAff()
+        bold_final = await bold_aff.shorten_long_urls_in_text(cleaned_bold)
+        check("bold-md post final: exactly 'Men : bitly / Women : bitly'",
+              bold_final == ("Starts At ₹407🔥\n"
+                             "Men : https://bit.ly/menwatches\n"
+                             "Women : https://bit.ly/womenwatches")
+              and bold_aff.calls == 2)
+        # Legitimate single '+' in product text must survive (URL-encoded space).
+        plus_text = bot.clean_source_text("Air Purifier X1+ Filter Set ₹2999")
+        check("single plus in product text survives emphasis sweep",
+              "X1+ Filter Set" in plus_text)
         # New source channels are registered and fan out to the non-Tricks main
         # targets (Secret + LootZoneIndia11 + PowerLoots1); premium/price/card
         # routes are added dynamically on top.

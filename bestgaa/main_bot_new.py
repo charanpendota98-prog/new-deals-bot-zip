@@ -294,6 +294,10 @@ log.addHandler(rotating)
 # Domain and parsing helpers
 # ---------------------------------------------------------------------------
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
+# Same pattern but with a CAPTURE group: re.split drops the separator itself,
+# while a capturing group keeps every URL inside the split parts (odd index),
+# so text-side cleanup can mask URLs and never touch query chars like '+'.
+URL_KEEP_RE = re.compile(r"(https?://[^\s<>\[\](){}\"']+)", re.I)
 INTENT_RE = re.compile(r"intent://[^\s]+", re.I)
 ASIN_RE = re.compile(r"(?:/dp/|/gp/product/|/gp/aw/d/)([A-Z0-9]{10})(?:[/?#]|$)", re.I)
 
@@ -1011,6 +1015,23 @@ def normalize_nested_link_markup(text: str) -> str:
             break
     # Leftover stray square brackets are noise.
     out = re.sub(r"[\[\]]+", "", out)
+    # Markdown emphasis debris (++, **, __ and lone */_) left around the
+    # collapsed links is source formatting, never deal content. Strip it in
+    # the TEXT parts only (URLs are masked) so legitimate '+' query chars
+    # inside Amazon URLs survive untouched.
+    def _drop_emphasis_part(part: str) -> str:
+        # Runs of 2+ emphasis chars (++, **, __) and lone */_ markers. Applied
+        # to URL parts too (replacement is empty, not a space) so a URL that
+        # ended up glued to "**++" debris is left a valid clean URL; a lone
+        # "+" is never touched (URL-encoded spaces legitimately end queries).
+        part = re.sub(r"[*_+]{2,}", "", part)
+        return re.sub(r"[*_]+", "", part)
+    out = "\n".join(
+        re.sub(r"[ \t]{2,}", " ", " ".join(
+            _drop_emphasis_part(p) for p in URL_KEEP_RE.split(line)
+        )).strip()
+        for line in out.splitlines()
+    )
     # Collapse the SAME product link stacked several times in one line (nested
     # copies) down to one, keeping a short text prefix if there is one.
     lines = []

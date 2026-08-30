@@ -370,6 +370,17 @@ function normalizeNestedLinks(text) {
     if (out === prev) break
   }
   out = out.replace(/[\[\]]+/g, '')
+  // Markdown emphasis debris (++, **, __ and lone */_) left around collapsed
+  // links is source formatting, never deal content. Strip runs of 2+ emphasis
+  // chars and lone */_ everywhere; URLs are masked so legitimate '+' query
+  // chars inside Amazon URLs survive untouched.
+  out = out.split(/\r?\n/).map(line =>
+    line.split(/(https?:\/\/[^\s<>\[\](){}"']+)/)
+      .map(p => p.replace(/[*_+]{2,}/g, '').replace(/[*_]+/g, ''))
+      .join('')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+  ).join('\n')
   return out.split(/\r?\n/).map(line => {
     const stripped = line.trim().replace(/^[()]+|[()]+$/g, '').trim()
     // Count RAW occurrences (not de-duplicated): the same product URL stacked
@@ -3533,6 +3544,42 @@ if (process.argv.includes('--self-test')) {
     const mdTwoOut = normalizeNestedLinks(mdTwo)
     if (!mdTwoOut.includes('B0DQPT85TB') || !mdTwoOut.includes('B0F4NFCHX8')) {
       throw new Error('two-link tidy dropped a URL: ' + mdTwoOut)
+    }
+  }
+  // USER REPORT 2: markdown with BOLD/HIGHLIGHT debris glued around the links,
+  // "Men : ++**[[url](url)]([url](url))**" and "**Women : ++**[url](url)**++".
+  // Must collapse to clean "Men : <url>" / "Women : <url>" lines with zero
+  // leftover * + brackets or &amp; (URLs masked so query '+' chars survive).
+  {
+    const boldMen = 'https://www.amazon.in/s?i=watches&k=sonata&linkId=d1ed8305142355ade29af769ae53ffd5&rh=n%3A1350387031%2Cn%3A2563504031&s=price-asc-rank&xpid=amZH9R9-GxtvF&tag=deals0911-21'
+    const boldWomen = boldMen.replace('2563504031', '2563505031').replace('d1ed8305142355ade29af769ae53ffd5', '600920435a84f32e3ac84659fd83d23e')
+    const a = u => u.replace(/&/g, '&amp;')
+    const boldPost = 'Starts At \u20b9407\n' +
+      'Men : ++**[[' + a(boldMen) + '](' + a(boldMen) + ')]([' + a(boldMen) + '](' + boldMen + '))**\n' +
+      '**Women : ++**[' + a(boldWomen) + '](' + boldWomen + ')**++\n'
+    const boldOut = normalizeNestedLinks(boldPost)
+    const boldLines = boldOut.split('\n').filter(Boolean)
+    if (boldLines.length !== 3 || boldLines[0] !== 'Starts At \u20b9407') {
+      throw new Error('bold-md tidy line count/label wrong: ' + boldOut)
+    }
+    if (!boldLines[1].startsWith('Men : ') || !boldLines[2].startsWith('Women : ')) {
+      throw new Error('bold-md tidy lost Men/Women labels: ' + boldOut)
+    }
+    const junk = boldOut.replace(/https?:\/\/\S+/g, '')
+    if (/[\[\]*/]/.test(junk) || boldOut.includes('&amp')) {
+      throw new Error('bold-md tidy left debris: ' + boldOut)
+    }
+    if (!boldLines[1].includes(boldMen) || !boldLines[2].includes(boldWomen)) {
+      throw new Error('bold-md tidy dropped a URL: ' + boldOut)
+    }
+    if ((boldLines[1].match(/https?:\/\//g) || []).length !== 1 ||
+        (boldLines[2].match(/https?:\/\//g) || []).length !== 1) {
+      throw new Error('bold-md tidy did not dedupe URL copies: ' + boldOut)
+    }
+    // A legitimate single '+' inside product text must survive.
+    const plusLine = 'Air Purifier X1+ Filter Set \u20b92999'
+    if (normalizeNestedLinks(plusLine) !== plusLine) {
+      throw new Error('single plus in product text was damaged')
     }
   }
   if (!stateFilePreExisted) fs.rmSync(STATE_FILE, { force: true })
