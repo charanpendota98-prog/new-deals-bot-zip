@@ -525,11 +525,54 @@ function canonicalUrlKey(url) {
     return u.hostname + u.pathname
   } catch { return url }
 }
+// Loot channels open with a pure campaign banner ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥",
+// "⚡️ 11 PM FLASH SALE ⚡️") that says nothing about the product. Those lines are
+// decoration and must not sit on top of our post - but they are droppable ONLY
+// because a real product line exists in the same post. So the vocabulary is
+// deliberately limited to generic hype words: one product/spec word keeps the
+// line, and if every text line is a banner the first one stays as the headline
+// (never hand the reader a wall of bare links). Mirrors _product_label /
+// is_campaign_banner_line / strip_promo_lines in bestgaa/main_bot_new.py.
+const BANNER_NOISE_WORDS = new Set((`
+top tops best hot mega super ultra dhamaka dhamal amazing awesome superb mind
+blowing daily latest new today yesterday deal deals dealz offer offers loot loots
+sale sales steal stealer alert alerts save savings price prices drop drops shocker
+shocking free gift gifts bonus grab hurry limited time slot hours day nights night
+of the a an for you your ours only off on in india indian
+weekend special weekday flash live now just don miss
+`).split(/\s+/).filter(Boolean))
+const TIME_OF_DAY_RE = /\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)/gi
+
+function isCampaignBannerLine(line) {
+  // Brand/store names are not in the vocabulary on purpose: "Myntra Mega Sale" is
+  // a real store header (content), "TOP DEAL OF THE DAY" is hype (noise).
+  const t = line || ''
+  if (!t.trim() || /https?:\/\/\S+/i.test(t)) return false
+  if (/[\u20B9$%]|\b(?:rs\.?|inr|mrp|discount|cod)\b/i.test(t)) return false
+  let stripped = t.replace(TIME_OF_DAY_RE, ' ')
+  stripped = stripped.replace(/\b(?:\d{1,2}(?:st|nd|rd|th)?|\d{1,2}\s*(?:am|pm))\b/gi, ' ')
+  const words = stripped.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean)
+  if (!words.length) return true // pure decoration (emoji / rules) is noise
+  return words.every(word => BANNER_NOISE_WORDS.has(word.toLowerCase()))
+}
+
+// Drop the banner lines, keeping the FIRST one only when nothing else can act as
+// the post's headline.
+function dropCampaignBanners(lines) {
+  const flags = lines.map(isCampaignBannerLine)
+  const hasRealHeadline = lines.some((line, i) => line.trim()
+    && !/https?:\/\/\S+/i.test(line) && !flags[i])
+  if (hasRealHeadline) return lines.filter((line, i) => !flags[i])
+  const firstBanner = flags.findIndex(Boolean)
+  return firstBanner < 0 ? lines : lines.filter((line, i) => !flags[i] || i === firstBanner)
+}
+
 function cleanDealText(text) {
   const noise = /^(?:\s*(?:🔥\s*LOOT\s+ZONE\s*[—-]\s*India|🚨\s*SPECIAL\s+OFFER|✅\s*Verified\s*•\s*Enjoy\s*\(Grab\s*fast\)|.*deal\s*time\s*:.*(?:IST)?|.*\bloot\s+fa+s+\s*t+\b.*|.*(?:@GrabOnIndiaOfficial|50\+\s*loots\s*daily).*|(?:h|ht|htt|https?|ttp|ttps|tps?:\/\/|s:\/\/|:\/\/|uy)|👉.*(?:https\s*:\s*are)|💰?\s*want\s+real\s+cash\s*back\s+too\??|forward\s+to\s+@cashkarolink_?bot|#(?:myntra|flipkart|amazon|ajio))\s*)$/i
   const fragments = new Set(['h','ht','htt','http','https','ttp','ttps','tps://','tp://','s://','://','uy'])
   const meaningful = new Set(['men','mens','women','womens','unisex','blue','black','white','red','green','yellow','brown','orange','pink','purple','grey','gray','beige','gold','silver','small','medium','large'])
-  const cleaned = normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '').split(/\r?\n/)
+  const cleaned = dropCampaignBanners(normalizeNestedLinks(text)
+    .replace(/[\u200b-\u200f\u2060\ufeff]/g, '').split(/\r?\n/))
     .filter(line => {
       const core = line.replace(/[^A-Za-z:/]/g, '').toLowerCase()
       const punctuationOnly = /^\s*(?:[-–—|:>]+|[👉👆]+)\s*$/.test(line)
@@ -3820,6 +3863,32 @@ if (process.argv.includes('--self-test')) {
     if ((mdPost.match(/https?:\/\/bitli\.in\//g) || []).length !== 4) throw new Error('markdown list post lost links: ' + mdPost)
     const glued = sanitizeOutbound('Top Loading Washing Machine Cover @ \u20b9260https://bitli.in/zz1\n\u279c https://bitli.in/zz2')
     if (!glued.includes('\u20b9260 https://bitli.in/zz1')) throw new Error('link glued to the price was not separated: ' + glued)
+  }
+  // v17.1: a campaign banner is decoration, not the deal - it must not sit on
+  // top of the post, but a line that could BE the headline (or a store header)
+  // is never dropped, so a post can never collapse into bare links.
+  {
+    const bannerSrc = '\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n' +
+      '\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n' +
+      'Top Loading Washing Machine Cover @ \u20b9260\n' +
+      ['IKthI4w', '6ft5j8a', '3FQw8wi', 'eIQ8aOv']
+        .map(c => `\u279c [https://bitli.in/${c}](https://bitli.in/${c})`).join('\n')
+    const bannerPost = sanitizeOutbound(formatWhatsAppPost({ text: bannerSrc }))
+    if (/TOP DEAL OF THE DAY|FLASH SALE|11 PM/.test(bannerPost)) {
+      throw new Error('campaign banner leaked into the WhatsApp post: ' + bannerPost)
+    }
+    if (!/Washing Machine Cover/.test(bannerPost) || !bannerPost.includes('\u20b9260')) {
+      throw new Error('banner stripping cost the product/price line: ' + bannerPost)
+    }
+    if ((bannerPost.match(/bitli\.in\//g) || []).length !== 4) throw new Error('banner shape lost links: ' + bannerPost)
+    if (bannerPost.includes('[') || bannerPost.includes('](')) throw new Error('markdown debris after banner strip: ' + bannerPost)
+    if (isCampaignBannerLine('Myntra Mega Sale')) throw new Error('store header must not be treated as a banner')
+    if (!isCampaignBannerLine('\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f')) throw new Error('flash-sale header not recognized as a banner')
+    const bannerOnly = dropCampaignBanners(['\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25',
+      '\u26a1\ufe0f FLASH SALE \u26a1\ufe0f', 'https://bitli.in/zz9'])
+    if (bannerOnly[0].indexOf('TOP DEAL') < 0 || bannerOnly.length !== 2) {
+      throw new Error('a banner that is the only headline must survive as the headline: ' + JSON.stringify(bannerOnly))
+    }
   }
   console.log('bridge self-test PASS')
   process.exit(0)

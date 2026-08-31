@@ -301,3 +301,28 @@ D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
   "you fixed it but I still see it" is that the server never restarted on the
   new build (this repo state must be deployed with ops/repack_bundles.sh +
   apply_dual_hotfix.sh; nothing in this session was pushed to a live machine).
+
+  v17.1 addendum - source campaign banners (the "unwanted text" that survived)
+  ------------------------------------------------------------------------------
+    The user's paste also carried the channel's own hype lines into our channel
+    ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥", "⚡️ 11 PM FLASH SALE ⚡️"). Those lines are not
+    about the product at all, so strip_promo_lines() now recognises them via
+    is_campaign_banner_line(): every word of the line must be generic hype
+    (BANNER_NOISE_WORDS) and the line must carry no link, no ₹ amount, no %.
+    Two guards keep this from becoming the "lost headline" bug again:
+      * brand/store words (Myntra, Flipkart, Boat, ...) are NOT in the
+        vocabulary on purpose, so a real store header ("Myntra Mega Sale") and a
+        product line are never mistaken for a banner;
+      * if EVERY text line of the post is a banner, the first one is KEPT as the
+        headline (and only the extras are dropped), because a post of nothing but
+        links is worse than a post carrying a hype line.
+    Mirrored in the bridge (isCampaignBannerLine / dropCampaignBanners inside
+    cleanDealText) and locked by test_campaign_banner_lines + new bridge
+    self-test cases (banner gone, product + price + all 4 links kept, store
+    header kept, banner-only post keeps its headline).
+    Final counts on this tree: test_render_job.py 137/137,
+    test_pipeline_fixes.py 159/159, test_rescan.py pass, bridge --self-test PASS.
+    ops/repack_bundles.sh now also ships coverage_audit.py inside the bot bundle,
+    so `python3 /home/ubuntu/bestgaa-bot/bestgaa-bot/coverage_audit.py --hours 12
+    --heal` works on the server without a repo checkout; diagnose.sh runs the
+    audit and greps the v17.1 markers of the DEPLOYED files.

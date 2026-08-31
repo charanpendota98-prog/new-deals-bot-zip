@@ -884,7 +884,7 @@ async def test_list_post_shapes(store):
     # deals (the SAME campaign from two sources must dedup - and it does, which
     # is exactly what an earlier run of this test proved).
     names = ["Top Loading Washing Machine Cover", "Quilted Top Load Washer Protector",
-             "Heavy Duty Washing Machine Cover"]
+             "Heavy Duty Washing Machine Cover", "Universal Top Load Machine Shield"]
 
     class FakeMsg:
         def __init__(self, text):
@@ -915,18 +915,23 @@ async def test_list_post_shapes(store):
             return rendered
 
     shapes = {}
-    for n in range(3):
+    for n in range(4):
         codes = ["%dtG7oChgiQuTgS25b" % n, "%dIKthI4w" % n, "%d6ft5j8a" % n, "%d3FQw8wi" % n]
         shapes[n] = codes
     ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + "?tag=deals0911-21"
             for cs in shapes.values() for c in cs}
-    titles = [names[n] + " \u20b9260" for n in range(3)]
+    titles = [names[n] + " \u20b9260" for n in range(4)]
+    # the exact channel banner decoration sources paste above every list
+    banners = "\ud83d\udd25\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\ud83d\udd25\n" \
+              "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
     shape_list = [
         ("plain bullets", titles[0] + "\n" + "\n".join("\u279c https://bitli.in/" + c for c in shapes[0])),
         ("markdown bullets", titles[1] + "\n" + "\n".join(
             "\u279c [https://bitli.in/{0}](https://bitli.in/{0})".format(c) for c in shapes[1])),
         ("link glued to the price", titles[2] + "https://bitli.in/" + shapes[2][0] + "\n" + "\n".join(
             "\u279c https://bitli.in/" + c for c in shapes[2][1:])),
+        ("campaign banners above the list", banners + titles[3] + "\n" + "\n".join(
+            "\u279c [https://bitli.in/{0}](https://bitli.in/{0})".format(c) for c in shapes[3])),
     ]
 
     for n, (name, text) in enumerate(shape_list):
@@ -952,6 +957,9 @@ async def test_list_post_shapes(store):
         check("[%s] each link sits on its own line" % name,
               all(ln.strip().startswith(("\u279c", "http")) or "\u20b9" in ln for ln in lines))
         check("[%s] the price used for routing is the source price" % name, price == 260)
+        check("[%s] no channel banner / flash-sale hype in our post" % name,
+              "TOP DEAL" not in rendered and "FLASH SALE" not in rendered
+              and "11 PM" not in rendered)
 
     # The same campaign posted by a second source (identical text, different
     # shortener) must still be refused - dedup did not get weaker.
@@ -1078,6 +1086,44 @@ def test_coverage_audit():
           not again["lost"])
 
 
+def test_campaign_banner_lines():
+    """The banner rule may remove hype, never the product line."""
+    print("\n== campaign banner lines: hype out, content in ==")
+    hype = [
+        "\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25",
+        "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f",
+        "DEALS OF THE DAY",
+        "MEGA SALE ON - GRAB LIMITED TIME",
+        "New Price Drop!!!",
+        "\u2705\u2705\u2705",
+    ]
+    content = [
+        "Top Loading Washing Machine Cover @ \u20b9260",
+        "Men Running Shoes 45% OFF",
+        "Myntra Mega Sale",                      # a store header IS content
+        "Boat Airdopes 141",
+        "Free Fire Gift",                        # brand/product words, keep it
+        "Size 7 (UK) | Color: Blue",
+        "Universal Top Load Machine Shield",
+        "https://bitli.in/IKthI4w",
+    ]
+    for line in hype:
+        check("banner classifier drops %r" % line[:28], bot.is_campaign_banner_line(line))
+    for line in content:
+        check("banner classifier keeps %r" % line[:28], not bot.is_campaign_banner_line(line))
+    both = hype[0] + "\n" + hype[1] + "\n\nMen Cotton T-Shirt\nhttps://a.co/x"
+    out = bot.strip_promo_lines(both)
+    check("banners removed when a product line exists",
+          "TOP DEAL" not in out and "FLASH SALE" not in out
+          and "Men Cotton T-Shirt" in out and "https://a.co/x" in out)
+    only = hype[0] + "\n" + hype[1] + "\nhttps://a.co/x"
+    out2 = bot.strip_promo_lines(only)
+    check("the headline is NOT removed when nothing else can carry the post",
+          hype[0] in out2 and "https://a.co/x" in out2 and hype[1] not in out2)
+    check("idempotent", bot.strip_promo_lines(out) == out)
+
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
@@ -1099,6 +1145,7 @@ async def main():
         await test_real_post_shape()
         await test_list_post_shapes(store)
         test_coverage_audit()
+        test_campaign_banner_lines()
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

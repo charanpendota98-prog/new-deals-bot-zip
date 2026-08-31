@@ -67,6 +67,8 @@ def default_db() -> Path:
         return Path(env)
     here = Path(__file__).resolve().parent
     for candidate in (
+        Path.cwd() / "bestgaa.sqlite3",
+        here / "bestgaa.sqlite3",
         here.parent / "bestgaa" / "bestgaa.sqlite3",
         Path.home() / "bestgaa-bot" / "bestgaa-bot" / "bestgaa.sqlite3",
         Path.home() / "bestgaa" / "bestgaa.sqlite3",

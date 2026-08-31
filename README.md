@@ -388,9 +388,9 @@ live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `7dea657e1e13a89754f307ce09d66cd4914dad0a193331030ef67d93e19e3d2e` |
-| `tg-wa-bridge/bridge.js` | `615a05910a23f51566859ca75bba10202bd1a3b455d176b26db04446512990a2` |
-| `ops/coverage_audit.py` | `a146799f0112df41489c45e33b3eade9c4e13b5a30acce9ab021a067b9572abf` |
+| `bestgaa/main_bot_new.py` | `52b0f4e3603afadf31beefc8ce5789fcaea34256502625939ce41c8bbc39dc82` |
+| `tg-wa-bridge/bridge.js` | `edc60a6fd02fc43599bfedf7ae2120bd3b1e887066013bc436a12fd3271fae91` |
+| `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
 Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
 131/131 (list shapes, coverage audit, price fidelity, no-silent-loss),

@@ -78,7 +78,8 @@ fi
 
 echo ""
 echo "==== 2b. SOURCE COVERAGE: did every source post reach a channel? ===="
-AUDIT="$BESTGAA_DIR/../new-deals-bot-zip/ops/coverage_audit.py"
+AUDIT="$BESTGAA_DIR/coverage_audit.py"
+[[ -f "$AUDIT" ]] || AUDIT="$BESTGAA_DIR/../new-deals-bot-zip/ops/coverage_audit.py"
 [[ -f "$AUDIT" ]] || AUDIT="$(dirname "$(readlink -f "$0")")/coverage_audit.py"
 if [[ -f "$AUDIT" ]]; then
   python3 "$AUDIT" --hours 12 2>&1 | sed 's/^/  /'

@@ -1150,13 +1150,64 @@ def strip_inline_cta(line: str) -> str:
     return re.sub(r"[\s|*•:,\-]+$", "", out).strip()
 
 
+# Loot channels open with a pure campaign banner ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥",
+# "⚡️ 11 PM FLASH SALE ⚡️") that is not about any product. Those lines are decoration
+# and must not reach our channels - but the ONLY thing that makes them droppable is
+# that the post also contains a real product line. A list post whose headline is the
+# product must never lose it, so the vocabulary below is deliberately limited to
+# generic hype words: one product/spec word in the line keeps the line.
+BANNER_NOISE_WORDS = frozenset("""
+top tops best hot mega super ultra dhamaka dhamal amazing awesome superb mind
+blowing daily latest new today yesterday deal deals dealz offer offers loot loots
+sale sales steal stealer alert alerts save savings price prices drop drops shocker
+shocking free gift gifts bonus grab hurry limited time slot hours day nights night
+of the a an for you your ours only off on in india indian
+weekend special weekday flash live now just don miss
+""".split())
+TIME_OF_DAY_RE = re.compile(r"\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)", re.I)
+
+
+def is_campaign_banner_line(line: str) -> bool:
+    """True for a pure hype/banner line with no product, price or link in it.
+
+    Brand/store names are deliberately NOT in the vocabulary: "Myntra Mega Sale" is
+    a real store header (content), "TOP DEAL OF THE DAY" is hype (noise).
+    """
+    t = line or ""
+    if not t.strip() or URL_RE.search(t):
+        return False
+    if re.search(r"[\u20b9$%]|\b(?:rs\.?|inr|mrp|discount|cod|off\s*[:=])", t, re.I):
+        return False
+    stripped = TIME_OF_DAY_RE.sub(" ", t)
+    stripped = re.sub(r"\b(?:\d{1,2}(?:st|nd|rd|th)?|\d{1,2}\s*(?:am|pm))\b", " ", stripped, flags=re.I)
+    words = [w for w in re.sub(r"[^\w\s]", " ", stripped, flags=re.U).split() if w]
+    if not words:
+        return True  # pure decoration (emoji / rules) - noise by any definition
+    return all(w.lower() in BANNER_NOISE_WORDS for w in words)
+
+
 def strip_promo_lines(text: str) -> str:
     """Drop source promo/navigation lines from a Telegram/WhatsApp body, and
     strip a CTA fragment glued to the end of a real deal line (price/discount
-    lines are kept as lines, only the channel junk on them is removed)."""
+    lines are kept as lines, only the channel junk on them is removed).
+
+    A campaign banner is removed only while the post still has a real product
+    line: never let the cleaning leave a wall of bare links behind.
+    """
+    lines = (text or "").splitlines()
+    banners = [is_campaign_banner_line(ln) for ln in lines]
+    # A post is NOT allowed to become a wall of bare links: if every text line is
+    # a banner (some channels put the product name nowhere else), the first one is
+    # kept as the headline and only the extra banner lines go away.
+    has_real_headline = any(ln.strip() and not URL_RE.search(ln) and not flag
+                            for ln, flag in zip(lines, banners))
+    first_banner = None if has_real_headline else next(
+        (i for i, ln in enumerate(lines) if ln.strip() and banners[i]), None)
     kept = []
-    for ln in (text or "").splitlines():
+    for index, ln in enumerate(lines):
         if is_promo_noise_line(ln):
+            continue
+        if banners[index] and index != first_banner:
             continue
         kept.append(strip_inline_cta(ln))
     return "\n".join(kept)
