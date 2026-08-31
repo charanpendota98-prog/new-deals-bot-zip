@@ -64,7 +64,20 @@ def check(label, cond):
 
 
 async def queue_row(store, text, source="some_source", msg_id=1):
-    await store.enqueue(111, msg_id, source, text, False)
+    """Insert a queue row directly (bypassing the intake fingerprint check).
+
+    These cases must exercise the RENDER-stage gates - routing, conversion,
+    product/content dedup. The intake stage now refuses a duplicate campaign
+    before it is ever queued, and that layer is covered by
+    test_pipeline_fixes.py.
+    """
+    import time as _time
+    priority = bot.classify_priority(text, False)
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) VALUES(?,?,?,?,?,?)",
+        (111, msg_id, source, _time.time(), priority, str(bot.raw_chat_id(111))),
+    )
+    store.conn.commit()
     row = store.conn.execute("SELECT * FROM queue ORDER BY id DESC LIMIT 1").fetchone()
     return row
 

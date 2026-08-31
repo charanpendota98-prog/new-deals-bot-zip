@@ -1,0 +1,155 @@
+IMMEDIACY + ZERO-DUPLICATE + POST-QUALITY FIX NOTES — 2026-08-31 (v16)
+
+WHY THIS EXISTS (reported symptoms)
+  1. "Source lo posts vasthunnai, kani mana bot adichu mellaga / eppudido post
+     chesthundi" — source channels publish, our channels receive them late and
+     at random times.
+  2. Duplicate posts in the target channels.
+  3. Unwanted words / junk text next to the deal.
+  4. The link in the source post must be replaced by OUR link and then posted.
+
+ROOT CAUSES FOUND (all in bestgaa/main_bot_new.py unless noted)
+
+A. LATENCY — the pipeline waited on purpose in six places
+  A1. Claim order was `created_at ASC`. A fresh deal therefore queued BEHIND
+      every hours-old row in the backlog (README claimed "newest-first" but the
+      SQL never said so) => posts looked batched and random.
+      Fixed: `QUEUE_ORDER=newest` (default) + `MAX_JOB_AGE_HOURS` sweeper so old
+      inventory is dropped (STALE DROP) instead of blocking or posting stale.
+  A2. Idle workers polled the queue once per second and nothing woke them.
+      Fixed: `notify_queue()` / `QUEUE_WAKE` — enqueue, retry, reclaim and
+      job-completion all wake the workers instantly (safety poll now 0.5s).
+  A3. Every URL of a post was handled SERIALLY, and each step had huge timeouts:
+      short-link resolve up to 5 x 18s, merchant page probe 2 x 18s (+1s sleep),
+      affiliate probe again, pre-send probe a THIRD time, Bitly 12s each.
+      A 4-link list could burn 2-4 minutes before a single send.
+      Fixed: resolve/convert/health-check/shorten all run concurrently
+      (asyncio.gather + bounded semaphores), per-request timeout is now
+      `HTTP_TOTAL_TIMEOUT_SECONDS` (12s), link verdicts are cached
+      (`LINK_HEALTH_CACHE_SECONDS`) so one URL is probed once per job, the
+      pre-send pass is capped by `PRESEND_CHECK_BUDGET_SECONDS` (a hanging
+      merchant site can no longer stall the queue; the already-verified
+      render-path verdict stands), and shortening reuses cached short links.
+      Measured by test: a 4-link post renders in ~0.5s where serial was >=2s
+      with 0.25s fake steps — with real 18s network steps the win is minutes.
+  A4. A failed/partial job backed off `5 * 2**attempts` capped at 300s — up to
+      5 minutes between retries, i.e. "posts whenever it feels like it".
+      Fixed: `job_retry_delay()` = 3s base, `JOB_RETRY_MAX_SECONDS`=20 cap,
+      `JOB_MAX_ATTEMPTS`=10, and every re-queue wakes the workers.
+  A5. A big source video/document was downloaded inline, freezing that worker
+      (and the deals behind it) for minutes. Fixed: `MAX_MEDIA_MB` (45) skip +
+      `MEDIA_DOWNLOAD_TIMEOUT_SECONDS` (120) cap; text still posts.
+  A6. The ingest safety-net cycle was 600s with a 20-message window, so a
+      missed event healed only every 10 minutes; sources were scanned serially.
+      Fixed: `SOURCE_RESCAN_SECONDS`=120, `SOURCE_RESCAN_LIMIT`=40, sources
+      scanned `SOURCE_RESCAN_CONCURRENCY`=4 at a time; `SOURCE_REFRESH_SECONDS`
+      900s -> 180s. Also every id convention is now matched when registering a
+      source (raw entity id, Telethon's `-100…` marked id, legacy `-chat` id) —
+      previously a source whose id form differed was mapped but NEVER ingested,
+      which reads exactly like "the bot is late / ignores that channel".
+  A7. Premium channel pacing (15-35 min gaps, 12/window, IST windows) is a
+      deliberate curation rule and is kept, but it is now a setting
+      (`PREMIUM_GAP_MIN_SECONDS`/`PREMIUM_GAP_MAX_SECONDS`) instead of a
+      hard-coded delay. The 02:00-06:00 IST quiet window is unchanged (user
+      rule); workers now resume within 15s of 06:00 instead of 60s.
+
+B. DUPLICATES
+  B1. The queue's uniqueness key was the raw `(chat_id,msg_id)` pair while
+      ingest / rescan / startup backfill could each write a DIFFERENT chat-id
+      form for the same message. Two rows => the same deal posted twice to every
+      target. Fixed: canonical `chat_key = raw_chat_id(chat_id)` + real unique
+      index `ux_queue_chat_key(chat_key,msg_id)`; pre-existing double rows are
+      folded once at startup (`DEDUP MIGRATION`).
+  B2. `reserve()` deleted every `deal_claims` row older than 20 minutes and
+      `maintenance()` deleted every claim older than 1 hour — including claims
+      held by jobs that were still pending/processing (a Premium-deferred or
+      backlogged job is exactly that). The lock disappeared, so the same product
+      from a second source passed the dedup gate and posted again.
+      Fixed: both only purge claims whose owning job is finished.
+  B3. A partially delivered job re-cleaned the rendered text on retry. Different
+      cleaning => different chunk boundaries => the "resume" re-sent an already
+      sent line. Fixed: `has_partial_delivery()` — once anything is out, the job
+      is finished with the stored bytes verbatim; before anything is sent the
+      cleaned text is frozen back into the DB (`update_rendered`).
+  B4. Copy-pasted campaigns burned a full render cycle before the pre-send gate
+      rejected them. Fixed: intake fingerprint check (`INTAKE DEDUP`), which
+      also closes the window where two sources queued the same campaign at once.
+
+C. UNWANTED WORDS / TEXT QUALITY
+  C1. A promo line that carried a channel link was kept (any URL counted as
+      "deal content") and then half-stripped, publishing residue such as
+      `.com/channel/0029`, `.me/someotherchannel`, bare `https://` or
+      `ps://broken`. Fixed: a line whose ONLY links are social/channel links is
+      dropped whole (promo intent words or an invite/addlist/+ link), and
+      `strip_url_residue()` sweeps any leftover protocol/domain fragment after
+      CTA stripping — both on the source text and on our own output (`tidy_post`).
+  C2. Referral / app-install farming ("Install the app and refer a friend to
+      earn ₹50") survived because a ₹ amount protects a line. Fixed: dropped
+      ahead of the price guard (narrow patterns; coupons, prices, specs, free
+      shipping are untouched).
+  C3. When two source links collapsed to the same product, the surviving link
+      stayed on the first line and the second line was left as a dangling
+      `Link 👉` with nothing after it. Fixed: `remove_dangling_cta_lines()`
+      (whitelisted pure-CTA labels with no link and no price).
+  C4. "…from our telegram channel" style attribution glued inside a deal line
+      left `Price ₹21,999 from our telegram`. Fixed with a bounded CTA pattern
+      that removes the phrase and keeps the price.
+  C5. tg-wa-bridge/bridge.js had the same promo-line short-circuit in
+      `isPromoNoiseLine` and no residue sweep, so the WhatsApp post could carry
+      the same junk. Both mirrored there (`isPromoOnlyUrl`,
+      `CHANNEL_INVITE_URL_RE`, `PROMO_INTENT_RE`, `REFERRAL_SPAM_RE`, residue
+      replaces inside `cleanDealText`) and covered by new `--self-test` cases.
+
+C6. FALSE DEDUP (missed posts): the one-hour same-price gate (`PRICE_DEDUP_SECONDS`,
+      set to 3600 in the deployed .env) was applied to EVERY post, so a genuinely
+      different product that happened to cost the same as something posted in the
+      last hour was silently dropped as a "duplicate" - the opposite of "source
+      lo ragane target lo post avvali". The module docstring always said this gate
+      is a fallback for posts WITHOUT product identity, and it now behaves that
+      way (`PRICE_DEDUP_IGNORES_IDENTITY=false` by default). Same ASIN/PID or the
+      same campaign fingerprint are still hard-blocked, so this does not open a
+      duplicate window. Set `PRICE_DEDUP_IGNORES_IDENTITY=true` to get the old
+      strict behaviour back.
+
+D. LINK REPLACEMENT (source link -> OUR link)
+  D1. `render_job` still skipped an ENTIRE deal when one unverified link
+      survived ("foreign URL survived") — a lost post plus no monetization.
+      Fixed: the leftover link is removed from the post (`LINK REPAIR`) and the
+      deal goes out with our link; it is only skipped when nothing verified
+      remains, so an unmonetized post is still impossible.
+  D2. Guarantees now asserted by tests: our affiliate link appears exactly once,
+      no `amzn.to`/`fkrt` source link survives, every surviving URL is either a
+      link we generated or one of our own channel/folder links.
+
+DEPLOY
+  cd ops && ./repack_bundles.sh          # rebuild the bundles from tracked source
+  ./apply_dual_hotfix.sh                 # on the Oracle server (sudo + systemctl)
+  # bot only:
+  #   upload bestgaa/* to ~/bestgaa-bot/bestgaa-bot/ then ./deploy_bestgaa.sh
+
+VERIFY ON THE SERVER (after restart)
+
+  journalctl -u bestgaa.service -n 200 --no-pager \
+    | grep -E 'QUEUED|RECOVERED|RESCAN|RETRY|DEDUP|LINK REPAIR|STALE DROP|NIGHT SKIP|JOB '
+
+  # 1. a new source post must show QUEUED within ~1s of the source timestamp;
+  # 2. no "queue=N" row should ever reach a second successful send for the same
+  #    deal key (DEDUP / INTAKE DEDUP lines instead);
+  # 3. spot-check the target channel: no leftover t.me/whatsapp promo lines, no
+  #    `ps://`-style fragments, exactly one (our) link per product.
+  # 4. lag check: (target post time - source post time) should now be seconds,
+  #    except for the intentional Premium channel windows and 02:00-06:00 IST.
+
+NOTE ON .env PRECEDENCE
+  A pre-existing .env WINS over these defaults (they are loaded with
+  setdefault). If the server .env still pins e.g. QUEUE_WORKERS=6,
+  SOURCE_RESCAN_SECONDS=600 or MAX_JOB_AGE_HOURS is missing, either remove those
+  lines or set them to the values in the README knob table, then restart the
+  unit. Nothing else has to be changed - the tuned behaviour is the built-in
+  default.
+
+ROLLBACK
+  deploy_bestgaa.sh keeps `main_bot.py.backup.<stamp>` and rolls back
+  automatically if the new unit fails its startup check. The added
+  `chat_key` column and indexes are additive: an older bot binary still runs
+  against the same DB (it simply keeps using the old (chat_id,msg_id) key).

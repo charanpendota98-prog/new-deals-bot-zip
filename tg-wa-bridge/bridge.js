@@ -323,12 +323,38 @@ const PROMO_PATTERNS = [
   /\bcash\s*?back\b[^.\n]{0,20}(?:@\S+|bot)\b/i,
   /[\u{1F4E2}\u{1F514}\u{1F4E3}\u{23F0}]/u,
 ]
+// A link that is only social/channel navigation is never deal content. A line
+// carrying nothing but such links is boilerplate and must go as a WHOLE line:
+// partially stripping the link used to leave residue like `.com/channel/0029`
+// or `.me/someotherchannel` sitting in the published post.
+const PROMO_ONLY_URL_HOSTS = [
+  't.me', 'telegram.me', 'telegram.dog', 'telegram.org', 'whatsapp.com', 'wa.me',
+  'instagram.com', 'facebook.com', 'twitter.com', 'x.com', 'discord.com',
+  'discord.gg', 'pinterest.com', 'linkedin.com', 'reddit.com', 'github.com',
+  'youtube.com', 'youtu.be', 'imgur.com',
+]
+function isPromoOnlyUrl(value) {
+  try {
+    const host = new URL(cleanUrl(String(value))).hostname.toLowerCase()
+    return PROMO_ONLY_URL_HOSTS.some(d => host === d || host.endsWith('.' + d))
+  } catch { return false }
+}
+const CHANNEL_INVITE_URL_RE = /t\.me\/(?:addlist\/|joinchat\/|\+)|telegram\.me\/(?:\+|joinchat\/)|whatsapp\.com\/(?:channel|group)\//i
+const PROMO_INTENT_RE = /\b(?:join|subscribe|follow|unfollow|share|forward|visit|open|check|notify|notifications?|turn\s+on|enable|activate)\b|\bfor\s+more\b|\bmore\s+(?:loot|deal|update)s?\b|\bour\s+(?:channel|group|whatsapp|telegram)\b/i
+// Referral/invite farming is junk even when a ₹ amount sits in the sentence.
+const REFERRAL_SPAM_RE = /\b(?:refer|invite)\s+(?:a\s+)?(?:friend|mate|user|family|one)\b|\b(?:earn|win|get)\s+(?:\u20B9|rs\.?|inr\s?)?\s*\d+\s*(?:each|per\s+user)?\s*(?:on|for|by|after|in)?\s*(?:referral|referrals|refer|invite|signup|sign\s*-?\s*up)\b|\b(?:referral|invite)\s+code\b|\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b/i
+
 function isPromoNoiseLine(line) {
   const t = (line || '').trim()
   if (!t) return false
-  // Keep anything carrying real deal content: a link, a price, a discount %,
-  // or a 3+ word product description -- never strip a real deal line.
-  if (/https?:\/\/\S/.test(t)) return false
+  // Keep anything carrying real deal content: a genuine merchant link, a price,
+  // a discount %, or a 3+ word product description -- never strip a real deal
+  // line. A line made only of channel/social links is the exception: promo
+  // wording plus an invite link means the whole line is boilerplate.
+  const lineUrls = t.match(/https?:\/\/\S+/g) || []
+  if (lineUrls.length && lineUrls.some(u => !isPromoOnlyUrl(u))) return false
+  if (lineUrls.length && (CHANNEL_INVITE_URL_RE.test(t) || PROMO_INTENT_RE.test(t))) return true
+  if (REFERRAL_SPAM_RE.test(t)) return true
   if (/[\u20B9$]|\b(?:rs\.?|inr|mrp)\b/i.test(t)) return false
   if (/\d+\s*%/.test(t)) return false
   // Word count for "is this a real product description?" ignores promo/CTA
@@ -435,6 +461,11 @@ function cleanDealText(text) {
   realUrls.forEach((url, i) => { protocolCleaned = protocolCleaned.split(url).join(`\x01U${i}\x02`) })
   protocolCleaned = protocolCleaned
     .replace(/\bhttps?:\/\/[^\s\x01]*/gi, '')      // orphan or truncated protocol line
+    // Half-stripped promo links leave TLD/protocol residue (`ps://broken`,
+    // `.com/channel/0029`): real URLs are masked out above, so only residue
+    // can match these.
+    .replace(/[A-Za-z0-9_-]*\.(?:me|com|in|net|org|io|co|html?)\b[\\/]\S*/gi, '')
+    .replace(/\b(?:https?|httpsx|ht|htt|ftp|tps|ttp|tp|ps|hs|sp)[:/ ]{0,2}[/\\]{2,}\S*/gi, '')
     .replace(/(?:\s*\b(?:https?|htt|ftp)\b)/gi, '')
     .replace(/\x01U\d+\x02/g, m => realUrls[Number(m.slice(2, -1))])
   // A source post whose duplicate links collapsed to one can leave dangling
@@ -3193,6 +3224,29 @@ if (process.argv.includes('--self-test')) {
       if (!/Use code MYNTRA|Limited stock|Pack of 2/.test(safe)) throw new Error('genuine deal words wrongly stripped: ' + safe)
       const tme = stripInlineCta('Follow us on t.me/somechannel for deals · ₹299')
       if (/t\.me|follow/i.test(tme)) throw new Error('t.me self-promo not stripped: ' + tme)
+    }
+    // Source promo that carries a channel link is removed as a WHOLE line (a
+    // partial strip used to leak `.com/channel/0029` style residue into the
+    // published post), and referral/app-install farming never reaches the post.
+    {
+      const noisy = cleanDealText([
+        'Sony 32 inch HD Smart TV',
+        'Deal Price ₹11,990 (37% OFF)',
+        'Join our WhatsApp Channel for more deals: https://whatsapp.com/channel/0029',
+        'Visit our channel: https://t.me/someotherchannel',
+        'ps://broken',
+      ].join('\n'))
+      if (/whatsapp|someotherchannel|\.com\/channel|ps:\/\//i.test(noisy)) {
+        throw new Error('channel promo or URL residue leaked into the post: ' + noisy)
+      }
+      if (!/Sony 32 inch HD Smart TV/.test(noisy) || !/11,?990/.test(noisy)) {
+        throw new Error('deal content must survive promo cleanup: ' + noisy)
+      }
+      const keep = cleanDealText('Cotton Tshirt ₹249 https://fktr.in/KEEPME')
+      if (!/fktr\.in\/KEEPME/.test(keep)) throw new Error('merchant link must be preserved: ' + keep)
+      const ref = cleanDealText('Zepto groceries ₹200\nInstall the app and refer a friend to earn ₹50')
+      if (/refer a friend|Install the app/i.test(ref)) throw new Error('referral spam leaked: ' + ref)
+      if (!/200/.test(ref)) throw new Error('price lost while stripping referral spam: ' + ref)
     }
   }
   // Bitly shortening policy (quota-smart): long links always; LIST posts

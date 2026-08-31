@@ -45,6 +45,11 @@ python3 -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py
 # Env values are arbitrary — the self-test makes no network calls:
 cd tg-wa-bridge && npm install \
   && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test
+
+# Behaviour tests (no network; expects all green):
+python3 test_render_job.py       # 137 checks: routing, formatting, conversion
+python3 test_rescan.py            # ingest dead-man's switch + idempotency
+python3 test_pipeline_fixes.py   # 49 checks: immediacy, zero duplicates, post quality
 ```
 
 The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
@@ -79,15 +84,34 @@ Individual deploys:
 - **Queue liveness:** mature warm-up tier pinned by default (`WA_WARMUP_DONE=true`), plausibility ceiling on `nextAllowedAt`, per-step timeouts, connection watchdog, heartbeat logs.
 - **Source resilience (Telegram ingest never silently loses deals):** startup
   backfill per source (`BACKFILL_HOURS`=6 / `BACKFILL_LIMIT`=50 default) + a
-  **rescan dead-man's switch**: every `SOURCE_RESCAN_SECONDS` (default 600s)
-  the bot re-scans each LIVE source's recent messages
-  (`SOURCE_RESCAN_LIMIT`=20) and enqueues anything new — the queue's
-  `UNIQUE(chat_id,msg_id)` makes repeats free, so even a silently dead
-  Telethon event stream recovers deals within one cycle instead of losing
-  them until the next restart. `INGEST SILENCE` is logged after 30 min
-  without a source event, and ingest failures log `INGEST FAIL` instead of
-  dying quietly inside the event handler.
-- **Dispatch order (v569b7415):** under499loots primary feed → media → ≤₹99/₹199/₹499 → multi-link lists → highest discount → card/bank offers boosted → categories → **newest-first** (a brand-new deal never waits behind hours-old inventory; old jobs age out via `MAX_JOB_AGE_HOURS`).
+  **rescan dead-man's switch**: every `SOURCE_RESCAN_SECONDS` (default **120s**,
+  was 600s) the bot re-scans each LIVE source's recent messages
+  (`SOURCE_RESCAN_LIMIT`=40, was 20), **concurrently** across
+  `SOURCE_RESCAN_CONCURRENCY`=4 sources, and enqueues anything new — the queue's
+  `UNIQUE(chat_key,msg_id)` makes repeats free, so even a silently dead Telethon
+  event stream recovers deals within one short cycle instead of losing them until
+  the next restart. Every id convention is now matched (raw entity id, Telethon's
+  `-100…` marked id, legacy `-chat` id), so a source can no longer be "live" in
+  the map yet never receive its posts. `INGEST SILENCE` is logged after 30 min
+  without a source event, ingest failures log `INGEST FAIL`, and a duplicate
+  refused at intake logs `INGEST DUP`.
+- **Immediate dispatch (v16 — `ops/IMMEDIACY_DEDUP_FIX_NOTES.txt`):** the queue
+  is *woken* the moment a deal is inserted (`QUEUE_WAKE`, no more 1s blind poll),
+  every URL of a post is resolved/converted/health-checked **concurrently**
+  (a 4-link list renders in ~0.5s instead of 4 serial 18–37s round trips), link
+  health verdicts are cached for `LINK_HEALTH_CACHE_SECONDS` so the same URL is
+  probed once per job instead of three times, the pre-send health pass is
+  time-boxed by `PRESEND_CHECK_BUDGET_SECONDS` (a hanging merchant site can no
+  longer stall the queue), oversized/slow source media is skipped
+  (`MAX_MEDIA_MB`, `MEDIA_DOWNLOAD_TIMEOUT_SECONDS`) instead of freezing a
+  worker, and job retries back off to `JOB_RETRY_MAX_SECONDS` (20s) instead of
+  5 minutes.
+- **Dispatch order:** priority tiers (mega 4+ link lists → card offer/≥80% →
+  ≥75% → photo/video → ordinary, plus the `PRIORITY_SOURCES` boost) then
+  **newest-first**, which is now actually implemented (it was documented but the
+  SQL still said `created_at ASC`, so a fresh deal waited behind every hours-old
+  row in the backlog). Over-age pending work is dropped, not posted late, by
+  `MAX_JOB_AGE_HOURS` (default 6h, logged as `STALE DROP`).
 - **Structured WhatsApp posts (source-faithful, nothing missed):** every
   WhatsApp post leads with the bold deal **name** (extracted from the source
   post), then price/discount badges (💰 ₹price | 🔥 N% OFF), then the source
@@ -104,13 +128,24 @@ Individual deploys:
   that fail are **skipped, never sent**, with the reason logged
   (`best-deal gate: ...`). Toggles: `WA_BEST_GATE`, `WA_BEST_MIN_DISCOUNT`,
   `WA_BEST_MAX_PRICE`, `WA_BEST_MIN_NAME_CHARS`.
-- **Zero duplicates, four layers, every send path:** (1) intake — an exact
-  deal key or campaign-content fingerprint that was already posted is never
-  even queued; (2) product dedup window (below); (3) a product already waiting
-  in the queue from another source is not queued twice; (4) every send path
-  (strict, special, mega-list, rotation) re-checks the exact key AND the
-  content fingerprint immediately before sending. The same campaign posted via
-  a different shortlink is still recognized as a duplicate.
+- **Zero duplicates, five layers, every send path:** (1) intake — a source
+  message is queued at most once because the queue key is the *canonical*
+  `(raw chat id, msg_id)` pair backed by a real `UNIQUE` index
+  (`ux_queue_chat_key`; a DB that already contains double rows for one message
+  is collapsed once at startup, `DEDUP MIGRATION`), and a campaign whose
+  content fingerprint was already posted is never even inserted
+  (`INTAKE DEDUP`); (2) product dedup window (below); (3) a product already
+  waiting in the queue from another source is not queued twice; (4) every send
+  path (strict, special, mega-list, rotation) re-checks the exact key AND the
+  content fingerprint immediately before sending; (5) a retry resumes with the
+  **stored rendered bytes** (`has_partial_delivery`), so a re-cut of the chunk
+  boundaries can never post a line twice. The same campaign posted via a
+  different shortlink is still recognized as a duplicate.
+- **Claims never expire while a job is alive:** `reserve()` and `maintenance()`
+  used to delete any `deal_claims` row older than 20 min / 1 h, including rows
+  held by a *pending* job (a Premium-deferred or backlogged job is exactly
+  that). The lock vanished and the identical deal from a second source got
+  posted again. Both now only purge claims whose job is finished.
 - **Night quiet window 02:00–06:00 IST (both sides), stale loot never posted:**
   the Telegram bot (`POST_QUIET_START`/`POST_QUIET_END`) and the WhatsApp
   bridge (`QUIET_START`/`QUIET_END`, `HYBRID_QUIET=false`) both pause
@@ -121,14 +156,30 @@ Individual deploys:
   ONLY multi-product **lists** earn the morning flush. Day deals born before
   02:00 keep their normal freshness budget. Set both clock values equal to
   disable the window.
-- **No random junk beside prices (both sides):** a random mixed letter+digit
-  token glued to or spaced after a price (`₹122oya`, `₹185 VN7z`) is source
-  corruption and is stripped before posting, while real quantities/units
-  (`2pcs`, `500ml`, `65w`, `750W`) always survive — covered by unit tests.
+- **No random junk, no promo, no residue (both sides):** a random mixed
+  letter+digit token glued to or spaced after a price (`₹122oya`, `₹185 VN7z`)
+  is source corruption and is stripped, while real quantities/units
+  (`2pcs`, `500ml`, `65w`, `750W`) always survive. A line whose ONLY links are
+  channel/social links (`Join our WhatsApp Channel: https://whatsapp.com/…`,
+  `Visit https://t.me/someotherchannel`) is dropped as a WHOLE line instead of
+  being half-stripped — that leak used to publish junk like
+  `.com/channel/0029` or `ps://broken`. `strip_url_residue()` sweeps any
+  leftover protocol/domain fragment (real links are masked first, so a
+  generated affiliate URL can never be damaged), referral/app-install spam
+  lines are removed even when they mention ₹, and a CTA label whose link
+  collapsed (`Link 👉` with nothing after it) is deleted
+  (`remove_dangling_cta_lines`). Covered by `test_pipeline_fixes.py`.
+- **Source link → OUR link, exactly once:** after `render_job`, every URL in
+  the post must be one we generated (affiliate/tagged link, our own folder /
+  channel links, or a pass-through service offer). A leftover source/foreign
+  link used to throw the whole deal away with `foreign URL survived`; it is now
+  **repaired out** (`LINK REPAIR`) so the post still goes out with our link —
+  and the deal is only skipped when nothing verified remains.
 - **Smart random pacing:** the bridge already posts with randomized gaps,
-  hourly break patterns and jitter; the bot now also spaces multi-target
-  fan-out with a human-like 3–9s random delay between targets (never before
-  the first target, so a hot deal is not delayed).
+  hourly break patterns and jitter; the bot spaces multi-target fan-out with a
+  short random gap (`TARGET_FANOUT_GAP_MIN`/`TARGET_FANOUT_GAP_MAX`, default
+  0.4–1.2s; the code never actually had the 3–9s earlier docs claimed) and
+  never before the first target, so a hot deal is not delayed.
 - **Never-stall pipeline:** bot workers are never-die (a claim or job error is
   logged and the loop continues — a dead worker can no longer silently stop
   all posting), and jobs orphaned in `processing` (kill -9, OOM, watchdog
@@ -215,14 +266,57 @@ Individual deploys:
 - **Service independence:** `bestgaa.service` (Telegram) and
   `tg-wa-bridge.service` (WhatsApp) are separate units; a WhatsApp
   pause/logout/ban never stops Telegram posting, and vice versa.
-- **One-file night deploy:** `ops/bestgaa_nightfix.zip` (built from tracked
-  source) carries `apply_nightfix.sh` + the bridge bundle — download, scp to
-  the server, unzip, run. Telegram bot is never touched by it.
+- **One-file night deploy:** `ops/bestgaa_nightfix.zip` carries
+  `apply_nightfix.sh` + the bridge bundle — download, scp to the server, unzip,
+  run. Telegram bot is never touched by it. **This bundle predates the v16
+  immediacy/dedup fixes — do not use it to deploy them.** Use
+  `ops/repack_bundles.sh` + `ops/apply_dual_hotfix.sh` (bot + bridge) or
+  `bestgaa/deploy_bestgaa.sh` (bot only) so both services come from tracked
+  source.
 - **Link safety:** every outgoing URL must exist as an authenticated generated `affiliate_url` in BestGAA's SQLite `link_cache`; foreign/shortener links are blocked.
+
+## Posting-immediacy / dedup knobs (`.env`, all optional, all clamped)
+
+Defaults are the tuned values; a typo in `.env` cannot make the bot slow again
+because every number is clamped into a safe range.
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `QUEUE_WORKERS` | 8 | concurrent render/deliver workers |
+| `PRICE_DEDUP_SECONDS` / `PRICE_DEDUP_IGNORES_IDENTITY` | server `.env` (3600) / `false` | the one-hour same-price gate is a **fallback for posts with no ASIN/PID**; set it to `true` to also block a *different* product that happens to share an already-posted price |
+| `QUEUE_ORDER` | `newest` | `newest` = a fresh deal is dispatched ahead of backlog; `oldest` restores FIFO |
+| `MAX_JOB_AGE_HOURS` | 6 | pending work older than this is dropped (`STALE DROP`), never posted late |
+| `JOB_RETRY_BASE_SECONDS` / `JOB_RETRY_MAX_SECONDS` | 3 / 20 | retry backoff for an undelivered job (was up to 300s) |
+| `JOB_MAX_ATTEMPTS` | 10 | attempts before a job is marked `failed` |
+| `HTTP_TOTAL_TIMEOUT_SECONDS` | 12 | per-request budget for resolve/health/EarnKaro |
+| `LINK_CHECK_ATTEMPTS` / `LINK_CHECK_RETRY_SLEEP_SECONDS` | 2 / 0.4 | health-probe behaviour |
+| `LINK_HEALTH_CACHE_SECONDS` | 900 | a URL is probed once per job, not once per stage |
+| `PRESEND_CHECK_BUDGET_SECONDS` | 25 | hard wall-clock cap on the pre-send link check |
+| `MAX_MEDIA_MB` / `MEDIA_DOWNLOAD_TIMEOUT_SECONDS` | 45 / 120 | oversized or slow source media is skipped (text still posts) |
+| `SOURCE_RESCAN_SECONDS` / `SOURCE_RESCAN_LIMIT` / `SOURCE_RESCAN_CONCURRENCY` | 120 / 40 / 4 | ingest dead-man's switch cadence |
+| `SOURCE_REFRESH_SECONDS` | 180 | retry joining sources that failed at startup |
+| `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0.4 / 1.2 | random gap between the fan-out targets of one job |
+| `PREMIUM_MAX_PER_NIGHT` / `PREMIUM_GAP_MIN_SECONDS` / `PREMIUM_GAP_MAX_SECONDS` | 12 / 900 / 2100 | Premium channel curation (the only place the bot intentionally waits) |
+| `WA_BEST_GATE` etc. | see bridge | WhatsApp best-deal gate, unchanged |
+
+Log lines that prove it is working: `QUEUED` (ingest → queue in the same
+second), `RECOVERED`/`RESCAN` (event-stream gap healed within one short cycle),
+`RETRY` (job retried in seconds), `INTAKE DEDUP` / `DEDUP` (a copy refused
+before it could ever post), `LINK REPAIR` (a source link replaced by ours
+instead of dropping the deal), `NIGHT SKIP` / `STALE DROP` (nothing stale is
+posted late).
 
 ## Current deployed version (server-verified)
 
-Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy:
+Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
+
+> **The tracked source is now ahead of this table.** `bestgaa/main_bot_new.py`
+> (v16 immediacy + dedup + post-quality fixes) and `tg-wa-bridge/bridge.js`
+> (promo-line/URL-residue/referral cleanup mirrored) changed in
+> `arena/01a0583b-new-deals-bot-zip`; the hashes below describe the *deployed*
+> build only. Deploy the repo source (`ops/repack_bundles.sh` →
+> `ops/apply_dual_hotfix.sh`, or `bestgaa/deploy_bestgaa.sh` for the bot alone),
+> then refresh this table with the new hashes.
 
 | Artifact | SHA-256 |
 |---|---|

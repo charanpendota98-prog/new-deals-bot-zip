@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v15.0
+"""BestGAA Production Bot v16.0
 
-Durable Telegram deal pipeline:
-- SQLite queue and delivery ledger (restart-safe)
+Durable Telegram deal pipeline — "source lo post rattane, mana target lo
+immediately, exactly once, clean":
+- SQLite queue and delivery ledger (restart-safe), workers woken instantly on
+  insert, dispatched newest-first with an age-out sweeper (never posts stale)
+- concurrent resolve / convert / health-check / shorten per post with cached
+  verdicts and hard time budgets, so one slow site cannot delay everything
 - EarnKaro conversion with retry/cache/circuit breaker
-- strict generated-link-only output
-- per-product 10-hour cross-source dedup
+- strict generated-link-only output (source links are always replaced by ours;
+  an unverified leftover link is repaired out instead of dropping the deal)
+- per-product 10-hour cross-source dedup, backed by a canonical
+  (chat_key,msg_id) unique index so one source message can never queue twice
 - 1-hour same-price fallback only when product identity is unavailable
 - dedup committed only after at least one target post succeeds
 - Buy Now/entity/button URL support
+- source promo / channel links / URL residue / dangling CTA labels stripped
 - long caption/message chunking
 - Under-99 / Under-499 price routing
 """
@@ -37,7 +44,7 @@ from typing import Any, Iterable
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, utils as tl_utils
 from telethon.helpers import add_surrogate, del_surrogate
 from telethon.errors import (
     ChannelPrivateError,
@@ -109,14 +116,87 @@ except ValueError:
 
 PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 PRICE_DEDUP_SECONDS = max(0, int(os.getenv("PRICE_DEDUP_SECONDS", "0")))
-QUEUE_WORKERS = max(1, int(os.getenv("QUEUE_WORKERS", "6")))
-EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "6")))
+# The one-hour same-price gate is a FALLBACK for posts with no product identity
+# (no ASIN/PID). Set it to true to also block a different product that happens
+# to carry an already-posted price — kept configurable because the strict
+# version suppresses legitimate distinct deals ("source lo vasthe mana channel
+# lo raavatam" is the primary rule).
+PRICE_DEDUP_IGNORES_IDENTITY = os.getenv("PRICE_DEDUP_IGNORES_IDENTITY", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _num(name: str, fallback: float, low: float, high: float) -> float:
+    """Read a numeric env var and clamp it into a safe range."""
+    try:
+        value = float(os.getenv(name, ""))
+    except (TypeError, ValueError):
+        value = fallback
+    return min(high, max(low, value))
+
+
+# --- Immediacy (USER RULE: "source lo post rattane target lo post avvali") ---
+# The pipeline is event-driven end to end: a queued deal is woken up instantly
+# (no idle polling delay), rendered with concurrent HTTP, and retried within
+# seconds instead of minutes. Every knob below is clamped so a typo in .env can
+# never turn the bot back into a slow/batched poster.
+QUEUE_WORKERS = max(1, int(os.getenv("QUEUE_WORKERS", "8")))
+QUEUE_IDLE_POLL_SECONDS = _num("QUEUE_IDLE_POLL_SECONDS", 0.5, 0.1, 10)
+# Newest-first: a brand-new deal must never queue behind hours-old inventory
+# (that is exactly what made posts look random/late). Old inventory drains by
+# age-out instead of being posted stale.
+QUEUE_ORDER = "newest" if os.getenv("QUEUE_ORDER", "newest").strip().lower() != "oldest" else "oldest"
+# Stale loot is never posted: pending jobs older than this are dropped (logged),
+# matching the "prices do not survive" trust policy instead of flushing them late.
+MAX_JOB_AGE_HOURS = _num("MAX_JOB_AGE_HOURS", 6, 0.25, 72)
+# Job-level retry backoff. The old 5*2**attempts (capped at 5 minutes) was the
+# main cause of "the bot posts whenever it feels like it".
+JOB_RETRY_BASE_SECONDS = _num("JOB_RETRY_BASE_SECONDS", 3, 1, 60)
+JOB_RETRY_MAX_SECONDS = _num("JOB_RETRY_MAX_SECONDS", 20, 2, 300)
+JOB_MAX_ATTEMPTS = max(3, int(os.getenv("JOB_MAX_ATTEMPTS", "10")))
+EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "8")))
 POST_RETRIES = max(1, int(os.getenv("POST_RETRIES", "3")))
-SOURCE_REFRESH_SECONDS = max(300, int(os.getenv("SOURCE_REFRESH_SECONDS", "900")))
+# Every outbound HTTP probe gets a real budget instead of the 18-30s default,
+# and repeated probes of the same URL are cached, so one slow merchant site can
+# no longer hold up the whole queue.
+HTTP_TOTAL_TIMEOUT_SECONDS = _num("HTTP_TOTAL_TIMEOUT_SECONDS", 12, 3, 45)
+LINK_CHECK_ATTEMPTS = max(1, int(os.getenv("LINK_CHECK_ATTEMPTS", "2")))
+LINK_CHECK_RETRY_SLEEP_SECONDS = _num("LINK_CHECK_RETRY_SLEEP_SECONDS", 0.4, 0, 10)
+LINK_HEALTH_CACHE_SECONDS = _num("LINK_HEALTH_CACHE_SECONDS", 900, 0, 86400)
+PRESEND_CHECK_BUDGET_SECONDS = _num("PRESEND_CHECK_BUDGET_SECONDS", 25, 0, 240)
+# A huge source video must never freeze a worker; oversized/slow media is
+# posted as text so the deal itself goes out on time.
+MAX_MEDIA_MB = _num("MAX_MEDIA_MB", 45, 1, 2048)
+MEDIA_DOWNLOAD_TIMEOUT_SECONDS = _num("MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 120, 5, 900)
+SOURCE_REFRESH_SECONDS = _num("SOURCE_REFRESH_SECONDS", 180, 60, 3600)
 # Dead-man's switch: re-scan every live source's recent messages on a short
 # cycle so a silently dead event stream never loses deals until a restart.
-SOURCE_RESCAN_SECONDS = max(300, int(os.getenv("SOURCE_RESCAN_SECONDS", "600")))
-SOURCE_RESCAN_LIMIT = max(5, int(os.getenv("SOURCE_RESCAN_LIMIT", "20")))
+SOURCE_RESCAN_SECONDS = _num("SOURCE_RESCAN_SECONDS", 120, 30, 3600)
+SOURCE_RESCAN_LIMIT = max(5, int(os.getenv("SOURCE_RESCAN_LIMIT", "40")))
+# How many sources are probed at once by the rescan cycle (a 20+ source list
+# used to take minutes to walk serially, so a missed post could wait a long
+# time before the next cycle found it).
+SOURCE_RESCAN_CONCURRENCY = max(1, int(os.getenv("SOURCE_RESCAN_CONCURRENCY", "4")))
+# Short random gap between the fan-out targets of ONE job (Telegram never waits
+# for a human-like rhythm, this only spreads channel-to-channel delivery).
+TARGET_FANOUT_GAP_MIN = _num("TARGET_FANOUT_GAP_MIN", 0.4, 0, 30)
+TARGET_FANOUT_GAP_MAX = max(TARGET_FANOUT_GAP_MIN, _num("TARGET_FANOUT_GAP_MAX", 1.2, 0, 60))
+# Queue wake-up event, created in main(); workers stop on it instantly instead
+# of only noticing new work at the end of their idle poll.
+QUEUE_WAKE: asyncio.Event | None = None
+
+
+def notify_queue() -> None:
+    """Wake the idle workers the moment new work exists (best-effort)."""
+    with contextlib.suppress(Exception):
+        if QUEUE_WAKE is not None:
+            QUEUE_WAKE.set()
+
+
+def job_retry_delay(attempts: int) -> float:
+    """Prompt, bounded retry backoff — never minutes for a hot deal."""
+    delay = JOB_RETRY_BASE_SECONDS * (2 ** max(0, int(attempts)))
+    return min(JOB_RETRY_MAX_SECONDS, max(1.0, delay)) + random.uniform(0, 1.5)
+
+
 # Timestamp of the last ingested source event (live ingest health signal).
 LAST_INGEST_AT = time.time()
 BACKFILL_HOURS = max(0, int(os.getenv("BACKFILL_HOURS", "6")))
@@ -149,9 +229,13 @@ ALL_OWNED_TARGETS = list(dict.fromkeys(
      UNDER99_TARGET, UNDER499_TARGET, TRICKS_TARGET]
 ))
 OUR_MAIN_CHANNEL_LINKS = ("https://t.me/SecretLootIndia1", "https://t.me/LootZoneIndia11")
-PREMIUM_MAX_PER_NIGHT = 12
-PREMIUM_GAP_MIN_SECONDS = 15 * 60
-PREMIUM_GAP_MAX_SECONDS = 35 * 60
+PREMIUM_MAX_PER_NIGHT = max(1, int(os.getenv("PREMIUM_MAX_PER_NIGHT", "12")))
+# The Premium channel is curated, not a firehose — but the gap between its
+# picks is now a *setting* instead of a hard-coded 15-35 minutes, so the
+# "everything goes out late" feeling can be tuned without a code change.
+PREMIUM_GAP_MIN_SECONDS = int(_num("PREMIUM_GAP_MIN_SECONDS", 900, 0, 4 * 3600))
+PREMIUM_GAP_MAX_SECONDS = int(max(PREMIUM_GAP_MIN_SECONDS,
+                                  _num("PREMIUM_GAP_MAX_SECONDS", 2100, 0, 8 * 3600)))
 IST = timezone(timedelta(hours=5, minutes=30))
 
 
@@ -885,6 +969,13 @@ PROMO_PATTERNS_PY = [
     re.compile(r"\bhurry?\s*up\b", re.I),
     re.compile(r"\bstay\s+(?:tuned|connected|updated)\b", re.I),
     re.compile(r"📢|🔔|📣|⏰"),
+    # Referral / app-install spam that carries no deal content (user rule: no
+    # unwanted words in our posts).
+    re.compile(r"\brefer\s+(?:a\s+)?(?:friend|mate|user)s?\b", re.I),
+    re.compile(r"\b(?:earn|win|get)\s+(?:₹|rs\.?|inr\s?)\s*\d+\s*(?:on|for|by|each)?\s*"
+               r"\b(?:referral|refer|sign\s*-?\s*up|signup|invite)\b", re.I),
+    re.compile(r"\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b", re.I),
+    re.compile(r"\b(?:sent|posted|powered)\s+via\s+\S+|\bvia\s+\w+\s+admin\b", re.I),
 ]
 _PROMO_WORD_RE = re.compile(
     r"t\.me|telegram|whatsapp|join|subscribe|follow|share|forward|click|tap|"
@@ -894,13 +985,60 @@ _PROMO_WORD_RE = re.compile(
     r"turn|enable|activate|don'?t|do|not|never", re.I)
 
 
+def is_promo_only_url(url: str) -> bool:
+    """True for social/channel/navigation links — never merchant deal content."""
+    try:
+        host = (urlparse(clean_url(url)).hostname or "").lower()
+    except Exception:
+        return True
+    if not host:
+        return True
+    return in_domains(host, NON_STORE_DOMAINS)
+
+
+# Channel invite/forward links: a line that carries one of these is boilerplate
+# by definition (we always replace source self-promo with OUR folder/channel).
+CHANNEL_INVITE_URL_RE = re.compile(
+    r"(?i)t\.me/(?:addlist/|joinchat/|\+)|telegram\.me/(?:\+|joinchat/)"
+    r"|whatsapp\.com/(?:channel|group)/"
+)
+# Wording that marks a line as channel navigation rather than deal content.
+PROMO_INTENT_RE = re.compile(
+    r"(?i)\b(?:join|subscribe|follow|unfollow|share|forward|visit|open|check|"
+    r"notify|notifications?|turn\s+on|enable|activate)\b"
+    r"|\bfor\s+more\b|\bmore\s+(?:loot|deal|update)s?\b"
+    r"|\bour\s+(?:channel|group|whatsapp|telegram)\b|\b(?:our|the)\s+official\s+channel\b"
+)
+
+
+# Referral/invite farming is never deal content, even when a ₹ amount appears
+# in the sentence — dropped ahead of the price guard on purpose.
+REFERRAL_SPAM_RE = re.compile(
+    r"(?i)\b(?:refer|invite)\s+(?:a\s+)?(?:friend|mate|user|family|one)\b"
+    r"|\b(?:earn|win|get)\s+(?:₹|rs\.?|inr\s?)?\s*\d+\s*(?:each|per\s+user)?\s*"
+    r"(?:on|for|by|after|in)?\s*(?:referral|referrals|refer|invite|signup|sign\s*-?\s*up)\b"
+    r"|\b(?:referral|invite)\s+code\b"
+)
+
+
 def is_promo_noise_line(line: str) -> bool:
     """True only for pure promo/navigation boilerplate (no deal content)."""
     t = (line or "").strip()
     if not t:
         return False
-    if URL_RE.search(t):
-        return False
+    if REFERRAL_SPAM_RE.search(t):
+        return True
+    urls = URL_RE.findall(t)
+    if urls:
+        # A real merchant link is always deal content. But a line whose ONLY
+        # links are social/channel links is boilerplate: dropping the whole line
+        # is also what stops half-stripped residue (`.com/channel/0029`,
+        # `.me/someotherchannel`) from leaking into our posts.
+        if any(not is_promo_only_url(url) for url in urls):
+            return False
+        if CHANNEL_INVITE_URL_RE.search(t) or PROMO_INTENT_RE.search(t):
+            return True
+        return any(rx.search(t) for rx in PROMO_PATTERNS_PY)
     if re.search(r"[₹$]|\b(?:rs\.?|inr|mrp)\b", t, re.I):
         return False
     if re.search(r"\d+\s*%", t):
@@ -935,6 +1073,9 @@ GLOBAL_CTA_PATTERNS_PY = (
     r"\bshare\s+(?:it\s+)?(?:with|to)\s+[^.\n|]*\b(?:friends?|family|groups?|everyone)\b[^.\n|]*",
     r"\bforward\s+to\s+@?\w+[^.\n|]*",
     r"\b(?:visit|open)\s+(?:our\s+)?(?:channel|t\.me/\S+|whatsapp\s+channel)\b[^.\n|]*",
+    # "... from our telegram channel" style attribution glued inside a deal
+    # line: the phrase goes, the price next to it stays.
+    r"\b(?:from|on|via|in|at)\s+our\s+(?:official\s+)?(?:telegram|whatsapp|t\.me)\s*(?:channel|group|bot|link)?\b",
     r"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b[^.\n|₹$]*?(?=$|[.\n|])",
     r"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me/\S+",
     r"\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b[^.\n|₹$]*$",
@@ -1070,6 +1211,42 @@ def normalize_nested_link_markup(text: str) -> str:
     return "\n".join(lines)
 
 
+# Half-stripped promo links and broken entity fragments are the main source of
+# "unwanted words" in a post: removing a `t.me/...` CTA used to leave
+# `.com/channel/0029`, `.me/someotherchannel` or `ps://broken` behind. These
+# patterns only ever match URL *residue* (real links are masked out first), so a
+# generated affiliate URL can never be damaged by this pass.
+URL_RESIDUE_RES = (
+    r"(?i)\b(?:https?|httpsx|ht|htt|httpx|ftp|tps|ttp|tp|ps|hs|sp)[:/ ]{0,2}[/\\]{2,}\S*",
+    r"(?i)[A-Za-z0-9_-]*\.(?:me|com|in|net|org|io|co|html?)\b[/\\]\S*",
+    r"(?i)\b(?:t|telegram|whatsapp|wa)\s*[:.]\s*(?:me|com|dog)\b\S*",
+)
+
+
+def strip_url_residue(text: str) -> str:
+    """Drop broken/half-stripped URL fragments while leaving real links intact."""
+    if not text:
+        return text
+    real = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text)))
+    masked = text
+    for index, url in enumerate(real):
+        masked = masked.replace(url, f"\x01R{index}\x02")
+    for pattern in URL_RESIDUE_RES:
+        masked = re.sub(pattern, " ", masked)
+    masked = re.sub(r"[ \t]{2,}", " ", masked)
+    # A line that lost everything except bullets/emoji/arrows is a dead slot.
+    lines = [
+        line for line in masked.splitlines()
+        if re.search(r"[A-Za-z0-9\u0900-\u097F\u0C00-\u0C7F]", line)
+        or URL_RE.search(line)
+        or not re.fullmatch(r"[\s🔗👉➡️🔎🔍•▪️\-–—_|:*+]+", line or "")
+    ]
+    masked = "\n".join(lines)
+    for index, url in enumerate(real):
+        masked = masked.replace(f"\x01R{index}\x02", url)
+    return re.sub(r"\n{3,}", "\n\n", masked).strip()
+
+
 def clean_source_text(text: str) -> str:
     text = (text or "").replace("\x00", "")
     text = normalize_nested_link_markup(text)
@@ -1094,6 +1271,9 @@ def clean_source_text(text: str) -> str:
     # Drop source promo/navigation lines (join/follow/share/notify, t.me
     # self-promo, deal-time, handles, emoji-only) that carry no deal content.
     text = strip_promo_lines(text)
+    # Then remove anything the CTA stripping left dangling (`.com/channel/0029`,
+    # `ps://`, a bare `https://`) so no URL residue ever reaches a post.
+    text = strip_url_residue(text)
     return text.strip()
 
 
@@ -1160,6 +1340,9 @@ def tidy_post(text: str) -> str:
     masked = re.sub(r"(?m)^\s*[:>-]+\s*$", "", masked)
     for index, url in enumerate(protected):
         masked = masked.replace(f"\x01URL{index}\x02", url)
+    # Final anti-residue sweep on our own output too: any fragment that is not a
+    # complete link is dropped, every generated URL is masked inside the helper.
+    masked = strip_url_residue(masked)
 
     # Remove orphan link bullets with no actual URL after them, e.g. a leftover
     # `🔗` or `🔗 ` line whose source URL was collapsed/deduped away. A bullet
@@ -1264,6 +1447,34 @@ def remove_trailing_url_tokens(text: str) -> str:
     return "\n".join(output)
 
 
+# A label line that carried a link which later collapsed (two source links
+# converting to the SAME product) or was stripped as promo is a dangling slot:
+# `Link ` / `Buy Now` with nothing after it. Those are the most visible form of
+# "unwanted words" in a finished post, so they are removed explicitly.
+DANGLING_CTA_WORDS = {
+    "", "link", "links", "buy", "shop", "click", "tap", "order", "grab", "here",
+    "buylink", "buyhere", "clickhere", "shopnow", "buynow", "getit", "checkout",
+    "orderhere", "view", "viewdeal", "deal", "offer", "purchase", "product", "url",
+    "affiliate", "affiliatepartner", "ad", "ads", "promo", "sponsored",
+}
+
+
+def remove_dangling_cta_lines(text: str) -> str:
+    """Drop pure CTA/link-label lines that ended up with no link and no price."""
+    kept = []
+    for line in (text or "").splitlines():
+        if URL_RE.search(line) or re.search(r"[\u20b9$]|%\s*(?:off|discount)|\d", line, re.I):
+            kept.append(line)
+            continue
+        core = (line or "").strip()
+        if core and len(core) <= 28:
+            probe = re.sub(r"[^A-Za-z]", "", core).lower()
+            if probe in DANGLING_CTA_WORDS:
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def strict_orphan_token_cleanup(text: str) -> str:
     """Remove any isolated random short token, not just previously seen examples."""
     text = remove_trailing_url_tokens(text)
@@ -1280,6 +1491,7 @@ def strict_orphan_token_cleanup(text: str) -> str:
     for i, url in enumerate(real_urls):
         masked = masked.replace(f"\x01U{i}\x02", url)
 
+    masked = remove_dangling_cta_lines(masked)
     lines = (masked or "").splitlines()
     kept = []
     for index, line in enumerate(lines):
@@ -1313,6 +1525,11 @@ def strict_orphan_token_cleanup(text: str) -> str:
             stripped = re.sub(r"(?i)\b(?:htt|ttp|tps|s)[:/][A-Za-z0-9/:._-]*", "", stripped)
             stripped = re.sub(r"\s{2,}", " ", stripped).strip(" :|+-")
             if not stripped:
+                continue
+            # Removing a broken fragment can leave a bare CTA label behind
+            # ("Link", "Buy Now"); without a link or price it is junk.
+            if (len(stripped) <= 28 and not re.search(r"[\u20b9$%\d]", stripped)
+                    and re.sub(r"[^A-Za-z]", "", stripped).lower() in DANGLING_CTA_WORDS):
                 continue
         kept.append(stripped)
     result = "\n".join(kept)
@@ -1440,6 +1657,52 @@ def chunks(text: str, limit: int) -> list[str]:
         result.append(current.rstrip())
     return result
 
+
+MARKED_CHANNEL_PREFIX = 1_000_000_000_000  # Telegram's "-100" channel marker
+
+
+def raw_chat_id(value: Any) -> int:
+    """Canonical numeric chat id for dedup, independent of ID convention.
+
+    Telethon reports a channel as `-100<id>` (Bot API "marked" form), a resolved
+    entity exposes the raw positive id, and a legacy basic chat is `-<id>`. All
+    three must collapse to ONE key, otherwise the same source message can be
+    queued twice (once by the live event stream, once by the rescan safety net)
+    and then posted twice to every target.
+    """
+    try:
+        if hasattr(value, "id"):
+            value = value.id
+        v = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if v > 0:
+        return v
+    v = -v
+    text = str(v)
+    if text.startswith("100") and len(text) > 3:
+        with contextlib.suppress(ValueError):
+            return int(text[3:])
+    if v > MARKED_CHANNEL_PREFIX:
+        return v - MARKED_CHANNEL_PREFIX
+    return v
+
+
+def marked_chat_id(value: Any) -> int:
+    """The id Telethon needs in order to FETCH messages (marked channel form)."""
+    raw = raw_chat_id(value)
+    if not raw:
+        return 0
+    try:
+        entity_id = int(getattr(value, "id", raw) or raw)
+    except (TypeError, ValueError):
+        entity_id = raw
+    # Legacy basic chats are negated without the -100 marker.
+    if entity_id < 0 and not str(-entity_id).startswith("100"):
+        return entity_id
+    return int(f"-100{raw}")
+
+
 # ---------------------------------------------------------------------------
 # SQLite durable state
 # ---------------------------------------------------------------------------
@@ -1521,9 +1784,36 @@ class Store:
             self.conn.execute("ALTER TABLE queue ADD COLUMN premium_score INTEGER")
         if "priority" not in queue_columns:
             self.conn.execute("ALTER TABLE queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
+        if "chat_key" not in queue_columns:
+            self.conn.execute("ALTER TABLE queue ADD COLUMN chat_key TEXT")
+            # Backfill the canonical key for rows written by older builds so a
+            # re-encountered message still hits the unique index instead of
+            # creating a second queue row (== a second post).
+            legacy_rows = self.conn.execute(
+                "SELECT id, chat_id FROM queue WHERE chat_key IS NULL"
+            ).fetchall()
+            for row in legacy_rows:
+                self.conn.execute("UPDATE queue SET chat_key=? WHERE id=?",
+                                  (str(raw_chat_id(row[1])), row[0]))
+        try:
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_chat_key ON queue(chat_key, msg_id)"
+            )
+        except sqlite3.IntegrityError:
+            # An older build really did create two rows for one message (the
+            # double-post bug). Collapse them, then enforce uniqueness for good.
+            self._collapse_duplicate_queue_rows()
+            self.conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ux_queue_chat_key ON queue(chat_key, msg_id)"
+            )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS ix_queue_status "
+            "ON queue(status, priority, created_at)"
+        )
         # A previous crash must not leave work permanently stuck.
         self.conn.execute("UPDATE queue SET status='pending' WHERE status='processing'")
         self.conn.commit()
+        notify_queue()
         self._migrate_legacy_json()
 
     @staticmethod
@@ -1535,6 +1825,32 @@ class Store:
                 from datetime import datetime
                 return datetime.fromisoformat(value).timestamp()
         return 0.0
+
+    def _collapse_duplicate_queue_rows(self) -> None:
+        """Fold pre-existing duplicate (chat_key, msg_id) rows into one row.
+
+        Only ever called from the schema migration: older builds keyed the queue
+        on the raw chat id, so one source message could legitimately end up with
+        two queue rows and therefore be posted twice.
+        """
+        duplicates = self.conn.execute(
+            "SELECT chat_key, msg_id, GROUP_CONCAT(id) FROM queue "
+            "WHERE chat_key IS NOT NULL GROUP BY chat_key, msg_id HAVING COUNT(*) > 1"
+        ).fetchall()
+        dropped = 0
+        for row in duplicates:
+            ids = [int(x) for x in (row[2] or "").split(",") if x]
+            if len(ids) < 2:
+                continue
+            keep = min(ids)
+            extra = [x for x in ids if x != keep]
+            for queue_id in extra:
+                self.conn.execute("DELETE FROM deliveries WHERE queue_id=?", (queue_id,))
+                self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
+                self.conn.execute("DELETE FROM queue WHERE id=?", (queue_id,))
+                dropped += 1
+        if dropped:
+            log.info("DEDUP MIGRATION | collapsed %s duplicate queue row(s)", dropped)
 
     def _migrate_legacy_json(self) -> None:
         """Import recent v13/v14 JSON history once, preventing night→morning reposts."""
@@ -1581,31 +1897,86 @@ class Store:
         except Exception as exc:
             log.warning("Legacy dedup migration skipped: %s", exc)
 
+    async def seen_message(self, chat_id: int, msg_id: int) -> bool:
+        """True when this exact source message is already known to the queue."""
+        key = str(raw_chat_id(chat_id))
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM queue WHERE chat_key=? AND msg_id=? LIMIT 1", (key, msg_id)
+            ).fetchone()
+        return row is not None
+
+    async def is_duplicate_content(self, text: str, queue_id: int | None = None) -> bool:
+        """Cheap intake-stage fingerprint check (no HTTP, no rendering).
+
+        Catches the copy-paste reposts that used to burn a whole render cycle
+        before the pre-send gate rejected them, and closes the window where the
+        same campaign queued from two sources could both reach the send path.
+        """
+        if not text:
+            return False
+        try:
+            key = content_deal_key(text)
+        except Exception:
+            return False
+        if not key:
+            return False
+        now = time.time()
+        async with self.lock:
+            # Already posted inside the product-dedup window -> definite copy.
+            posted = self.conn.execute(
+                "SELECT 1 FROM posted_deals WHERE deal_key=? AND posted_at>=?",
+                (key, now - PRODUCT_DEDUP_SECONDS)
+            ).fetchone()
+            # Or a live job from another source is already carrying this exact
+            # campaign (the same test the pre-send gate does, applied earlier so
+            # the duplicate never burns a render cycle). Only fresh claims of
+            # still-active jobs count, so a dead claim can never lose a deal.
+            claimed = self.conn.execute(
+                "SELECT 1 FROM deal_claims c JOIN queue q ON q.id=c.queue_id "
+                "WHERE c.deal_key=? AND c.queue_id<>? "
+                "AND q.status IN ('pending','processing') AND c.claimed_at>=?",
+                (key, queue_id or 0, now - max(1200.0, SOURCE_RESCAN_SECONDS * 2))
+            ).fetchone()
+        return bool(posted or claimed)
+
     async def enqueue(self, chat_id: int, msg_id: int, source: str,
                       text: str = "", has_media: bool = False) -> bool:
-        # Best-lists first, then super discounts, then photos — so the highest
+        # Best-lists first, then super discounts, then photos - so the highest
         # value Telegram post is rendered/delivered ahead of ordinary ones.
         priority = classify_priority(text, has_media)
         # User rule: first-preference sources (e.g. pricehistory) post ahead of
         # the same content tier from other sources on every non-Tricks channel.
         if source in PRIORITY_SOURCES:
             priority = min(priority + 1, 5)
+        # Layer 1 of the zero-duplicate guarantee: a campaign whose fingerprint
+        # was already posted (or is already waiting in the queue) is never even
+        # inserted, so it can never reach the send path twice.
+        if text and await self.is_duplicate_content(text):
+            log.info("INTAKE DEDUP | source=%s msg=%s (already posted or queued)", source, msg_id)
+            return False
         async with self.lock:
             cur = self.conn.execute(
-                "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority) "
-                "VALUES(?,?,?,?,?)",
-                (chat_id, msg_id, source, time.time(), priority),
+                "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) "
+                "VALUES(?,?,?,?,?,?)",
+                (chat_id, msg_id, source, time.time(), priority, str(raw_chat_id(chat_id))),
             )
             self.conn.commit()
-            return cur.rowcount > 0
+        inserted = cur.rowcount > 0
+        if inserted:
+            # Wake the idle workers immediately: a deal must never wait for the
+            # next idle poll cycle (that polling gap was a visible posting lag).
+            notify_queue()
+        return inserted
 
     async def claim_job(self) -> sqlite3.Row | None:
         async with self.lock:
             now = time.time()
             self.conn.execute("BEGIN IMMEDIATE")
+            order = "DESC" if QUEUE_ORDER == "newest" else "ASC"
             row = self.conn.execute(
                 "SELECT * FROM queue WHERE status='pending' AND next_at<=? "
-                "ORDER BY priority DESC, created_at ASC LIMIT 1", (now,)
+                f"ORDER BY priority DESC, created_at {order} LIMIT 1", (now,)
             ).fetchone()
             if row:
                 # next_at doubles as the claim timestamp while processing, so a
@@ -1623,11 +1994,41 @@ class Store:
         """
         async with self.lock:
             cur = self.conn.execute(
-                "UPDATE queue SET status='pending' WHERE status='processing' AND next_at<?",
+                "UPDATE queue SET status='pending', next_at=0 WHERE status='processing' AND next_at<?",
                 (time.time() - max_age_seconds,),
             )
             self.conn.commit()
+            if cur.rowcount:
+                notify_queue()
             return cur.rowcount
+
+    async def drop_stale_jobs(self, max_age_hours: float | None = None) -> int:
+        """Drop pending work older than the freshness budget (never post it late).
+
+        A loot price that is six hours old is already dead: posting it late both
+        looks wrong and costs subscribers. Newest-first claiming needs this
+        sweeper so stale inventory cannot occupy the queue indefinitely.
+        """
+        hours = MAX_JOB_AGE_HOURS if max_age_hours is None else float(max_age_hours)
+        if hours <= 0:
+            return 0
+        cutoff = time.time() - hours * 3600
+        async with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, source, msg_id FROM queue WHERE status='pending' AND created_at<?",
+                (cutoff,),
+            ).fetchall()
+            for row in rows:
+                self.conn.execute(
+                    "UPDATE queue SET status='done', last_error=? WHERE id=?",
+                    (f"stale job dropped (older than {hours:g}h)", row["id"]),
+                )
+                self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (row["id"],))
+            self.conn.commit()
+        if rows:
+            log.info("STALE DROP | %s pending job(s) older than %sh skipped instead of posted late",
+                     len(rows), hours)
+        return len(rows)
 
     async def save_render(self, queue_id: int, text: str, targets: list[str], keys: list[str],
                           premium_rank: int | None = None) -> None:
@@ -1736,7 +2137,15 @@ class Store:
             claim_cutoff = now - 20 * 60
             self.conn.execute("BEGIN IMMEDIATE")
             self.conn.execute("DELETE FROM posted_deals WHERE posted_at<?", (cutoff,))
-            self.conn.execute("DELETE FROM deal_claims WHERE claimed_at<?", (claim_cutoff,))
+            # Expire only claims whose owning job is FINISHED. Purging a claim a
+            # live job still holds is how the same product got posted twice from
+            # another source: a big backlog or a Premium window can legitimately
+            # keep a job pending for far longer than 20 minutes.
+            self.conn.execute(
+                "DELETE FROM deal_claims WHERE claimed_at<? AND queue_id NOT IN "
+                "(SELECT id FROM queue WHERE status IN ('pending','processing'))",
+                (claim_cutoff,),
+            )
             if content_key:
                 content_posted = self.conn.execute(
                     "SELECT 1 FROM posted_deals WHERE deal_key=? AND posted_at>=?", (content_key, cutoff)
@@ -1763,9 +2172,14 @@ class Store:
                         "INSERT OR REPLACE INTO deal_claims VALUES(?,?,?)", (key, queue_id, now)
                     )
                     new_keys.append(key)
-            # User rule: regardless of ASIN/PID, the exact same detected price
-            # must not be posted again from any source during the one-hour window.
-            if price is not None and PRICE_DEDUP_SECONDS > 0:
+            # Price gate: the exact same detected price must not be posted again
+            # from any source inside the window. By default this only applies when
+            # the post has NO product identity (the documented fallback); a real
+            # ASIN/PID match is already covered by the key check above, and two
+            # different ₹99 products are not duplicates of each other.
+            # PRICE_DEDUP_IGNORES_IDENTITY=true restores the strict behaviour.
+            if (price is not None and PRICE_DEDUP_SECONDS > 0
+                    and (PRICE_DEDUP_IGNORES_IDENTITY or not has_identity)):
                 pp = self.conn.execute(
                     "SELECT 1 FROM price_posts WHERE price=? AND posted_at>=?",
                     (price, now - PRICE_DEDUP_SECONDS),
@@ -1814,6 +2228,30 @@ class Store:
                 )
             self.conn.commit()
             return True
+
+    async def has_pending_work(self) -> bool:
+        """True when a claimable job exists (checked after clearing the wake)."""
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM queue WHERE status='pending' AND next_at<=? LIMIT 1",
+                (time.time(),),
+            ).fetchone()
+        return row is not None
+
+    async def has_partial_delivery(self, queue_id: int) -> bool:
+        """True when at least one chunk of this job already reached a target."""
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT 1 FROM deliveries WHERE queue_id=? AND chunks_sent>0 LIMIT 1", (queue_id,)
+            ).fetchone()
+        return row is not None
+
+    async def update_rendered(self, queue_id: int, text: str) -> None:
+        """Freeze the canonical rendered text so every target (and every retry
+        after a restart) sends byte-identical chunks."""
+        async with self.lock:
+            self.conn.execute("UPDATE queue SET rendered_text=? WHERE id=?", (text, queue_id))
+            self.conn.commit()
 
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
@@ -1894,7 +2332,8 @@ class Store:
             if not state or state[0] != queue_id:
                 return
             if ok:
-                next_at = time.time() + random.randint(PREMIUM_GAP_MIN_SECONDS, PREMIUM_GAP_MAX_SECONDS)
+                gap_max = max(int(PREMIUM_GAP_MIN_SECONDS), int(PREMIUM_GAP_MAX_SECONDS))
+                next_at = time.time() + random.randint(int(PREMIUM_GAP_MIN_SECONDS), gap_max)
                 self.conn.execute(
                     "UPDATE premium_state SET sent_count=sent_count+1,next_at=?,claim_queue_id=NULL,claim_at=0 WHERE id=1",
                     (next_at,),
@@ -1940,8 +2379,8 @@ class Store:
                     "UPDATE queue SET status='pending',next_at=? WHERE id=?",
                     (max(now + 30, premium_defer_until), queue_id),
                 )
-            elif remaining_targets and attempts < 8:
-                delay = min(300, 5 * (2 ** attempts))
+            elif remaining_targets and attempts < JOB_MAX_ATTEMPTS:
+                delay = job_retry_delay(attempts)
                 self.conn.execute(
                     "UPDATE queue SET status='pending',attempts=attempts+1,next_at=? WHERE id=?",
                     (now + delay, queue_id),
@@ -1951,20 +2390,26 @@ class Store:
                 if not successes:
                     self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
             self.conn.commit()
+        # A job that still owes targets must be picked up immediately, not at
+        # the end of the next idle poll.
+        notify_queue()
 
     async def fail_job(self, row: sqlite3.Row, error: str) -> None:
         async with self.lock:
             attempts = row["attempts"] + 1
-            if attempts >= 8:
+            if attempts >= JOB_MAX_ATTEMPTS:
                 status, next_at = "failed", 0
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (row["id"],))
             else:
-                status, next_at = "pending", time.time() + min(300, 5 * (2 ** attempts))
+                status, next_at = "pending", time.time() + job_retry_delay(attempts)
             self.conn.execute(
                 "UPDATE queue SET status=?,attempts=?,next_at=?,last_error=? WHERE id=?",
                 (status, attempts, next_at, error[:1000], row["id"]),
             )
             self.conn.commit()
+        log.info("RETRY | queue=%s attempt=%s status=%s (%s)",
+                 row["id"], attempts, status, error[:160])
+        notify_queue()
 
     async def mark_done(self, queue_id: int, reason: str = "") -> None:
         async with self.lock:
@@ -1973,6 +2418,7 @@ class Store:
             )
             self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
             self.conn.commit()
+        notify_queue()
 
     async def maintenance(self) -> dict[str, int]:
         """Bound disk growth without touching live/pending work."""
@@ -2003,7 +2449,15 @@ class Store:
             self.conn.execute(
                 "DELETE FROM price_posts WHERE posted_at<?", (now - PRICE_DEDUP_SECONDS,)
             )
-            self.conn.execute("DELETE FROM deal_claims WHERE claimed_at<?", (now - 3600,))
+            # Same rule as reserve(): a claim held by a job that is still
+            # pending/processing must survive housekeeping. Purging it was how a
+            # deferred (Premium) or backlogged job lost its lock and the same
+            # campaign from another source slipped through to a second post.
+            self.conn.execute(
+                "DELETE FROM deal_claims WHERE claimed_at<? AND queue_id NOT IN "
+                "(SELECT id FROM queue WHERE status IN ('pending','processing'))",
+                (now - 3600,),
+            )
             self.conn.execute(
                 "DELETE FROM deliveries WHERE queue_id NOT IN (SELECT id FROM queue)"
             )
@@ -2055,6 +2509,13 @@ EK_SEM = asyncio.Semaphore(EK_MAX_CONCURRENCY)
 class AffiliateClient:
     def __init__(self, session: aiohttp.ClientSession):
         self.session = session
+        # URL -> (checked_at, is_alive). The same URL is probed up to three
+        # times per deal (merchant page, affiliate link, pre-send recheck);
+        # without a cache each repeat cost another 18-36s of network waiting,
+        # which is what made posts land minutes after the source.
+        self._health: dict[str, tuple[float, bool]] = {}
+        # long_url -> short link, so a retry never re-calls the shortener.
+        self._short_cache: dict[str, str] = {}
 
     async def cache_link(self, source_url: str, affiliate: str, resolved: str, key: str) -> None:
         """Proxy to the global store's link cache so subclasses/tests can override."""
@@ -2062,7 +2523,7 @@ class AffiliateClient:
 
     async def resolve(self, source_url: str) -> str:
         current = source_url
-        for _ in range(5):
+        for _ in range(4):
             try:
                 p = urlparse(current)
                 host = (p.hostname or "").lower()
@@ -2077,7 +2538,7 @@ class AffiliateClient:
                     break
                 async with self.session.get(
                     current, allow_redirects=True,
-                    timeout=aiohttp.ClientTimeout(total=18),
+                    timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
                     headers={"User-Agent": "Mozilla/5.0"},
                 ) as response:
                     final = str(response.url)
@@ -2090,15 +2551,28 @@ class AffiliateClient:
         return current
 
     async def link_not_broken(self, url: str) -> bool:
+        """Alive-check a URL, reusing the verdict of a recent identical check."""
+        key = clean_url(url)
+        cached = self._health.get(key)
+        if cached and time.time() - cached[0] < LINK_HEALTH_CACHE_SECONDS:
+            return cached[1]
+        verdict = await self._probe_link(key)
+        if LINK_HEALTH_CACHE_SECONDS > 0:
+            if len(self._health) > 3000:
+                self._health.clear()
+            self._health[key] = (time.time(), verdict)
+        return verdict
+
+    async def _probe_link(self, url: str) -> bool:
         """Follow the URL and reject explicit merchant repair/dead-page responses."""
-        for attempt in range(2):
+        for attempt in range(LINK_CHECK_ATTEMPTS):
             try:
                 async with self.session.get(
-                    clean_url(url), allow_redirects=True,
-                    timeout=aiohttp.ClientTimeout(total=18),
+                    url, allow_redirects=True,
+                    timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
                     headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36"},
                 ) as response:
-                    raw = await response.content.read(600_000)
+                    raw = await response.content.read(400_000)
                     body = raw.decode(response.charset or "utf-8", errors="ignore")
                     if looks_broken_page(response.status, body):
                         log.warning("BROKEN LINK blocked | status=%s | %s", response.status, url[:100])
@@ -2109,15 +2583,42 @@ class AffiliateClient:
                         return True
             except Exception as exc:
                 log.warning("LINK CHECK attempt %s inconclusive %s: %s", attempt + 1, url[:70], exc)
-            if attempt == 0:
-                await asyncio.sleep(1)
+            if attempt + 1 < LINK_CHECK_ATTEMPTS:
+                await asyncio.sleep(LINK_CHECK_RETRY_SLEEP_SECONDS)
         # Do not discard a valid deal solely because Oracle was bot-blocked or
         # temporarily offline; explicit repair/dead-page signatures are blocked.
         return True
 
     async def rendered_links_not_broken(self, text: str) -> bool:
+        """Belt-and-braces pre-send check, run CONCURRENTLY and time-boxed.
+
+        The old serial loop could hold a worker for a minute or more on a
+        multi-link post (each URL up to 2 x 18s). Every link is still checked;
+        if the whole budget runs out we keep the render-path verdict instead of
+        delaying a live deal, because a slow probe is not a broken deal.
+        """
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
-        return bool(urls) and all([await self.link_not_broken(url) for url in urls])
+        if not urls:
+            return False
+        if len(urls) == 1 or PRESEND_CHECK_BUDGET_SECONDS <= 0:
+            return all([await self.link_not_broken(url) for url in urls])
+        sem = asyncio.Semaphore(max(1, EK_MAX_CONCURRENCY))
+
+        async def check(url: str) -> bool:
+            async with sem:
+                return await self.link_not_broken(url)
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*(check(url) for url in urls)),
+                timeout=PRESEND_CHECK_BUDGET_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning("PRESEND CHECK | %s link(s) exceeded the %ss budget; "
+                        "keeping the verified render-path links (deal is never lost over a slow probe)",
+                        len(urls), int(PRESEND_CHECK_BUDGET_SECONDS))
+            return True
+        return all(results)
 
     @staticmethod
     def valid_generated(link: str) -> bool:
@@ -2205,7 +2706,7 @@ class AffiliateClient:
                         EK_API,
                         json={"deal": clean},
                         headers={"Authorization": f"Bearer {EK_KEY}", "Content-Type": "application/json"},
-                        timeout=aiohttp.ClientTimeout(total=25),
+                        timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2)),
                     ) as response:
                         body = await response.text()
                         if response.status in (429, 500, 502, 503, 504):
@@ -2245,12 +2746,22 @@ class AffiliateClient:
                         return LinkResult(source_url, resolved, affiliate, key)
                 except Exception as exc:
                     last = exc
-                    await asyncio.sleep(min(8, (2 ** attempt) + random.random()))
+                    # Brief jitter, not a 8s sleep per attempt: an API blip must
+                    # delay this deal by seconds, never by minutes.
+                    await asyncio.sleep(min(2.5, 0.4 * (2 ** attempt) + random.random() * 0.3))
             EK_BREAKER.failure()
             raise RuntimeError(f"EarnKaro failed: {last}")
 
     async def shorten(self, long_url: str) -> str | None:
+        # Same long URL seen again (retry, re-render, another target)? Reuse the
+        # short link we already minted instead of spending another API call.
+        cached_short = self._short_cache.get(long_url)
+        if cached_short:
+            return cached_short
         shortened = await self.bitly(long_url)
+        if shortened:
+            self._short_cache[long_url] = shortened
+            return shortened
         if shortened:
             return shortened
         # Tokenless fallback for very long/multi-link posts. The authenticated
@@ -2259,12 +2770,13 @@ class AffiliateClient:
             async with self.session.get(
                 "https://is.gd/create.php",
                 params={"format": "simple", "url": long_url},
-                timeout=aiohttp.ClientTimeout(total=12),
+                timeout=aiohttp.ClientTimeout(total=max(6.0, HTTP_TOTAL_TIMEOUT_SECONDS)),
             ) as response:
                 if response.status == 200:
                     link = (await response.text()).strip()
                     if link.startswith("https://is.gd/"):
                         log.info("SHORTENER fallback=is.gd")
+                        self._short_cache[long_url] = link
                         return link
         except Exception as exc:
             log.warning("is.gd failed: %s", exc)
@@ -2277,7 +2789,7 @@ class AffiliateClient:
                     "https://api-ssl.bitly.com/v4/shorten",
                     json={"long_url": long_url},
                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    timeout=aiohttp.ClientTimeout(total=12),
+                    timeout=aiohttp.ClientTimeout(total=max(6.0, HTTP_TOTAL_TIMEOUT_SECONDS)),
                 ) as response:
                     if response.status == 429:
                         continue
@@ -2312,8 +2824,9 @@ class AffiliateClient:
             if compact and compact != url and compact != raw:
                 out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
                 compacted += 1
-        # Pass 2: Bitly/is.gd the remaining long links (search/category).
-        replacements: dict[str, str] = {}
+        # Pass 2: Bitly/is.gd the remaining long links (search/category) — all
+        # of them at once, so a 6-link list pays one round trip, not six.
+        pending: list[tuple[str, str]] = []
         for raw in dict.fromkeys(URL_RE.findall(out)):
             url = clean_url(raw)
             host = (urlparse(url).hostname or "").lower()
@@ -2321,8 +2834,26 @@ class AffiliateClient:
                 continue
             if in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS) or in_domains(host, OUR_SHORTENER_DOMAINS):
                 continue
-            shortened = await self.shorten(url)
-            if shortened and shortened != url:
+            pending.append((raw, url))
+        shortened_all: list[str | None] = []
+        if pending:
+            sem = asyncio.Semaphore(max(1, min(6, EK_MAX_CONCURRENCY)))
+
+            async def _short(url: str) -> str | None:
+                async with sem:
+                    return await self.shorten(url)
+
+            shortened_all = list(await asyncio.gather(
+                *(_short(url) for _, url in pending),
+                return_exceptions=True,
+            ))
+        replacements: dict[str, str] = {}
+        for (raw, url), shortened in zip(pending, shortened_all):
+            if isinstance(shortened, Exception) or not shortened:
+                if isinstance(shortened, Exception):
+                    log.warning("SHORTEN failed %s: %s", url[:60], shortened)
+                continue
+            if shortened != url:
                 replacements[raw] = shortened
                 # Register the new short link in link_cache so the FINAL
                 # provenance gate (verify_generated_text queries affiliate_url)
@@ -2357,6 +2888,14 @@ def distinct_affiliate_results(results: Iterable[LinkResult]) -> list[LinkResult
 # ---------------------------------------------------------------------------
 # Telegram helpers
 # ---------------------------------------------------------------------------
+def fetch_chat_id(entity: Any, fallback: Any = None) -> int:
+    """The chat id Telethon accepts for get_messages()/send_*() for this entity."""
+    try:
+        return int(tl_utils.get_peer_id(entity))
+    except Exception:
+        return marked_chat_id(fallback if fallback is not None else entity)
+
+
 async def resolve_entity(client: TelegramClient, identifier: str):
     # Telegram uses both t.me/+hash and telegram.me/+hash invite forms.
     if identifier.startswith(("https://t.me/+", "https://telegram.me/+")):
@@ -2389,21 +2928,28 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
         source_hours, source_limit = BACKFILL_HOURS, BACKFILL_LIMIT
     cutoff = datetime.now(timezone.utc).timestamp() - source_hours * 3600
     queued = 0
+    # Queue under the SAME chat id the live event stream uses, otherwise the
+    # (chat,msg_id) uniqueness check misses and one message is queued (and
+    # posted) twice - once from backfill, once from the live update.
+    chat_key = fetch_chat_id(entity, getattr(entity, "id", 0))
     try:
         messages = await client.get_messages(entity, limit=source_limit)
-        marked_chat_id = int(f"-100{int(entity.id)}")
         for msg in reversed(messages):
             stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
             if stamp < cutoff:
                 continue
             if not extract_urls(msg) and not getattr(msg, "reply_to", None):
                 continue
-            await store.enqueue(marked_chat_id, msg.id, source)
-            queued += 1
+            if await store.enqueue(chat_key, msg.id, source,
+                                   (msg.text or msg.message or "")):
+                queued += 1
         if queued:
             log.info("BACKFILL | source=%s candidates=%s hours=%s", source, queued, source_hours)
     except Exception as exc:
         log.warning("BACKFILL failed %s: %s", source, exc)
+
+
+RESOLVED_SOURCE_IDS: dict[str, int] = {}
 
 
 async def register_source(client: TelegramClient, source_map: dict, source: str,
@@ -2411,10 +2957,15 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
     entity = await resolve_entity(client, source)
     if not entity:
         return False
-    bare = int(entity.id)
-    source_map[bare] = (source, list(targets))
-    source_map[int(f"-100{bare}")] = (source, list(targets))
-    log.info("SOURCE OK @%s -> %s -> %s", source, bare, targets)
+    fetch_id = fetch_chat_id(entity, getattr(entity, "id", 0))
+    # Map EVERY id convention that can arrive on an update (raw entity id,
+    # Telethon's marked channel id, the plain -chat id of a legacy group). A
+    # source that only matched one form silently received nothing at all.
+    for key in {raw_chat_id(entity), fetch_id, int(getattr(entity, "id", 0) or 0)}:
+        if key:
+            source_map[key] = (source, list(targets))
+    RESOLVED_SOURCE_IDS[source] = fetch_id
+    log.info("SOURCE OK @%s -> %s -> %s", source, fetch_id, targets)
     if do_backfill:
         await backfill_source(client, entity, source)
     return True
@@ -2486,46 +3037,70 @@ async def refresh_missing_sources(client: TelegramClient, source_map: dict,
 
 async def source_rescan_loop(client: TelegramClient, source_map: dict,
                              stop: asyncio.Event) -> None:
-    """Dead-man's switch for the event stream.
+    """Never-stall safety net for ingest, reclaims and stale work.
 
     Ingest is event-based; if the Telethon session degrades (network flap, DC
-    switch, stale auth) the events silently stop while the process stays up —
+    switch, stale auth) the events silently stop while the process stays up -
     refresh_missing_sources does not help because the sources are still mapped.
-    This loop re-scans every LIVE source's recent messages every
-    SOURCE_RESCAN_SECONDS and enqueues anything new (the queue dedups by
-    (chat_id, msg_id), so re-seeing a post is free). A deal missed by the
-    event stream is therefore recovered within one cycle instead of being
-    lost until the next restart backfill.
+    This loop therefore, every SOURCE_RESCAN_SECONDS:
+
+      1. reclaims jobs orphaned in 'processing' (task killed mid-await),
+      2. drops pending work older than MAX_JOB_AGE_HOURS (dead loot is never
+         posted late), and
+      3. re-scans every live source's recent messages and enqueues anything
+         new (the queue dedups on the canonical (chat_key,msg_id) index, so
+         re-seeing a post is free and can never create a second post).
+
+    Sources are scanned CONCURRENTLY so a 20-source list costs one short round
+    trip instead of minutes, which is what makes a recovered deal go out
+    seconds after the cycle rather than a quarter of an hour later.
+
+    NOTE: LAST_INGEST_AT is deliberately NOT refreshed here - it measures the
+    live event stream, so INGEST SILENCE keeps reporting a degraded session.
     """
-    global LAST_INGEST_AT
+    sem = asyncio.Semaphore(max(1, SOURCE_RESCAN_CONCURRENCY))
     while not stop.is_set():
         try:
-            await asyncio.wait_for(stop.wait(), timeout=SOURCE_RESCAN_SECONDS)
+            await asyncio.wait_for(stop.wait(), timeout=max(0.5, SOURCE_RESCAN_SECONDS))
             break
         except asyncio.TimeoutError:
             pass
-        # Free any job orphaned in 'processing' (task killed mid-await): the
-        # deal goes back to 'pending' instead of silently never posting.
         try:
             reclaimed = await store.reclaim_stuck_jobs()
             if reclaimed:
                 log.warning("RECLAIMED | %s stuck processing job(s) returned to the queue", reclaimed)
         except Exception as exc:
             log.warning("RECLAIM failed: %s", exc)
-        # Cycle + 2 min drift margin: covers the whole scan window even if a
-        # cycle slips; re-seeing a post is free (the queue dedups).
-        window_start = time.time() - (SOURCE_RESCAN_SECONDS + 120)
-        recovered = 0
+        with contextlib.suppress(Exception):
+            await store.drop_stale_jobs()
+        # Scan window: at least two cycles plus slack, so a slipped cycle can
+        # never leave an uncovered gap. Re-seeing a post is free (dedup).
+        window_start = time.time() - (SOURCE_RESCAN_SECONDS * 2 + 180)
+        items: list[tuple[str, int]] = []
+        seen: set[str] = set()
         for chat_id, (source, _targets) in list(source_map.items()):
-            if stop.is_set():
-                break
-            if not str(chat_id).startswith("-100"):
-                continue  # each source is registered twice; scan the -100 form
+            if source in seen:
+                continue
+            fetch_id = RESOLVED_SOURCE_IDS.get(source)
+            if not fetch_id and str(chat_id).startswith("-100"):
+                fetch_id = chat_id
+            if not fetch_id:
+                continue
+            seen.add(source)
+            items.append((source, int(fetch_id)))
+
+        async def scan_one(source: str, chat_id: int) -> int:
+            recovered = 0
             try:
-                messages = await client.get_messages(chat_id, limit=SOURCE_RESCAN_LIMIT)
+                async with sem:
+                    messages = await client.get_messages(chat_id, limit=SOURCE_RESCAN_LIMIT)
                 for msg in reversed(messages or []):
                     stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
                     if stamp < window_start:
+                        continue
+                    # Cheap pre-filter: a message already in the queue never even
+                    # reaches the fingerprint/normalisation work in enqueue.
+                    if await store.seen_message(chat_id, msg.id):
                         continue
                     raw = (msg.text or msg.message or "") if msg is not None else ""
                     has_media = bool(
@@ -2537,17 +3112,45 @@ async def source_rescan_loop(client: TelegramClient, source_map: dict,
                     if await store.enqueue(chat_id, msg.id, source, raw, has_media):
                         recovered += 1
                         log.info("RECOVERED | source=%s msg=%s (event stream gap)", source, msg.id)
-                await asyncio.sleep(0.1)
             except Exception as exc:
                 log.warning("RESCAN failed source=%s: %s", source, exc)
+            return recovered
+
+        results = await asyncio.gather(
+            *(scan_one(source, chat_id) for source, chat_id in items),
+            return_exceptions=True,
+        ) if items else []
+        recovered_total = sum(r for r in results if isinstance(r, int))
         silence_min = (time.time() - LAST_INGEST_AT) / 60
         if silence_min >= 30:
             log.warning(
-                "INGEST SILENCE | no source events for %.0f min; rescan keeps deals flowing",
-                silence_min,
+                "INGEST SILENCE | no source events for %.0f min; the %ss rescan keeps deals flowing",
+                silence_min, int(SOURCE_RESCAN_SECONDS),
             )
-        if recovered:
-            log.info("RESCAN | cycle=%ss recovered=%s", SOURCE_RESCAN_SECONDS, recovered)
+        if recovered_total:
+            log.info("RESCAN | cycle=%ss limit=%s recovered=%s sources=%s",
+                     int(SOURCE_RESCAN_SECONDS), SOURCE_RESCAN_LIMIT, recovered_total, len(items))
+
+
+def media_is_too_large(msg) -> bool:
+    """True when the source media would tie up a worker longer than it is worth."""
+    limit = int(MAX_MEDIA_MB * 1024 * 1024)
+    if limit <= 0:
+        return False
+    media = getattr(msg, "media", None)
+    if media is None:
+        return False
+    sizes: list[int] = []
+    for name in ("video", "document", "voice", "round_message", "sticker", "gif", "file"):
+        item = getattr(media, name, None)
+        if item is not None:
+            with contextlib.suppress(Exception):
+                sizes.append(int(getattr(item, "size", 0) or 0))
+    with contextlib.suppress(Exception):
+        photo_sizes = getattr(media, "sizes", None) or []
+        sizes.append(max((int(getattr(p, "size", 0) or 0) for p in photo_sizes), default=0))
+    sizes = [size for size in sizes if size > 0]
+    return bool(sizes) and max(sizes) > limit
 
 
 def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
@@ -2645,12 +3248,19 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Resolve first so social/footer URLs do not inflate the 2+ Bitly threshold.
     # Every remaining merchant candidate is atomic: if even one cannot be freshly
     # converted, the whole post is retried/skipped rather than posting a partial deal.
+    # Every source shortener is expanded CONCURRENTLY: a mega list used to pay
+    # one 18s hop chain per link, serially, before anything could be posted.
     candidates: list[tuple[str, str]] = []
-    for source_url in source_urls:
-        resolved = await affiliate.resolve(source_url)
-        host = (urlparse(resolved).hostname or "").lower()
+    resolved_list = (await asyncio.gather(
+        *(affiliate.resolve(url) for url in source_urls), return_exceptions=True
+    )) if source_urls else []
+    for source_url, resolved in zip(source_urls, resolved_list):
+        if isinstance(resolved, BaseException):
+            log.warning("RESOLVE failed %s: %s", source_url[:60], resolved)
+            resolved = source_url
+        host = (urlparse(str(resolved)).hostname or "").lower()
         if not in_domains(host, NON_STORE_DOMAINS):
-            candidates.append((source_url, resolved))
+            candidates.append((source_url, str(resolved)))
     if not candidates:
         raise PermanentSkip("no monetizable URLs")
 
@@ -2672,23 +3282,28 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         raise PermanentSkip("no monetizable URLs")
 
     multi_link = len(store_candidates) >= 2
+    # Conversion is the slow step (shortener hops + EarnKaro + health checks),
+    # so a multi-link post converts every product at once. EK_SEM still caps the
+    # pressure on the API and `converted` keeps source order.
     converted: list[LinkResult] = []
     transient_errors: list[str] = []
-    for source_url, resolved in store_candidates:
-        try:
-            result = await affiliate.convert(source_url, multi_link, resolved)
-            if result:
-                converted.append(result)
-            else:
-                resolved_host = (urlparse(resolved).hostname or "").lower()
-                # Strict completeness: never publish a list with a missing
-                # product link. Retry the entire source post instead.
-                transient_errors.append(
-                    f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
-                )
-        except Exception as exc:
-            transient_errors.append(str(exc))
-            log.warning("CONVERT failed %s: %s", source_url[:60], exc)
+    convert_results = (await asyncio.gather(
+        *(affiliate.convert(url, multi_link, resolved) for url, resolved in store_candidates),
+        return_exceptions=True,
+    )) if store_candidates else []
+    for (source_url, resolved), result in zip(store_candidates, convert_results):
+        if isinstance(result, BaseException):
+            transient_errors.append(str(result))
+            log.warning("CONVERT failed %s: %s", source_url[:60], result)
+        elif result:
+            converted.append(result)
+        else:
+            resolved_host = (urlparse(resolved).hostname or "").lower()
+            # Strict completeness: never publish a list with a missing
+            # product link. Retry the entire source post instead.
+            transient_errors.append(
+                f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
+            )
     if transient_errors:
         # A temporary API/Bitly/network failure must retry the whole job so a
         # monetizable link is not silently lost.
@@ -2775,9 +3390,21 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         allowed_final_urls.add(OUR_FOLDER_LINK)
     if service_pairs:
         allowed_final_urls.update(resolved for _, resolved in service_pairs)
-    for raw in URL_RE.findall(rendered):
-        if clean_url(raw) not in allowed_final_urls:
-            raise PermanentSkip(f"foreign URL survived: {raw[:80]}")
+    # GUARANTEE: the source's link is gone, only OUR link remains. A single
+    # leftover foreign/shortener link used to throw the whole deal away
+    # ("foreign URL survived") - that is how posts silently went missing. The
+    # offending link is now repaired out of the post; we still refuse to publish
+    # something that carries no verified link at all.
+    leftover = [raw for raw in dict.fromkeys(URL_RE.findall(rendered))
+                if clean_url(raw) not in allowed_final_urls]
+    if leftover:
+        for raw in leftover:
+            rendered = rendered.replace(raw, " ")
+        rendered = tidy_post(clean_source_text(rendered))
+        log.info("LINK REPAIR | queue=%s removed %s unverified link(s): %s",
+                 row["id"], len(leftover), ", ".join(u[:40] for u in leftover[:4]))
+    if not any(clean_url(raw) in allowed_final_urls for raw in URL_RE.findall(rendered)):
+        raise PermanentSkip("no verified affiliate link survived in the rendered post")
 
     # PowerLoots1 is now a global filtered destination across ALL configured
     # sources. Remove legacy unconditional routing, then add it only when the
@@ -2942,27 +3569,57 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     try:
         if row["rendered_text"]:
             msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
-            # Re-clean persisted pending work too, so a hotfix applies to queued
-            # posts created by an older formatter before they are delivered.
             rendered = row["rendered_text"]
-            if msg:
-                rendered = remove_source_url_residue(
-                    rendered, extract_urls(msg), URL_RE.findall(rendered)
-                )
-            rendered = tidy_post(clean_source_text(rendered))
-            rendered = format_clustered_product_list(rendered)
-            rendered = strict_orphan_token_cleanup(rendered)
+            if await store.has_partial_delivery(row["id"]):
+                # At least one chunk is already out. Re-cleaning would shift the
+                # chunk boundaries and the resumed part would post a duplicated
+                # or half-eaten line, so finish this job with the stored bytes.
+                pass
+            else:
+                # Nothing sent yet: re-clean persisted pending work so a hotfix
+                # applies to posts queued by an older formatter before delivery,
+                # then freeze the result so every target gets identical text.
+                if msg:
+                    rendered = remove_source_url_residue(
+                        rendered, extract_urls(msg), URL_RE.findall(rendered)
+                    )
+                rendered = tidy_post(clean_source_text(rendered))
+                rendered = format_clustered_product_list(rendered)
+                rendered = strict_orphan_token_cleanup(rendered)
+                if rendered != row["rendered_text"]:
+                    with contextlib.suppress(Exception):
+                        await store.update_rendered(row["id"], rendered)
             if not await store.claim_content_key(row["id"], content_deal_key(rendered)):
                 raise DuplicateDeal("duplicate pending content")
             price = parse_price(msg.text or "") if msg else None
         else:
             msg, rendered, price = await render_job(client, affiliate, row)
         if msg and getattr(msg, "media", None) and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice)):
-            # Parent exists and no fake .bin extension: Telethon preserves the
-            # actual photo/video/document type so target posts render correctly.
-            media_path = await client.download_media(
-                msg, file=str(MEDIA_DIR / f"{row['chat_id']}_{row['msg_id']}")
-            )
+            if media_is_too_large(msg):
+                log.info("MEDIA SKIPPED | queue=%s oversized media; posting the deal as text",
+                         row["id"])
+            else:
+                # Parent exists and no fake .bin extension: Telethon preserves the
+                # actual photo/video/document type so target posts render correctly.
+                media_target = MEDIA_DIR / f"{row['chat_id']}_{row['msg_id']}"
+                try:
+                    # A slow/huge download used to freeze a worker for minutes,
+                    # which pushed every OTHER deal behind it. Text beats waiting.
+                    media_path = await asyncio.wait_for(
+                        client.download_media(msg, file=str(media_target)),
+                        timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning("MEDIA SLOW | queue=%s download exceeded %ss; posting text-only",
+                                row["id"], int(MEDIA_DOWNLOAD_TIMEOUT_SECONDS))
+                    media_path = None
+                    with contextlib.suppress(Exception):
+                        Path(media_target).unlink(missing_ok=True)
+                except Exception as exc:
+                    log.warning("MEDIA FAILED | queue=%s %s (posting text-only)", row["id"], exc)
+                    media_path = None
+                    with contextlib.suppress(Exception):
+                        Path(media_target).unlink(missing_ok=True)
         # Final provenance gate runs again immediately before target delivery.
         owned_candidates = {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
         owned_external = {url for url in owned_candidates if url in rendered}
@@ -2979,10 +3636,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         first_target_sent = False
         for target in await store.pending_targets(row["id"]):
             # USER RULE: Telegram never waits — no ban rule there, keep posting.
-            # Only a tiny 0.5-1.5s jitter between targets so channel-to-channel
-            # fan-out looks natural without ever slowing the deal down.
+            # Only a tiny random jitter (TARGET_FANOUT_GAP_MIN/MAX, default
+            # 0.4-1.2s) between targets so channel-to-channel fan-out looks
+            # natural without ever slowing the deal down. Never before the
+            # first target.
             if first_target_sent:
-                await asyncio.sleep(random.uniform(0.5, 1.5))
+                await asyncio.sleep(random.uniform(TARGET_FANOUT_GAP_MIN, TARGET_FANOUT_GAP_MAX))
             first_target_sent = True
             premium_claimed = False
             if target == PREMIUM_TARGET:
@@ -3040,10 +3699,30 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+async def idle_wait(stop: asyncio.Event) -> None:
+    """Park a worker until new queue work exists instead of polling.
+
+    The wake flag is cleared *after* a direct pending check, so a wake-up can
+    never be lost in the gap between claiming and sleeping; the short timeout
+    is only a safety net (and keeps shutdown responsive).
+    """
+    if QUEUE_WAKE is not None:
+        QUEUE_WAKE.clear()
+        if await store.has_pending_work():
+            return
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(QUEUE_WAKE.wait(), timeout=QUEUE_IDLE_POLL_SECONDS)
+        return
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(stop.wait(), timeout=QUEUE_IDLE_POLL_SECONDS)
+
+
 async def main() -> None:
-    log.info("BestGAA Production Bot v15 starting")
+    global QUEUE_WAKE
+    log.info("BestGAA Production Bot v16 starting (immediate dispatch, no duplicates)")
+    QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=max(15.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2))
     session = aiohttp.ClientSession(timeout=timeout)
     affiliate = AffiliateClient(session)
     stop = asyncio.Event()
@@ -3060,7 +3739,10 @@ async def main() -> None:
 
     @client.on(events.NewMessage())
     async def on_message(event):
-        entry = source_map.get(event.chat_id)
+        # Accept any chat-id convention (marked channel, raw entity id, legacy
+        # negative chat id) so a live event is never silently unmatched - an
+        # unmatched event is exactly "the source posted, we didn't".
+        entry = source_map.get(event.chat_id) or source_map.get(raw_chat_id(event.chat_id))
         if not entry:
             return
         try:
@@ -3071,11 +3753,16 @@ async def main() -> None:
                 msg is not None and msg.media is not None and
                 not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice))
             )
-            await store.enqueue(event.chat_id, event.message.id, source, raw, has_media)
+            added = await store.enqueue(event.chat_id, event.message.id, source, raw, has_media)
             global LAST_INGEST_AT
             LAST_INGEST_AT = time.time()
-            log.info("QUEUED | priority=%s media=%s source=%s chat=%s msg=%s",
-                     classify_priority(raw, has_media), has_media, source, event.chat_id, event.message.id)
+            if added:
+                log.info("QUEUED | priority=%s media=%s source=%s chat=%s msg=%s",
+                         classify_priority(raw, has_media), has_media, source,
+                         event.chat_id, event.message.id)
+            else:
+                log.info("INGEST DUP | source=%s chat=%s msg=%s (already queued/posted)",
+                         source, event.chat_id, event.message.id)
         except Exception as exc:
             # Never let one bad event die silently — a lost event means a lost
             # deal, so make the failure loud (the rescan loop still recovers it).
@@ -3093,7 +3780,9 @@ async def main() -> None:
             # goes out the moment the window ends.
             if in_post_quiet():
                 try:
-                    await asyncio.wait_for(stop.wait(), timeout=60)
+                    # Short poll, so posting restarts within seconds of 06:00
+                    # instead of idling a full minute on top of the window.
+                    await asyncio.wait_for(stop.wait(), timeout=15)
                 except asyncio.TimeoutError:
                     pass
                 continue
@@ -3107,11 +3796,8 @@ async def main() -> None:
                     pass
                 continue
             if not row:
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=1)
-                except asyncio.TimeoutError:
-                    continue
-                break
+                await idle_wait(stop)
+                continue
             # USER RULE: a deal that arrived during 02:00-06:00 is DEAD by
             # 06:00 (loot prices do not survive) — skip it, never post it
             # late. Only multi-product LISTS (3+ links) earn the morning slot.
