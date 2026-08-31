@@ -10,6 +10,7 @@ Run: python3 test_pipeline_fixes.py   (from the repo root)
 """
 import asyncio
 import os
+import sqlite3
 import sys
 import tempfile
 import time
@@ -870,6 +871,213 @@ async def test_real_post_shape():
     check("the deal name line is untouched", "Top Loading Washing Machine Cover" in post)
 
 
+async def test_list_post_shapes(store):
+    """The loot-list format most sources use: one headline + a block of links.
+
+    A bullet emoji used to be mistaken for a product label, so the rebuild kept
+    "\u279c + link" pairs and the HEADLINE (product name + price) vanished from
+    the published post. One product with four variant links has ONE label: the
+    source layout (name, price, every link) must survive untouched.
+    """
+    print("\n== list-post shapes keep the headline and every link ==")
+    # one distinct product per shape, so the shapes are genuinely different
+    # deals (the SAME campaign from two sources must dedup - and it does, which
+    # is exactly what an earlier run of this test proved).
+    names = ["Top Loading Washing Machine Cover", "Quilted Top Load Washer Protector",
+             "Heavy Duty Washing Machine Cover"]
+
+    class FakeMsg:
+        def __init__(self, text):
+            self.text, self.message = text, text
+            self.media = self.entities = self.reply_to = self.reply_markup = None
+
+    class Client:
+        def __init__(self, text):
+            self._text = text
+
+        async def get_messages(self, chat_id, ids=None):
+            return FakeMsg(self._text)
+
+    class Aff:
+        async def resolve(self, url):
+            return "https://www.amazon.in/dp/B0" + url.rsplit("/", 1)[-1][:6].upper()
+
+        async def convert(self, source, multi_link, resolved=None):
+            code = source.rsplit("/", 1)[-1].rstrip("]")
+            if code not in ours:
+                return None
+            return bot.LinkResult(source, resolved or "", ours[code], "ASIN:B0" + code[:6].upper())
+
+        async def cache_link(self, *a, **k):
+            return None
+
+        async def shorten_long_urls_in_text(self, rendered):
+            return rendered
+
+    shapes = {}
+    for n in range(3):
+        codes = ["%dtG7oChgiQuTgS25b" % n, "%dIKthI4w" % n, "%d6ft5j8a" % n, "%d3FQw8wi" % n]
+        shapes[n] = codes
+    ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + "?tag=deals0911-21"
+            for cs in shapes.values() for c in cs}
+    titles = [names[n] + " \u20b9260" for n in range(3)]
+    shape_list = [
+        ("plain bullets", titles[0] + "\n" + "\n".join("\u279c https://bitli.in/" + c for c in shapes[0])),
+        ("markdown bullets", titles[1] + "\n" + "\n".join(
+            "\u279c [https://bitli.in/{0}](https://bitli.in/{0})".format(c) for c in shapes[1])),
+        ("link glued to the price", titles[2] + "https://bitli.in/" + shapes[2][0] + "\n" + "\n".join(
+            "\u279c https://bitli.in/" + c for c in shapes[2][1:])),
+    ]
+
+    for n, (name, text) in enumerate(shape_list):
+        codes = shapes[n]
+        store.conn.execute(
+            "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) VALUES(?,?,?,?,?,?)",
+            (-100600 - n, 9000 + n, "list_src", time.time(), 1,
+             str(bot.raw_chat_id(-100600 - n))))
+        store.conn.commit()
+        row = store.conn.execute("SELECT * FROM queue WHERE msg_id=?", (9000 + n,)).fetchone()
+        _m, rendered, price = await bot.render_job(Client(text), Aff(), row)
+        lines = [ln for ln in rendered.splitlines() if ln.strip()]
+        check("[%s] product name and price stay in the post" % name,
+              names[n] in rendered and "\u20b9260" in rendered)
+        check("[%s] every one of our links is present" % name,
+              all(ours[c] in rendered for c in codes))
+        check("[%s] no source shortener link survives" % name, "bitli.in" not in rendered)
+        check("[%s] no leaked short-code glued anywhere" % name,
+              not any(bot.re.search(r"\u20b9260[A-Za-z0-9]", ln) for ln in lines)
+              and not any(c in ln for ln in lines for c in codes))
+        check("[%s] no markdown debris in a plain-text post" % name,
+              not any("[" in ln or "](" in ln for ln in lines))
+        check("[%s] each link sits on its own line" % name,
+              all(ln.strip().startswith(("\u279c", "http")) or "\u20b9" in ln for ln in lines))
+        check("[%s] the price used for routing is the source price" % name, price == 260)
+
+    # The same campaign posted by a second source (identical text, different
+    # shortener) must still be refused - dedup did not get weaker.
+    dup_row = None
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) VALUES(?,?,?,?,?,?)",
+        (-100605, 9005, "other_src", time.time(), 1, str(bot.raw_chat_id(-100605))))
+    store.conn.commit()
+    dup_row = store.conn.execute("SELECT * FROM queue WHERE msg_id=9005").fetchone()
+    try:
+        await bot.render_job(Client(shape_list[0][1]), Aff(), dup_row)
+        check("the same campaign from another source is still deduped", False)
+    except bot.DuplicateDeal:
+        check("the same campaign from another source is still deduped", True)
+
+    # A genuine multi-product list (one real label per link) must STILL be
+    # rebuilt into neat label->link pairs; the fix above may not disable that.
+    multi = ("Men Running Shoes\nhttps://bitli.in/m1aa\n"
+             "Women Cotton Kurti\nhttps://bitli.in/m2bb\n"
+             "Kids School Bag\nhttps://bitli.in/m3cc")
+    pairs = {
+        "https://bitli.in/m1aa": "https://www.amazon.in/dp/B0MEN1?tag=deals0911-21",
+        "https://bitli.in/m2bb": "https://www.amazon.in/dp/B0WOM2?tag=deals0911-21",
+        "https://bitli.in/m3cc": "https://www.amazon.in/dp/B0KID3?tag=deals0911-21",
+    }
+
+    class MultiAff(Aff):
+        async def resolve(self, url):
+            return url
+
+        async def convert(self, source, multi_link, resolved=None):
+            if source not in pairs:
+                return None
+            return bot.LinkResult(source, source, pairs[source], "ASIN:" + source[-4:])
+
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) VALUES(?,?,?,?,?,?)",
+        (-100699, 9099, "list_src", time.time(), 1, str(bot.raw_chat_id(-100699))))
+    store.conn.commit()
+    row = store.conn.execute("SELECT * FROM queue WHERE msg_id=9099").fetchone()
+    _m, rendered, _p = await bot.render_job(Client(multi), MultiAff(), row)
+    check("a real 3-product list is still rebuilt as label\u2192link pairs",
+          all(label in rendered for label in ("Men Running Shoes", "Women Cotton Kurti", "Kids School Bag"))
+          and all(link in rendered for link in pairs.values()))
+    order = [rendered.index(x) for x in ("Men Running Shoes", pairs["https://bitli.in/m1aa"],
+                                        "Women Cotton Kurti", pairs["https://bitli.in/m2bb"])]
+    check("each product keeps ITS OWN link in source order", order == sorted(order))
+
+
+def test_coverage_audit():
+    """ops/coverage_audit.py must find the swallowed posts and heal only those."""
+    print("\n== coverage audit finds and heals the lost posts ==")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("coverage_audit",
+                                                  Path(__file__).resolve().parent / "ops" / "coverage_audit.py")
+    audit_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit_mod)
+
+    db = Path(tempfile.mktemp(suffix=".sqlite3"))
+    store = bot.Store(db)
+    now = time.time()
+    cases = [
+        # (status, last_error, has_successful_delivery) -> expected bucket
+        ("done", "", True, "posted"),
+        ("done", "DuplicateDeal: duplicate deal", False, "dedup"),
+        ("done", "PermanentSkip: night window", False, "policy"),
+        ("done", "STALE DROP: older than the freshness budget", False, "policy"),
+        ("failed", "RuntimeError: conversion retry required: EarnKaro 503", False, "lost"),
+        ("done", "PermanentSkip: no monetizable URLs", False, "lost"),
+        ("pending", "", False, "in-flight"),
+    ]
+    ids = {}
+    for n, (status, err, delivered, expect) in enumerate(cases):
+        store.conn.execute(
+            "INSERT INTO queue(chat_id,msg_id,source,status,attempts,last_error,created_at,chat_key)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (-100300 - n, 300 + n, "audit_src", status, 4, err, now - n * 60,
+             str(bot.raw_chat_id(-100300 - n))))
+        ids[expect] = store.conn.execute(
+            "SELECT last_insert_rowid() id").fetchone()["id"]
+        if delivered:
+            store.conn.execute("INSERT INTO deliveries(queue_id,target,status) VALUES(?,?,'sent')",
+                               (ids[expect], "LootZoneIndia11"))
+            ids["posted"] = ids[expect]
+    store.conn.execute("INSERT INTO deal_claims(queue_id,deal_key,claimed_at) VALUES(?,?,?)",
+                       (ids["lost"], "ASIN:AUDITLOST", now))
+    store.conn.commit()
+    store.conn.close()
+
+    report = audit_mod.audit(db, 24)
+    buckets = report["per_source"]["audit_src"]
+    check("audit counts every source post", buckets["seen"] == len(cases))
+    check("audit counts what actually reached a target", buckets["posted"] == 1)
+    check("audit classifies the swallowed posts as LOST", len(report["lost"]) == 2)
+    check("audit does NOT cry wolf on dedup/policy/in-flight rows",
+          buckets["dedup"] == 1 and buckets["policy"] == 2 and buckets["in-flight"] == 1)
+    lost_reasons = " ".join(row["reason"] for row in report["lost"])
+    check("every LOST reason is a bug-shaped gap",
+          "conversion retry required" in lost_reasons and "no monetizable URLs" in lost_reasons)
+
+    healed = audit_mod.heal(db, [row["id"] for row in report["lost"]])
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    states = {r["msg_id"]: r for r in conn.execute("SELECT * FROM queue")}
+    lost_ids = {row["msg_id"] for row in report["lost"]}
+    check("--heal re-queues exactly the lost rows", healed == 2
+          and all(states[m]["status"] == "pending" and states[m]["attempts"] == 0
+                  for m in lost_ids))
+    check("--heal clears the stale live claim so the re-render is allowed",
+          conn.execute("SELECT COUNT(*) c FROM deal_claims WHERE deal_key='ASIN:AUDITLOST'"
+                       ).fetchone()["c"] == 0)
+    check("posted / dedup / policy / in-flight rows are untouched",
+          states[300]["status"] == "done" and states[301]["status"] == "done"
+          and states[302]["status"] == "done" and states[303]["status"] == "done"
+          and states[306]["status"] == "pending")
+    check("the dedup record of what subscribers already saw is preserved",
+          conn.execute("SELECT COUNT(*) c FROM posted_deals").fetchone()["c"] >= 0
+          and conn.execute("SELECT COUNT(*) c FROM posted_deals WHERE deal_key='ASIN:AUDITLOST'"
+                           ).fetchone()["c"] == 0)
+    conn.close()
+    # a second audit after healing must be clean
+    again = audit_mod.audit(db, 24)
+    check("after --heal the audit reports nothing lost (rows are queued again)",
+          not again["lost"])
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
@@ -889,6 +1097,8 @@ async def main():
         await test_edited_source_posts(store)
         await test_passthrough_knob(store)
         await test_real_post_shape()
+        await test_list_post_shapes(store)
+        test_coverage_audit()
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), routing + media-fix notes |
+| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -193,6 +193,34 @@ Individual deploys:
   being dropped; one dead destination removes only that link; and a source post
   that was **edited** before any target received it is re-queued (`EDIT REVIVE`)
   instead of staying lost.
+- **v17.1 — a list post never loses its headline:** the reported shape (one
+  product line with the price, then a `➜` + link per variant) came out of our
+  channel as four bare links. `format_visible_source_product_pairs()` accepted a
+  decorated bullet line as a *product label*, so four variants produced four bogus
+  pairs, the real headline was consumed as a label and discarded, and the
+  dangling-bullet cleanup then deleted the bullets. Label extraction is now one
+  classifier, `_product_label()` — decoration stripped **by class** (never by an
+  emoji list, because an omitted emoji silently turns a bullet into a product),
+  real words required, a URL never a label — and a post with fewer than 3 genuine
+  products falls back to `rebuild_text`, which keeps every source line. Cleaning
+  may only remove junk: dropping a product name or price line is the same class of
+  bug as printing junk, and `test_list_post_shapes()` is the tripwire.
+- **v17.1 — a glued link is separated, and the junk sweeper never eats a URL:**
+  `₹260https://bitli.in/x` used to publish as `₹260://bitli.in/x` because
+  `strip_price_junk` cut the `https` off as if it were a junk token. It now masks
+  real URLs before cutting, and `tidy_post` (mirrored by `sanitizeOutbound` in
+  the bridge) inserts one space before a glued link, so the price reads exactly
+  as published (`₹260`) and the link stays intact and clickable.
+- **v17.1 — coverage is auditable, not assumed:** `ops/coverage_audit.py` reads
+  the live DB and reports per source how many posts arrived vs reached a target,
+  separating correct refusals (dedup / night window / stale) from `LOST` rows
+  (conversion retry, no verified link, provenance, unresolved target, silent
+  "no monetizable URLs"). `--heal` re-queues only the LOST rows after copying the
+  DB, clearing just their live `deal_claims` and never `posted_deals` — so a
+  healed deal another source already published is refused as a duplicate instead
+  of posting twice. `ops/diagnose.sh` runs it and also greps the v17.1 markers in
+  the files that are really in production, because "you fixed it and I still see
+  it" almost always means the server never restarted on the new build.
 - **Source link → OUR link, exactly once:** after `render_job`, every URL in
   the post must be one we generated (affiliate/tagged link, our own folder /
   channel links, or a pass-through service offer). A leftover source/foreign
@@ -338,8 +366,9 @@ posted late).
 Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 
 > **The tracked source is now ahead of this table.** `bestgaa/main_bot_new.py`
-> (v17: verbatim price lines, outbound junk guard, a dedup fingerprint that no
-> longer swallows posts, unmonetizable-link pass-through, edited-post revive) and
+> (v17.1: list posts keep their headline, glued links separated, verbatim price
+> lines, outbound junk guard, a dedup fingerprint that no longer swallows posts,
+> unmonetizable-link pass-through, edited-post revive; v17 items unchanged) and
 > `tg-wa-bridge/bridge.js` (the same junk/markdown guards, with WhatsApp
 > `*bold*` formatting left intact) changed in
 > `arena/01a0583b-new-deals-bot-zip`; the hashes below describe the *deployed*
@@ -353,12 +382,19 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17 — not yet deployed to a server):
+Current **repo source** on this branch (v17.1 — **not yet deployed to a server**;
+until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
+live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `3776bd53486926f6004f65d4de3bfebb18fb15a82a36ac4043a2c7c3d833d2e6` |
-| `tg-wa-bridge/bridge.js` | `5311a3ee7209ea963b20178ca145453a6409229ad80c07e7ba99540014f19422` |
+| `bestgaa/main_bot_new.py` | `7dea657e1e13a89754f307ce09d66cd4914dad0a193331030ef67d93e19e3d2e` |
+| `tg-wa-bridge/bridge.js` | `615a05910a23f51566859ca75bba10202bd1a3b455d176b26db04446512990a2` |
+| `ops/coverage_audit.py` | `a146799f0112df41489c45e33b3eade9c4e13b5a30acce9ab021a067b9572abf` |
+
+Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
+131/131 (list shapes, coverage audit, price fidelity, no-silent-loss),
+`test_rescan.py` pass, `node tg-wa-bridge/bridge.js --self-test` pass.
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`
 > (`51c3791b…` / `5d8e1f50…` / `28656d74…`) predates this build and is stale.

@@ -49,6 +49,43 @@ if grep -q "isOurAmazonTagLink" "$BRIDGE_DIR/bridge.js" 2>/dev/null; then
 else
   bad "WhatsApp bridge is running OLD code -> cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh"
 fi
+# v17 markers - these are the fixes for "posts missing" and "random junk next
+# to the price". If they are absent the server is still on an older build, and
+# no amount of waiting will change what the channels print: redeploy.
+for marker in "sanitize_outbound_text:final outbound junk guard (no glued tokens, no [url](url) debris)" \
+              "GENERIC_HEADLINE_RE:campaign fingerprint no longer swallows a source sharing one banner line" \
+              "keep_passthrough:unmonetizable store links post clean instead of being dropped" \
+              "revive_edited_job:an edited source post that never went out is re-queued" \
+              "remember_passthrough:pass-through links carry provenance"; do
+  name="${marker%%:*}"; desc="${marker#*:}"
+  if grep -q "$name" "$BESTGAA_DIR/main_bot.py" 2>/dev/null \
+     || grep -q "$name" "$BESTGAA_DIR/main_bot_new.py" 2>/dev/null; then
+    ok "v17 bot: $desc"
+  else
+    bad "v17 bot fix MISSING: $name -> redeploy (the bug this fixes is still live)"
+  fi
+done
+if grep -q "function sanitizeOutbound" "$BRIDGE_DIR/bridge.js" 2>/dev/null; then
+  ok "v17 bridge: outbound junk guard present"
+else
+  bad "v17 bridge guard MISSING -> redeploy the bridge bundle"
+fi
+if grep -qE "BestGAA Production Bot v1[7-9]" "$BOT_LOG" 2>/dev/null; then
+  ok "bot log shows a v17+ startup banner (the new build actually restarted)"
+else
+  warn "no v17 startup banner in $BOT_LOG -> service was not restarted after the deploy"
+fi
+
+echo ""
+echo "==== 2b. SOURCE COVERAGE: did every source post reach a channel? ===="
+AUDIT="$BESTGAA_DIR/../new-deals-bot-zip/ops/coverage_audit.py"
+[[ -f "$AUDIT" ]] || AUDIT="$(dirname "$(readlink -f "$0")")/coverage_audit.py"
+if [[ -f "$AUDIT" ]]; then
+  python3 "$AUDIT" --hours 12 2>&1 | sed 's/^/  /'
+  echo "    (repair the recoverable ones with: python3 $AUDIT --hours 12 --heal)"
+else
+  warn "coverage_audit.py not found - run it from the repo: python3 ops/coverage_audit.py --hours 12"
+fi
 
 echo ""
 echo "==== 3. WHATSAPP GROUPS CONFIGURED? ===="

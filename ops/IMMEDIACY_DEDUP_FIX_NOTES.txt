@@ -251,3 +251,53 @@ D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
     unmonetizable deal than post it untagged), set PASSTHROUGH_UNMONETIZED=false
     in .env - see the knob below; the fingerprint fix and the outbound guard
     have no switch and should not need one.
+
+
+  ----------------------------------------------------------------------------
+  v17.1: THE EXACT POST THE USER PASTED, FIXED AT THE ROOT
+  ----------------------------------------------------------------------------
+  The complaint was: source has the list, our channel printed FOUR BARE LINKS
+  (product name + ₹260 gone), and the price line carried a random token.
+  Root cause #1 (lost headline): in format_visible_source_product_pairs() a
+  decorated bullet line ("➜ https://bitli.in/x") was accepted as a product LABEL
+  because the only check was "not empty". Four variants therefore produced four
+  bogus pairs, the list rebuild consumed the real headline as a label and
+  discarded it, and the dangling-bullet cleanup then deleted the bullets - so
+  what remained was a wall of links. _product_label() now decides what may be a
+  label (strip decoration by CLASS, require real words, reject URLs) and a post
+  with fewer than 3 genuine products falls back to rebuild_text, which keeps
+  every source line. Cleaning must never remove content; a product name/price
+  line lost to a cleanup rule is a bug of the same size as junk printed.
+  Root cause #2 (glued text): strip_price_junk() cut "https" off a link glued
+  straight onto a price (₹260https://bitli.in/x), leaving ₹260://bitli.in/x.
+  It masks real URLs before cutting, and tidy_post()/sanitizeOutbound() separate
+  a glued link with one space, so the price reads exactly as published and the
+  link is intact and clickable. Mirrored in tg-wa-bridge/bridge.js
+  (stripPriceJunk + sanitizeOutbound), whose list layout already keeps every
+  source line (new bridge self-test cases pin the same shape).
+  Verification (all on this branch): /tmp/shape_matrix.py renders 4 source shapes
+  (plain bullets, markdown bullets, URL glued to the price, inline [url](url) on
+  the price line) through the real render_job - every shape keeps
+  "Title @ ₹260", shows all 4 of our links, zero glued junk, zero brackets.
+  python3 test_render_job.py -> 137 passed / 0 failed
+  python3 test_pipeline_fixes.py -> 131 passed / 0 failed
+    (+ test_list_post_shapes, + test_coverage_audit)
+  python3 test_rescan.py -> RESCAN TESTS PASS
+  node tg-wa-bridge/bridge.js --self-test -> bridge self-test PASS
+  Coverage tool (the "nothing may stay missing" answer): ops/coverage_audit.py
+  reads the live DB and classifies every source post as posted / in-flight /
+  dedup / policy / LOST; LOST = closed without reaching a target for a reason
+  the current build can handle (conversion retry, no verified link, provenance,
+  unresolved target, silent 'no monetizable URLs').
+    python3 ops/coverage_audit.py --hours 12          # look, exit 1 if gaps
+    python3 ops/coverage_audit.py --hours 12 --heal   # re-queue only the LOST
+  --heal copies the DB first (main_bot.py keeps its own .backup.<stamp>), resets
+  attempts/status/rendered_text, clears only the live deal_claims rows for those
+  jobs and NEVER touches posted_deals - so a healed row whose product already
+  went out from another source is refused again as a duplicate instead of being
+  posted twice. Rows older than --max-age-hours (default 6) are not healed: that
+  loot is dead. ops/diagnose.sh now runs the audit and checks the v17.1 markers
+  in the files that are actually in production - the most common reason for
+  "you fixed it but I still see it" is that the server never restarted on the
+  new build (this repo state must be deployed with ops/repack_bundles.sh +
+  apply_dual_hotfix.sh; nothing in this session was pushed to a live machine).

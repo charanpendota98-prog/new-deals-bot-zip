@@ -446,10 +446,19 @@ function normalizeNestedLinks(text) {
 // ("*bold*" headers are ours, only the source's broken markdown is repaired).
 function stripPriceJunk(text) {
   if (!text) return ''
-  return String(text)
+  // Real links are masked first: a link glued straight onto a price
+  // ("₹260https://bitli.in/x") must keep its protocol - cutting "https" as if it
+  // were a junk token used to leave "₹260://bitli.in/x" behind.
+  const urls = [...new Set(String(text).match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
+  let masked = String(text)
+  urls.forEach((u, i) => { masked = masked.split(u).join(`\u0002P${i}\u0003`) })
+  let out = masked
     .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b/g, '$1')
     .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b/g, '$1')
     .replace(/(₹\s*[\d,]+)[ \t]+(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)/gmi, '$1')
+  urls.forEach((u, i) => { out = out.split(`\u0002P${i}\u0003`).join(u) })
+  // Keep a glued link apart from the word/price in front of it.
+  return out.replace(/([\w₹)\]>"'])(?=https?:\/\/)/g, '$1 ')
 }
 function fixUnbalancedParens(line) {
   if (!line) return line
@@ -496,6 +505,10 @@ function sanitizeOutbound(text) {
   }
   out = stripPriceJunk(out)
   out = stripLinkFragmentTokens(out)
+  // A link glued to the word/price before it prints as one unreadable token
+  // ("₹260https://…"). Query-nested links stay intact: the separator must be a
+  // word char, never "=", "&", "?" or "/".
+  out = out.replace(/([\w\u20b9)\]>"'])(?=https?:\/\/)/g, '$1 ')
   // A line that carries a link is left exactly as it is: its parentheses may be
   // part of a real merchant path, and editing them would break the link.
   out = out.split(/\r?\n/)
@@ -3782,6 +3795,31 @@ if (process.argv.includes('--self-test')) {
     if (wrapped.includes('(') || !wrapped.includes('a_b_c')) throw new Error('bracketed URL not unwrapped cleanly: ' + wrapped)
     if (fixUnbalancedParens('Deal (₹99 only') .includes('(')) throw new Error('unmatched paren survived')
     if (!fixUnbalancedParens('Boat ₹1,099 (75% OFF)').includes('(75% OFF)')) throw new Error('balanced parens must stay')
+  }
+  // v17: the loot-list shape (headline with the price, then a bullet + link per
+  // variant). The headline must survive, every link must appear, and the
+  // markdown-bracket variant must never print literally.
+  {
+    const variants = ['tG7oChgiQuTgS25b', 'IKthI4w', '6ft5j8a', '3FQw8wi']
+    const listShape = 'Top Loading Washing Machine Cover @ \u20b9260\n' +
+      variants.map(c => `\u279c https://bitli.in/${c}`).join('\n')
+    const post = sanitizeOutbound(formatWhatsAppPost({ text: listShape }))
+    if (!/Washing Machine Cover/.test(post)) throw new Error('list post lost the product name: ' + post)
+    if (!post.includes('\u20b9260')) throw new Error('list post lost the source price: ' + post)
+    if ((post.match(/https?:\/\/bitli\.in\//g) || []).length !== 4) throw new Error('list post lost links: ' + post)
+    if (post.includes('tG7oChgiQuTgS25b') && !post.includes('bitli.in/tG7oChgiQuTgS25b')) {
+      throw new Error('short code leaked outside its link: ' + post)
+    }
+    const mdShape = 'Top Loading Washing Machine Cover @ \u20b9260\n' +
+      variants.map(c => `\u279c [https://bitli.in/${c}](https://bitli.in/${c})`).join('\n')
+    const mdPost = sanitizeOutbound(formatWhatsAppPost({ text: mdShape }))
+    if (mdPost.includes('[') || mdPost.includes('](')) throw new Error('markdown debris in a WhatsApp post: ' + mdPost)
+    if (!mdPost.includes('\u20b9260') || !/Washing Machine Cover/.test(mdPost)) {
+      throw new Error('markdown list post lost name/price: ' + mdPost)
+    }
+    if ((mdPost.match(/https?:\/\/bitli\.in\//g) || []).length !== 4) throw new Error('markdown list post lost links: ' + mdPost)
+    const glued = sanitizeOutbound('Top Loading Washing Machine Cover @ \u20b9260https://bitli.in/zz1\n\u279c https://bitli.in/zz2')
+    if (!glued.includes('\u20b9260 https://bitli.in/zz1')) throw new Error('link glued to the price was not separated: ' + glued)
   }
   console.log('bridge self-test PASS')
   process.exit(0)

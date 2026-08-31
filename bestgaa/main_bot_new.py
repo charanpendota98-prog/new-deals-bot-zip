@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.0
+"""BestGAA Production Bot v17.1
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -1325,9 +1325,17 @@ def strip_url_residue(text: str) -> str:
 # guard all share them, so a token cannot survive by dodging one of the passes.
 
 def strip_price_junk(text: str) -> str:
-    """Cut random tokens glued to (or hanging right after) a \u20b9 price."""
+    """Cut random tokens glued to (or hanging right after) a \u20b9 price.
+
+    Real links are masked first: a link glued straight onto a price
+    ("\u20b9260https://bitli.in/x") must keep its protocol - cutting the "https"
+    as if it were junk used to leave "\u20b9260://bitli.in/x" behind.
+    """
     if not text:
         return text
+    urls = list(dict.fromkeys(URL_RE.findall(text)))
+    for index, url in enumerate(urls):
+        text = text.replace(url, f"\x02P{index}\x03")
     # Letters-only tail directly after the price stays conservative (<=12) so a
     # real word can never be eaten ("\u20b9122oya" -> "\u20b9122").
     text = re.sub(r"(\u20b9\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b", r"\1", text)
@@ -1344,7 +1352,10 @@ def strip_price_junk(text: str) -> str:
         r"(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)",
         r"\1", text, flags=re.M | re.I,
     )
-    return text
+    for index, url in enumerate(urls):
+        text = text.replace(f"\x02P{index}\x03", url)
+    # Keep a glued link apart from the word/price in front of it.
+    return re.sub(r'([\w\u20b9)\]>"\'])(?=https?://)', r"\1 ", text)
 
 
 def strip_link_fragment_tokens(text: str) -> str:
@@ -1542,6 +1553,11 @@ def tidy_post(text: str) -> str:
     # Final anti-residue sweep on our own output too: any fragment that is not a
     # complete link is dropped, every generated URL is masked inside the helper.
     masked = strip_url_residue(masked)
+    # A link glued to the word/price in front of it ("₹260https://…") prints as
+    # one unreadable token, and the fragment then looks like junk next to the
+    # price. Keep the words apart. Query-nested links stay intact because the
+    # separator has to be a word char, never "=", "&", "?" or "/".
+    masked = re.sub(r'([\w\u20b9)\]>"\'])(?=https?://)', r"\1 ", masked)
 
     # Remove orphan link bullets with no actual URL after them, e.g. a leftover
     # `🔗` or `🔗 ` line whose source URL was collapsed/deduped away. A bullet
@@ -1736,6 +1752,26 @@ def strict_orphan_token_cleanup(text: str) -> str:
     return result.strip()
 
 
+def _product_label(line: str) -> str:
+    """Return the real product text of a list line, or "" when there is none.
+
+    Decoration only (bullets/arrows/emoji/punctuation) and pure links are not a
+    label: a list of variant links under one headline has ONE label, not four,
+    and pretending otherwise deletes the headline (product name + price) from
+    the published post.
+    """
+    text = re.sub(r"^[^\w\u20b9]+", "", (line or "").strip())
+    text = re.sub(r"[^\w\u20b9%)]+$", "", text).strip(" \t:|-+*~")
+    text = re.sub(r"^[\s\u279c\u27a1\u2192\u2193\U0001f449\U0001f517\u2022\u25aa\ufe0f:|*-]+", "", text).strip()
+    if len(text) < 4 or not re.search(r"[A-Za-z]{2}", text):
+        return ""
+    # A line that still carries a link is a link line, not a product label (the
+    # label of a same-line pair is passed in already cut before the URL).
+    if URL_RE.search(text) or "http" in text.lower():
+        return ""
+    return text
+
+
 def format_visible_source_product_pairs(raw_text: str,
                                         mapping: dict[str, str]) -> str | None:
     """Rebuild visible product-list posts by source order, not fragile entity spans."""
@@ -1753,16 +1789,18 @@ def format_visible_source_product_pairs(raw_text: str,
             if not affiliate or affiliate in used_affiliates:
                 continue
             prefix = line.split(raw_url, 1)[0]
-            prefix = re.sub(r"^[\s🔗👉➡️:|*-]+|[\s:|*-]+$", "", prefix).strip()
-            label = prefix
+            # A label has to carry the product's own words. Leading decoration
+            # (bullets, arrows, emoji, dashes) is stripped by CLASS, not by an
+            # emoji list: "\u279c https://.." used to yield the label "\u279c", which
+            # turned a bullet into a "product" and then the real title line
+            # vanished from the post (name and price gone, bare links only).
+            label = _product_label(prefix)
             label_index = index
             if not label:
                 for previous in range(index - 1, -1, -1):
-                    candidate = lines[previous].strip()
-                    if (not candidate or previous in used_label_lines
-                            or URL_RE.search(candidate)):
+                    if previous in used_label_lines:
                         continue
-                    candidate = re.sub(r"^[\s🔗👉➡️:|*-]+|[\s:|*-]+$", "", candidate).strip()
+                    candidate = _product_label(lines[previous])
                     if candidate:
                         label, label_index = candidate, previous
                         break
@@ -1773,6 +1811,9 @@ def format_visible_source_product_pairs(raw_text: str,
                     used_label_lines.add(label_index)
                     used_affiliates.add(affiliate)
 
+    # Only a genuine multi-product list may be rebuilt this way. (Fewer than 3
+    # real labels means one product with several variant links: keep the source
+    # layout, which already carries the name, the price and every link.)
     if len(pairs) < 3:
         return None
     output = []
@@ -4043,7 +4084,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17 starting "
+    log.info("BestGAA Production Bot v17.1 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
