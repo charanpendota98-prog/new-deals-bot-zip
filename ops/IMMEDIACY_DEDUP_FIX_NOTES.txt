@@ -326,3 +326,41 @@ D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
     so `python3 /home/ubuntu/bestgaa-bot/bestgaa-bot/coverage_audit.py --hours 12
     --heal` works on the server without a repo checkout; diagnose.sh runs the
     audit and greps the v17.1 markers of the DEPLOYED files.
+
+  ----------------------------------------------------------------------------
+  v17.2: BOTH WHATSAPP CHANNELS + THE REFERRAL-FARMING LEAK
+  ----------------------------------------------------------------------------
+  LEAK FOUND BY RENDERING THE USER'S OWN POST THROUGH THE BRIDGE: the last line
+  of the source ("Get Flipkart App - Refer 3 friends and ₹100 referral bonus")
+  reached the WhatsApp post untouched. Cause: isPromoNoiseLine()/is_promo_noise_line()
+  protect any line carrying ₹ (so a price line is never eaten), and the referral
+  patterns only covered "refer a friend" / "earn ₹50 on referral" / "referral code".
+  REFERRAL_SPAM_RE on BOTH sides now also matches refer|invite ... friends,
+  referral|invite|sign-up|joining + bonus|reward|cashback|incentive (install the
+  app was already there). Checked against the lines that must survive: coupon
+  codes, MRP, product+price, specs.
+  TWO CHANNELS: targetsFor() went through a single eligibility helper
+  (secondaryEligible) so the routing rule is one place - tiered by default (the
+  2nd channel is the Under-₹99 shelf; a digest is main-only) and a full mirror
+  when WA_CHANNEL_ALL_POSTS=true. A failed newsletter resolve used to leave
+  under99Jid null until the next reconnect: ensureSecondaryChannel +
+  secondaryChannelRetryLoop retry every 10 min, so one network blip no longer
+  costs the 2nd channel the rest of the day.
+  PACING (the "slow and random" complaint on the WhatsApp side): the broadcast
+  gap between the two channels of ONE post is now interTargetGap()
+  (WA_INTER_TARGET_GAP_SECONDS, default 6, floor 3) instead of the post-to-post
+  anti-flood gap (that is why the 2nd channel used to trail by ~1 min); the
+  mature warmup tier is 30-60s (WA_MATURE_GAP_MIN/MAX_SECONDS, floor 15) instead
+  of 60-120s; the special/large-list settle is 10-18s and the rotation-bucket
+  settle 8-20s (they were 30-90s and 20-90s, which looked like random delay).
+  What is deliberately NOT removed: burst rest, one irregular hourly break,
+  occasional long idle, 02:00-06:00 IST quiet window (the user's own rule), and
+  the day-1/day-2 warmup tiers - a fresh WhatsApp number posting at machine
+  speed gets the number banned. Telegram has no such pacing: source post -> our
+  channels is immediate there.
+  Tests: python3 test_pipeline_fixes.py -> 177 passed / 0 failed (new
+  test_unwanted_text_never_posts; list/banner/audit groups unchanged);
+  node tg-wa-bridge/bridge.js --self-test -> PASS in BOTH modes
+  (tiered and WA_CHANNEL_ALL_POSTS=true), plus warmup-mode and tuned-gap runs.
+  ops/diagnose.sh prints which 2nd-channel mode is live and warns when a
+  channel failed to resolve; install_bridge.sh asks for the 2nd channel + mirror.

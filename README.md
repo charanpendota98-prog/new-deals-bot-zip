@@ -221,6 +221,25 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.2 — both WhatsApp channels, and no referral farming ever:** the
+  `Get Flipkart App - Refer 3 friends and ₹100 referral bonus` block some sources
+  staple under a deal *was* reaching the WhatsApp post, because a `₹` amount on a
+  line made `is_promo_noise_line` protect the whole line. `REFERRAL_SPAM_RE` now
+  matches refer-N-friends / referral-bonus / install-the-app phrasing on both
+  sides, so those lines go while a real coupon line (`Use code SAVE200 for extra
+  ₹200 off`) and every product/price line stay. The second channel is a first-class
+  target: `WA_CHANNEL_ALL_POSTS=true` mirrors **every** post to both channels
+  (default keeps it as the Under-₹99 shelf, digests on the main one), a channel
+  that failed to resolve is retried every 10 minutes instead of staying missing
+  until the next reconnect, and the two channels are now `WA_INTER_TARGET_GAP_SECONDS`
+  (6s) apart instead of a full anti-flood gap — so the 2nd channel no longer looks
+  a minute behind. Mature pacing dropped to 30-60s between posts (`WA_MATURE_GAP_*`),
+  and the list/special settle from 30-90s to 10-18s: that random hold is what made
+  WhatsApp "post slowly and at random". The burst rest, the one irregular hourly
+  break and the night window stay on purpose - a WhatsApp number driven at machine
+  speed gets banned, and the user's own 02:00-06:00 rule says night loot is dead.
+  `install_bridge.sh` now asks for the 2nd channel and the mirror choice, and
+  `diagnose.sh` prints which mode is live.
 - **v17.1 — coverage is auditable, not assumed:** `ops/coverage_audit.py` reads
   the live DB and reports per source how many posts arrived vs reached a target,
   separating correct refusals (dedup / night window / stale) from `LOST` rows
@@ -392,19 +411,19 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.1 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.2 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `52b0f4e3603afadf31beefc8ce5789fcaea34256502625939ce41c8bbc39dc82` |
-| `tg-wa-bridge/bridge.js` | `edc60a6fd02fc43599bfedf7ae2120bd3b1e887066013bc436a12fd3271fae91` |
+| `bestgaa/main_bot_new.py` | `f11f79aeebd23d57ca7398367b4c7cd078cb5a07790fb17ddbb465e888a1cb3b` |
+| `tg-wa-bridge/bridge.js` | `a0f8d826525498192f9447cf400f2d89437771dab2badc8b60aca45d427fee73` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
 Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
-159/159 (list shapes, campaign banners, coverage audit, price fidelity,
-no-silent-loss),
+177/177 (list shapes, campaign banners, referral/app-install junk, coverage
+audit, price fidelity, no-silent-loss),
 `test_rescan.py` pass, `node tg-wa-bridge/bridge.js --self-test` pass.
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`

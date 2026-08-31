@@ -35,6 +35,12 @@ fi
 read -rsp "New BotFather token: " TG_TOKEN; echo
 read -rp "Dedicated WhatsApp number with country code (digits only, e.g. 9198...): " WA_PHONE
 read -rp "WhatsApp Channel invite link OR ...@newsletter ID: " WA_CHANNEL
+read -rp "SECOND WhatsApp Channel (under-99 shelf / mirror target) - invite link or ...@newsletter ID, Enter to skip: " WA_CHANNEL_UNDER99
+MIRROR_ALL=""
+if [[ -n "$WA_CHANNEL_UNDER99" ]]; then
+  read -rp "Post EVERY deal to BOTH channels? [y/N] (N = 2nd channel gets only under-99 content): " MIRROR_ANS
+  case "$MIRROR_ANS" in [yY]*) MIRROR_ALL="true" ;; *) MIRROR_ALL="false" ;; esac
+fi
 read -rp "WhatsApp groups to ALSO post to (group JID / number / invite code, comma separated, optional): " WA_GROUPS
 read -rsp "Bitly tokens for shortening long WhatsApp links (comma separated, optional - without it the is.gd fallback is used): " WA_BITLY_TOKENS; echo
 read -rp "Direct source channels to ALSO watch (safety net for deals Telegram missed; Enter = default list, 'none' = disable): " TG_DIRECT_INPUT
@@ -57,6 +63,10 @@ TG_SOURCE_USERNAMES=Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia
 $DIRECT_SOURCES_LINE
 WA_PHONE=$(printf '%s' "$WA_PHONE" | tr -cd '0-9')
 WA_CHANNEL=$WA_CHANNEL
+# Second channel + how it is fed: WA_CHANNEL_ALL_POSTS=true mirrors every post to
+# both channels; false keeps the second one as the under-99 shelf only.
+WA_CHANNEL_UNDER99=$WA_CHANNEL_UNDER99
+WA_CHANNEL_ALL_POSTS=$MIRROR_ALL
 WA_GROUPS=$WA_GROUPS
 WA_BITLY_TOKENS=$WA_BITLY_TOKENS
 WA_PRODUCT_DEDUP_HOURS=10
@@ -74,13 +84,21 @@ CURATE_TOP_DEALS=true
 AMAZON_TAG=deals0911-21
 EARNKARO_PUBLISHER_ID=5478322
 BESTGAA_DB_PATH=/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3
-ROTATION_JITTER_MIN_SECONDS=20
-ROTATION_JITTER_MAX_SECONDS=90
-SPECIAL_JITTER_MIN_SECONDS=30
-SPECIAL_JITTER_MAX_SECONDS=90
+# Pacing. A source post must not sit for minutes: the list/special settle only
+# waits long enough for the album parts / extra links of the SAME post to join.
+ROTATION_JITTER_MIN_SECONDS=8
+ROTATION_JITTER_MAX_SECONDS=20
+SPECIAL_JITTER_MIN_SECONDS=10
+SPECIAL_JITTER_MAX_SECONDS=18
 LARGE_LIST_MIN_LINKS=4
 MAX_JOB_AGE_HOURS=12
-MIN_WA_MESSAGE_GAP_SECONDS=60
+# Post-to-post gap on a mature number (30s), and the SHORT gap used between the
+# targets of ONE post - so the 2nd channel gets the same post seconds later
+# instead of a minute later. Lower only if the number is not new.
+MIN_WA_MESSAGE_GAP_SECONDS=30
+WA_INTER_TARGET_GAP_SECONDS=6
+WA_MATURE_GAP_MIN_SECONDS=30
+WA_MATURE_GAP_MAX_SECONDS=60
 WA_PRIMARY_SOURCE=under499loots
 WA_MEDIA_FIRST=true
 WA_PROMOTE_AFTER_MINUTES=45

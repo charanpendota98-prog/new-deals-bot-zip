@@ -146,6 +146,23 @@ PY
 else
   warn "bridge-state.json not found (bridge may not have started)"
 fi
+# Both WhatsApp channels fed? The second channel is either an Under-₹99 shelf
+# (tiered) or a full mirror (WA_CHANNEL_ALL_POSTS=true). A channel that fails to
+# resolve is retried every 10 minutes - this prints which mode is live.
+SEC_LINE=$(grep -E '^WA_CHANNEL_UNDER99=' "$BRIDGE_DIR/.env" 2>/dev/null | cut -d= -f2-)
+if [[ -n "${SEC_LINE:-}" ]]; then
+  if grep -qE '^WA_CHANNEL_ALL_POSTS=true' "$BRIDGE_DIR/.env" 2>/dev/null; then
+    ok "2nd WhatsApp channel configured AND mirroring every post (WA_CHANNEL_ALL_POSTS=true)"
+  else
+    ok "2nd WhatsApp channel configured as the Under-₹99 shelf (set WA_CHANNEL_ALL_POSTS=true to mirror everything)"
+  fi
+  sudo journalctl -u tg-wa-bridge -n 400 --no-pager 2>/dev/null | grep -q "could not be resolved" \
+    && warn "a WhatsApp channel failed to resolve at least once (it retries every 10 min; check the invite link/JID)" \
+    || true
+else
+  warn "no 2nd WhatsApp channel (WA_CHANNEL_UNDER99 empty) - only ONE channel is being posted to"
+fi
+
 sudo journalctl -u tg-wa-bridge -n 200 --no-pager 2>/dev/null | grep -q "WhatsApp connected" \
   && ok "bridge connected at least once (see: sudo journalctl -u tg-wa-bridge -n 40 --no-pager)" \
   || warn "no 'WhatsApp connected' in recent logs -> run with sudo: sudo journalctl -u tg-wa-bridge -n 60 --no-pager"

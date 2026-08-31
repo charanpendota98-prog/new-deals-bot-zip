@@ -1009,6 +1009,43 @@ async def test_list_post_shapes(store):
     check("each product keeps ITS OWN link in source order", order == sorted(order))
 
 
+def test_unwanted_text_never_posts():
+    """Nothing the source did not offer as the deal may appear in our post."""
+    print("\n== unwanted text (banners, referral farming) never posts ==")
+    junk = [
+        "Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus",
+        "Refer 5 friends to earn \u20b950 each",
+        "Install the app and get \u20b920 bonus",
+        "Share this with your family group",
+        "Follow our channel for more loot",
+    ]
+    for line in junk:
+        check("junk line never posted: %s" % line[:34], bot.is_promo_noise_line(line))
+        check("clean_source_text removes it: %s" % line[:34],
+              line.split(" - ")[0][:14] not in bot.clean_source_text(
+                  "Men Shirt \u20b9399\nhttps://a.co/x\n" + line))
+    keep = [
+        "Men Shirt \u20b9399 (75% OFF)",
+        "Use code SAVE200 for extra \u20b9200 off",
+        "Top Loading Washing Machine Cover @ \u20b9260",
+        "Size 7 (UK) | Color: Blue",
+        "MRP \u20b91999",
+    ]
+    for line in keep:
+        check("real content kept: %s" % line[:34], not bot.is_promo_noise_line(line))
+    pasted = ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
+              "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
+              "Top Loading Washing Machine Cover @ \u20b9260\n"
+              "\u279c https://bitli.in/IKthI4w\n"
+              "Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus")
+    clean = bot.clean_source_text(pasted)
+    check("the whole junk frame collapses to name + price + one clean link line",
+          clean == "Top Loading Washing Machine Cover @ \u20b9260\n\u279c https://bitli.in/IKthI4w")
+    check("tidy_post keeps that shape (nothing re-added, nothing eaten)",
+          bot.tidy_post(clean) == clean)
+    check("no emoji / hype left anywhere", not bot.re.search(r"[\ud83d\udd25\u26a1\ufe0f]", clean))
+
+
 def test_coverage_audit():
     """ops/coverage_audit.py must find the swallowed posts and heal only those."""
     print("\n== coverage audit finds and heals the lost posts ==")
@@ -1146,6 +1183,7 @@ async def main():
         await test_list_post_shapes(store)
         test_coverage_audit()
         test_campaign_banner_lines()
+        test_unwanted_text_never_posts()
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

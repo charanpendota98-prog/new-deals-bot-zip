@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.1
+"""BestGAA Production Bot v17.2
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -1059,6 +1059,12 @@ REFERRAL_SPAM_RE = re.compile(
     r"|\b(?:earn|win|get)\s+(?:₹|rs\.?|inr\s?)?\s*\d+\s*(?:each|per\s+user)?\s*"
     r"(?:on|for|by|after|in)?\s*(?:referral|referrals|refer|invite|signup|sign\s*-?\s*up)\b"
     r"|\b(?:referral|invite)\s+code\b"
+    # Loot channels staple an app-install / refer-N-friends block under the real
+    # deal ("Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus"). Such
+    # a line carries a \u20b9 amount, so the price guard alone used to keep it alive.
+    r"|\b(?:refer|invite)\b[^.\n]{0,40}\b(?:friends?|mates?|budd(?:y|ies)|users?)\b"
+    r"|\b(?:referral|invite|sign\s*-?\s*up|joining)\s*(?:bonus|reward|cashback|incentive)\b"
+    r"|\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b"
 )
 
 
@@ -4135,7 +4141,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.1 starting "
+    log.info("BestGAA Production Bot v17.2 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

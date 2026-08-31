@@ -57,6 +57,11 @@ const WA_CHANNEL = required('WA_CHANNEL')
 // Accepts an @newsletter JID or a https://whatsapp.com/channel/CODE invite.
 // Empty = single main channel.
 const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
+// The user runs TWO WhatsApp channels. By default the second one is the
+// Under-₹99 shelf and only receives under-₹99 content. Set
+// WA_CHANNEL_ALL_POSTS=true to mirror EVERY post to both channels instead
+// (the under-₹99 gate is then ignored, digests included).
+const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerCase() === 'true'
 const UNDER99_MAX_PRICE = Number(process.env.WA_UNDER99_MAX_PRICE || 99)
 // A LIST makes the Under-₹99 channel when it actually features under-₹99
 // products AND is either a best-discount list (this % or a flagged special/
@@ -94,11 +99,14 @@ const CURATE_TOP_DEALS = (process.env.CURATE_TOP_DEALS || 'true').toLowerCase() 
 const AMAZON_TAG = process.env.AMAZON_TAG || 'deals0911-21'
 const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
 const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
-const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 20)
-const ROTATION_JITTER_MAX = Number(process.env.ROTATION_JITTER_MAX_SECONDS || 90)
+const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
+const ROTATION_JITTER_MAX = Number(process.env.ROTATION_JITTER_MAX_SECONDS || 20)
 const DIGEST_MAX_CHARS = Number(process.env.DIGEST_MAX_CHARS || 3800)
-const SPECIAL_JITTER_MIN = Number(process.env.SPECIAL_JITTER_MIN_SECONDS || 30)
-const SPECIAL_JITTER_MAX = Number(process.env.SPECIAL_JITTER_MAX_SECONDS || 90)
+// A special/4+ link list waits this long only so the album parts / extra links
+// of the SAME source post can join it. A 30-90s hold looked like "posts arrive
+// late and at random"; a short settle keeps the batching without the lag.
+const SPECIAL_JITTER_MIN = Number(process.env.SPECIAL_JITTER_MIN_SECONDS || 10)
+const SPECIAL_JITTER_MAX = Number(process.env.SPECIAL_JITTER_MAX_SECONDS || 18)
 const LARGE_LIST_MIN_LINKS = Number(process.env.LARGE_LIST_MIN_LINKS || 4)
 const MAX_JOB_AGE_MS = Number(process.env.MAX_JOB_AGE_HOURS || 12) * 3600_000
 // Subscriber-trust policy for stale deals (USER RULE):
@@ -108,7 +116,12 @@ const MAX_JOB_AGE_MS = Number(process.env.MAX_JOB_AGE_HOURS || 12) * 3600_000
 //  - An ordinary day deal older than WA_ORDINARY_MAX_AGE_MINUTES is dropped
 //    the same way instead of being posted hours late.
 const ORDINARY_MAX_AGE_MS = Number(process.env.WA_ORDINARY_MAX_AGE_MINUTES || 150) * 60_000
-const MIN_WA_MESSAGE_GAP_SECONDS = Math.max(60, Number(process.env.MIN_WA_MESSAGE_GAP_SECONDS || 60))
+const MIN_WA_MESSAGE_GAP_SECONDS = Math.max(15, Number(process.env.MIN_WA_MESSAGE_GAP_SECONDS || 30))
+// One post, TWO WhatsApp channels: the second channel must not pay a full
+// anti-flood gap. Between the targets of the SAME broadcast (and between the
+// photos of the SAME album) a short fixed gap is used - the long gap only
+// applies between separate posts. Tune down only if the number is not new.
+const INTER_TARGET_GAP_SECONDS = Math.max(3, Number(process.env.WA_INTER_TARGET_GAP_SECONDS || 6))
 // 24/7 throughput: hour/day caps must never park the queue for hours. These
 // are safety ceilings only, and are sized so a hard 60s floor stays reachable.
 const HOUR_CAP_OVERRIDE = Number(process.env.WA_HOUR_CAP || 0)
@@ -288,6 +301,10 @@ function randomMs(minSeconds, maxSeconds) { return randomInt(minSeconds, maxSeco
 async function interMessageGap() {
   await sleep(randomMs(MIN_WA_MESSAGE_GAP_SECONDS + 5, MIN_WA_MESSAGE_GAP_SECONDS + 30))
 }
+// Between the targets of one broadcast / the items of one album.
+async function interTargetGap() {
+  await sleep(randomMs(INTER_TARGET_GAP_SECONDS, INTER_TARGET_GAP_SECONDS + 5))
+}
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex') }
 // A hung WhatsApp/Telegram promise must never freeze the dispatcher. Every
 // network step is wrapped so the worker can retry instead of stalling for hours.
@@ -342,7 +359,7 @@ function isPromoOnlyUrl(value) {
 const CHANNEL_INVITE_URL_RE = /t\.me\/(?:addlist\/|joinchat\/|\+)|telegram\.me\/(?:\+|joinchat\/)|whatsapp\.com\/(?:channel|group)\//i
 const PROMO_INTENT_RE = /\b(?:join|subscribe|follow|unfollow|share|forward|visit|open|check|notify|notifications?|turn\s+on|enable|activate)\b|\bfor\s+more\b|\bmore\s+(?:loot|deal|update)s?\b|\bour\s+(?:channel|group|whatsapp|telegram)\b/i
 // Referral/invite farming is junk even when a ₹ amount sits in the sentence.
-const REFERRAL_SPAM_RE = /\b(?:refer|invite)\s+(?:a\s+)?(?:friend|mate|user|family|one)\b|\b(?:earn|win|get)\s+(?:\u20B9|rs\.?|inr\s?)?\s*\d+\s*(?:each|per\s+user)?\s*(?:on|for|by|after|in)?\s*(?:referral|referrals|refer|invite|signup|sign\s*-?\s*up)\b|\b(?:referral|invite)\s+code\b|\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b/i
+const REFERRAL_SPAM_RE = /\b(?:refer|invite)\s+(?:a\s+)?(?:friend|mate|user|family|one)\b|\b(?:earn|win|get)\s+(?:\u20B9|rs\.?|inr\s?)?\s*\d+\s*(?:each|per\s+user)?\s*(?:on|for|by|after|in)?\s*(?:referral|referrals|refer|invite|signup|sign\s*-?\s*up)\b|\b(?:referral|invite)\s+code\b|\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b|\b(?:refer|invite)\b[^.\n]{0,40}\b(?:friends?|mates?|budd(?:y|ies)|users?)\b|\b(?:referral|invite|sign\s*-?\s*up|joining)\s*(?:bonus|reward|cashback|incentive)\b/i
 
 function isPromoNoiseLine(line) {
   const t = (line || '').trim()
@@ -734,10 +751,18 @@ function warmupPolicy() {
   const day = warmupDone
     ? 8
     : Math.max(1, Math.floor((Date.now() - state.warmupStartedAt) / 86400_000) + 1)
+  // An established channel no longer needs a 1-2 minute wait between posts -
+  // that is what made the mirror look like "it posts late and at random". The
+  // mature tier is tunable (WA_MATURE_GAP_MIN/MAX_SECONDS) with a 15s floor;
+  // the anti-ban structures around it (burst rest, one irregular hourly break,
+  // occasional long idle, caps) stay, because a WhatsApp number posted at
+  // machine speed gets banned - unlike the Telegram bot account.
+  const matureMin = Math.max(15, Number(process.env.WA_MATURE_GAP_MIN_SECONDS || 30))
+  const matureMax = Math.max(matureMin, Number(process.env.WA_MATURE_GAP_MAX_SECONDS || 60))
   let policy
   if (day <= 2) policy = { day, min: 120, max: 180, hourCap: 8, dayCap: 18 }
-  else if (day <= 7) policy = { day, min: 60, max: 120, hourCap: 30, dayCap: 400 }
-  else policy = { day, min: 60, max: 120, hourCap: 45, dayCap: 700 }
+  else if (day <= 7) policy = { day, min: matureMax, max: matureMax * 2, hourCap: 30, dayCap: 400 }
+  else policy = { day, min: matureMin, max: matureMax, hourCap: 45, dayCap: 700 }
   if (HOUR_CAP_OVERRIDE > 0) policy.hourCap = HOUR_CAP_OVERRIDE
   if (DAY_CAP_OVERRIDE > 0) policy.dayCap = DAY_CAP_OVERRIDE
   return policy
@@ -2214,10 +2239,18 @@ function under99Eligible(job) {
 }
 // Targets for a post: main Channel + (groups) + Under-₹99 channel when eligible.
 // Digests/rotational batches pass job=null and go to the main channel only.
+function secondaryEligible(job) {
+  if (!under99Jid) return false
+  // Mirror mode: both channels get everything (digests included).
+  if (CHANNEL_ALL_POSTS) return true
+  // Tiered mode (default): the second channel is the Under-₹99 shelf, so only
+  // under-₹99 content belongs there; a digest stays a main-channel item.
+  return Boolean(job) && under99Eligible(job)
+}
 function targetsFor(job) {
   const list = []
   if (targetJid) list.push(targetJid)
-  if (under99Jid && job && under99Eligible(job)) list.push(under99Jid)
+  if (secondaryEligible(job)) list.push(under99Jid)
   for (const jid of groupJids) if (!list.includes(jid)) list.push(jid)
   return list
 }
@@ -2295,7 +2328,7 @@ async function broadcastText(sock, job, tag, text) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interMessageGap()
+    if (jid !== targets[targets.length - 1]) await interTargetGap()
   }
 }
 // Sends one photo/video to ALL targets. Channel media uses the corrected
@@ -2325,7 +2358,7 @@ async function broadcastMediaItem(sock, job, item, caption) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interMessageGap()
+    if (jid !== targets[targets.length - 1]) await interTargetGap()
   }
 }
 function formatDigestItem(job, number, bodyMax = 220) {
@@ -2622,7 +2655,7 @@ async function sendStrictSourceJob(job) {
       saveState()
       break
     }
-    if (index + 1 < media.length) await interMessageGap()
+    if (index + 1 < media.length) await interTargetGap()
   }
 
   // There are exactly three cases, all source-derived and none dropped:
@@ -2633,7 +2666,7 @@ async function sendStrictSourceJob(job) {
   const textOnPhoto = mediaDelivered && captionFits
   const stillNeedsText = body && !job.strictTextSent && !textOnPhoto
   if (stillNeedsText) {
-    if (mediaDelivered) await interMessageGap()
+    if (mediaDelivered) await interTargetGap()
     await broadcastText(wa, job, 'strict-text', body)
     job.strictTextSent = true
     saveState()
@@ -2865,6 +2898,28 @@ async function connectionWatchdog() {
   }
 }
 
+/**
+ * A second channel that failed to resolve once (network blip, newsletter list
+ * not cached yet) used to stay missing until the next reconnect - silently
+ * halving coverage. Retry while it is unresolved.
+ */
+async function ensureSecondaryChannel(sock) {
+  if (!WA_CHANNEL_UNDER99 || under99Jid || !sock) return
+  try {
+    under99Jid = await resolveNewsletterJid(sock, WA_CHANNEL_UNDER99)
+    log.info({ under99Jid, mode: CHANNEL_ALL_POSTS ? 'all posts' : 'under-99 tier' },
+      'secondary WhatsApp channel resolved on retry')
+  } catch (error) {
+    log.warn({ err: error.message }, 'secondary WhatsApp channel still unresolved; retry in 10 min')
+  }
+}
+function secondaryChannelRetryLoop() {
+  const timer = setInterval(() => {
+    if (!shuttingDown && waReady) ensureSecondaryChannel(wa).catch(() => {})
+  }, 600_000)
+  if (typeof timer.unref === 'function') timer.unref()
+}
+
 async function connectWhatsApp() {
   const { state: auth, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
   const { version } = await fetchLatestBaileysVersion()
@@ -2899,7 +2954,10 @@ async function connectWhatsApp() {
             under99Jid = await resolveNewsletterJid(sock, WA_CHANNEL_UNDER99)
             log.info({ under99Jid }, 'Under-₹99 channel resolved')
           } catch (error) {
-            log.error({ err: error.message }, 'Under-₹99 channel could not be resolved; using main channel only')
+            // A transient failure must not cost the SECOND channel the rest of
+          // the day: the main channel keeps posting and the resolve is retried
+          // on a timer (secondaryChannelRetryLoop).
+          log.error({ err: error.message }, 'Under-₹99 channel could not be resolved; retrying on a timer, main channel posting normally')
           }
         }
         groupJids = []
@@ -3109,9 +3167,30 @@ if (process.argv.includes('--self-test')) {
   try { await withTimeout(new Promise(() => {}), 30, 'hang') } catch { timedOut = true }
   if (!timedOut) throw new Error('dispatch timeout guard test failed')
   const policy = warmupPolicy()
-  if (policy.dayCap < 200 || policy.hourCap < 22) throw new Error('24/7 throughput cap test failed')
+  // The 24/7 caps only apply to a warmed number; a brand new one is capped low
+  // on purpose, so that must not trip this check.
+  const matureNumber = (process.env.WA_WARMUP_DONE || 'true').toLowerCase() === 'true'
+  if (matureNumber && (policy.dayCap < 200 || policy.hourCap < 22)) {
+    throw new Error('24/7 throughput cap test failed')
+  }
+  // Queue acceleration must respect the CONFIGURED post gap (it used to be
+  // pinned to 60s, which made a tuned-down gap untestable).
+  const expectedAccel = Math.max(100_000, 80_000 + MIN_WA_MESSAGE_GAP_SECONDS * 1000)
   const accelerated = acceleratedNextAllowed(100_000, 80_000, 2, false, 400_000)
-  if (accelerated !== 140_000) throw new Error('two-plus queue acceleration floor test failed')
+  if (accelerated !== expectedAccel) {
+    throw new Error(`two-plus queue acceleration floor test failed (${accelerated} != ${expectedAccel})`)
+  }
+  // Acceleration may never send before one post gap after the last send (unless
+  // that gap already elapsed) and never later than the scheduled time.
+  if (accelerated > 400_000 || accelerated < 80_000 + MIN_WA_MESSAGE_GAP_SECONDS * 1000 - 1) {
+    throw new Error('acceleration out of bounds')
+  }
+  if (acceleratedNextAllowed(100_000, 80_000, 2, false, 90_000) !== 90_000) {
+    throw new Error('acceleration must not delay a job already scheduled sooner')
+  }
+  if (acceleratedNextAllowed(100_000, 80_000, 2, true, 400_000) !== 400_000) {
+    throw new Error('acceleration must not fire inside the quiet window')
+  }
   if (acceleratedNextAllowed(100_000, 80_000, 1, false, 400_000) !== 400_000) throw new Error('single-queue delay preservation test failed')
   const fresh = Date.now()
   const prioritySamples = [
@@ -3717,10 +3796,57 @@ if (process.argv.includes('--self-test')) {
     const tBoth = targetsFor(single99).sort().join(',')
     if (tBoth !== 'main@newsletter,u99@newsletter') throw new Error('eligible deal must fan to both channels: ' + tBoth)
     const tMain = targetsFor(single499).sort().join(',')
-    if (tMain !== 'main@newsletter') throw new Error('non-eligible deal must go main-only: ' + tMain)
+    // (In WA_CHANNEL_ALL_POSTS mirror mode both channels legitimately receive
+    // everything, including digests - the checks after this one cover that.)
+    if (!CHANNEL_ALL_POSTS && tMain !== 'main@newsletter') throw new Error('non-eligible deal must go main-only: ' + tMain)
     const tDigest = targetsFor(null).sort().join(',')
-    if (tDigest !== 'main@newsletter') throw new Error('digest must go main channel only: ' + tDigest)
+    if (!CHANNEL_ALL_POSTS && tDigest !== 'main@newsletter') throw new Error('digest must go main channel only: ' + tDigest)
     if (!isNewsletterTarget('u99@newsletter') || !isNewsletterTarget('main@newsletter')) throw new Error('both channels are newsletters')
+    // v17.2: two-channel coverage + pacing.
+    // WA_CHANNEL_ALL_POSTS=true mirrors EVERYTHING to both channels (that is the
+    // mode to use when the second channel is a general channel, not the
+    // Under-₹99 shelf); the default keeps the tiered behaviour.
+    if (CHANNEL_ALL_POSTS) {
+      if (targetsFor(null).length !== 2) throw new Error('all-posts mode must include the second channel even for digests: ' + targetsFor(null))
+      if (targetsFor({ text: 'Expensive Sofa ₹24999 10% OFF\nhttps://fktr.in/EXP' }).length !== 2) {
+        throw new Error('all-posts mode must not gate by price')
+      }
+    } else {
+      if (secondaryEligible(null)) throw new Error('tiered mode must keep digests on the main channel')
+      if (secondaryEligible({ text: 'Sofa ₹24999 10% OFF\nhttps://fktr.in/EXP' })) throw new Error('expensive deal must not hit the under-₹99 shelf')
+    }
+    // A failed secondary resolve must not silently cost the second channel: the
+    // retry helper exists and is a no-op while resolved.
+    if (typeof ensureSecondaryChannel !== 'function' || typeof secondaryChannelRetryLoop !== 'function') {
+      throw new Error('secondary channel retry helper missing')
+    }
+    // Pacing: the gap BETWEEN THE TWO CHANNELS of one post is the short
+    // intra-target gap, not the anti-flood post gap (that is what made the
+    // second channel look ~1 minute behind / the post "arrive late").
+    if (!(INTER_TARGET_GAP_SECONDS < MIN_WA_MESSAGE_GAP_SECONDS)) {
+      throw new Error('intra-broadcast gap must be shorter than the post-to-post gap')
+    }
+    if (!(MIN_WA_MESSAGE_GAP_SECONDS >= 15) || !(INTER_TARGET_GAP_SECONDS >= 3)) {
+      throw new Error('pacing floors are not reachable: ' + [MIN_WA_MESSAGE_GAP_SECONDS, INTER_TARGET_GAP_SECONDS])
+    }
+    // A MATURE number must not hold a fresh source post for minutes; a genuinely
+    // new number keeps its slow warmup tiers on purpose (ban safety).
+    {
+      const p = warmupPolicy()
+      if (p.day > 7 && p.min > 60) {
+        throw new Error('mature WhatsApp tier must not pace a fresh post above 60s: ' + p.min)
+      }
+      if (p.day <= 2 && p.min < 60) throw new Error('a brand new number must stay slow (warmup tier)')
+    }
+    // The settle windows may be tuned by env, but they must never grow back
+    // into the old multi-minute "why is it posting randomly" holds.
+    if (!(SPECIAL_JITTER_MAX >= 0 && ROTATION_JITTER_MAX >= 0
+          && SPECIAL_JITTER_MAX <= 300 && ROTATION_JITTER_MAX <= 300)) {
+      throw new Error(`settle windows out of range: special=${SPECIAL_JITTER_MAX}s rotation=${ROTATION_JITTER_MAX}s`)
+    }
+    if (!(SPECIAL_JITTER_MIN <= SPECIAL_JITTER_MAX && ROTATION_JITTER_MIN <= ROTATION_JITTER_MAX)) {
+      throw new Error('settle window min must not exceed max')
+    }
     targetJid = beforeTarget; under99Jid = beforeUnder
   }
   // USER POST: clumsy markdown-wrapped Amazon links (the SAME URL stacked 2-3x
@@ -3890,12 +4016,30 @@ if (process.argv.includes('--self-test')) {
       throw new Error('a banner that is the only headline must survive as the headline: ' + JSON.stringify(bannerOnly))
     }
   }
+  // v17.2: an app-install / refer-N-friends block stapled under the deal must
+  // never reach the channel, even though it carries a ₹ amount (the price guard
+  // used to keep the whole line alive).
+  {
+    const junk = 'Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus'
+    if (!isPromoNoiseLine(junk)) throw new Error('referral/app-install line survived: ' + junk)
+    if (!isPromoNoiseLine('Install the app and get \u20b920 signup bonus')) throw new Error('install-app farming survived')
+    if (isPromoNoiseLine('Use code SAVE200 for extra \u20b9200 off')) throw new Error('a real coupon line must never be dropped')
+    if (isPromoNoiseLine('Top Loading Washing Machine Cover @ \u20b9260')) throw new Error('product/price line must never be dropped')
+    const pasted = '\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n' +
+      'Top Loading Washing Machine Cover @ \u20b9260\n\u279c https://bitli.in/IKthI4w\n' + junk
+    const post = sanitizeOutbound(formatWhatsAppPost({ text: pasted }))
+    if (/Refer 3 friends|Install the app|TOP DEAL/.test(post)) throw new Error('unwanted text reached the channel: ' + post)
+    if (!/Washing Machine Cover @ \u20b9260/.test(post) || !post.includes('bitli.in/IKthI4w')) {
+      throw new Error('deal content lost while stripping junk: ' + post)
+    }
+  }
   console.log('bridge self-test PASS')
   process.exit(0)
 }
 
 pruneState(); saveState()
 await connectWhatsApp()
+secondaryChannelRetryLoop()
 if (!PAIR_ONLY) {
   // A crashed loop must not leave the Channel silent: restart it in place.
   const supervise = (name, factory) => {
