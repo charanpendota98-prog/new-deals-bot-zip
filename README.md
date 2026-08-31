@@ -211,6 +211,16 @@ Individual deploys:
   real URLs before cutting, and `tidy_post` (mirrored by `sanitizeOutbound` in
   the bridge) inserts one space before a glued link, so the price reads exactly
   as published (`₹260`) and the link stays intact and clickable.
+- **v17.1 — a source's own hype never enters our channel:** the channel banners
+  loot channels paste above every list (`🔥🔥 TOP DEAL OF THE DAY 🔥🔥`,
+  `⚡️ 11 PM FLASH SALE ⚡️`) used to survive cleaning because `is_promo_noise_line`
+  only reacts to CTA verbs. `is_campaign_banner_line()` drops a line only when
+  *every* word of it is generic campaign vocabulary and it carries no link, no
+  `₹` amount and no percentage — brand/store names are excluded from the
+  vocabulary on purpose, so a real store header (`Myntra Mega Sale`) and any
+  product line stay. And if every text line of the post is a banner, the first one
+  is kept as the headline: a wall of bare links is worse than a headline with
+  hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
 - **v17.1 — coverage is auditable, not assumed:** `ops/coverage_audit.py` reads
   the live DB and reports per source how many posts arrived vs reached a target,
   separating correct refusals (dedup / night window / stale) from `LOST` rows
@@ -393,7 +403,8 @@ live channels keep printing exactly what the older build was coded to print):
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
 Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
-131/131 (list shapes, coverage audit, price fidelity, no-silent-loss),
+159/159 (list shapes, campaign banners, coverage audit, price fidelity,
+no-silent-loss),
 `test_rescan.py` pass, `node tg-wa-bridge/bridge.js --self-test` pass.
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`
