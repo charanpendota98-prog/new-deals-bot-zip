@@ -586,11 +586,296 @@ async def test_price_gate_is_a_fallback(store):
     store.conn.commit()
 
 
+def test_final_text_fidelity():
+    """The post must show the source's own words - nothing more, nothing mangled.
+
+    Reported in the wild as "Top Loading Washing Machine Cover @
+    \u20b9260tG7oChgiQuTgS25b" plus "\u279c [https://bitli.in/..](https://bitli.in/..)"
+    lines: the price is right but a masked-shortener fragment was glued to it and
+    markdown debris was printed literally (posts are sent with no parse_mode).
+    """
+    print("\n== final text = source text, cleaned and nothing added ==")
+    glued = "Top Loading Washing Machine Cover @ \u20b9260tG7oChgiQuTgS25b"
+    out = bot.clean_source_text(glued)
+    check("the \u20b9260 price survives exactly as the source wrote it", out.endswith("\u20b9260"))
+    check("the random 17-char fragment is gone", "tG7oChgiQuTgS25b" not in out and "260t" not in out)
+    spaced = bot.clean_source_text("Sony Headphones \u20b91,499 Xk9LaMn20QpR7 extra bass")
+    check("a spaced random fragment after a price is gone too", "Xk9LaMn20QpR7" not in spaced)
+    check("the real words around it are kept", "Sony Headphones" in spaced and "extra bass" in spaced)
+
+    # Junk the old length-capped rules missed must go, real deal content must not.
+    kept = ("Cotton Tshirt Pack of 2 \u20b9249 (500ml, 2pcs, 65w, 20000mAh)\n"
+            "Use code: SAVE_200 for \u20b9200 off\nPrice \u20b9249 (55% OFF)")
+    preserved = bot.clean_source_text(kept)
+    for frag in ("(500ml, 2pcs, 65w, 20000mAh)", "SAVE_200", "\u20b9249", "(55% OFF)"):
+        check(f"real content kept: {frag}", frag in preserved)
+
+    md = "\u279c [https://bitli.in/IKthI4w](https://bitli.in/IKthI4w)"
+    final = bot.sanitize_outbound_text("Cover \u20b9260\n" + md + "\n" + md.replace("IKthI4w", "6ft5j8a"))
+    check("markdown [url](url) debris never survives the outbound guard",
+          "](" not in final and "[" not in final and ")" not in final)
+    check("both real links still appear", final.count("https://bitli.in/") == 2)
+    check("the price line is untouched by the markdown guard", "\u20b9260" in final)
+    check("outbound guard is idempotent (a retry sends the same bytes)",
+          bot.sanitize_outbound_text(final) == final)
+    # A cleanup pass must never eat a link: dropping one silently deletes a whole
+    # deal line (that is how "posts are missing" would come back).
+    many = "\n".join(f"Item {i} \u20b9{i * 111}\nhttps://bitli.in/keep{i}" for i in range(6))
+    guarded = bot.sanitize_outbound_text(many)
+    check("the guard never removes or rewrites a link",
+          len(bot.URL_RE.findall(guarded)) == len(bot.URL_RE.findall(many))
+          and all(f"https://bitli.in/keep{i}" in guarded for i in range(6)))
+    check("the guard never removes a price line",
+          all(f"\u20b9{i * 111}" in guarded for i in range(6)))
+
+    # Cleanup residue such as an empty bracket pair must not be published.
+    check("empty parens left by promo stripping are removed",
+          "( )" not in bot.fix_unbalanced_parens("Price \u20b921,999 ( )"))
+    # Our own links are the point of the bot - never corrupt one.
+    folder = "\u0001f4c2 Join: " + bot.OUR_FOLDER_LINK
+    check("our folder link keeps its underscore (a stripped _ = dead invite)",
+          bot.OUR_FOLDER_LINK in bot.normalize_nested_link_markup(folder))
+    check("an underscore inside a URL is preserved by the whole chain",
+          bot.OUR_FOLDER_LINK in bot.sanitize_outbound_text(folder))
+    check("emphasis debris is still removed from text parts",
+          bot.normalize_nested_link_markup("**Bold Sale** at *50%* off") == "Bold Sale at 50% off")
+
+
+async def test_no_silent_loss(store):
+    """No source post may be swallowed by dedup or by an unmonetizable link."""
+    print("\n== every source post reaches the channels (no silent loss) ==")
+    # Different products under one repeated banner line: the content fingerprint
+    # used to key on the banner alone, so 2 and 3 looked "already posted".
+    banner = "\U0001f525\U0001f525 TOP DEAL OF THE DAY \U0001f525\U0001f525"
+    posts = [
+        f"{banner}\nSony 32 inch HD Smart TV\nPrice \u20b911,999 (37% OFF)\nhttps://fkrt.is/p1",
+        f"{banner}\nboAt Airdopes 141 TWS Earbuds\nPrice \u20b91,099 (75% OFF)\nhttps://fkrt.is/p2",
+        f"{banner}\nNoise ColorFit Pro 4 Smartwatch\nPrice \u20b91,499 (65% OFF)\nhttps://fkrt.is/p3",
+    ]
+    keys = [bot.content_deal_key(p) for p in posts]
+    check("each product gets its OWN fingerprint", len(set(keys)) == 3 and all(keys))
+    same = bot.content_deal_key(posts[0].replace("fkrt.is/p1", "tinyurl.com/other"))
+    check("a re-post of the SAME campaign still dedups (different short link)",
+          same == keys[0])
+    for i, text in enumerate(posts):
+        ok = await store.enqueue(-100777, 7100 + i, "banner_src", text)
+        check(f"different deal #{i + 1} under a shared banner is queued", ok is True)
+    rows = store.conn.execute(
+        "SELECT COUNT(*) c FROM queue WHERE chat_id=-100777").fetchone()["c"]
+    check("all three rows are in the queue (nothing dropped at intake)", rows == 3)
+
+    # EarnKaro has no campaign for a store: the post must still go out, with the
+    # clean untagged merchant link, instead of burning 10 retries and vanishing.
+    src = "https://www.myntra.com/ethnic-men-s-shirts/x/12345/detail"
+
+    class FakeMsg:
+        def __init__(self, text):
+            self.text, self.message = text, text
+            self.media = self.entities = self.reply_to = self.reply_markup = None
+
+    class FakeClient:
+        async def get_messages(self, chat_id, ids=None):
+            return FakeMsg("Men\u2019s Regular Fit Shirt\nPrice \u20b9599 (68% OFF)\n" + src)
+
+    class NoCampaignAffiliate:
+        """The store is monetizable in principle; the network simply returns nothing."""
+
+        async def resolve(self, url):
+            return url
+
+        async def convert(self, source, multi_link, resolved=None):
+            return None
+
+        async def cache_link(self, *a, **k):
+            return None
+
+        async def shorten_long_urls_in_text(self, rendered):
+            return rendered
+
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,attempts,chat_key) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (-100778, 7200, "shirt_src", time.time(), 1, bot.JOB_MAX_ATTEMPTS, str(bot.raw_chat_id(-100778))))
+    store.conn.commit()
+    row = store.conn.execute("SELECT * FROM queue WHERE msg_id=7200").fetchone()
+    _msg, rendered, price = await bot.render_job(FakeClient(), NoCampaignAffiliate(), row)
+    check("an unmonetizable store post is still published (was silently lost)",
+          "Regular Fit Shirt" in rendered and "\u20b9599" in rendered)
+    check("the published link is the clean merchant page",
+          "myntra.com" in rendered and "detail" in rendered)
+    check("no foreign affiliate/tag param survives on a pass-through link",
+          not any(k in rendered for k in ("?tag=", "&tag=", "affid=", "utm_", "clickid")))
+    check("the pass-through link has our provenance (verify_generated_text accepts it)",
+          await store.verify_generated_text(rendered, ()))
+    check("price is parsed from the source text, not from a junk token", price == 599)
+    again = store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) "
+        "VALUES(?,?,?,?,?,?)",
+        (-100779, 7201, "other_src", time.time(), 1, str(bot.raw_chat_id(-100779))))
+    store.conn.commit()
+    row2 = store.conn.execute("SELECT * FROM queue WHERE msg_id=7201").fetchone()
+    try:
+        await bot.render_job(FakeClient(), NoCampaignAffiliate(), row2)
+        check("the same deal from a second source is deduped, not reposted", False)
+    except bot.DuplicateDeal:
+        check("the same deal from a second source is deduped, not reposted", True)
+
+
+async def test_edited_source_posts(store):
+    """A source post edited into shape must still reach our channels."""
+    print("\n== edited source posts are never lost ==")
+    await store.enqueue(-100888, 8100, "edit_src", "Some Shirt \u20b9599")
+    rid = store.conn.execute("SELECT id FROM queue WHERE msg_id=8100").fetchone()["id"]
+    await store.mark_done(rid, "PermanentSkip: no monetizable URLs")
+    key = str(bot.raw_chat_id(-100888))
+    check("a post that was skipped for having no usable link is re-opened on edit",
+          await store.revive_edited_job(key, 8100) == "revived")
+    state = store.conn.execute("SELECT status,attempts,rendered_text FROM queue WHERE id=?", (rid,)).fetchone()
+    check("the revived job is queued again, fresh budget, no stale render",
+          state["status"] == "pending" and state["attempts"] == 0 and not state["rendered_text"])
+
+    store.conn.execute("UPDATE queue SET status='done' WHERE id=?", (rid,))
+    store.conn.execute("INSERT INTO deliveries(queue_id,target,status) VALUES(?,?, 'sent')",
+                       (rid, "LootZoneIndia11"))
+    store.conn.commit()
+    check("an already-delivered deal is NOT reposted when the source edits it",
+          await store.revive_edited_job(key, 8100) is None)
+    check("and its queue row stays closed",
+          store.conn.execute("SELECT status FROM queue WHERE id=?", (rid,)).fetchone()["status"] == "done")
+    check("a job that has not run yet is left as pending (no churn, no double work)",
+          await store.revive_edited_job(key, 8100) in (None, "pending"))
+
+    # Genuine transient API failures still retry (only the FINAL attempt degrades),
+    # otherwise a network blip would post an unmonetized link at once.
+    class FakeMsg:
+        def __init__(self, text):
+            self.text, self.message = text, text
+            self.media = self.entities = self.reply_to = self.reply_markup = None
+
+    class FakeClient:
+        async def get_messages(self, chat_id, ids=None):
+            return FakeMsg("Men\u2019s Cotton Shirt\nPrice \u20b9599 (68% OFF)\nhttps://www.myntra.com/x/1/detail")
+
+    class ExplodingAffiliate:
+        async def resolve(self, url):
+            return url
+
+        async def convert(self, source, multi_link, resolved=None):
+            raise RuntimeError("EarnKaro 503")
+
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,attempts,chat_key) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (-100889, 8101, "edit_src", time.time(), 1, 0, str(bot.raw_chat_id(-100889))))
+    store.conn.commit()
+    row = store.conn.execute("SELECT * FROM queue WHERE msg_id=8101").fetchone()
+    try:
+        await bot.render_job(FakeClient(), ExplodingAffiliate(), row)
+        check("a mid-budget API error still retries instead of degrading", False)
+    except RuntimeError as exc:
+        check("a mid-budget API error still retries instead of degrading",
+              "conversion retry required" in str(exc))
+
+
+async def test_passthrough_knob(store):
+    """PASSTHROUGH_UNMONETIZED=false must restore the old refuse-to-post rule."""
+    print("\n== pass-through has a documented kill switch ==")
+
+    class FakeMsg:
+        def __init__(self, text):
+            self.text, self.message = text, text
+            self.media = self.entities = self.reply_to = self.reply_markup = None
+
+    class FakeClient:
+        async def get_messages(self, chat_id, ids=None):
+            return FakeMsg("Men\u2019s Cotton Shirt\nPrice \u20b9599 (68% OFF)\n"
+                           "https://www.myntra.com/x/1/detail")
+
+    class NoCampaign:
+        async def resolve(self, url):
+            return url
+
+        async def convert(self, source, multi_link, resolved=None):
+            return None
+
+        async def cache_link(self, *a, **k):
+            return None
+
+        async def shorten_long_urls_in_text(self, rendered):
+            return rendered
+
+    old = bot.PASSTHROUGH_UNMONETIZED
+    try:
+        bot.PASSTHROUGH_UNMONETIZED = False
+        store.conn.execute(
+            "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,attempts,chat_key) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (-100999, 8200, "knob_src", time.time(), 1, bot.JOB_MAX_ATTEMPTS,
+             str(bot.raw_chat_id(-100999))))
+        store.conn.commit()
+        row = store.conn.execute("SELECT * FROM queue WHERE msg_id=8200").fetchone()
+        try:
+            await bot.render_job(FakeClient(), NoCampaign(), row)
+            check("false = the deal is refused, exactly like before v17", False)
+        except bot.PermanentSkip:
+            check("false = the deal is refused, exactly like before v17", True)
+        bot.PASSTHROUGH_UNMONETIZED = True
+        store.conn.execute(
+            "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,attempts,chat_key) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (-100998, 8201, "knob_src", time.time(), 1, bot.JOB_MAX_ATTEMPTS,
+             str(bot.raw_chat_id(-100998))))
+        store.conn.commit()
+        row2 = store.conn.execute("SELECT * FROM queue WHERE msg_id=8201").fetchone()
+        _msg, rendered, _price = await bot.render_job(FakeClient(), NoCampaign(), row2)
+        check("default (true) = the deal posts with the clean merchant link",
+              "myntra.com/x/1/detail" in rendered)
+    finally:
+        bot.PASSTHROUGH_UNMONETIZED = old
+
+
+async def test_real_post_shape():
+    """The user-reported post, run through the ACTUAL send path, must be clean.
+
+    Source line was published as "@ ₹260tG7oChgiQuTgS25b" followed by four
+    "\u279c [https://bitli.in/XXXX](https://bitli.in/XXXX)" lines - the exact
+    complaint (a token the source never wrote, plus literal markdown around our
+    own links).
+    """
+    print("\n== the reported post, through deliver() ==")
+    dirty = ("Top Loading Washing Machine Cover @ \u20b9260tG7oChgiQuTgS25b (55% OFF)\n"
+             "\u279c [https://bitli.in/IKthI4w](https://bitli.in/IKthI4w)\n"
+             "\u279c [https://bitli.in/6ft5j8a](https://bitli.in/6ft5j8a)\n"
+             "\u279c [https://bitli.in/GsO58oA](https://bitli.in/GsO58oA)\n"
+             "\u279c [https://bitli.in/Tt11zzQ](https://bitli.in/Tt11zzQ)")
+    sent = []
+
+    class Api:
+        async def send_message(self, chat, text=None, **kw):
+            sent.append(text)
+            return type("M", (), {"id": 1})()
+
+    ok, _err = await bot.deliver(Api(), "SomeTarget", dirty, None)
+    post = sent[0] if sent else ""
+    check("the post is actually sent (the guard never blocks a real deal)", ok and bool(post))
+    check("price reads exactly \u20b9260 (no glued token, nothing appended)",
+          "\u20b9260 (55% OFF)" in post and "260t" not in post)
+    check("the source\u2019s random fragment is nowhere in the post", "tG7oChgiQuTgS25b" not in post)
+    check("no markdown debris survives in a plain-text post",
+          "](" not in post and "[" not in post)
+    check("every one of our four links survives, exactly once each",
+          all(f"https://bitli.in/{code}" in post for code in
+              ("IKthI4w", "6ft5j8a", "GsO58oA", "Tt11zzQ"))
+          and post.count("https://bitli.in/") == 4)
+    check("the deal name line is untouched", "Top Loading Washing Machine Cover" in post)
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
         bot.store = store
         test_text_quality()
+        test_final_text_fidelity()
         await test_collapse_migration(store)
         await test_dedup(store)
         await test_latency(store)
@@ -600,6 +885,10 @@ async def main():
         await test_housekeeping(store)
         await test_render_latency(store)
         await test_price_gate_is_a_fallback(store)
+        await test_no_silent_loss(store)
+        await test_edited_source_posts(store)
+        await test_passthrough_knob(store)
+        await test_real_post_shape()
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

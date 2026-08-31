@@ -153,3 +153,101 @@ ROLLBACK
   automatically if the new unit fails its startup check. The added
   `chat_key` column and indexes are additive: an older bot binary still runs
   against the same DB (it simply keeps using the old (chat_id,msg_id) key).
+
+D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
+    kastunnayi; price line lo edo random tokens vasthunnayi"
+
+  D2.1 MISSING POSTS - the campaign fingerprint was the whole story.
+       content_deal_key() keyed on the FIRST LINE whenever that line was >=18
+       chars and >=3 words. Sources that repeat a banner ("🔥🔥 TOP DEAL OF THE
+       DAY 🔥🔥") above every product therefore produced ONE fingerprint for
+       hundreds of different deals: after the first post, every later product
+       from that source looked "already posted" for PRODUCT_DEDUP_SECONDS (10h)
+       and was refused at intake (INTAKE DEDUP) and at reserve() (DEDUP).
+       Fix: the fingerprint now (a) ignores a purely generic banner line
+       (GENERIC_HEADLINE_RE) and falls back to the body lines, and (b) always
+       includes every price/discount signal in the post, so a different product
+       or a different price is a different campaign. A genuine re-post of the
+       SAME campaign (different shortener) still matches.
+
+  D2.2 MISSING POSTS - "the API has no campaign for this store" is permanent,
+       not transient. AffiliateClient.convert returning None (Myntra/Ajio/Meesho
+       /Shopsy style cases, or an expired Flipkart program) used to be appended
+       to transient_errors, retried the whole job 10 times with backoff, and
+       then marked the job failed: the deal was LOST and the retry storm slowed
+       every other deal down. Now such a link is kept as a PASS-THROUGH merchant
+       link: merchant_url() strips the source's tracking/affiliate params, the
+       pair is registered in link_cache (Store.remember_passthrough) so the
+       provenance gate still vouches for it, and the post goes out (PASSTHROUGH /
+       DEGRADED POST in the log). Only trusted merchant domains
+       (KNOWN_MERCHANT_DOMAINS) qualify - an unknown domain still retries. A
+       mid-budget transient failure still retries (a 503 must not cost the
+       commission on every other link), and dedup still applies: the same product
+       arriving from a second source is refused as DuplicateDeal.
+
+  D2.3 MISSING POSTS - one dead link killed the whole post. process_job's health
+       gate blocked the send when ANY destination probe failed
+       ("broken merchant destination blocked before send" -> PermanentSkip ->
+       the deal never appeared). It now probes each surviving URL concurrently,
+       removes only the dead ones and posts the rest (LINK REPAIR). If every
+       destination is dead, the job retries until the final attempt.
+
+  D2.4 MISSING POSTS - edited source messages were invisible. Sources often
+       publish the text and add/repair the link seconds later; the first render
+       then failed with "no URLs"/"no monetizable URLs" and the row was closed.
+       A MessageEdited handler now calls Store.revive_edited_job: a row that has
+       NOT had a single successful target delivery is reset to pending with a
+       fresh attempt budget and no stale render (EDIT REVIVE). A row that already
+       reached a target is deliberately left alone - reposting an edit would be
+       a duplicate.
+
+  D2.5 UNWANTED TEXT - the price line must be exactly the source's words.
+       "Top Loading Washing Machine Cover @ ₹260tG7oChgiQuTgS25b" is a
+       masked-shortener fragment glued to the price: the strip patterns were
+       capped at 12/14 characters (and tidy_post's at 8 letters), so a 17-char
+       token sailed through. strip_price_junk() now kills a mixed letter+digit
+       tail up to 64 chars while the conservative letters-only rule (so a real
+       word is never eaten) and the unit whitelist (2pcs/500ml/65w/20000mAh)
+       stay. strip_link_fragment_tokens() removes the same fragment when it sits
+       on its own line, skipping any line that mentions a code/coupon/voucher/
+       referral/pin so real coupon text is never touched. All of clean_source_text,
+       tidy_post and the outbound guard share these helpers, so a token cannot
+       survive by dodging one pass.
+
+  D2.6 VISUAL JUNK - "[url](url)" printed literally, empty brackets, mangled
+       parentheses. Telegram posts are sent with no parse_mode, so markdown
+       debris shows as raw characters, and the substitution step can rewrite the
+       label of "[label](src)" to our own link, producing
+       "➜ [https://bitli.in/A](https://bitli.in/A)". sanitize_outbound_text() is
+       now the LAST GATE (deliver(), and idempotently at render/persist time):
+       it collapses a bracket group whose label is a URL/punctuation to the bare
+       link, keeps a label with real words and appends the link, removes empty
+       "()" pairs and stray brackets, and re-runs the junk sweeps. It never
+       touches a line that carries a verified link (so a URL is byte-identical),
+       and never strips "*bold*" (the bridge's own formatting).
+       Related: the emphasis-debris pass deleted every "_" it found - including
+       inside URLs, which silently broke our own folder invite
+       (t.me/addlist/5V7_ViAGDxAwNTI1 -> ...5V7ViAGDxAwNTI1, a dead link); and
+       both sides shaved parentheses off the end of every line, so the very
+       common "Price ₹260 (75% OFF)" line lost its closing bracket. Both are
+       fixed and locked by tests on the bot and in the bridge self-test.
+
+  VERIFY (v17 additions)
+    journalctl -u bestgaa.service -n 300 --no-pager \
+      | grep -E 'PASSTHROUGH|DEGRADED POST|EDIT REVIVE|LINK REPAIR|DEDUP|QUEUED'
+    - a source channel that reuses one banner line must now show a QUEUED line
+      for EVERY product (previously one per banner per 10 hours);
+    - PASSTHROUGH lines are expected for stores EarnKaro cannot monetize - the
+      deal still posts, untagged, and never repeats;
+    - the published line must read "@ ₹260" with nothing appended, and no "["
+      or "](" may appear anywhere in a target post.
+    - node tg-wa-bridge/bridge.js --self-test covers the same rules on the
+      WhatsApp side (stripPriceJunk / stripLinkFragmentTokens / sanitizeOutbound).
+
+  ROLLBACK (v17)
+    Every change is inside the existing passes; deploy_bestgaa.sh keeps
+    main_bot.py.backup.<stamp> and restores it automatically on a failed
+    startup check. To stop pass-through publishing (if you would rather lose an
+    unmonetizable deal than post it untagged), set PASSTHROUGH_UNMONETIZED=false
+    in .env - see the knob below; the fingerprint fix and the outbound guard
+    have no switch and should not need one.

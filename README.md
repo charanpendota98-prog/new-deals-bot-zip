@@ -169,6 +169,30 @@ Individual deploys:
   lines are removed even when they mention ₹, and a CTA label whose link
   collapsed (`Link 👉` with nothing after it) is deleted
   (`remove_dangling_cta_lines`). Covered by `test_pipeline_fixes.py`.
+- **v17 — the price line is exactly what the source wrote:** the junk-token
+  patterns were length-capped (12/14 chars), so a real-world masked-shortener
+  fragment as long as `₹260tG7oChgiQuTgS25b` survived into published posts. All
+  three cleanup passes now share one helper pair — `strip_price_junk` (mixed
+  letter+digit tails up to 64 chars) and `strip_link_fragment_tokens` (a stand-alone
+  12+ char run that mixes lower+upper+digits, skipped on any line mentioning
+  code/coupon/voucher/referral so real coupon codes survive).
+- **v17 — nothing unclean can leave the bot:** `sanitize_outbound_text` runs as a
+  LAST GATE inside `deliver` (and at render/persist time, idempotently) on every
+  target: it collapses `[url](url)` markdown debris left by broken entities and
+  the link-substitution step, removes empty `()` pairs and stray brackets, and
+  re-runs the junk sweeps. It never rewrites a verified link (lines holding a URL
+  are left byte-identical), never strips `*bold*` (that is our own WhatsApp
+  formatting), and never deletes a price line. `_drop_emphasis_part` also stopped
+  eating `_` inside URLs, which had silently corrupted our own folder invite.
+- **v17 — no post is silently swallowed:** the campaign fingerprint now includes
+  every price/discount and ignores a generic banner line, so products that share
+  a repeated header are no longer mistaken for duplicates of the first one; a
+  store link the affiliate network cannot monetize (or a link whose conversion
+  still fails on the FINAL attempt) is published as a clean untagged merchant
+  link (`PASSTHROUGH`/`DEGRADED POST`) instead of burning the retry budget and
+  being dropped; one dead destination removes only that link; and a source post
+  that was **edited** before any target received it is re-queued (`EDIT REVIVE`)
+  instead of staying lost.
 - **Source link → OUR link, exactly once:** after `render_job`, every URL in
   the post must be one we generated (affiliate/tagged link, our own folder /
   channel links, or a pass-through service offer). A leftover source/foreign
@@ -296,6 +320,7 @@ because every number is clamped into a safe range.
 | `SOURCE_RESCAN_SECONDS` / `SOURCE_RESCAN_LIMIT` / `SOURCE_RESCAN_CONCURRENCY` | 120 / 40 / 4 | ingest dead-man's switch cadence |
 | `SOURCE_REFRESH_SECONDS` | 180 | retry joining sources that failed at startup |
 | `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0.4 / 1.2 | random gap between the fan-out targets of one job |
+| `PASSTHROUGH_UNMONETIZED` | true | publish a store link the affiliate network cannot monetize as a clean untagged merchant link (false = retry then skip, i.e. lose the deal) |
 | `PREMIUM_MAX_PER_NIGHT` / `PREMIUM_GAP_MIN_SECONDS` / `PREMIUM_GAP_MAX_SECONDS` | 12 / 900 / 2100 | Premium channel curation (the only place the bot intentionally waits) |
 | `WA_BEST_GATE` etc. | see bridge | WhatsApp best-deal gate, unchanged |
 
@@ -303,7 +328,9 @@ Log lines that prove it is working: `QUEUED` (ingest → queue in the same
 second), `RECOVERED`/`RESCAN` (event-stream gap healed within one short cycle),
 `RETRY` (job retried in seconds), `INTAKE DEDUP` / `DEDUP` (a copy refused
 before it could ever post), `LINK REPAIR` (a source link replaced by ours
-instead of dropping the deal), `NIGHT SKIP` / `STALE DROP` (nothing stale is
+instead of dropping the deal), `PASSTHROUGH` / `DEGRADED POST` (an unmonetizable link
+still posts clean instead of vanishing), `EDIT REVIVE` (an edited source post
+that had not gone out is re-queued), `NIGHT SKIP` / `STALE DROP` (nothing stale is
 posted late).
 
 ## Current deployed version (server-verified)
@@ -311,8 +338,10 @@ posted late).
 Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 
 > **The tracked source is now ahead of this table.** `bestgaa/main_bot_new.py`
-> (v16 immediacy + dedup + post-quality fixes) and `tg-wa-bridge/bridge.js`
-> (promo-line/URL-residue/referral cleanup mirrored) changed in
+> (v17: verbatim price lines, outbound junk guard, a dedup fingerprint that no
+> longer swallows posts, unmonetizable-link pass-through, edited-post revive) and
+> `tg-wa-bridge/bridge.js` (the same junk/markdown guards, with WhatsApp
+> `*bold*` formatting left intact) changed in
 > `arena/01a0583b-new-deals-bot-zip`; the hashes below describe the *deployed*
 > build only. Deploy the repo source (`ops/repack_bundles.sh` →
 > `ops/apply_dual_hotfix.sh`, or `bestgaa/deploy_bestgaa.sh` for the bot alone),
@@ -323,6 +352,13 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | Hotfix zip (`archive/bestgaa_whatsapp_hotfix.zip`) | `569b7415c375de0fddc2a3d27653f11e3dd764ce4c7cb922a373de5936150128` |
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
+
+Current **repo source** on this branch (v17 — not yet deployed to a server):
+
+| File | SHA-256 |
+|---|---|
+| `bestgaa/main_bot_new.py` | `3776bd53486926f6004f65d4de3bfebb18fb15a82a36ac4043a2c7c3d833d2e6` |
+| `tg-wa-bridge/bridge.js` | `5311a3ee7209ea963b20178ca145453a6409229ad80c07e7ba99540014f19422` |
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`
 > (`51c3791b…` / `5d8e1f50…` / `28656d74…`) predates this build and is stale.

@@ -402,13 +402,26 @@ function normalizeNestedLinks(text) {
   // chars inside Amazon URLs survive untouched.
   out = out.split(/\r?\n/).map(line =>
     line.split(/(https?:\/\/[^\s<>\[\](){}"']+)/)
-      .map(p => p.replace(/[*_+]{2,}/g, '').replace(/[*_]+/g, ''))
+      // A real URL is only trimmed at its edges: t.me/addlist/… and merchant
+      // paths legitimately contain "_", and deleting it turned OUR OWN folder
+      // link into a dead invite. Text parts lose emphasis runs/markers.
+      .map(p => /^https?:\/\//i.test(p)
+        ? p.replace(/^[*_+~]+|[*_+~]+$/g, '')
+        : p.replace(/[*_+~]{2,}/g, '').replace(/(?<![\w])[*_](?=\w)/g, '').replace(/(?<=\w)[*_](?![\w])/g, ''))
       .join('')
       .replace(/[ \t]{2,}/g, ' ')
       .trim()
   ).join('\n')
   return out.split(/\r?\n/).map(line => {
-    const stripped = line.trim().replace(/^[()]+|[()]+$/g, '').trim()
+    // Parentheses carry real deal text ("Price ₹260 (75% OFF)") and must never
+    // be shaved off a line end, so an unmatched/empty pair is repaired only on
+    // lines without a link. On a URL line only the OUTER wrapper is unwrapped -
+    // the inner parens of a glued forward fragment ("url1(url2(url3))") are the
+    // separators the per-line dedup below counts on and must stay untouched.
+    const bare = line.trim()
+    const stripped = /https?:\/\//i.test(bare)
+      ? bare.replace(/^[()]+|[()]+$/g, '').trim()
+      : fixUnbalancedParens(bare)
     // Count RAW occurrences (not de-duplicated): the same product URL stacked
     // 2-3x in one broken markdown/forward fragment must collapse to ONE line.
     const raw = (stripped.match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])
@@ -421,6 +434,75 @@ function normalizeNestedLinks(text) {
     const prefix = stripped.replace(/https?:\/\/\S+/g, '').replace(/[()\[\]]+/g, '').replace(/\s{2,}/g, ' ').trim().replace(/[\s|]+$/, '')
     return ((prefix ? prefix + '\n' : '') + canon.join('\n')).trim()
   }).join('\n')
+}
+
+// ---------------------------------------------------------------------------
+// Junk-token killers, mirrored from the Telegram bot so both delivery paths
+// publish the same clean text: a masked-shortener fragment glued to a price
+// ("₹260tG7oChgiQuTgS25b") or left on its own line, "[url](url)" markdown
+// debris, an empty "()" from promo stripping. The old length-capped rules missed
+// any fragment longer than 12-14 chars, which is exactly how those appeared in
+// front of subscribers. WhatsApp formatting is deliberately left alone
+// ("*bold*" headers are ours, only the source's broken markdown is repaired).
+function stripPriceJunk(text) {
+  if (!text) return ''
+  return String(text)
+    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b/g, '$1')
+    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b/g, '$1')
+    .replace(/(₹\s*[\d,]+)[ \t]+(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)/gmi, '$1')
+}
+function fixUnbalancedParens(line) {
+  if (!line) return line
+  let out = line.replace(/\(\s*\)/g, ' ').replace(/[ \t]{2,}/g, ' ').trim()
+  const count = (s, re) => (s.match(re) || []).length
+  while (count(out, /\(/g) > count(out, /\)/g)) out = out.replace('(', '')
+  while (count(out, /\)/g) > count(out, /\(/g)) {
+    const at = out.lastIndexOf(')')
+    if (at < 0) break
+    out = out.slice(0, at) + out.slice(at + 1)
+  }
+  return out.replace(/[ \t]{2,}/g, ' ').trim()
+}
+function stripLinkFragmentTokens(text) {
+  if (!text) return ''
+  const urls = [...new Set(String(text).match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
+  let masked = String(text)
+  urls.forEach((u, i) => { masked = masked.split(u).join('\u0001K' + i + '\u0002') })
+  const lines = masked.split(/\r?\n/).map(line => {
+    // A coupon/referral code is real content: never swept as "random" text.
+    if (/code|coupon|kupon|voucher|referral|refer\b|promo|pin\b|deal\s*id/i.test(line)) return line
+    return line
+      .replace(/(?<![A-Za-z0-9_-])(?=[A-Za-z0-9_-]{12,64}(?![A-Za-z0-9_-]))(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{12,64}(?![A-Za-z0-9_-])/g, '')
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim()
+      .replace(/[ \t\u279c\u27a1\u2192\u2022•➜➡🔗👉–—:]+$/u, '')
+      .trim()
+  })
+  urls.forEach((u, i) => {
+    for (let n = 0; n < lines.length; n++) lines[n] = lines[n].split('\u0001K' + i + '\u0002').join(u)
+  })
+  return lines.join('\n')
+}
+// LAST GATE for every string handed to WhatsApp (text, caption or group send).
+function sanitizeOutbound(text) {
+  if (!text) return ''
+  let out = String(text)
+  for (let i = 0; i < 4; i++) {
+    const prev = out
+    out = out.replace(/\[\s*(https?:\/\/[^\s\]\[]+?)\s*\]\s*\(\s*https?:\/\/[^)\s]+?\s*\)/gi, '$1')
+    out = out.replace(/\[([^\]\[]*?)\]\s*\(\s*(https?:\/\/[^)\s]+?)\s*\)/gi, (_m, label, url) =>
+      String(label).replace(/\s/g, '') === String(url).replace(/\s/g, '') ? url : label + ' ' + url)
+    if (out === prev) break
+  }
+  out = stripPriceJunk(out)
+  out = stripLinkFragmentTokens(out)
+  // A line that carries a link is left exactly as it is: its parentheses may be
+  // part of a real merchant path, and editing them would break the link.
+  out = out.split(/\r?\n/)
+    .map(line => /https?:\/\//i.test(line) ? line : fixUnbalancedParens(line))
+    .join('\n')
+  out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n')
+  return out.trim()
 }
 function canonicalUrlKey(url) {
   try {
@@ -444,10 +526,10 @@ function cleanDealText(text) {
     .join('\n')
     .replace(/^\s*➜\s*(https?:\/\/)/gm, '$1')
     .replace(/(https?:\/\/[^\s]+)(?:[ \t]+[A-Za-z0-9_-]{2,16})+[ \t]*$/gm, '$1')
-    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b/g, '$1')
+    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b/g, '$1')
     // Random mixed letter+digit token AFTER a price ("₹185 VN7z") is source
     // corruption, never real content. Real units (2pcs, 500ml...) survive.
-    .replace(/(₹\s*[\d,]+)[ \t]+(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,14}(?=[ \t]|$)/gmi, '$1')
+    .replace(/(₹\s*[\d,]+)[ \t]+(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)/gmi, '$1')
     .replace(/deal\s*price\s*:\s*(₹\s*[\d,]+)\s+(₹\s*[\d,]+)/gi, 'Deal Price: $1\nMRP: $2')
     .replace(/regular\s*price\s*:\s*-?\s*(₹\s*[\d,]+)/gi, 'MRP: $1')
     .replace(/^\s*(₹\s*[\d,]+)\s*\|\s*$/gm, 'Deal Price: $1')
@@ -779,7 +861,8 @@ function watchAck(sock, messageId, windowMs = 9000) {
 // Sends photo/video to a WhatsApp Channel using the corrected upload path and
 // verifies the ack. Throws when WhatsApp rejects the stanza, so the caller can
 // fall back to a text-only update instead of silently posting nothing.
-async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption }) {
+async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }) {
+  const caption = sanitizeOutbound(rawCaption)
   const isVideo = type === 'video'
   const mediaType = isVideo ? 'video' : 'image'
   const content = isVideo
@@ -829,7 +912,11 @@ async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption 
   return { key: { id: messageId, remoteJid: jid, fromMe: true } }
 }
 
-async function sendNewsletterText(sock, jid, text) {
+async function sendNewsletterText(sock, jid, rawText) {
+  // LAST GATE for every Channel post: markdown debris, glued random fragments
+  // and empty brackets are removed here, after all formatting decisions, so
+  // nothing unclean can reach a subscriber even if an earlier pass missed it.
+  const text = sanitizeOutbound(rawText)
   const sent = await withTimeout(sock.sendMessage(jid, { text }), 90_000, 'sendMessage(text)')
   const ack = await watchAck(sock, sent?.key?.id, 6000)
   if (!ack.ok) throw new Error(`WhatsApp rejected Channel text (ack ${ack.error})`)
@@ -2143,7 +2230,7 @@ async function broadcastText(sock, job, tag, text) {
       await sendNewsletterText(sock, jid, text)
     } else {
       try {
-        await withTimeout(sock.sendMessage(jid, { text }), 90_000, `group text send ${jid}`)
+        await withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(text) }), 90_000, `group text send ${jid}`)
       } catch (error) {
         log.warn({ jid, tag, err: error.message }, 'group text delivery failed; other targets unaffected')
         continue
@@ -2160,9 +2247,10 @@ async function broadcastText(sock, job, tag, text) {
 async function broadcastMediaItem(sock, job, item, caption) {
   const data = await telegramFile(item.fileId)
   const isVideo = item.type === 'video'
+  const groupCaption = sanitizeOutbound(caption || '') || undefined
   const groupContent = isVideo
-    ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: caption || undefined }
-    : { image: data, caption: caption || undefined }
+    ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: groupCaption }
+    : { image: data, caption: groupCaption }
   const targets = allTargets(job)
   const marks = marksFor(job)
   for (const jid of targets) {
@@ -3662,6 +3750,39 @@ if (process.argv.includes('--self-test')) {
   }
   if (!stateFilePreExisted) fs.rmSync(STATE_FILE, { force: true })
   if (!stateBackupPreExisted) fs.rmSync(STATE_BACKUP_FILE, { force: true })
+  // ------------------------------------------------------------------ v17 text fidelity
+  // The published post must show the source's own words: the price line stays
+  // "₹260" (no glued shortener fragment, nothing appended), markdown debris from
+  // broken entities never prints literally, and OUR OWN links survive intact.
+  {
+    const glued = 'Top Loading Washing Machine Cover @ ₹260tG7oChgiQuTgS25b'
+    const cleaned = cleanDealText(glued)
+    if (!/₹260$/.test(cleaned.trim())) throw new Error('price must survive exactly: ' + cleaned)
+    if (/tG7oChgiQuTgS25b|260t/.test(cleaned)) throw new Error('random fragment after price survived: ' + cleaned)
+    const spaced = stripPriceJunk('Sony Headphones ₹1,499 Xk9LaMn20QpR7 extra bass')
+    if (/Xk9LaMn20QpR7/.test(spaced) || !/extra bass/.test(spaced)) throw new Error('spaced fragment/content: ' + spaced)
+    const kept = cleanDealText('Cotton Tshirt Pack of 2 ₹249 (500ml, 2pcs, 65w, 20000mAh)\nUse code: SAVE_200 for ₹200 off\nPrice ₹249 (55% OFF)')
+    for (const frag of ['(500ml, 2pcs, 65w, 20000mAh)', 'SAVE_200', '₹249', '(55% OFF)']) {
+      if (!kept.includes(frag)) throw new Error('real content lost from the post: ' + frag + ' -> ' + kept)
+    }
+    const debris = 'Cover ₹260\n➜ [https://bitli.in/IKthI4w](https://bitli.in/IKthI4w)\n➜ [https://bitli.in/6ft5j8a](https://bitli.in/6ft5j8a)'
+    const out = sanitizeOutbound(debris)
+    if (out.includes('](') || out.includes('[')) throw new Error('markdown debris survived the outbound guard: ' + out)
+    if ((out.match(/https:\/\/bitli\.in\//g) || []).length !== 2) throw new Error('links must survive the guard: ' + out)
+    if (!out.includes('₹260')) throw new Error('price must survive the guard: ' + out)
+    if (sanitizeOutbound(out) !== out) throw new Error('outbound guard is not idempotent')
+    if (sanitizeOutbound('Deal ₹99 ( )').includes('( )')) throw new Error('empty bracket residue survived')
+    if (sanitizeOutbound('*DEALS OF THE DAY*\n\n💥 *UNDER ₹99*') !== '*DEALS OF THE DAY*\n\n💥 *UNDER ₹99*') {
+      throw new Error('sanitizeOutbound must not destroy our own WhatsApp bolding')
+    }
+    const folder = '📂 All Loot Channels — One Tap\n👉 https://t.me/addlist/5V7_ViAGDxAwNTI1'
+    if (!normalizeNestedLinks(folder).includes('5V7_ViAGDxAwNTI1')) throw new Error('underscore inside our own link was deleted (dead invite)')
+    if (!sanitizeOutbound(folder).includes('5V7_ViAGDxAwNTI1')) throw new Error('outbound guard corrupted our own link')
+    const wrapped = normalizeNestedLinks('(https://bit.ly/a_b_c)')
+    if (wrapped.includes('(') || !wrapped.includes('a_b_c')) throw new Error('bracketed URL not unwrapped cleanly: ' + wrapped)
+    if (fixUnbalancedParens('Deal (₹99 only') .includes('(')) throw new Error('unmatched paren survived')
+    if (!fixUnbalancedParens('Boat ₹1,099 (75% OFF)').includes('(75% OFF)')) throw new Error('balanced parens must stay')
+  }
   console.log('bridge self-test PASS')
   process.exit(0)
 }

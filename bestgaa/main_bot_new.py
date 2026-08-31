@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v16.0
+"""BestGAA Production Bot v17.0
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -17,6 +17,15 @@ immediately, exactly once, clean":
 - dedup committed only after at least one target post succeeds
 - Buy Now/entity/button URL support
 - source promo / channel links / URL residue / dangling CTA labels stripped
+- v17: a final outbound guard so a published post can never contain markdown
+  debris ("[url](url)"), a shortener fragment glued to a price
+  ("₹260tG7oChgiQuTgS25b"), an empty "()" or a corrupted link of our own
+- v17: campaign fingerprint includes the prices, so products that share one
+  banner line are no longer mistaken for duplicates of each other
+- v17: links the affiliate network cannot monetize post as clean untagged
+  merchant links instead of burning the retry budget and vanishing; a genuine
+  API outage degrades the same way on the last attempt (never a missing post)
+- v17: an edited source post that never reached a target is re-queued
 - long caption/message chunking
 - Under-99 / Under-499 price routing
 """
@@ -152,6 +161,12 @@ MAX_JOB_AGE_HOURS = _num("MAX_JOB_AGE_HOURS", 6, 0.25, 72)
 JOB_RETRY_BASE_SECONDS = _num("JOB_RETRY_BASE_SECONDS", 3, 1, 60)
 JOB_RETRY_MAX_SECONDS = _num("JOB_RETRY_MAX_SECONDS", 20, 2, 300)
 JOB_MAX_ATTEMPTS = max(3, int(os.getenv("JOB_MAX_ATTEMPTS", "10")))
+# When the affiliate network has no campaign for a store, publish the CLEAN
+# merchant link (tracking/affiliate params stripped, registered as ours) instead
+# of losing the post: "source lo unna post mana channel lo undali" outranks the
+# commission on those links. Set to false to restore the old behaviour (retry the
+# job and skip the deal when nothing is monetizable).
+PASSTHROUGH_UNMONETIZED = os.getenv("PASSTHROUGH_UNMONETIZED", "true").strip().lower() not in ("0", "false", "no", "off")
 EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "8")))
 POST_RETRIES = max(1, int(os.getenv("POST_RETRIES", "3")))
 # Every outbound HTTP probe gets a real budget instead of the 18-30s default,
@@ -628,20 +643,46 @@ def extract_product_id(value: str) -> str | None:
     return None
 
 
+# Pure hype/banner lines ("TOP DEAL OF THE DAY", "🔥🔥 FLASH SALE ⚡⚡") that a
+# source repeats above every single post. They say nothing about the product, so
+# they must never be used as a campaign identity on their own.
+GENERIC_HEADLINE_RE = re.compile(
+    r"(?i)^(?:[\W_]+|top|best|hot|mega|super|dhamaka|dhamal|amazing|awesome|superb|daily|"
+    r"latest|new|today|deal|deals|offer|offers|loot|loots|sale|steal|alert|alerts|save|savings|"
+    r"price|prices|drop|drops|crash|shocker|shocking|free|gift|bonus|grab|hurry|limited|time|"
+    r"of|the|a|an|for|you|your|only|off|in|india|amazon|flipkart|myntra)]+$"
+)
+
+
 def content_deal_key(text: str) -> str | None:
-    """Cross-source fingerprint to block same deal even when short URLs differ."""
+    """Cross-source fingerprint to block the same deal even when short URLs differ.
+
+    The prices/discounts are part of the identity on purpose. Keying on the
+    banner line alone (the old behaviour) made EVERY post from a source that
+    reuses a hype prefix collapse onto one fingerprint, so after the first post
+    the whole source looked "already posted" for ten hours and silently
+    disappeared - the exact "source has the posts, our channels do not" gap.
+    """
     cleaned = clean_source_text(text)
     cleaned = URL_RE.sub(" ", cleaned)
     cleaned = re.sub(r"(?i)\b(?:buy\s*now|shop\s*now|grab\s*fast)\b", " ", cleaned)
+    signals = sorted({re.sub(r"\s+", "", s).lower() for s in re.findall(
+        r"₹\s*\d[\d,]*|\d{1,3}\s*%|\d+(?:\.\d+)?\s*off", cleaned)})
     cleaned = re.sub(r"[^\w₹%\n]+", " ", cleaned, flags=re.UNICODE)
     lines = [re.sub(r"\s+", " ", line).strip().lower()
              for line in cleaned.splitlines() if line.strip()]
     if not lines:
         return None
     headline = lines[0]
-    # A strong headline blocks reposted campaigns even when a later source has
-    # fewer/more variant links. Short/generic headlines fall back to full text.
-    basis = headline if len(headline) >= 18 and len(headline.split()) >= 3 else " ".join(lines)
+    # A product-specific headline blocks reposted campaigns even when a later
+    # source carries fewer/more variant links. Generic or short banners fall
+    # back to the body lines so different products never share a fingerprint.
+    specific = (len(headline) >= 18 and len(headline.split()) >= 3
+                and not GENERIC_HEADLINE_RE.fullmatch(headline))
+    basis = headline if specific else " ".join(lines[:10])
+    basis = " ".join(basis.split())
+    if signals:
+        basis = f"{basis} || {' '.join(signals)}"
     if len(basis) < 18 or len(basis.split()) < 3:
         return None
     return "CONTENT:" + hashlib.sha256(basis.encode()).hexdigest()
@@ -1178,12 +1219,21 @@ def normalize_nested_link_markup(text: str) -> str:
     # the TEXT parts only (URLs are masked) so legitimate '+' query chars
     # inside Amazon URLs survive untouched.
     def _drop_emphasis_part(part: str) -> str:
-        # Runs of 2+ emphasis chars (++, **, __) and lone */_ markers. Applied
-        # to URL parts too (replacement is empty, not a space) so a URL that
-        # ended up glued to "**++" debris is left a valid clean URL; a lone
-        # "+" is never touched (URL-encoded spaces legitimately end queries).
-        part = re.sub(r"[*_+]{2,}", "", part)
-        return re.sub(r"[*_]+", "", part)
+        # A real URL is only ever trimmed at its edges: "https://t.me/addlist/"
+        # links and merchant paths legitimately contain underscores, and an
+        # interior "_" used to be deleted (it silently corrupted our own folder
+        # link into a dead join URL). Trailing emphasis glued to a URL is debris.
+        if re.match(r"(?i)https?://", part):
+            return re.sub(r"^[*_+~]+|[*_+~]+$", "", part)
+        # Text parts: runs of 2+ markers (** __ ++ ~~) plus lone emphasis
+        # markers are markdown debris. "*" never carries meaning in a plain-text
+        # deal post (and Telegram does not render it), so every one of them
+        # goes. "_" inside a word is kept: coupon codes ("SAVE_200") and SKUs
+        # are real content.
+        part = re.sub(r"[*_+~]{2,}", "", part)
+        part = part.replace("*", "")
+        part = re.sub(r"(?<![\w])_(?=\w)", "", part)
+        return re.sub(r"(?<=\w)_(?![\w])", "", part)
     out = "\n".join(
         re.sub(r"[ \t]{2,}", " ", " ".join(
             _drop_emphasis_part(p) for p in URL_KEEP_RE.split(line)
@@ -1192,9 +1242,26 @@ def normalize_nested_link_markup(text: str) -> str:
     )
     # Collapse the SAME product link stacked several times in one line (nested
     # copies) down to one, keeping a short text prefix if there is one.
+    # A URL wrapped in parentheses is cleaner as the bare link (the emphasis
+    # pass above splits on the brackets, leaving "( url )" spacing behind).
+    # The spaces are REQUIRED: a broken forward can glue "url1(url2(url3" together
+    # and those inner parens are the only thing separating the duplicates - the
+    # per-line dedup below needs them, so they must not be touched here.
+    out = re.sub(r"\(\s+(https?://[^\s()]+)\s+\)", r"\1", out, flags=re.I)
     lines = []
     for line in out.splitlines():
-        stripped = line.strip().strip("()").strip()
+        # Parentheses are real deal text - "Price ₹260 (75% OFF)" must survive
+        # untouched. Only a line that is itself a URL wrapped in parens (an
+        # artefact of forwarded/bot-posted entities) gets its wrapper removed.
+        bare = line.strip()
+        if URL_RE.search(bare):
+            # Only the outer wrapper comes off a URL line: the inner parentheses
+            # of a glued forward fragment ("url1(url2(url3))") are the separators
+            # the dedup below counts on, so they must survive untouched.
+            bare = bare.strip("()").strip()
+        else:
+            bare = fix_unbalanced_parens(bare)
+        stripped = bare
         urls = URL_RE.findall(stripped)
         if len(urls) > 1:
             canon, seen = [], set()
@@ -1205,7 +1272,8 @@ def normalize_nested_link_markup(text: str) -> str:
                     canon.append(clean_url(u).rstrip("()"))
             if canon:
                 prefix = re.sub(r"https?://\S+", "", stripped)
-                prefix = re.sub(r"[()]+", "", prefix).strip(" \t|")
+                prefix = re.sub(r"[()]{2,}", " ", prefix).strip(" \t|()")
+                prefix = fix_unbalanced_parens(prefix)
                 stripped = (((prefix + "\n") if prefix else "") + "\n".join(canon)).strip()
         lines.append(stripped)
     return "\n".join(lines)
@@ -1247,6 +1315,139 @@ def strip_url_residue(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", masked).strip()
 
 
+# ---------------------------------------------------------------------------
+# Junk-token killers. Sources are forwarded bot output: masked shortener tails
+# (".../tG7oChgiQuTgS25b") get glued to the price or left on a line of their
+# own, and broken Telegram entities leave "[url](url)" markdown debris. The
+# previous rules were length-capped at 12-14 characters, so a 17-character
+# fragment sailed straight into the published post. These three helpers are the
+# single source of truth: clean_source_text, tidy_post and the final outbound
+# guard all share them, so a token cannot survive by dodging one of the passes.
+
+def strip_price_junk(text: str) -> str:
+    """Cut random tokens glued to (or hanging right after) a \u20b9 price."""
+    if not text:
+        return text
+    # Letters-only tail directly after the price stays conservative (<=12) so a
+    # real word can never be eaten ("\u20b9122oya" -> "\u20b9122").
+    text = re.sub(r"(\u20b9\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b", r"\1", text)
+    # A tail that mixes letters AND digits is a shortener/link fragment, never a
+    # word: allow up to 64 chars ("\u20b9260tG7oChgiQuTgS25b" -> "\u20b9260").
+    text = re.sub(
+        r"(\u20b9\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b",
+        r"\1", text)
+    # Same thing when a space separates it from the price ("\u20b9260 tG7oChgi...").
+    # Genuine units and quantities are excluded so "500ml"/"2pcs" survive.
+    text = re.sub(
+        r"(\u20b9\s*[\d,]+)[ \t]+"
+        r"(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)"
+        r"(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)",
+        r"\1", text, flags=re.M | re.I,
+    )
+    return text
+
+
+def strip_link_fragment_tokens(text: str) -> str:
+    """Drop masked-shortener fragments that stand alone inside a line.
+
+    A 12+ character run that mixes lower case, upper case and digits is link
+    residue (a coupon is never random-case like that, and coupon/referral lines
+    are skipped entirely), so this kills the "edo edo random" words no source
+    actually wrote.
+    """
+    if not text:
+        return text
+    urls = list(dict.fromkeys(URL_RE.findall(text)))
+    masked = text
+    for index, url in enumerate(urls):
+        masked = masked.replace(url, f"\x01K{index}\x02")
+    lines = []
+    for line in masked.splitlines():
+        if not re.search(r"(?i)code|coupon|kupon|voucher|referral|refer\b|promo|pin\b|deal\s*id", line):
+            line = re.sub(
+                r"(?<![A-Za-z0-9_-])"
+                r"(?=[A-Za-z0-9_-]{12,64}(?![A-Za-z0-9_-]))"
+                r"(?=[A-Za-z0-9_-]*[a-z])(?=[A-Za-z0-9_-]*[A-Z])(?=[A-Za-z0-9_-]*\d)"
+                r"[A-Za-z0-9_-]{12,64}(?![A-Za-z0-9_-])",
+                "", line)
+            line = re.sub(r"[ \t]{2,}", " ", line).strip()
+            # Only an orphan bullet left behind by the sweep (":" is preserved so
+            # "Use code:" labels survive, and no bracket can be eaten).
+            line = re.sub(r"[\s\u279c\u27a1\u2192\ufe0f\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
+        lines.append(line)
+    for index, url in enumerate(urls):
+        lines = [line.replace(f"\x01K{index}\x02", url) for line in lines]
+    return "\n".join(lines)
+
+
+def fix_unbalanced_parens(line: str) -> str:
+    """Drop empty/unmatched parentheses, never a real "(75% OFF)" pair."""
+    if not line:
+        return line
+    # Stripping a promo URL out of "Price ₹21,999 (from our channel ...)" can
+    # leave an empty bracket pair: that is cleanup residue, not deal content.
+    stripped = re.sub(r"\(\s*\)", " ", line)
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped).strip(" \t|")
+    if stripped != line:
+        line = stripped
+    if line.count("(") == line.count(")"):
+        return line
+    while line.count("(") > line.count(")"):
+        line = line.replace("(", "", 1)
+    while line.count(")") > line.count("("):
+        line = line.rstrip()[:-1] if line.endswith(")") else re.sub(r"\)$", "", line, count=1)
+        line = line[: line.rfind(")")] + line[line.rfind(")") + 1:] if ")" in line else line
+    return line.strip()
+
+
+def _collapse_markdown_link(match: re.Match) -> str:
+    """`[label](url)` printed as plain text is debris; keep what is content.
+
+    Posts go out with no parse_mode, so brackets are shown literally. When the
+    label is itself the URL (or just punctuation/empty) the whole group is one
+    duplicated link and the bare URL is all that must remain. A label carrying
+    real words is deal content, so it is kept and the link follows it.
+    """
+    label = (match.group(1) or "").strip()
+    url = (match.group(2) or "").strip()
+    if not label or URL_RE.fullmatch(label) or not re.search(r"[A-Za-z0-9]", label):
+        return url
+    return f"{label} {url}"
+
+
+def sanitize_outbound_text(text: str) -> str:
+    """Final gate for the exact string handed to Telegram.
+
+    Everything above cleans the SOURCE text; the affiliate substitution and the
+    shortener pass run afterwards and can still leave "[url](url)" markup, a
+    glued token or an empty bullet line. This guard is idempotent, touches only
+    formatting, and never rewrites a verified link or a price the source had.
+    """
+    if not text:
+        return text
+    out = text
+    for _ in range(4):
+        previous = out
+        out = re.sub(r"\[\s*([^\]\[]*?)\s*\]\s*\(\s*(https?://[^\s)]+?)\s*\)",
+                     _collapse_markdown_link, out, flags=re.I)
+        if out == previous:
+            break
+    out = strip_price_junk(out)
+    out = strip_link_fragment_tokens(out)
+    out = re.sub(r"\(\s*\)", " ", out)
+    # Any bracket left after the collapse is a fragment of broken entity markup.
+    out = re.sub(r"[\[\]]", "", out)
+    out = "\n".join(
+        # A line carrying a link is left exactly as it is: "( )" may be part of a
+        # real merchant path and the parentheses of a URL must never be edited.
+        line if URL_RE.search(line) else fix_unbalanced_parens(line)
+        for line in out.splitlines()
+    )
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()
+
+
 def clean_source_text(text: str) -> str:
     text = (text or "").replace("\x00", "")
     text = normalize_nested_link_markup(text)
@@ -1254,17 +1455,11 @@ def clean_source_text(text: str) -> str:
     text = CK_FOOTER_RE.sub("\n", text)
     text = SOURCE_NOISE_LINE_RE.sub("", text)
     text = remove_orphan_url_fragment_lines(text)
-    # Remove URL-tail garbage accidentally glued to a price by malformed source
-    # entities (e.g. `₹122oya`) without changing normal words elsewhere.
-    text = re.sub(r"(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b", r"\1", text)
-    # Random mixed letter+digit token AFTER a price ("₹185 VN7z") is source
-    # corruption, never real content. Real units (2pcs, 500ml, 65w...) survive.
-    text = re.sub(
-        r"(₹\s*[\d,]+)[ \t]+"
-        r"(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)"
-        r"(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,14}(?=[ \t]|$)",
-        r"\1", text, flags=re.M | re.I,
-    )
+    # Remove URL-tail garbage glued to a price ("₹122oya", "₹260tG7oChgiQuTgS25b")
+    # and any stand-alone shortener fragment. Shared with tidy_post and the
+    # outbound guard so the same junk can never be missed by one pass only.
+    text = strip_price_junk(text)
+    text = strip_link_fragment_tokens(text)
     text = ORPHAN_MARKDOWN_LINE_RE.sub("", text)
     text = re.sub(r"(?im)^\s*[^\w\n]*(?:sent\s+via|via\s+\w+\s+admin).*$", "", text)
     text = re.sub(r"(?im)^\s*(?:follow|join|subscribe).*@\w+.*$", "", text)
@@ -1333,9 +1528,13 @@ def tidy_post(text: str) -> str:
     # generated URLs are safely masked above.
     masked = re.sub(r"(?i)\bhtt[A-Za-z0-9/:._-]*", "", masked)
     masked = re.sub(r"\bh(?=[A-Z][a-z])", "", masked)
-    masked = re.sub(r"(₹\s*[\d,]+)[A-Za-z]{1,8}\b", r"\1", masked)
+    masked = strip_price_junk(masked)
     masked = masked.replace("*", "").replace("_", "")
-    masked = re.sub(r"[\[\]()]", " ", masked)
+    # Square brackets are markdown debris in a plain-text channel; parentheses
+    # around "(75% OFF)", "(Pack of 2)" or "(Code: X)" are the source's own
+    # deal text and must be printed exactly as written. Only an unmatched paren
+    # left behind by another cleanup pass is removed.
+    masked = re.sub(r"[\[\]]", " ", masked)
     masked = re.sub(r"[ \t]+", " ", masked)
     masked = re.sub(r"(?m)^\s*[:>-]+\s*$", "", masked)
     for index, url in enumerate(protected):
@@ -2245,6 +2444,54 @@ class Store:
                 "SELECT 1 FROM deliveries WHERE queue_id=? AND chunks_sent>0 LIMIT 1", (queue_id,)
             ).fetchone()
         return row is not None
+
+    async def remember_passthrough(self, source_url: str, url: str, deal_key: str) -> None:
+        """Record a clean unmonetized destination so it can pass the provenance gate.
+
+        A pass-through link is deliberately NOT an affiliate link: it exists only
+        because the network has no campaign for that store. Registering the exact
+        pair keeps the "only links we produced may be published" rule intact
+        instead of weakening the check itself.
+        """
+        async with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO link_cache(source_url,affiliate_url,resolved_url,deal_key,created_at)"
+                " VALUES(?,?,?,?,?)",
+                (source_url, url, url, deal_key, time.time()),
+            )
+            self.conn.commit()
+
+    async def revive_edited_job(self, chat_key: str, msg_id: int) -> str | None:
+        """Re-open a source post that was edited before it reached any target.
+
+        Deal channels publish the text first and add or repair the link seconds
+        later. The first render then failed with "no monetizable URLs"/"no URLs",
+        the row was closed, and the deal never appeared in our channels even
+        though the edited source post is perfect - a whole class of "source has
+        it, we don't". A job that already reached at least one target is left
+        alone on purpose: posting the edit again would be a duplicate.
+        """
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT q.id, q.status FROM queue q WHERE q.chat_key=? AND q.msg_id=? "
+                "AND NOT EXISTS (SELECT 1 FROM deliveries d "
+                "WHERE d.queue_id=q.id AND d.status='sent')",
+                (str(chat_key), msg_id),
+            ).fetchone()
+            if not row:
+                return None
+            if row["status"] == "pending":
+                # Still waiting for a worker: nothing to revive, the render will
+                # read the edited text from Telegram anyway.
+                return "pending"
+            self.conn.execute(
+                "UPDATE queue SET status='pending', next_at=0, attempts=0, "
+                "rendered_text=NULL, last_error='' WHERE id=?",
+                (row["id"],),
+            )
+            self.conn.commit()
+        notify_queue()
+        return "revived"
 
     async def update_rendered(self, queue_id: int, text: str) -> None:
         """Freeze the canonical rendered text so every target (and every retry
@@ -3166,7 +3413,10 @@ def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
 
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True) -> tuple[bool, str]:
-    parts = outbound_parts(text, media_path)
+    # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
+    # removed here - after cleaning, after shortening, after chunking decisions -
+    # so whatever produced them can never reach a subscriber's screen.
+    parts = outbound_parts(sanitize_outbound_text(text), media_path)
     if start_chunk > len(parts):
         return False, "invalid chunk checkpoint"
     for index in range(start_chunk, len(parts)):
@@ -3291,6 +3541,28 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         *(affiliate.convert(url, multi_link, resolved) for url, resolved in store_candidates),
         return_exceptions=True,
     )) if store_candidates else []
+    # Links the affiliate network simply cannot monetize (no campaign for that
+    # store, e.g. Myntra/Ajio/Meesho, or an expired Flipkart program) are NOT a
+    # transient failure. The old code retried them ten times and then threw the
+    # whole post away - that is how source posts silently went missing. They are
+    # kept as clean merchant links instead: foreign tracking/affiliate params are
+    # stripped by merchant_url() and the link is registered as one we produced.
+    passthrough: list[tuple[str, str]] = []
+
+    def keep_passthrough(source_url: str, resolved: str) -> None:
+        if not PASSTHROUGH_UNMONETIZED:
+            return
+        host = (urlparse(str(resolved or "")).hostname or "").lower()
+        # Subdomain-aware (www.myntra.com must count as myntra.com).
+        if not host or not in_domains(host, KNOWN_MERCHANT_DOMAINS):
+            return
+        clean_resolved = clean_url(merchant_url(resolved))
+        if not clean_resolved or clean_resolved in {clean_url(r) for _, r in passthrough}:
+            return
+        passthrough.append((source_url, clean_resolved))
+        log.info("PASSTHROUGH | queue=%s unmonetizable link kept clean: %s",
+                 row["id"], clean_resolved[:70])
+
     for (source_url, resolved), result in zip(store_candidates, convert_results):
         if isinstance(result, BaseException):
             transient_errors.append(str(result))
@@ -3299,16 +3571,30 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             converted.append(result)
         else:
             resolved_host = (urlparse(resolved).hostname or "").lower()
-            # Strict completeness: never publish a list with a missing
-            # product link. Retry the entire source post instead.
-            transient_errors.append(
-                f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
-            )
-    if transient_errors:
+            before = len(passthrough)
+            keep_passthrough(source_url, resolved)
+            if len(passthrough) == before:
+                # Unknown destination: never publish an unvetted domain, retry.
+                transient_errors.append(
+                    f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
+                )
+    if transient_errors and row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
         # A temporary API/Bitly/network failure must retry the whole job so a
         # monetizable link is not silently lost.
         raise RuntimeError("conversion retry required: " + "; ".join(transient_errors[:3]))
-    if not converted and not service_pairs:
+    if transient_errors:
+        # Final attempt: publish the clean merchant destination for every link
+        # the API never answered instead of dropping the deal. "Source has it,
+        # our channel does not" was the bug; a slightly-less-monetized post is
+        # the fix (only trusted merchant domains qualify).
+        already = {clean_url(r.source) for r in converted}
+        log.warning("DEGRADED POST | queue=%s attempt=%s %s link(s) unresolved: %s",
+                    row["id"], row["attempts"] + 1, len(transient_errors),
+                    "; ".join(transient_errors[:2])[:180])
+        for source_url, resolved in store_candidates:
+            if clean_url(source_url) not in already:
+                keep_passthrough(source_url, resolved)
+    if not converted and not service_pairs and not passthrough:
         raise PermanentSkip("no monetizable URLs")
 
     # Preserve distinct variant links (colour/gender/size/category filters) inside
@@ -3317,6 +3603,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     converted = distinct_affiliate_results(converted)
     keys = list(dict.fromkeys(
         [product_key(resolved) for _, resolved in service_pairs]
+        + [product_key(resolved) for _, resolved in passthrough]
         + [r.deal_key for r in converted]
     ))
     has_identity = any(not key.startswith("URL:") for key in keys)
@@ -3329,10 +3616,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         raise DuplicateDeal("duplicate deal")
     allowed = {key for key in new_keys}
     converted = [r for r in converted if r.deal_key in allowed]
+    passthrough = [(s, r) for s, r in passthrough if product_key(r) in allowed]
     # Service-only posts have an empty `converted` by design (their links are
     # pass-through, already reserved via their product keys above) — only a
     # STORE-only post can be fully duplicated this way.
-    if not converted and not service_pairs:
+    if not converted and not service_pairs and not passthrough:
         raise DuplicateDeal("all products already posted")
 
     mapping = {clean_url(r.source): r.affiliate for r in converted}
@@ -3351,6 +3639,17 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     for result in converted:
         if result.affiliate not in rendered:
             rendered = (rendered.rstrip() + "\n" + result.affiliate).strip()
+    # Pass-through store links: swap the source shortener for the clean merchant
+    # destination and register the exact pair so the provenance gate vouches for it.
+    for source_url, resolved in passthrough:
+        with contextlib.suppress(Exception):
+            await store.remember_passthrough(clean_url(source_url), resolved, product_key(resolved))
+        for variant in dict.fromkeys(v for v in (source_url, clean_url(source_url)) if v):
+            if variant in rendered:
+                rendered = rendered.replace(variant, resolved)
+    for _source_url, resolved in passthrough:
+        if resolved not in rendered:
+            rendered = (rendered.rstrip() + "\n" + resolved).strip()
     # Service offer links: show the resolved clean destination (a zom.to short
     # link becomes the real offer page) and ensure each one is present.
     for source_url, resolved in service_pairs:
@@ -3390,6 +3689,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         allowed_final_urls.add(OUR_FOLDER_LINK)
     if service_pairs:
         allowed_final_urls.update(resolved for _, resolved in service_pairs)
+    if passthrough:
+        allowed_final_urls.update(resolved for _, resolved in passthrough)
     # GUARANTEE: the source's link is gone, only OUR link remains. A single
     # leftover foreign/shortener link used to throw the whole deal away
     # ("foreign URL survived") - that is how posts silently went missing. The
@@ -3495,6 +3796,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # long generated URL (Amazon category/search links with our tag, missed
     # multi-link shortens) before persisting/sending.
     rendered = await affiliate.shorten_long_urls_in_text(rendered)
+    rendered = sanitize_outbound_text(rendered)
     if not URL_RE.search(rendered):
         raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
     # Persist only the products actually rendered/reserved; never extend the
@@ -3586,6 +3888,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 rendered = tidy_post(clean_source_text(rendered))
                 rendered = format_clustered_product_list(rendered)
                 rendered = strict_orphan_token_cleanup(rendered)
+                rendered = sanitize_outbound_text(rendered)
                 if rendered != row["rendered_text"]:
                     with contextlib.suppress(Exception):
                         await store.update_rendered(row["id"], rendered)
@@ -3631,7 +3934,28 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         for owned_url in owned_external:
             merchant_health_text = merchant_health_text.replace(owned_url, "")
         if URL_RE.search(merchant_health_text) and not await affiliate.rendered_links_not_broken(merchant_health_text):
-            raise PermanentSkip("broken merchant destination blocked before send")
+            # One dead probe used to throw the ENTIRE post away, i.e. another
+            # silent missing post. Now only the broken destination is dropped;
+            # the rest of the deal still goes out, and a post whose every link
+            # is dead retries before it is finally refused.
+            all_urls = list(dict.fromkeys(URL_RE.findall(merchant_health_text)))
+            verdicts = await asyncio.gather(
+                *(affiliate.link_not_broken(u) for u in all_urls), return_exceptions=True
+            )
+            dead = [u for u, ok in zip(all_urls, verdicts) if ok is False]
+            survivors = [u for u in all_urls if u not in set(dead)]
+            if dead and survivors:
+                for url in dead:
+                    rendered = rendered.replace(url, " ")
+                rendered = sanitize_outbound_text(tidy_post(clean_source_text(rendered)))
+                with contextlib.suppress(Exception):
+                    await store.update_rendered(row["id"], rendered)
+                log.warning("LINK REPAIR | queue=%s dropped %s dead destination(s); posting the rest",
+                            row["id"], len(dead))
+            elif dead and row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
+                raise RuntimeError("every destination unverified; retry later")
+            elif dead:
+                raise PermanentSkip("broken merchant destination blocked before send")
         premium_defer_until = None
         first_target_sent = False
         for target in await store.pending_targets(row["id"]):
@@ -3719,7 +4043,8 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v16 starting (immediate dispatch, no duplicates)")
+    log.info("BestGAA Production Bot v17 starting "
+             "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
     timeout = aiohttp.ClientTimeout(total=max(15.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2))
@@ -3768,6 +4093,21 @@ async def main() -> None:
             # deal, so make the failure loud (the rescan loop still recovers it).
             log.error("INGEST FAIL source=%s chat=%s msg=%s: %s",
                       entry[0], event.chat_id,
+                      event.message.id if event.message is not None else "?", exc)
+
+    @client.on(events.MessageEdited())
+    async def on_message_edited(event):
+        """An edit of a source post must not be lost (see revive_edited_job)."""
+        entry = source_map.get(event.chat_id) or source_map.get(raw_chat_id(event.chat_id))
+        if not entry:
+            return
+        try:
+            outcome = await store.revive_edited_job(raw_chat_id(event.chat_id), event.message.id)
+            if outcome == "revived":
+                log.info("EDIT REVIVE | source=%s msg=%s re-queued (no target had it yet)",
+                         entry[0], event.message.id)
+        except Exception as exc:
+            log.error("EDIT FAIL source=%s chat=%s msg=%s: %s", entry[0], event.chat_id,
                       event.message.id if event.message is not None else "?", exc)
 
     async def worker(index: int):

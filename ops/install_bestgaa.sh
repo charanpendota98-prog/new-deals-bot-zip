@@ -129,6 +129,10 @@ SOURCE_REFRESH_SECONDS=180
 MAX_MEDIA_MB=45
 TARGET_FANOUT_GAP_MIN=0.4
 TARGET_FANOUT_GAP_MAX=1.2
+# v17: publish a store link EarnKaro cannot monetize as a clean untagged
+# merchant link instead of losing the post. false = old behaviour (retry, then
+# skip - that deal never reaches the channels).
+PASSTHROUGH_UNMONETIZED=true
 # Night quiet 02:00-06:00 IST: Telegram posting pauses; deals keep queueing
 # and go out at 06:00. Set both equal (00:00/00:00) to disable.
 POST_QUIET_START=02:00

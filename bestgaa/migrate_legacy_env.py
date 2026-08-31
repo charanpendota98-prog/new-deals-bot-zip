@@ -103,6 +103,10 @@ def main() -> None:
         "SOURCE_RESCAN_LIMIT": "40",
         "SOURCE_REFRESH_SECONDS": "180",
         "MAX_MEDIA_MB": "45",
+        # v17: never lose a post over a store the network cannot monetize.
+        "PASSTHROUGH_UNMONETIZED": "true",
+        "TARGET_FANOUT_GAP_MIN": "0.4",
+        "TARGET_FANOUT_GAP_MAX": "1.2",
     }
     missing = [key for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "EARNKARO_API_KEY", "AMAZON_TAG") if not required[key]]
     if missing:
