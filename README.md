@@ -221,6 +221,30 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.5 — NOTHING of ours is added to a post (WhatsApp side):** the bridge used
+  to *re-layout* every deal — it hoisted a product line into a bold title, printed
+  its own `💰 ₹499  |  🔥 75% OFF` badge line, dropped the source's real price line
+  as "redundant" with that badge, wrapped specials in `🔥 *LOOT ZONE — India*` /
+  `🚨 *SPECIAL OFFER*` / `✅ Verified • Enjoy (Grab fast)`, pasted
+  `🛍️ MEGA DEAL LIST` above big lists, opened digests with `🔥 DEALS OF THE DAY`,
+  added a `➜` in front of every link and fell back to an invented `Latest deal`
+  caption. Every one of those is **text the source never wrote**, so all of it is
+  gone: a WhatsApp post is now the cleaned source post — source lines in source
+  order, one OUR link per line, nothing added, nothing re-ordered. Junk still goes
+  (another channel's branding, referral/app-install farming, CTA filler, markdown
+  `**` debris, glued tokens), and if a source's own line is `🔥🔥 TOP DEAL OF THE DAY
+  🔥🔥` that line prints **exactly as written** (only `WA_STRIP_CAMPAIGN_BANNERS=true`
+  removes hype, and even then the real deal text stays). Telegram gained the same
+  promise: the dead `format_premium_loot()` wrapper (which would have written
+  `👑 PREMIUM LOOT PICK 👑` + `✨ Handpicked • Verified Link • Grab Fast`) is deleted,
+  and `tidy_post` no longer shaves `_` out of the middle of a word — `Use code
+  SAVE_200` used to publish as `SAVE200`, a code that does not work. Routing per the
+  user's channel list: **LootZone = every deal, PowerLoots = every deal** (its old
+  ≤₹499/70%-off filter silently dropped posts), **Secret = only the strong picks**
+  (`eligible_for_secret`), **Premium = highest-discount only** (a sub-₹99 item now
+  needs a real discount too), Under99 = ≤₹99, Under499 = ≤₹499, **any 3+ product
+  list reaches every non-Tricks channel**, and the Tricks pipeline is untouched.
+  One post is still exactly one copy per channel.
 - **v17.4 — each WhatsApp channel gets its own content, and the best-of channel
   posts only the winner:** `WA_CHANNEL_UNDER99`, `WA_CHANNEL_UNDER499` and
   `WA_CHANNEL_BEST_OF` are resolved to JIDs (a channel that fails to resolve is
@@ -451,23 +475,29 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.4 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.5 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `5b139333469d1e443cc5bbc1de15d73a2cba2f9fcd9f60378e56c214046cbb6c` |
-| `tg-wa-bridge/bridge.js` | `3eca10ebe78cf11f147ca85b032cc3e33174f0eada883e9225835fc9c6d75570` |
+| `bestgaa/main_bot_new.py` | `236ce3d73cf49120074299d149a223570dd7a2e6afdddf0a2aebf8a5574159ca` |
+| `tg-wa-bridge/bridge.js` | `18d562126217cb4fa12e49d5a968cf6722e031cc4878e2290452f1e208656d9b` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
-Verified on this tree: `test_render_job.py` 140/140 (list fan-out to both price
-channels, once per channel), `test_pipeline_fixes.py` 186/186 (source fidelity,
-list shapes, branding/referral junk, coverage audit, price fidelity,
-no-silent-loss), `test_rescan.py` pass, and
-`node tg-wa-bridge/bridge.js --self-test` pass in default / strip-banners /
-mirror-all (`WA_CHANNEL_ALL_POSTS=true`) / warmup / tuned-gap /
-`WA_BEST_OF_COOLDOWN_SECONDS=3600` modes — the self-test also asserts the channel
+Verified on this tree: `test_render_job.py` 150/150 (PowerLoots takes every deal,
+premium needs a real discount, a list lands in both price channels exactly once per
+channel), `test_pipeline_fixes.py` 202/202 (source fidelity incl. a new
+"nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage
+audit, price fidelity, no-silent-loss), `test_rescan.py` pass, and
+`node tg-wa-bridge/bridge.js --self-test` pass in 10 env modes — default,
+`WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`,
+`WA_BEST_OF_COOLDOWN_SECONDS=3600`, tuned gaps, `WA_MEDIA_FIRST=false`, the channel
+matrix (all four channels), and combinations. The self-test also asserts the channel
+policy matrix (₹89 vs ₹399 vs ₹24999, list-agnostic price rule, card offers
+everywhere), that a 10-deal burst produces exactly one best-of post, and that the
+WhatsApp output of the user's real post is the source text with our 4 links — no
+asterisks, no badges, no banner of ours, `(74% OFF)` brackets and `SAVE_200` intact — the self-test also asserts the channel
 policy matrix (₹89 vs ₹399 vs ₹24999, list-agnostic price rule, card offers
 everywhere) and that a 10-deal burst produces exactly one best-of post.
 

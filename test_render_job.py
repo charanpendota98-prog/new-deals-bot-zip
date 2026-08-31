@@ -244,6 +244,25 @@ async def main():
         targets99 = await store.pending_targets(row99["id"])
         check("over-99 item withheld from Under99 channel only", "Under99Deals11" not in targets99)
 
+        # 7c-2. "powerloots lo anni cheyali" - PowerLoots1 now mirrors EVERY deal
+        # the pipeline accepts (the old <=499 / 70%-off filter silently dropped
+        # posts). Dedup is untouched, so it is still one copy per channel.
+        await case(store, "weak expensive deal still reaches PowerLoots",
+            "Premium Sofa Set\nDeal Price: ₹24999 5% OFF\nhttps://amzn.to/weak1",
+            {"https://amzn.to/weak1": "https://www.amazon.in/dp/B0WEAKITEM01"},
+            {"https://amzn.to/weak1": bot.LinkResult(
+                source="https://amzn.to/weak1",
+                resolved="https://www.amazon.in/dp/B0WEAKITEM01",
+                affiliate="https://www.amazon.in/dp/B0WEAKITEM01?tag=deals0911-21",
+                deal_key="amazon:B0WEAKITEM01")},
+            expect_render_contains=["Premium Sofa Set", "₹24999 5% OFF"],
+            expect_targets_superset=["PowerLoots1", "LootZoneIndia11"],
+            msg_id=77)
+        row77 = store.conn.execute("SELECT id FROM queue WHERE msg_id=77").fetchone()
+        targets77 = await store.pending_targets(row77["id"])
+        check("a weak/expensive deal is NOT premium material", "Premiumlootsdeals" not in targets77)
+        check("PowerLoots receives it exactly once", targets77.count("PowerLoots1") == 1)
+
         # 7d. Price-aware under-₹99 / under-₹499 LIST routing (user rule
         # "price tho"): a 3+ product list from ANY source reaches the under-99
         # channel only when it features an under-99 item, and under-499 only
@@ -351,6 +370,15 @@ async def main():
               bot.eligible_for_premium("Cotton socks under 99", 89, 60) is True)
         check("40% expensive deal is NOT premium",
               bot.eligible_for_premium("Smart watch 40% off", 2499, 40) is False)
+        # "premium dantlo best ga ... highest discount vunte" - cheap alone is not
+        # enough any more; the sub-99 path needs a real discount with it.
+        check("sub-99 with no stated discount is NOT premium",
+              bot.eligible_for_premium("Cotton socks under 99", 89, None) is False)
+        check("sub-99 with 55% off IS premium",
+              bot.eligible_for_premium("Cotton socks 55% off", 89, 55) is True)
+        # The bot never bolts its own banner onto a post: the dead premium
+        # wrapper (Q PREMIUM LOOT PICK Q / "Handpicked - Verified Link") is gone.
+        check("no invented premium wrapper exists", not hasattr(bot, "format_premium_loot"))
 
         # FINAL shortening pass: any long affiliate link left in the post (e.g.
         # a long Amazon category/search URL with our tag) is shortened; already

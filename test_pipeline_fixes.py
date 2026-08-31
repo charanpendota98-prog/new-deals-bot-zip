@@ -1215,6 +1215,49 @@ def test_campaign_banner_lines():
         bot.STRIP_CAMPAIGN_BANNERS = saved
 
 
+def test_nothing_added_by_us():
+    """v17.5 - the outbound post is the SOURCE post, never a rewrite.
+
+    "anni mana extra add chesinavalu ravoddu, source lo unna vishayam matrame
+    ravali": markdown debris (** around a line) is not printed, and everything
+    the source really wrote survives - its hype header, its second header, its
+    balanced brackets (74% OFF), its MRP note and a coupon code containing an
+    underscore. Another channel's branding and referral/app-install farming are
+    still removed, and the bot never invents a banner, a badge or a filler
+    caption of its own."""
+    R = "₹"
+    print("\n== nothing added by us (v17.5) ==")
+    src = (f"**🔥🔥 TOP DEAL OF THE DAY 🔥🔥**\n"
+           "⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️\n"
+           f"Top Loading Washing Machine Cover @ {R}260 (74% OFF)\n"
+           f"MRP {R}999 | Free shipping above {R}499\n"
+           f"Use code SAVE_200 for extra {R}200 off\n"
+           "🔥 LOOT ZONE INDIA — Join for more loot\n"
+           f"Get Flipkart App - Refer 3 friends and {R}100 referral bonus\n"
+           "➜ https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21")
+    out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(src)))
+    lines = [ln for ln in out.split("\n") if ln.strip()]
+    check("markdown asterisks never print", "*" not in out)
+    check("the source's own hype header survives verbatim as line 1",
+          lines[0] == "🔥🔥 TOP DEAL OF THE DAY 🔥🔥")
+    check("the source's second header survives with its emoji intact",
+          "⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️" in out)
+    check("product + price + balanced parentheses survive",
+          f"Top Loading Washing Machine Cover @ {R}260 (74% OFF)" in out)
+    check("MRP / shipping detail survives", f"MRP {R}999" in out and "Free shipping above" in out)
+    check("a coupon code underscore is never mangled", "SAVE_200" in out)
+    check("another channel's branding is gone", "LOOT ZONE" not in out.upper())
+    check("referral / app-install farming is gone",
+          "Refer 3 friends" not in out and "referral bonus" not in out)
+    check("our affiliate link survives intact",
+          "https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21" in out)
+    for invented in ("PREMIUM LOOT PICK", "Handpicked", "Latest deal", "DEALS OF THE DAY",
+                     "💰", "👑"):
+        check(f"no invented text of ours: {invented!r}", invented not in out)
+    check("nothing is reordered",
+          0 <= out.index("TOP DEAL OF THE DAY") < out.index("FLASH SALE") < out.index("Washing Machine"))
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
@@ -1238,6 +1281,7 @@ async def main():
         test_coverage_audit()
         test_campaign_banner_lines()
         test_unwanted_text_never_posts()
+        test_nothing_added_by_us()
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

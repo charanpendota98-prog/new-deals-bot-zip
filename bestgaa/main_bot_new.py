@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.4
+"""BestGAA Production Bot v17.5
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -898,34 +898,21 @@ def premium_score(text: str, price: int | None, discount: int | None) -> int:
 
 
 def eligible_for_premium(text: str, price: int | None, discount: int | None) -> bool:
-    """PREMIUM channel = only the BEST deals (user rule):
-      * 80%+ discount (any price) — a true top-tier deal,
-      * a sub-₹99 price — the hottest low-price loot,
-      * ₹100–₹499 with a 70%+ discount OR an explicit lowest-price claim.
+    """PREMIUM channel = only the BEST deals (user rule, Aug 2026 restated:
+    "premium dantlo best ga ... highest discount vunte post cheyali alantivi"):
+      * 80%+ discount (any price) - a true top-tier deal,
+      * a sub-₹99 price that ALSO carries a real discount (50%+) or an explicit
+        lowest-price claim - cheap alone is not "the highest discount",
+      * ₹100-₹499 with a 70%+ discount or a lowest-price claim.
     Best multi-product LISTS and credit/bank-card offers are added to Premium
     directly by the router regardless of this gate."""
     if discount is not None and discount >= 80:
         return True
-    if price is not None and price <= 99:
+    if price is not None and price <= 99 and ((discount or 0) >= 50 or has_lowest_price_claim(text)):
         return True
     return bool(
         price is not None and 100 <= price <= 499
         and ((discount is not None and discount >= 70) or has_lowest_price_claim(text))
-    )
-
-
-def format_premium_loot(text: str, price: int | None, discount: int | None) -> str:
-    badges = []
-    if discount is not None:
-        badges.append(f"🔥 {discount}% OFF")
-    if price is not None:
-        badges.append(f"💎 DEAL PRICE ₹{price}")
-    if has_lowest_price_claim(text):
-        badges.append("📉 LOWEST-PRICE ALERT")
-    return (
-        "👑 PREMIUM LOOT PICK 👑\n"
-        + "\n".join(badges)
-        + f"\n\n{text.strip()}\n\n✨ Handpicked • Verified Link • Grab Fast"
     )
 
 
@@ -1695,7 +1682,12 @@ def tidy_post(text: str) -> str:
     masked = re.sub(r"(?i)\bhtt[A-Za-z0-9/:._-]*", "", masked)
     masked = re.sub(r"\bh(?=[A-Z][a-z])", "", masked)
     masked = strip_price_junk(masked)
-    masked = masked.replace("*", "").replace("_", "")
+    # Markdown emphasis debris only. A '_' BETWEEN word characters is content -
+    # a coupon code ("Use code SAVE_200") or an SKU - and the blanket removal
+    # used to silently rewrite it into a code that does not work.
+    masked = masked.replace("*", "")
+    masked = re.sub(r"__([^_\n]+?)__", r"\1", masked)
+    masked = re.sub(r"(?<![\w])_+(?=\w)|(?<=\w)_+(?![\w])", "", masked)
     # Square brackets are markdown debris in a plain-text channel; parentheses
     # around "(75% OFF)", "(Pack of 2)" or "(Code: X)" are the source's own
     # deal text and must be printed exactly as written. Only an unmatched paren
@@ -3986,7 +3978,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                     base_targets.append(target)
             premium_rank = max(1, premium_score(text, routing_price, discount))
         else:
-            if eligible_for_power_loots(routing_price, discount, card_offer):
+            # "powerloots lo anni cheyali" - PowerLoots1 takes EVERY deal the
+            # pipeline accepts, from every non-Tricks source (the old
+            # <=₹499 / >=70%-off filter made it silently miss posts). Dedup is
+            # untouched, so this is still exactly one copy per channel.
+            if POWER_FILTER_TARGET not in base_targets:
                 base_targets.append(POWER_FILTER_TARGET)
             for price_target in automatic_price_targets(routing_price):
                 if price_target not in base_targets:
@@ -4272,7 +4268,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.4 starting "
+    log.info("BestGAA Production Bot v17.5 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

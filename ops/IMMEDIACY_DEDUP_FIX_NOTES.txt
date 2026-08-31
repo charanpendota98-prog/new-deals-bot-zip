@@ -459,3 +459,48 @@ test_rescan.py PASS, bridge --self-test PASS in default / strip-banners / mirror
 / warmup / tuned-gap / WA_BEST_OF_COOLDOWN_SECONDS=3600 modes. The self-test asserts
 the matrix (89 vs 399 vs 24999, list rule, card offers everywhere) and the
 one-winner-per-burst rule for the best-of channel.
+
+v17.5 - NOTHING OF OURS IS ADDED (the user's fidelity line, round 7)
+=====================================================================
+  User: "🔥🔥 TOP DEAL OF THE DAY ilaga ravoddu - anni mana extra add cheyodu
+  [ravoddu], source lo unte [matram] cheyu anthe" = do not print anything we added;
+  print only what the source has. Auditing the send paths found a lot of OUR text on
+  the WhatsApp side (the Telegram pipeline was already source-only apart from two
+  bugs below):
+    formatPostBody      - hoisted a bold title, added "💰 ₹X | 🔥 Y% OFF" badges and
+                          then dropped the source's own price line as a "repeat";
+                          fell back to an invented "Latest deal" caption.
+    formatSpecialCaption- wrapped every special in "🔥 *LOOT ZONE — India*" /
+                          "🚨 *SPECIAL OFFER*" / "✅ Verified • Enjoy (Grab fast)"
+                          (branding boilerplate the cleaner strips from SOURCES).
+    buildLargeListChunks- pasted "🛍️ MEGA DEAL LIST" + the same footer on lists.
+    digests             - opened with a "🔥 DEALS OF THE DAY / 💥 UNDER ₹99" header and
+                          invented "Latest deal" when a label could not be derived.
+    link layout         - added a "➜" in front of links that the source did not use.
+  All of that is removed. What stays: junk removal (branding of other channels,
+  referral/app-install farming, CTA filler, markdown ** debris, glued tokens,
+  orphan fragments) and OUR links, one per line, in source order. The e2e self-test
+  feeds the user's own post (double-flame banner + flash-sale line + product @
+  price (74% OFF) + MRP/shipping + SAVE_200 coupon + LOOT ZONE branding + referral
+  line + 4 bitli links) through formatWhatsAppPost and requires: asterisks absent,
+  banner first and unmodified, product/price/MRP/coupon lines intact, branding and
+  referral lines absent, no badge/header/filler text of ours, 4/4 links ours and on
+  their own lines, source order preserved.
+  Telegram side: the dead format_premium_loot() wrapper (would have printed
+  "👑 PREMIUM LOOT PICK 👑" + "✨ Handpicked • Verified Link • Grab Fast") is
+  deleted, and tidy_post stopped shaving '_' out of the middle of a word - "Use code
+  SAVE_200" was publishing as "SAVE200", i.e. a broken coupon code (a corrupted
+  legitimate character is exactly the class of bug the user banned).
+  Channel matrix per the same message: LootZone = every deal; PowerLoots1 = EVERY
+  deal (its <=499/70%-off filter silently dropped posts, so it was removed);
+  SecretLootIndia1 = only strong picks (eligible_for_secret); Premiumlootsdeals =
+  highest-discount only (a sub-99 item now needs 50%+ off or a lowest-price claim,
+  not just a low price); Under99 = <=99, Under499 = <=499; any 3+ product list goes
+  to every non-Tricks channel; the Tricks pipeline is untouched by request.
+  Self-test quality: three assertions that hard-coded a knob value (WA_MEDIA_FIRST
+  ordering x2, and the queue-acceleration/throughput-cap pair) were made
+  knob-aware, so `node bridge.js --self-test` now passes in 10 env combinations
+  instead of silently failing on any tuned .env. noteBestOfPick() no longer writes
+  the operator's bridge-state.json during a self-test run.
+  Counts: test_pipeline_fixes.py 202/202, test_render_job.py 150/150,
+  test_rescan.py PASS, bridge --self-test PASS x10 modes.

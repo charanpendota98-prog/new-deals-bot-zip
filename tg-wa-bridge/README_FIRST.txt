@@ -148,3 +148,14 @@ channel. Channel IDs may be an invite link or a ...@newsletter JID; a channel th
 fails to resolve once is retried every 10 minutes, and the main channel keeps
 posting meanwhile.
 
+v17.5 formatting rule: a WhatsApp post is the SOURCE post. The bridge no longer
+adds anything of its own - no bold headline hoisted out of the text, no "💰 price /
+🔥 discount" badge line, no "LOOT ZONE — India / SPECIAL OFFER / Verified • Enjoy
+(Grab fast)" wrapper on specials, no "MEGA DEAL LIST" banner on big lists, no
+"DEALS OF THE DAY" header on digests, no "➜" bullets and no "Latest deal" filler.
+What is still removed is only junk (another channel's branding, referral /
+app-install farming, CTA filler, markdown debris, glued tokens) and what is changed
+is only the link: every merchant link becomes OUR monetized link, one per line.
+If a source opens with its own "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" line, that line is
+published exactly as the source wrote it; set WA_STRIP_CAMPAIGN_BANNERS=true only if
+you want those hype lines gone.
