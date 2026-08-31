@@ -167,6 +167,15 @@ JOB_MAX_ATTEMPTS = max(3, int(os.getenv("JOB_MAX_ATTEMPTS", "10")))
 # commission on those links. Set to false to restore the old behaviour (retry the
 # job and skip the deal when nothing is monetizable).
 PASSTHROUGH_UNMONETIZED = os.getenv("PASSTHROUGH_UNMONETIZED", "true").strip().lower() not in ("0", "false", "no", "off")
+
+# SOURCE FIDELITY (the user's standing rule): publish what the source published,
+# its own hype header included - "🔥🔥 TOP DEAL OF THE DAY 🔥🔥", "⚡️ 11 PM FLASH SALE ⚡️"
+# are part of how that channel writes a deal, so they are NOT junk and stay. What
+# IS removed: other-channel branding/signature, join/follow/share promo,
+# referral & app-install farming, CTA filler, glued random tokens, markdown
+# debris, URL residue - and every merchant/source link is swapped for OUR link.
+# Set STRIP_CAMPAIGN_BANNERS=true only if you ever want those hype lines gone too.
+STRIP_CAMPAIGN_BANNERS = os.getenv("STRIP_CAMPAIGN_BANNERS", "false").strip().lower() in ("1", "true", "yes", "on")
 EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "8")))
 POST_RETRIES = max(1, int(os.getenv("POST_RETRIES", "3")))
 # Every outbound HTTP probe gets a real budget instead of the 18-30s default,
@@ -1192,28 +1201,110 @@ def is_campaign_banner_line(line: str) -> bool:
     return all(w.lower() in BANNER_NOISE_WORDS for w in words)
 
 
+# Another channel's BRANDING (name/signature/watermark) is not deal content and
+# the user wants it gone, while everything the posting channel wrote ABOUT the
+# deal (including its own hype header) must stay verbatim. Two safe signals:
+#   * a promo verb / handle on the line ("Join ... for more loot", "@xyz",
+#     "Edited by Admin", "Subscribe"), or
+#   * an ALL-CAPS title line carrying a brand-suffix noun ("ZONE", "HUB",
+#     "INDIA", "OFFICIAL", "TELEGRAM"...), which is how these signatures read.
+# Both require that no word of the line describes a product/price/spec, so a
+# real deal sentence can never be mistaken for branding. Generic hype words are
+# deliberately NOT enough on their own: "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" is fidelity.
+BRANDING_LINE_RE = re.compile(
+    r"(?i)\b(?:join|follow|subscribe|share|forward|turn\s+on)\b"
+    r"|\b(?:telegram|whatsapp)\s*(?:channel|group)?\b|\b(?:channel|group)\s*(?:name|link)?\b"
+    r"|@[A-Za-z][A-Za-z0-9_]{3,}|\b(?:edited|posted|powered|made|managed)\s+by\b"
+    r"|\bfor\s+more\b|\bmore\s+(?:loots?|deals?|offers?|updates?|dhamaka)\b"
+    r"|\b(?:stay|keep)\s+(?:tuned|updated|connected)\b")
+# Only these count as "this line names a channel/brand" - plain hype words
+# (deal/deals/offer/loot/sale/day) are deliberately absent, because a channel's
+# own "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" header is fidelity, not branding.
+BRANDING_NOUNS = frozenset("""
+zone hub india official world point adda team squad daily store shop mart bazaar
+channel group telegram whatsapp admin edit edits powered managed updates update
+""".split())
+# Words that prove the line talks about a real product/price -> never branding.
+# A line that OPENS with a signature marker names whoever made the post, which is
+# the point of the line - the brand word itself is expected, so the vocabulary
+# check does not apply to it.
+SIGNATURE_PREFIX_RE = re.compile(
+    r"(?i)^[^\w\n]*(?:powered|edited|posted|made|managed|written|curated|created|shared|sent)"
+    r"\s+by\b")
+
+BRANDING_DEAL_EVIDENCE_RE = re.compile(
+    r"(?i)[\u20b9$]|\b(?:mrp|rs\.?|inr|cod|discount|size|color|colour|pack|pcs|pair)\b"
+    r"|\d+\s*%|\b\d+\s*(?:off|days?|years?|months?|gb|tb|mah)\b")
+
+
+BRANDING_WORDS = BRANDING_NOUNS | BANNER_NOISE_WORDS | frozenset(
+    "more for with and our us on in the a an by at to of also join follow subscribe "
+    "share forward turn notifications notification stay tuned connected edited "
+    "posted powered made managed only now here this that new best".split())
+HANDLE_RE = re.compile(r"@(?![A-Za-z]{1,3}\b)[A-Za-z][A-Za-z0-9_]{3,}")
+
+
+def is_branding_line(line: str) -> bool:
+    """True for another channel's name/signature/promo line, never for deal text."""
+    t = (line or "").strip()
+    if not t or URL_RE.search(t):
+        return False
+    if BRANDING_DEAL_EVIDENCE_RE.search(t):
+        return False
+    words = [w for w in re.sub(r"[^\w\s]", " ", t, flags=re.U).split() if w]
+    if not words:
+        return False
+    lowered = [w.lower() for w in words]
+    brand_nouns = [w for w in lowered if w in BRANDING_NOUNS]
+    # One product/spec word anywhere means this is a deal line, not a signature.
+    if not brand_nouns and not HANDLE_RE.search(t):
+        return False
+    if HANDLE_RE.search(t) or SIGNATURE_PREFIX_RE.match(t):
+        return True                       # a bare "@handle" / "Powered by X" credit line
+    if all(w in BRANDING_WORDS for w in lowered):
+        return bool(BRANDING_LINE_RE.search(t)) or len(brand_nouns) >= 2
+    return False                          # real content with a stray CTA
+
+
 def strip_promo_lines(text: str) -> str:
     """Drop source promo/navigation lines from a Telegram/WhatsApp body, and
     strip a CTA fragment glued to the end of a real deal line (price/discount
     lines are kept as lines, only the channel junk on them is removed).
 
-    A campaign banner is removed only while the post still has a real product
-    line: never let the cleaning leave a wall of bare links behind.
+    Fidelity first: a channel's own campaign banner ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥")
+    is part of the source post and is KEPT by default. Only with
+    STRIP_CAMPAIGN_BANNERS=true is it treated as decoration, and even then a
+    banner that is the post's only text line stays, so cleaning can never leave a
+    wall of bare links behind.
     """
     lines = (text or "").splitlines()
-    banners = [is_campaign_banner_line(ln) for ln in lines]
+    banners = [is_campaign_banner_line(ln) for ln in lines] if STRIP_CAMPAIGN_BANNERS else []
     # A post is NOT allowed to become a wall of bare links: if every text line is
     # a banner (some channels put the product name nowhere else), the first one is
     # kept as the headline and only the extra banner lines go away.
-    has_real_headline = any(ln.strip() and not URL_RE.search(ln) and not flag
-                            for ln, flag in zip(lines, banners))
-    first_banner = None if has_real_headline else next(
-        (i for i, ln in enumerate(lines) if ln.strip() and banners[i]), None)
+    if banners:
+        has_real_headline = any(ln.strip() and not URL_RE.search(ln) and not flag
+                                for ln, flag in zip(lines, banners))
+        first_banner = None if has_real_headline else next(
+            (i for i, ln in enumerate(lines) if ln.strip() and banners[i]), None)
+    else:
+        first_banner = None
+    branding = [is_branding_line(ln) for ln in lines]
+    # Same guard as the banner rule: if the ONLY text lines of the post are
+    # branding, the first one stays - a wall of bare links is never an
+    # improvement, and the product/price line is what fidelity is about.
+    if any(branding) and not any(ln.strip() and not URL_RE.search(ln) and not flag
+                                for ln, flag in zip(lines, branding)):
+        branding[next(i for i, flag in enumerate(branding) if flag)] = False
     kept = []
     for index, ln in enumerate(lines):
         if is_promo_noise_line(ln):
             continue
-        if banners[index] and index != first_banner:
+        # Branding of another channel always goes (fidelity is about the DEAL,
+        # not about whoever wants a subscriber for it).
+        if branding[index]:
+            continue
+        if banners and banners[index] and index != first_banner:
             continue
         kept.append(strip_inline_cta(ln))
     return "\n".join(kept)
@@ -1440,8 +1531,13 @@ def strip_link_fragment_tokens(text: str) -> str:
                 "", line)
             line = re.sub(r"[ \t]{2,}", " ", line).strip()
             # Only an orphan bullet left behind by the sweep (":" is preserved so
-            # "Use code:" labels survive, and no bracket can be eaten).
-            line = re.sub(r"[\s\u279c\u27a1\u2192\ufe0f\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
+            # "Use code:" labels survive, and no bracket can be eaten). A trailing
+            # variation selector is emoji, not residue: "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE
+            # \u26a1\ufe0f\u26a1\ufe0f" must come out exactly as the source wrote it, so only an
+            # ORPHAN \ufe0f (nothing in front of it but space/start) is dropped.
+            line = re.sub(r"[\s\u279c\u27a1\u2192\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
+            line = re.sub(r"(?<=\s)\ufe0f+(?=\s*$)", "", line)
+            line = re.sub(r"^\ufe0f+", "", line)
         lines.append(line)
     for index, url in enumerate(urls):
         lines = [line.replace(f"\x01K{index}\x02", url) for line in lines]
@@ -1826,6 +1922,11 @@ def _product_label(line: str) -> str:
     # label of a same-line pair is passed in already cut before the URL).
     if URL_RE.search(text) or "http" in text.lower():
         return ""
+    # A pure campaign banner is source decoration. It stays in the post (see
+    # STRIP_CAMPAIGN_BANNERS), but it must never be consumed as a product label,
+    # or the real product line below it loses its pairing.
+    if is_campaign_banner_line(text):
+        return ""
     return text
 
 
@@ -1873,9 +1974,37 @@ def format_visible_source_product_pairs(raw_text: str,
     # layout, which already carries the name, the price and every link.)
     if len(pairs) < 3:
         return None
-    output = []
-    for label, affiliate in pairs:
-        output.extend([label, affiliate, ""])
+    # Rebuild in SOURCE ORDER instead of emitting only the pairs: the old pair
+    # dump silently dropped every line that was not a label (a second header
+    # line, MRP / shipping notes), which breaks "publish what the source wrote".
+    # Every product line and every link stays, each link still sits under its
+    # own label, and no link is ever reordered or pooled.
+    output: list[str] = []
+    emitted: set[str] = set()
+    for line in lines:
+        raw_urls = URL_RE.findall(line)
+        if not raw_urls:
+            # Any text line prints where it stood in the source - a label keeps
+            # its place above its link, a second header or an MRP note keeps its
+            # own place too.
+            kept = tidy_post(line)
+            if kept:
+                output.append(kept)
+            continue
+        head = tidy_post(_product_label(line.split(raw_urls[0], 1)[0]))
+        if head:
+            output.append(head)
+        for raw_url in raw_urls:
+            affiliate = mapping.get(clean_url(raw_url))
+            if affiliate:
+                if affiliate in emitted:
+                    continue
+                emitted.add(affiliate)
+                output.append(affiliate)
+            else:
+                # Never swallow a link here: an unmapped source URL is handled by
+                # the provenance / pass-through / repair passes in render_job.
+                output.append(raw_url)
     return "\n".join(output).strip()
 
 

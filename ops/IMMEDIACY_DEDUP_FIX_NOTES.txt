@@ -364,3 +364,52 @@ D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
   (tiered and WA_CHANNEL_ALL_POSTS=true), plus warmup-mode and tuned-gap runs.
   ops/diagnose.sh prints which 2nd-channel mode is live and warns when a
   channel failed to resolve; install_bridge.sh asks for the 2nd channel + mirror.
+
+  ----------------------------------------------------------------------------
+  v17.2.1: THE USER REVERSED THE BANNER RULE - FIDELITY IS THE LAW
+  ----------------------------------------------------------------------------
+  "source lo ela vundo ala ravali; unwanted text / branding vasthe remove cheyali"
+  So: a channel's OWN hype header is content, not junk. The v17.1 default (drop
+  campaign banners) is now opt-in (STRIP_CAMPAIGN_BANNERS /
+  WA_STRIP_CAMPAIGN_BANNERS, both false), and what is ALWAYS removed is branding
+  from somebody else plus referral farming.
+  is_branding_line() (Python) / isBrandingLine() (bridge) - three signals, all of
+  them requiring that no word of the line describes a product/price/spec:
+    * a promo verb or channel word with only brand/hype vocabulary around it
+      ("Join our telegram channel for more deals");
+    * a bare @handle credit line, or a line that OPENS with a signature marker
+      ("Edited by …", "Powered by …", "sent via …");
+    * a channel-name title: every word is brand/hype vocabulary and at least two
+      are brand nouns (zone/hub/india/official/channel/…) - which catches
+      "Loot Zone India" while keeping "Myntra Mega Sale", "DEALS OF THE DAY",
+      "SAARE MI AMAZING DEALS" and any product line.
+  BANNER_NOISE_WORDS / GENERIC hype vocabulary is reused for this on purpose; brand
+  NAMES (myntra, flipkart, boat …) are excluded from every set, so a store header
+  is never branding. And the same "never leave a wall of bare links" guard applies:
+  if the ONLY text lines of a post are branding, the first one stays as the
+  headline.
+  Two more fidelity bugs found while verifying the exact user post and fixed on
+  BOTH sides:
+    * _product_label() now rejects a pure campaign banner, so a hype header can
+      never be consumed as a "product label" (that was how a headline got eaten);
+    * format_visible_source_product_pairs() rebuilds the whole post in source
+      order instead of emitting only label+link pairs, so a second header line or
+      an MRP/shipping note is no longer dropped; the bridge had the mirror-image
+      bug (text lines buffered before a label were discarded when the link line
+      cleared the buffer) - now flushed in order, and the label pairing keeps
+      each link under its own product.
+  strip_link_fragment_tokens() no longer trims a trailing \ufe0f (emoji
+  presentation selector) - only an ORPHAN one - so "⚡️ 11 PM FLASH SALE ⚡️" leaves
+  exactly as it entered.
+  Verified on the user's real post (banner + ₹260 + glued token + 4 markdown
+  bullets + LOOT ZONE INDIA branding + referral line), rendered through the real
+  render_job + deliver-time sanitize and through the bridge formatter:
+    🔥🔥🔥 TOP DEAL OF THE DAY 🔥🔥🔥        <- source's own header, kept
+    ⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️                <- kept, emoji intact
+    Top Loading Washing Machine Cover @ ₹260 <- name + price, junk token gone
+    ➜ 4 x OUR links (tag=deals0911-21)        <- no bitli.in source link left
+    (branding + referral/app-install lines absent; no [..](..) debris)
+  Counts: python3 test_pipeline_fixes.py 186/186, test_render_job.py 137/137,
+  test_rescan.py PASS, bridge --self-test PASS in default / strip-banners /
+  all-posts / warmup / tuned-gap modes. The duplicate test functions left by the
+  mid-file splice were removed (one definition per name now).

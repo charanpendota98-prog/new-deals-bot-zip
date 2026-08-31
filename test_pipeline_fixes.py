@@ -955,11 +955,17 @@ async def test_list_post_shapes(store):
         check("[%s] no markdown debris in a plain-text post" % name,
               not any("[" in ln or "](" in ln for ln in lines))
         check("[%s] each link sits on its own line" % name,
-              all(ln.strip().startswith(("\u279c", "http")) or "\u20b9" in ln for ln in lines))
+              all(ln.strip().startswith(("\u279c", "http")) or "\u20b9" in ln
+                  or bot.is_campaign_banner_line(ln) for ln in lines))
         check("[%s] the price used for routing is the source price" % name, price == 260)
-        check("[%s] no channel banner / flash-sale hype in our post" % name,
-              "TOP DEAL" not in rendered and "FLASH SALE" not in rendered
-              and "11 PM" not in rendered)
+        if "banners" in name:
+            # SOURCE FIDELITY (the user's rule): the posting channel's own hype
+            # header is part of its post and must be published as written.
+            check("[%s] source banner lines kept verbatim" % name,
+                  "TOP DEAL OF THE DAY" in rendered and "FLASH SALE" in rendered)
+        else:
+            check("[%s] no hype or junk that the source did not write" % name,
+                  "Refer" not in rendered and "notifications" not in rendered)
 
     # The same campaign posted by a second source (identical text, different
     # shortener) must still be refused - dedup did not get weaker.
@@ -1008,6 +1014,19 @@ async def test_list_post_shapes(store):
                                         "Women Cotton Kurti", pairs["https://bitli.in/m2bb"])]
     check("each product keeps ITS OWN link in source order", order == sorted(order))
 
+    # FIDELITY of the list rebuild: the lines that are NOT a product label (a
+    # second header, an MRP/shipping note) must survive it too, in place.
+    rich = ("MEGA LIST SALE\nMen Running Shoes\nhttps://bitli.in/m1aa\n"
+            "Women Cotton Kurti\nhttps://bitli.in/m2bb\nMRP ₹1999, free shipping\n"
+            "Kids School Bag\nhttps://bitli.in/m3cc")
+    rich_out = bot.format_visible_source_product_pairs(bot.clean_source_text(rich), pairs)
+    check("the list rebuild keeps non-label source lines",
+          rich_out is not None and "MEGA LIST SALE" in rich_out and "MRP \u20b91999, free shipping" in rich_out)
+    check("and every product with its own link",
+          all(x in rich_out for x in pairs.values()) and "Men Running Shoes" in rich_out
+          and rich_out.index("Men Running Shoes") < rich_out.index(pairs["https://bitli.in/m1aa"])
+          < rich_out.index("Women Cotton Kurti"))
+
 
 def test_unwanted_text_never_posts():
     """Nothing the source did not offer as the deal may appear in our post."""
@@ -1039,11 +1058,16 @@ def test_unwanted_text_never_posts():
               "\u279c https://bitli.in/IKthI4w\n"
               "Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus")
     clean = bot.clean_source_text(pasted)
-    check("the whole junk frame collapses to name + price + one clean link line",
-          clean == "Top Loading Washing Machine Cover @ \u20b9260\n\u279c https://bitli.in/IKthI4w")
-    check("tidy_post keeps that shape (nothing re-added, nothing eaten)",
-          bot.tidy_post(clean) == clean)
-    check("no emoji / hype left anywhere", not bot.re.search(r"[\ud83d\udd25\u26a1\ufe0f]", clean))
+    # FIDELITY: the source's own header lines stay exactly as written; only the
+    # referral/app-install farming line is cut.
+    check("source keeps its own header, product line and link",
+          clean == ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
+                    "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
+                    "Top Loading Washing Machine Cover @ \u20b9260\n"
+                    "\u279c https://bitli.in/IKthI4w"))
+    check("tidy_post damages nothing already clean (idempotent, nothing eaten)",
+          bot.tidy_post(clean) == clean and bot.clean_source_text(clean) == clean)
+    check("no invented text anywhere", "Refer" not in clean and "Install" not in clean)
 
 
 def test_coverage_audit():
@@ -1124,41 +1148,71 @@ def test_coverage_audit():
 
 
 def test_campaign_banner_lines():
-    """The banner rule may remove hype, never the product line."""
-    print("\n== campaign banner lines: hype out, content in ==")
+    """FIDELITY: a source's own hype header stays; another channel's branding goes.
+
+    v17.1 stripped the hype header lines; the user's rule is the opposite -
+    "source lo ela vundo ala" - so stripping is now an opt-in
+    (STRIP_CAMPAIGN_BANNERS=true) and what is ALWAYS removed is branding:
+    another channel's name/signature/"join for more" line.
+    """
+    print("\n== source hype stays, channel branding goes ==")
     hype = [
         "\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25",
         "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f",
         "DEALS OF THE DAY",
-        "MEGA SALE ON - GRAB LIMITED TIME",
-        "New Price Drop!!!",
-        "\u2705\u2705\u2705",
+        "SAARE MI AMAZING DEALS",
+    ]
+    branding = [
+        "\ud83d\udd25 LOOT ZONE INDIA \u2014 Join for more loot",
+        "Loot Zone India",
+        "Join our telegram channel for more deals",
+        "Edited by Admin @dealsAdda",
+        "Follow @BestDealHubIndia on WhatsApp",
+        "Powered by Amazon Deals Hub",
     ]
     content = [
         "Top Loading Washing Machine Cover @ \u20b9260",
         "Men Running Shoes 45% OFF",
-        "Myntra Mega Sale",                      # a store header IS content
+        "Myntra Mega Sale",
         "Boat Airdopes 141",
-        "Free Fire Gift",                        # brand/product words, keep it
+        "Free shipping on all orders",
         "Size 7 (UK) | Color: Blue",
-        "Universal Top Load Machine Shield",
-        "https://bitli.in/IKthI4w",
+        "Use code SAVE200 for extra \u20b9200 off",
     ]
     for line in hype:
-        check("banner classifier drops %r" % line[:28], bot.is_campaign_banner_line(line))
+        check("hype header is never branding: %r" % line[:26], not bot.is_branding_line(line))
+    for line in branding:
+        check("branding recognised: %r" % line[:26], bot.is_branding_line(line))
     for line in content:
-        check("banner classifier keeps %r" % line[:28], not bot.is_campaign_banner_line(line))
-    both = hype[0] + "\n" + hype[1] + "\n\nMen Cotton T-Shirt\nhttps://a.co/x"
-    out = bot.strip_promo_lines(both)
-    check("banners removed when a product line exists",
-          "TOP DEAL" not in out and "FLASH SALE" not in out
-          and "Men Cotton T-Shirt" in out and "https://a.co/x" in out)
-    only = hype[0] + "\n" + hype[1] + "\nhttps://a.co/x"
-    out2 = bot.strip_promo_lines(only)
-    check("the headline is NOT removed when nothing else can carry the post",
-          hype[0] in out2 and "https://a.co/x" in out2 and hype[1] not in out2)
-    check("idempotent", bot.strip_promo_lines(out) == out)
+        check("deal content is never branding: %r" % line[:26], not bot.is_branding_line(line))
 
+    # default (fidelity): hype kept, branding + referral junk removed
+    post = ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
+            "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
+            "Men Cotton T-Shirt\nhttps://a.co/x\n"
+            "\ud83d\udd25 LOOT ZONE INDIA \u2014 Join for more loot\n"
+            "Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus")
+    out = bot.clean_source_text(post)
+    check("source hype survives cleaning",
+          "TOP DEAL OF THE DAY" in out and "FLASH SALE" in out)
+    check("the product line and the price survive", "Men Cotton T-Shirt" in out and "https://a.co/x" in out)
+    check("branding line removed", "LOOT ZONE INDIA" not in out and "Join for" not in out)
+    check("referral/app-install line removed", "Refer 3 friends" not in out and "Install" not in out)
+    check("cleaning is idempotent", bot.clean_source_text(out) == out)
+
+    # opt-in: with the knob on, banners go but a headline never does
+    saved = bot.STRIP_CAMPAIGN_BANNERS
+    try:
+        bot.STRIP_CAMPAIGN_BANNERS = True
+        stripped = bot.strip_promo_lines(post)
+        check("STRIP_CAMPAIGN_BANNERS=true removes the hype header",
+              "TOP DEAL OF THE DAY" not in stripped and "Men Cotton T-Shirt" in stripped)
+        only = ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
+                "\u26a1\ufe0f FLASH SALE \u26a1\ufe0f\nhttps://a.co/x")
+        check("even in strip mode the first line stays when nothing else can headline",
+              "TOP DEAL OF THE DAY" in bot.strip_promo_lines(only))
+    finally:
+        bot.STRIP_CAMPAIGN_BANNERS = saved
 
 
 async def main():

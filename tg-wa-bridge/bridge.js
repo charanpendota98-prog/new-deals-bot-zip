@@ -62,6 +62,12 @@ const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
 // WA_CHANNEL_ALL_POSTS=true to mirror EVERY post to both channels instead
 // (the under-₹99 gate is then ignored, digests included).
 const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerCase() === 'true'
+// Source fidelity (the user's rule): the channel's own hype header
+// ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥", "⚡️ 11 PM FLASH SALE ⚡️") is part of the post and
+// is KEPT. Set WA_STRIP_CAMPAIGN_BANNERS=true only to drop those lines too.
+// Branding from OTHER channels, join/follow promo, referral & app-install
+// farming, CTA filler and URL residue are always removed, and links become ours.
+const STRIP_CAMPAIGN_BANNERS = (process.env.WA_STRIP_CAMPAIGN_BANNERS || 'false').toLowerCase() === 'true' 
 const UNDER99_MAX_PRICE = Number(process.env.WA_UNDER99_MAX_PRICE || 99)
 // A LIST makes the Under-₹99 channel when it actually features under-₹99
 // products AND is either a best-discount list (this % or a flagged special/
@@ -573,6 +579,50 @@ function isCampaignBannerLine(line) {
   return words.every(word => BANNER_NOISE_WORDS.has(word.toLowerCase()))
 }
 
+// Another channel's BRANDING (its name/signature/"join for more" line) is not
+// deal content and the user wants it removed, while everything that channel wrote
+// ABOUT the deal - including its own hype header - stays verbatim (fidelity).
+// Mirrors is_branding_line / BRANDING_* in bestgaa/main_bot_new.py: a promo verb
+// or @handle plus no product word, or a "Powered by X" signature, or an ALL-CAPS
+// title naming a channel brand. Generic hype words alone are never enough.
+const BRANDING_LINE_RE = /\b(?:join|follow|subscribe|share|forward|turn\s+on)\b|\b(?:telegram|whatsapp)\s*(?:channel|group)?\b|\b(?:channel|group)\s*(?:name|link)?\b|\b(?:edited|posted|powered|made|managed)\s+by\b|\bfor\s+more\b|\bmore\s+(?:loots?|deals?|offers?|updates?|dhamaka)\b|\b(?:stay|keep)\s+(?:tuned|updated|connected)\b/i
+const BRANDING_DEAL_EVIDENCE_RE = /[\u20B9$]|\b(?:mrp|rs\.?|inr|cod|discount|size|colou?r|pack|pcs|pair)\b/i
+const BRANDING_DEAL_NUM_RE = /\d+\s*%|\b\d+\s*(?:off|days?|years?|months?|gb|tb|mah)\b/i
+const HANDLE_RE = /@(?![A-Za-z]{1,3}\b)[A-Za-z][A-Za-z0-9_]{3,}/
+const SIGNATURE_PREFIX_RE = /^[^\p{L}\p{N}\n]*(?:powered|edited|posted|made|managed|written|curated|created|shared|sent)\s+by\b/i
+const BRANDING_NOUNS = new Set(('zone hub india official world point adda team squad daily store shop '
+  + 'mart bazaar channel group telegram whatsapp admin edit edits powered managed updates update').split(/\s+/))
+const BRANDING_WORDS = new Set([...BRANDING_NOUNS, ...BANNER_NOISE_WORDS,
+  'more', 'for', 'with', 'and', 'our', 'us', 'on', 'in', 'the', 'a', 'an', 'by', 'at', 'to', 'of',
+  'also', 'join', 'follow', 'subscribe', 'share', 'forward', 'turn', 'notifications', 'notification',
+  'stay', 'tuned', 'connected', 'edited', 'posted', 'powered', 'made', 'managed', 'only', 'now',
+  'here', 'this', 'that', 'new', 'best'])
+
+function isBrandingLine(line) {
+  const t = (line || '').trim()
+  if (!t || /https?:\/\/\S+/i.test(t)) return false
+  if (BRANDING_DEAL_EVIDENCE_RE.test(t) || BRANDING_DEAL_NUM_RE.test(t)) return false
+  const words = t.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean)
+  if (!words.length) return false
+  const lowered = words.map(w => w.toLowerCase())
+  const brandNouns = lowered.filter(w => BRANDING_NOUNS.has(w))
+  if (!brandNouns.length && !HANDLE_RE.test(t)) return false
+  if (HANDLE_RE.test(t) || SIGNATURE_PREFIX_RE.test(t)) return true
+  const inBrandVocab = lowered.every(w => BRANDING_WORDS.has(w))
+  return inBrandVocab && (BRANDING_LINE_RE.test(t) || brandNouns.length >= 2)
+}
+
+// Same never-a-wall-of-links guard as the banner rule: if the ONLY text lines are
+// branding, the first one stays so the post still has a headline.
+function dropBrandingLines(lines) {
+  const flags = lines.map(isBrandingLine)
+  if (!flags.some(Boolean)) return lines
+  const hasRealText = lines.some((line, i) => line.trim() && !/https?:\/\/\S+/i.test(line) && !flags[i])
+  if (hasRealText) return lines.filter((line, i) => !flags[i])
+  const first = flags.findIndex(Boolean)
+  return lines.filter((line, i) => !flags[i] || i === first)
+}
+
 // Drop the banner lines, keeping the FIRST one only when nothing else can act as
 // the post's headline.
 function dropCampaignBanners(lines) {
@@ -588,8 +638,13 @@ function cleanDealText(text) {
   const noise = /^(?:\s*(?:🔥\s*LOOT\s+ZONE\s*[—-]\s*India|🚨\s*SPECIAL\s+OFFER|✅\s*Verified\s*•\s*Enjoy\s*\(Grab\s*fast\)|.*deal\s*time\s*:.*(?:IST)?|.*\bloot\s+fa+s+\s*t+\b.*|.*(?:@GrabOnIndiaOfficial|50\+\s*loots\s*daily).*|(?:h|ht|htt|https?|ttp|ttps|tps?:\/\/|s:\/\/|:\/\/|uy)|👉.*(?:https\s*:\s*are)|💰?\s*want\s+real\s+cash\s*back\s+too\??|forward\s+to\s+@cashkarolink_?bot|#(?:myntra|flipkart|amazon|ajio))\s*)$/i
   const fragments = new Set(['h','ht','htt','http','https','ttp','ttps','tps://','tp://','s://','://','uy'])
   const meaningful = new Set(['men','mens','women','womens','unisex','blue','black','white','red','green','yellow','brown','orange','pink','purple','grey','gray','beige','gold','silver','small','medium','large'])
-  const cleaned = dropCampaignBanners(normalizeNestedLinks(text)
-    .replace(/[\u200b-\u200f\u2060\ufeff]/g, '').split(/\r?\n/))
+  const sourceLines = normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '').split(/\r?\n/)
+  // Branding always goes; the channel's own hype header only when the operator
+  // opted into WA_STRIP_CAMPAIGN_BANNERS.
+  const prepared = STRIP_CAMPAIGN_BANNERS
+    ? dropCampaignBanners(dropBrandingLines(sourceLines))
+    : dropBrandingLines(sourceLines)
+  const cleaned = prepared
     .filter(line => {
       const core = line.replace(/[^A-Za-z:/]/g, '').toLowerCase()
       const punctuationOnly = /^\s*(?:[-–—|:>]+|[👉👆]+)\s*$/.test(line)
@@ -1510,8 +1565,15 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
       if (lineUrls.length) {
         const labelPart = cleanBodyLine(line, lineUrls)
         if (labelPart) buffer.push(labelPart)
+        // The last buffered lines are this link's label(s); anything EARLIER in
+        // the buffer is ordinary source text (a second header, an MRP/shipping
+        // note) and must still be printed - dropping it used to lose source
+        // content. Same rule as the bot's ordered list rebuild.
+        const take = Math.min(lineUrls.length, buffer.length)
+        for (const rest of buffer.slice(0, buffer.length - take)) out.push(rest)
+        const labels = buffer.slice(buffer.length - take)
         for (const url of lineUrls) {
-          const label = buffer.length ? buffer.pop() : null
+          const label = labels.length ? labels.shift() : null
           out.push(label ? `${label}\n➜ ${displayUrl(job, url)}` : `➜ ${displayUrl(job, url)}`)
         }
         buffer = []
@@ -4000,9 +4062,46 @@ if (process.argv.includes('--self-test')) {
       ['IKthI4w', '6ft5j8a', '3FQw8wi', 'eIQ8aOv']
         .map(c => `\u279c [https://bitli.in/${c}](https://bitli.in/${c})`).join('\n')
     const bannerPost = sanitizeOutbound(formatWhatsAppPost({ text: bannerSrc }))
-    if (/TOP DEAL OF THE DAY|FLASH SALE|11 PM/.test(bannerPost)) {
-      throw new Error('campaign banner leaked into the WhatsApp post: ' + bannerPost)
+    // FIDELITY (the user's rule): the posting channel's own hype header is part of
+    // its post and is KEPT; only with WA_STRIP_CAMPAIGN_BANNERS=true does it go.
+    if (!STRIP_CAMPAIGN_BANNERS && !/TOP DEAL OF THE DAY/.test(bannerPost)) {
+      throw new Error('source banner must be preserved on WhatsApp: ' + bannerPost)
     }
+    if (!bannerPost.includes('\u20b9260') || !/Washing Machine Cover/.test(bannerPost)) {
+      throw new Error('fidelity mode lost the product/price line: ' + bannerPost)
+    }
+    if ((bannerPost.match(/bitli\.in\//g) || []).length !== 4) {
+      throw new Error('fidelity mode lost links: ' + bannerPost)
+    }
+    // But another channel's BRANDING never stays.
+    const branded = sanitizeOutbound(formatWhatsAppPost({ text:
+      'Top Loading Washing Machine Cover @ \u20b9260\n\u279c https://bitli.in/IKthI4w\n'
+      + '\ud83d\udd25 LOOT ZONE INDIA \u2014 Join for more loot\nFollow @BestDealHubIndia on WhatsApp' }))
+    if (/LOOT ZONE INDIA|BestDealHubIndia|Join for more/i.test(branded)) {
+      throw new Error('channel branding reached the WhatsApp post: ' + branded)
+    }
+    if (!/Washing Machine Cover|\u20b9260/.test(branded) || !branded.includes('bitli.in/IKthI4w')) {
+      throw new Error('branding strip cost deal content: ' + branded)
+    }
+    for (const keep of ['Myntra Mega Sale', 'DEALS OF THE DAY', 'SAARE MI AMAZING DEALS',
+                        'Free shipping on all orders', 'Boat Airdopes 141']) {
+      if (isBrandingLine(keep)) throw new Error('real content misread as branding: ' + keep)
+    }
+    for (const junk of ['\ud83d\udd25 LOOT ZONE INDIA \u2014 Join for more loot', 'Loot Zone India',
+                        'Join our telegram channel for more deals', 'Edited by Admin @dealsAdda',
+                        'Powered by Amazon Deals Hub']) {
+      if (!isBrandingLine(junk)) throw new Error('branding not recognised: ' + junk)
+    }
+    if (STRIP_CAMPAIGN_BANNERS && /TOP DEAL/.test(bannerPost)) {
+      throw new Error('strip mode did not remove the banner')
+    }
+    if (STRIP_CAMPAIGN_BANNERS && (!bannerPost.includes('\u20b9260') || !/Washing Machine Cover/.test(bannerPost))) {
+      throw new Error('strip mode must still keep the product/price line: ' + bannerPost)
+    }
+    // The opt-in helper still behaves (and keeps a headline when nothing else can).
+    const stripped = dropCampaignBanners(['\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25',
+      '\u26a1\ufe0f FLASH SALE \u26a1\ufe0f', 'Real Product \u20b999', 'https://a.co/1'])
+    if (/TOP DEAL|FLASH SALE/.test(stripped.join('\n'))) throw new Error('strip helper failed: ' + stripped)
     if (!/Washing Machine Cover/.test(bannerPost) || !bannerPost.includes('\u20b9260')) {
       throw new Error('banner stripping cost the product/price line: ' + bannerPost)
     }
@@ -4028,7 +4127,11 @@ if (process.argv.includes('--self-test')) {
     const pasted = '\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n' +
       'Top Loading Washing Machine Cover @ \u20b9260\n\u279c https://bitli.in/IKthI4w\n' + junk
     const post = sanitizeOutbound(formatWhatsAppPost({ text: pasted }))
-    if (/Refer 3 friends|Install the app|TOP DEAL/.test(post)) throw new Error('unwanted text reached the channel: ' + post)
+    // Only junk that is NOT the source's own post gets removed: referral/app-install
+    // farming. The channel's own header line stays (fidelity), unless the operator
+    // opted into WA_STRIP_CAMPAIGN_BANNERS.
+    if (/Refer 3 friends|Install the app/.test(post)) throw new Error('unwanted text reached the channel: ' + post)
+    if (/\[|\]\(/.test(post)) throw new Error('markdown debris reached the channel: ' + post)
     if (!/Washing Machine Cover @ \u20b9260/.test(post) || !post.includes('bitli.in/IKthI4w')) {
       throw new Error('deal content lost while stripping junk: ' + post)
     }

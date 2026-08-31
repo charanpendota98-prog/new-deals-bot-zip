@@ -221,6 +221,24 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.2.1 — SOURCE FIDELITY is the rule (the user reversed the v17.1 banner
+  strip):** `🔥🔥 TOP DEAL OF THE DAY 🔥🔥` / `⚡️ 11 PM FLASH SALE ⚡️` are how the
+  source channel writes a deal, so they are published exactly as the source wrote
+  them — emoji presentation selectors included (`strip_link_fragment_tokens`
+  stopped eating a trailing `\ufe0f`). What still goes, always: **another channel's
+  branding** (`is_branding_line` / `isBrandingLine`: "🔥 LOOT ZONE INDIA — Join for
+  more loot", "Loot Zone India", "Powered by …", "@handle" lines), referral and
+  app-install farming, CTA filler, glued random tokens, markdown debris, URL
+  residue — and every merchant link is swapped for OUR link. The classifier is
+  kept behind `STRIP_CAMPAIGN_BANNERS` / `WA_STRIP_CAMPAIGN_BANNERS` (both
+  default `false`) for anyone who later wants the hype lines gone; even then a
+  banner that is the post's only text line stays, so a wall of bare links is
+  impossible. Two related list-fidelity bugs fixed on both sides: a pure banner
+  can no longer be consumed as a product label (`_product_label` rejects it,
+  independent of the knob), and the multi-product rebuild now emits **every**
+  source line in source order (it used to print only the label→link pairs and
+  silently drop a second header or an MRP/shipping note; the bridge had the same
+  flaw, where text lines sitting above a label were thrown away).
 - **v17.2 — both WhatsApp channels, and no referral farming ever:** the
   `Get Flipkart App - Refer 3 friends and ₹100 referral bonus` block some sources
   staple under a deal *was* reaching the WhatsApp post, because a `₹` amount on a
@@ -411,18 +429,18 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.2 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.2.1 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `f11f79aeebd23d57ca7398367b4c7cd078cb5a07790fb17ddbb465e888a1cb3b` |
-| `tg-wa-bridge/bridge.js` | `a0f8d826525498192f9447cf400f2d89437771dab2badc8b60aca45d427fee73` |
+| `bestgaa/main_bot_new.py` | `522e4df71e766be068d9b7e58d84c9f3c83fe3a157e03488267f8f562da5403a` |
+| `tg-wa-bridge/bridge.js` | `c2362965868ed2d2dc4cc261b0b0a79507569154c36ea0415ed7dfdd00c4065e` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
 Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
-177/177 (list shapes, campaign banners, referral/app-install junk, coverage
+186/186 (source fidelity, list shapes, branding/referral junk, coverage
 audit, price fidelity, no-silent-loss),
 `test_rescan.py` pass, `node tg-wa-bridge/bridge.js --self-test` pass.
 

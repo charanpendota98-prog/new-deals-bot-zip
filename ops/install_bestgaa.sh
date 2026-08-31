@@ -133,6 +133,9 @@ TARGET_FANOUT_GAP_MAX=1.2
 # merchant link instead of losing the post. false = old behaviour (retry, then
 # skip - that deal never reaches the channels).
 PASSTHROUGH_UNMONETIZED=true
+# Source fidelity: publish what the source published (its own hype header
+# included). Set true to ALSO drop pure campaign banner lines.
+STRIP_CAMPAIGN_BANNERS=false
 # Night quiet 02:00-06:00 IST: Telegram posting pauses; deals keep queueing
 # and go out at 06:00. Set both equal (00:00/00:00) to disable.
 POST_QUIET_START=02:00

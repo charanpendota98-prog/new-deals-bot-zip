@@ -67,6 +67,9 @@ WA_CHANNEL=$WA_CHANNEL
 # both channels; false keeps the second one as the under-99 shelf only.
 WA_CHANNEL_UNDER99=$WA_CHANNEL_UNDER99
 WA_CHANNEL_ALL_POSTS=$MIRROR_ALL
+# Fidelity: the source's own header lines (TOP DEAL OF THE DAY / FLASH SALE) are
+# published as written. Set true to drop those hype lines too.
+WA_STRIP_CAMPAIGN_BANNERS=false
 WA_GROUPS=$WA_GROUPS
 WA_BITLY_TOKENS=$WA_BITLY_TOKENS
 WA_PRODUCT_DEDUP_HOURS=10
