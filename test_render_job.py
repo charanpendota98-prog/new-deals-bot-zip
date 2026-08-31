@@ -267,25 +267,28 @@ async def main():
                    rU, cU,
                    expect_targets_superset=["Under99Deals11", "under499loots", "LootZoneIndia11"],
                    msg_id=80)
+        # LIST roundups go to BOTH price channels regardless of the item prices
+        # (user rule: "under 99 channel lo ... list of products undali").
         rE, cE, uE = mk_list("EXP")
-        await case(store, "expensive list skips the price channels",
+        await case(store, "expensive list also lands in both price channels",
                    f"Premium Gadgets\nA ₹2999 {uE[0]}\nB ₹3499 {uE[1]}\nC ₹4999 {uE[2]}",
                    rE, cE,
-                   expect_targets_superset=["PowerLoots1", "Premiumlootsdeals", "LootZoneIndia11"],
+                   expect_targets_superset=["PowerLoots1", "Premiumlootsdeals", "LootZoneIndia11",
+                                            "Under99Deals11", "under499loots"],
                    msg_id=81)
         row81 = store.conn.execute("SELECT id FROM queue WHERE msg_id=81").fetchone()
         targets81 = await store.pending_targets(row81["id"])
-        check("expensive list NOT in under99/under499 (stays honest)",
-              "Under99Deals11" not in targets81 and "under499loots" not in targets81)
+        check("expensive list appears exactly once per channel (no duplication)",
+              targets81.count("Under99Deals11") == 1 and targets81.count("under499loots") == 1)
         rM, cM, uM = mk_list("MID")
-        await case(store, "mid (₹399-499) list -> under499 only",
+        await case(store, "mid (₹399-499) list -> under499 + under99",
                    f"Home Loots\nA ₹399 {uM[0]}\nB ₹449 {uM[1]}\nC ₹499 {uM[2]}",
                    rM, cM,
-                   expect_targets_superset=["under499loots", "LootZoneIndia11"],
+                   expect_targets_superset=["under499loots", "LootZoneIndia11", "Under99Deals11"],
                    msg_id=82)
         row82 = store.conn.execute("SELECT id FROM queue WHERE msg_id=82").fetchone()
         targets82 = await store.pending_targets(row82["id"])
-        check("mid list NOT in under99", "Under99Deals11" not in targets82)
+        check("mid list in under99 too, once", targets82.count("Under99Deals11") == 1)
 
         # 7e. First-preference source (pricehistory): its queue jobs get a +1
         # priority boost so the same content tier delivers ahead of others.

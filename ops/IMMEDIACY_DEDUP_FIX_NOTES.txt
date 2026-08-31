@@ -413,3 +413,49 @@ D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
   test_rescan.py PASS, bridge --self-test PASS in default / strip-banners /
   all-posts / warmup / tuned-gap modes. The duplicate test functions left by the
   mid-file splice were removed (one definition per name now).
+
+
+v17.4 - WHATSAPP CHANNEL POLICIES (per-channel content, best-of = winner only)
+================================================================================
+The user's rule for round 6: "under 99 channel lo under 99 products mariyu list of
+products undali; under 499 channel lo anni sources nunchi smart ga theskoni post
+cheyali; okkesari 10 deals vachina kuda the best vi smart ga post cheyali; kada ledu
+ante skip; credit card / bank offers mariyu lists anni channels lo undali" - i.e.
+curated per-channel content on WhatsApp (not "blast everything as fast as possible",
+which stays true for Telegram only), and lists/card offers always posted.
+
+What changed in tg-wa-bridge/bridge.js:
+  * WA_CHANNEL_UNDER499 / WA_CHANNEL_BEST_OF join WA_CHANNEL_UNDER99. resolveExtra-
+    Channels() resolves each configured channel, retries only the missing ones every
+    10 minutes, and syncChannelPolicies() records which policy each JID has, so
+    targetsFor() asks every channel instead of assuming "channel #2 = under-99".
+  * eligibleForChannel(job, policy):
+      under99   - price <= 99, card/bank offer, or ANY product list (price-agnostic)
+      under499  - same with the 499 band
+      bestOf    - card/service posts; a list needs an in-band item or 60%+ off;
+                  <=99 needs BEST_MIN_DISCOUNT; in-band needs 60%+ off; no price
+                  needs QUALITY_STRONG_DISCOUNT. Anything else is SKIPPED there.
+    isList / discount / price / cardOffer come from one channelFacts() read of the
+    post, so a price the source printed can never be misread as a different one.
+  * isBestOfMoment(job): the best-of channel only takes the top-ranked READY job
+    (dealQualityScore across the queue, ties to the newest), so a burst of ten deals
+    yields exactly one best-of post and the rest still flow on the paced main feed.
+    noteBestOfPick() records the pick (persisted) and WA_BEST_OF_COOLDOWN_SECONDS
+    (default 0) spaces picks out when the operator wants fewer.
+  * isNewsletterTarget() now covers all four channels, so delivery marks / pacing
+    apply to every one of them; a digest stays main-only unless
+    WA_CHANNEL_ALL_POSTS=true (mirror everything, the previous behaviour).
+  * install_bridge.sh asks for the third and fourth channel and writes the new keys.
+
+bestgaa/main_bot_new.py, same instruction on the Telegram side:
+  * a 3+ product list now fans out to Under99Deals11 AND under499loots whatever the
+    item prices are (it used to require an in-band price); single deals keep their
+    band check, Premium keeps only best-scored picks, card/service offers still fan
+    out to every owned channel. Dedup untouched: exactly one copy per channel, so
+    wider fan-out cannot duplicate a post (test_render_job asserts count == 1).
+
+Verified: test_render_job.py 140/140, test_pipeline_fixes.py 186/186,
+test_rescan.py PASS, bridge --self-test PASS in default / strip-banners / mirror-all
+/ warmup / tuned-gap / WA_BEST_OF_COOLDOWN_SECONDS=3600 modes. The self-test asserts
+the matrix (89 vs 399 vs 24999, list rule, card offers everywhere) and the
+one-winner-per-burst rule for the best-of channel.

@@ -221,6 +221,28 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.4 — each WhatsApp channel gets its own content, and the best-of channel
+  posts only the winner:** `WA_CHANNEL_UNDER99`, `WA_CHANNEL_UNDER499` and
+  `WA_CHANNEL_BEST_OF` are resolved to JIDs (a channel that fails to resolve is
+  retried every 10 min instead of staying missing until the next reconnect) and
+  mapped to a policy in `CHANNEL_POLICY_OF_JID`, so `targetsFor()` *asks each
+  channel what it accepts* instead of hard-coding "the second channel is under-99":
+  under-₹99 = deals ≤₹99, card/bank offers and **every product list**; under-₹499 =
+  the same with a ₹499 band, pulled from all sources; best-of = only a clear best
+  pick (`eligibleForChannel`: 60%+ off in band, `BEST_MIN_DISCOUNT` at ≤₹99, 70%+
+  when the source printed no price, card/service posts auto-pass) **and** only
+  while it is the top-ranked ready deal — `isBestOfMoment()` compares
+  `dealQualityScore` across the queue (ties to the newer post), so ten deals at
+  once produce ONE best-of post and the other nine keep flowing on the paced main
+  feed; a deal that is not the best is skipped there, not delayed and dumped.
+  `WA_BEST_OF_COOLDOWN_SECONDS` (default 0) spaces the picks out if you want fewer;
+  `WA_CHANNEL_ALL_POSTS=true` still mirrors everything to every channel, and a
+  digest stays a main-channel item otherwise. On the Telegram side the list rule is
+  now the same instruction: a 3+ product list is a curated roundup, so it fans out
+  to `Under99Deals11` **and** `under499loots` whatever the item prices are (it used
+  to require an in-band price), single deals keep their band check, `Premiumlootsdeals`
+  keeps only best-scored deals, and card/service offers still fan out to every owned
+  channel. Dedup is untouched by all of this - one post means one copy per channel.
 - **v17.3 — SOURCE FIDELITY is the rule (the user reversed the v17.1 banner
   strip):** `🔥🔥 TOP DEAL OF THE DAY 🔥🔥` / `⚡️ 11 PM FLASH SALE ⚡️` are how the
   source channel writes a deal, so they are published exactly as the source wrote
@@ -429,20 +451,25 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.3 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.4 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `a7b8ea9c2831688c1908e31954e44855d1bbe85ee772b25baee6bb36e8462b6b` |
-| `tg-wa-bridge/bridge.js` | `c2362965868ed2d2dc4cc261b0b0a79507569154c36ea0415ed7dfdd00c4065e` |
+| `bestgaa/main_bot_new.py` | `5b139333469d1e443cc5bbc1de15d73a2cba2f9fcd9f60378e56c214046cbb6c` |
+| `tg-wa-bridge/bridge.js` | `3eca10ebe78cf11f147ca85b032cc3e33174f0eada883e9225835fc9c6d75570` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 
-Verified on this tree: `test_render_job.py` 137/137, `test_pipeline_fixes.py`
-186/186 (source fidelity, list shapes, branding/referral junk, coverage
-audit, price fidelity, no-silent-loss),
-`test_rescan.py` pass, `node tg-wa-bridge/bridge.js --self-test` pass.
+Verified on this tree: `test_render_job.py` 140/140 (list fan-out to both price
+channels, once per channel), `test_pipeline_fixes.py` 186/186 (source fidelity,
+list shapes, branding/referral junk, coverage audit, price fidelity,
+no-silent-loss), `test_rescan.py` pass, and
+`node tg-wa-bridge/bridge.js --self-test` pass in default / strip-banners /
+mirror-all (`WA_CHANNEL_ALL_POSTS=true`) / warmup / tuned-gap /
+`WA_BEST_OF_COOLDOWN_SECONDS=3600` modes — the self-test also asserts the channel
+policy matrix (₹89 vs ₹399 vs ₹24999, list-agnostic price rule, card offers
+everywhere) and that a 10-deal burst produces exactly one best-of post.
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`
 > (`51c3791b…` / `5d8e1f50…` / `28656d74…`) predates this build and is stale.

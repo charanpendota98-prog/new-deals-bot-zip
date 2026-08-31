@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.3
+"""BestGAA Production Bot v17.4
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -27,7 +27,9 @@ immediately, exactly once, clean":
   API outage degrades the same way on the last attempt (never a missing post)
 - v17: an edited source post that never reached a target is re-queued
 - long caption/message chunking
-- Under-99 / Under-499 price routing
+- Under-99 / Under-499 price routing: single deals are band-checked, a product
+  LIST reaches both price channels whatever its item prices, bank/card offers fan
+  out to every owned channel, and Premium keeps only the best-scored deals
 """
 from __future__ import annotations
 
@@ -3968,17 +3970,17 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         premium_rank = max(1, premium_score(text, routing_price, discount))
     elif row["source"] not in TRICKS_SOURCES:
         if multi_product_list:
-            # 3+ product lists fan out to the curated non-Tricks destinations.
-            # The under-₹99 / under-₹499 PRICE channels receive a list only
-            # when it actually FEATURES items in that band (at least one priced
-            # item <= band) — user rule "price tho": a priced product or priced
-            # list from ANY source posts there, but an all-expensive list must
-            # not flood the under-99 channel. POWER + PREMIUM take every list.
-            if list_prices:
-                if any(p <= 99 for p in list_prices) and UNDER99_TARGET not in base_targets:
-                    base_targets.append(UNDER99_TARGET)
-                if any(p <= 499 for p in list_prices) and UNDER499_TARGET not in base_targets:
-                    base_targets.append(UNDER499_TARGET)
+            # 3+ product lists fan out to the curated non-Tricks destinations, and
+            # POWER + PREMIUM take every list (their audience expects roundups).
+            # The user's rule for the price channels (Aug 2026): a LIST roundup
+            # belongs in BOTH of them whatever the item prices are - "under 99
+            # channel lo under 99 products mariyu list of products undali", and the
+            # under-499 channel pulls its picks from all sources. Single deals stay
+            # band-checked, and dedup is untouched: every channel still receives a
+            # given post exactly once, so this cannot double-post.
+            for price_channel in (UNDER99_TARGET, UNDER499_TARGET):
+                if price_channel not in base_targets:
+                    base_targets.append(price_channel)
             for target in (POWER_FILTER_TARGET, PREMIUM_TARGET):
                 if target not in base_targets:
                     base_targets.append(target)
@@ -4270,7 +4272,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.3 starting "
+    log.info("BestGAA Production Bot v17.4 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

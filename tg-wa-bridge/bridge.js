@@ -62,6 +62,24 @@ const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
 // WA_CHANNEL_ALL_POSTS=true to mirror EVERY post to both channels instead
 // (the under-₹99 gate is then ignored, digests included).
 const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerCase() === 'true'
+// ---------------------------------------------------------------------------
+// THE USER'S CHANNEL MATRIX - each WhatsApp channel is a POLICY, not just a JID.
+// Configure a channel via env and its rule applies automatically:
+//   WA_CHANNEL            -> main: every curated best deal (quality gate applies)
+//   WA_CHANNEL_UNDER99    -> under-₹99 products + ANY multi-product list
+//   WA_CHANNEL_UNDER499   -> under-₹499 products + ANY multi-product list
+//   WA_CHANNEL_BEST_OF    -> only "the best of the moment": a deal that is not a
+//                            clear best-tier pick is SKIPPED on this channel
+// Lists go to BOTH price channels even when their prices sit above the band
+// ("list of products vachinappudu price tho sambandam lekunda 2 channels lo"), and
+// credit/bank-card offers are posted wherever they are configured.
+const WA_CHANNEL_UNDER499 = (process.env.WA_CHANNEL_UNDER499 || '').trim()
+const WA_CHANNEL_BEST_OF = (process.env.WA_CHANNEL_BEST_OF || '').trim()
+// "aa time best ga em vundo adi post cheyali": the best-of channel posts the
+// SINGLE top deal available at that moment (ten deals may be queued - only the
+// winner goes there). WA_BEST_OF_COOLDOWN_SECONDS spaces the picks out if you
+// want fewer of them; 0 (default) means "pick a winner for every post".
+const BEST_OF_COOLDOWN_SECONDS = Math.max(0, Number(process.env.WA_BEST_OF_COOLDOWN_SECONDS || 0))
 // Source fidelity (the user's rule): the channel's own hype header
 // ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥", "⚡️ 11 PM FLASH SALE ⚡️") is part of the post and
 // is KEPT. Set WA_STRIP_CAMPAIGN_BANNERS=true only to drop those lines too.
@@ -280,6 +298,10 @@ let wa = null
 let waReady = false
 let targetJid = null
 let under99Jid = null
+let under499Jid = null
+let bestOfJid = null
+// jid -> policy, rebuilt whenever a channel resolves (targetsFor reads it).
+const CHANNEL_POLICY_OF_JID = new Map()
 let groupJids = []
 let shuttingDown = false
 
@@ -2301,6 +2323,71 @@ function under99Eligible(job) {
 }
 // Targets for a post: main Channel + (groups) + Under-₹99 channel when eligible.
 // Digests/rotational batches pass job=null and go to the main channel only.
+// ---------------------------------------------------------------------------
+// Channel policy evaluation. The facts are computed once per job so every rule
+// is readable, testable and identical across channels.
+// ---------------------------------------------------------------------------
+function channelFacts(job) {
+  const text = (job && job.text) || ''
+  const urls = urlsIn(text)
+  const isList = Boolean(job && job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS
+  const discount = explicitDiscount(text) || 0
+  const price = detectedPrice(text)
+  const prices = dealPrices(text)
+  const cardOffer = /\b(?:credit\s*card|debit\s*card|bank\s*offer|card\s*offer|no\s*cost\s*emi)\b/i.test(text)
+  const special = Boolean(job && job.special) || isSpecialOffer(text)
+  return { isList, discount, price, prices, cardOffer, special }
+}
+function eligibleForChannel(job, policy) {
+  const facts = channelFacts(job)
+  if (policy === 'main') return true
+  if (policy === 'under99') {
+    if (facts.isList) return true // lists reach both price channels, price-agnostic
+    if (facts.cardOffer) return true
+    return facts.price != null && facts.price <= UNDER99_MAX_PRICE
+  }
+  if (policy === 'under499') {
+    if (facts.isList) return true
+    if (facts.cardOffer) return true
+    return facts.price != null && facts.price <= BEST_MAX_PRICE
+  }
+  if (policy === 'bestOf') {
+    // "the best vi smart ga, kada ledu ante skip"
+    if (facts.cardOffer || facts.special) return true
+    if (facts.isList) return facts.prices.some(p => p <= BEST_MAX_PRICE) || facts.discount >= 60
+    if (facts.price == null) return facts.discount >= QUALITY_STRONG_DISCOUNT
+    if (facts.price <= UNDER99_MAX_PRICE) return facts.discount >= BEST_MIN_DISCOUNT
+    return facts.price <= BEST_MAX_PRICE && facts.discount >= 60
+  }
+  return false
+}
+/**
+ * Is THIS job the best deal the best-of channel could post right now? Compared
+ * against every ready job that also qualifies for that channel, so a burst of ten
+ * deals produces exactly ONE winner there and the rest stay on the paced main
+ * feed. Ties break to the newer post (matching the queue's newest-first policy).
+ */
+function isBestOfMoment(job) {
+  if (!bestOfJid || !job) return true
+  const cooldown = BEST_OF_COOLDOWN_SECONDS * 1000
+  if (cooldown && Date.now() - (Number(state.bestOfLastPickAt) || 0) < cooldown) return false
+  const mine = dealQualityScore(job).score
+  for (const other of state.jobs) {
+    if (!other || other.id === job.id) continue
+    if (Number(other.availableAt || 0) > Date.now()) continue
+    if (!eligibleForChannel(other, 'bestOf')) continue
+    const theirs = dealQualityScore(other).score
+    if (theirs > mine || (theirs === mine && Number(other.createdAt || 0) > Number(job.createdAt || 0))) return false
+  }
+  return true
+}
+function noteBestOfPick(job) {
+  if (!job || job._bestOfNoted) return
+  job._bestOfNoted = true
+  state.bestOfLastPickAt = Date.now()
+  saveState()
+}
+
 function secondaryEligible(job) {
   if (!under99Jid) return false
   // Mirror mode: both channels get everything (digests included).
@@ -2312,7 +2399,16 @@ function secondaryEligible(job) {
 function targetsFor(job) {
   const list = []
   if (targetJid) list.push(targetJid)
-  if (secondaryEligible(job)) list.push(under99Jid)
+  for (const jid of [under99Jid, under499Jid, bestOfJid]) {
+    if (!jid || list.includes(jid)) continue
+    const policy = CHANNEL_POLICY_OF_JID.get(jid) || 'under99'
+    // A digest (no job) stays a main-channel item unless everything is mirrored.
+    if (!CHANNEL_ALL_POSTS && !job) continue
+    if (!CHANNEL_ALL_POSTS && !eligibleForChannel(job, policy)) continue
+    if (policy === 'bestOf' && !isBestOfMoment(job)) continue
+    if (policy === 'bestOf') noteBestOfPick(job)
+    list.push(jid)
+  }
   for (const jid of groupJids) if (!list.includes(jid)) list.push(jid)
   return list
 }
@@ -2353,7 +2449,9 @@ function allTargets(job = null) {
 // WA send (groups). Both the main channel and the Under-₹99 channel are
 // newsletters.
 function isNewsletterTarget(jid) {
-  return jid === targetJid || (!!under99Jid && jid === under99Jid) || /@newsletter$/i.test(jid || '')
+  return jid === targetJid || (!!under99Jid && jid === under99Jid)
+    || (!!under499Jid && jid === under499Jid) || (!!bestOfJid && jid === bestOfJid)
+    || /@newsletter$/i.test(jid || '')
 }
 // Per-target send marks survive retries so a failed group never causes a
 // duplicate on the targets that already received the message. Jobs carry
@@ -2965,19 +3063,45 @@ async function connectionWatchdog() {
  * not cached yet) used to stay missing until the next reconnect - silently
  * halving coverage. Retry while it is unresolved.
  */
-async function ensureSecondaryChannel(sock) {
-  if (!WA_CHANNEL_UNDER99 || under99Jid || !sock) return
-  try {
-    under99Jid = await resolveNewsletterJid(sock, WA_CHANNEL_UNDER99)
-    log.info({ under99Jid, mode: CHANNEL_ALL_POSTS ? 'all posts' : 'under-99 tier' },
-      'secondary WhatsApp channel resolved on retry')
-  } catch (error) {
-    log.warn({ err: error.message }, 'secondary WhatsApp channel still unresolved; retry in 10 min')
-  }
+const EXTRA_CHANNELS = () => [
+  { key: 'under99', env: WA_CHANNEL_UNDER99, apply: jid => { under99Jid = jid }, current: () => under99Jid },
+  { key: 'under499', env: WA_CHANNEL_UNDER499, apply: jid => { under499Jid = jid }, current: () => under499Jid },
+  { key: 'bestOf', env: WA_CHANNEL_BEST_OF, apply: jid => { bestOfJid = jid }, current: () => bestOfJid },
+]
+function syncChannelPolicies() {
+  CHANNEL_POLICY_OF_JID.clear()
+  if (under99Jid) CHANNEL_POLICY_OF_JID.set(under99Jid, 'under99')
+  if (under499Jid) CHANNEL_POLICY_OF_JID.set(under499Jid, 'under499')
+  if (bestOfJid) CHANNEL_POLICY_OF_JID.set(bestOfJid, 'bestOf')
 }
+// Resolve every configured extra channel. onlyMissing=true (the timer) retries
+// just the ones that are still unresolved, so a blip never halves coverage.
+async function resolveExtraChannels(sock, onlyMissing = false) {
+  if (!sock) return
+  for (const channel of EXTRA_CHANNELS()) {
+    if (!channel.env) continue
+    if (onlyMissing && channel.current()) continue
+    try {
+      const jid = await resolveNewsletterJid(sock, channel.env)
+      channel.apply(jid)
+      syncChannelPolicies()
+      log.info({ channel: channel.key, jid, mode: CHANNEL_ALL_POSTS ? 'mirror-everything' : `policy:${channel.key}` },
+        'WhatsApp channel resolved')
+    } catch (error) {
+      syncChannelPolicies()
+      log.error({ channel: channel.key, err: error.message },
+        'WhatsApp channel could not be resolved; retrying on a timer, main channel posting normally')
+    }
+  }
+  syncChannelPolicies()
+}
+async function ensureSecondaryChannel(sock) {
+  await resolveExtraChannels(sock)
+}
+
 function secondaryChannelRetryLoop() {
   const timer = setInterval(() => {
-    if (!shuttingDown && waReady) ensureSecondaryChannel(wa).catch(() => {})
+    if (!shuttingDown && waReady) resolveExtraChannels(wa, true).catch(() => {})
   }, 600_000)
   if (typeof timer.unref === 'function') timer.unref()
 }
@@ -3008,20 +3132,10 @@ async function connectWhatsApp() {
       lastConnectionOpenAt = Date.now()
       try {
         targetJid = await resolveTargetJid(sock)
-        // Optional second channel (Under-₹99). Non-fatal: if it fails to
-        // resolve, the main channel keeps posting normally.
-        under99Jid = null
-        if (WA_CHANNEL_UNDER99) {
-          try {
-            under99Jid = await resolveNewsletterJid(sock, WA_CHANNEL_UNDER99)
-            log.info({ under99Jid }, 'Under-₹99 channel resolved')
-          } catch (error) {
-            // A transient failure must not cost the SECOND channel the rest of
-          // the day: the main channel keeps posting and the resolve is retried
-          // on a timer (secondaryChannelRetryLoop).
-          log.error({ err: error.message }, 'Under-₹99 channel could not be resolved; retrying on a timer, main channel posting normally')
-          }
-        }
+        // Extra channels (Under-₹99 / Under-₹499 / Best-of). Non-fatal: whatever
+        // fails to resolve is retried on a timer while the main channel posts.
+        under99Jid = null; under499Jid = null; bestOfJid = null
+        await resolveExtraChannels(sock)
         groupJids = []
         if (CHANNEL_ONLY) {
           log.warn('WA_CHANNEL_ONLY=true -> groups disabled this run (Channel only).')
@@ -3042,7 +3156,9 @@ async function connectWhatsApp() {
         if (!state.warmupStartedAt) state.warmupStartedAt = Date.now()
         saveState()
         log.info({
-          targetJid, under99Jid, groups: groupJids, sources: [...SOURCES], policy: warmupPolicy(),
+          targetJid, under99Jid, under499Jid, bestOfJid,
+          channelPolicies: Object.fromEntries([...CHANNEL_POLICY_OF_JID.entries()]),
+          sources: [...SOURCES], policy: warmupPolicy(),
           primarySource: PRIMARY_SOURCE, mediaFirst: MEDIA_FIRST,
           newsletterMediaFix: NEWSLETTER_MEDIA_FIX,
           minGapSeconds: MIN_WA_MESSAGE_GAP_SECONDS,
@@ -4136,6 +4252,78 @@ if (process.argv.includes('--self-test')) {
       throw new Error('deal content lost while stripping junk: ' + post)
     }
   }
+  {
+    // Channel policy matrix - the user's four WhatsApp channels.
+    const cheap = { text: 'Sony Earbuds ₹89 80% OFF\nhttps://a.co/x1' }
+    if (!eligibleForChannel(cheap, 'under99')) throw new Error('a ₹89 deal must reach the under-99 channel')
+    const mid = { text: 'Wifi Speaker ₹399 65% OFF\nhttps://a.co/x2' }
+    if (eligibleForChannel(mid, 'under99')) throw new Error('a ₹399 deal must not pollute the under-99 channel')
+    if (!eligibleForChannel(mid, 'under499')) throw new Error('a ₹399 deal belongs in the under-499 channel')
+    if (!eligibleForChannel(mid, 'bestOf')) throw new Error('a 65%-off ₹399 deal is best-of material')
+    const weak = { text: 'Sofa Set ₹24999 5% OFF\nhttps://a.co/x3' }
+    if (eligibleForChannel(weak, 'under499') || eligibleForChannel(weak, 'bestOf')) {
+      throw new Error('an expensive weak deal must be skipped by the curated channels')
+    }
+    const list = { text: 'MEGA LIST\nShirt ₹1999 https://a.co/1\nShoes ₹2999 https://a.co/2\nBag ₹3999 https://a.co/3\nWatch ₹4999 https://a.co/4', largeList: true }
+    if (!eligibleForChannel(list, 'under99') || !eligibleForChannel(list, 'under499')) {
+      throw new Error('a product list must reach both price channels whatever the item prices')
+    }
+    const card = { text: 'HDFC credit card offer: ₹2500 instant discount on Apple laptop\nhttps://a.co/x5' }
+    if (!(eligibleForChannel(card, 'under99') && eligibleForChannel(card, 'under499') && eligibleForChannel(card, 'bestOf'))) {
+      throw new Error('bank/card offers must be posted on every channel')
+    }
+    // Ten deals arrive at once: the best-of channel must take exactly the winner.
+    const saved = { targetJid, under99Jid, under499Jid, bestOfJid, jobs: state.jobs }
+    const savedPolicies = new Map(CHANNEL_POLICY_OF_JID)
+    try {
+      targetJid = 'main@newsletter'; under99Jid = 'u99@newsletter'
+      under499Jid = 'u499@newsletter'; bestOfJid = 'best@newsletter'
+      syncChannelPolicies()
+      const deals = Array.from({ length: 10 }, (_, i) => ({
+        id: `burst-${i}`, text: `Item ${i} ₹399 ${10 + i * 8}% OFF\nhttps://a.co/b${i}`,
+        availableAt: 0, createdAt: 1000 + i,
+      }))
+      state.jobs = deals
+      if (!CHANNEL_ALL_POSTS) {
+        // Every question below is judged on ranking only: clear the cooldown clock
+        // and the per-job "already picked" flag, so a WA_BEST_OF_COOLDOWN_SECONDS
+        // setting cannot make independent calls contradict each other.
+        const pick = (job) => {
+          state.bestOfLastPickAt = 0
+          delete job._bestOfNoted
+          return targetsFor(job)
+        }
+        const winners = deals.filter((job) => pick(job).includes('best@newsletter')).length
+        if (winners !== 1) throw new Error(`the best-of channel must post exactly one winner from a 10-deal burst, got ${winners}`)
+        const top = deals.reduce((a, b) => (dealQualityScore(b).score > dealQualityScore(a).score ? b : a))
+        if (!pick(top).includes('best@newsletter')) throw new Error('the best-of pick must be the highest-scoring deal')
+        if (!deals.every((job) => pick(job).includes('u499@newsletter'))) {
+          throw new Error('every \u20b9399 deal belongs in the under-499 channel')
+        }
+        if (deals.some((job) => pick(job).includes('u99@newsletter'))) {
+          throw new Error('the under-99 channel must not take \u20b9399 single deals')
+        }
+        if (BEST_OF_COOLDOWN_SECONDS > 0) {
+          state.bestOfLastPickAt = Date.now()
+          deals.forEach((job) => { delete job._bestOfNoted })
+          if (deals.some((job) => targetsFor(job).includes('best@newsletter'))) {
+            throw new Error('best-of picks must respect WA_BEST_OF_COOLDOWN_SECONDS')
+          }
+        }
+      }
+      if (!deals.every((job) => targetsFor(job).includes('main@newsletter'))) {
+        throw new Error('the main channel must keep every deal, not only the winner')
+      }
+    } finally {
+      Object.assign(globalThis, {})
+      targetJid = saved.targetJid; under99Jid = saved.under99Jid
+      under499Jid = saved.under499Jid; bestOfJid = saved.bestOfJid
+      state.jobs = saved.jobs
+      CHANNEL_POLICY_OF_JID.clear()
+      for (const [k, v] of savedPolicies) CHANNEL_POLICY_OF_JID.set(k, v)
+    }
+  }
+
   console.log('bridge self-test PASS')
   process.exit(0)
 }

@@ -134,3 +134,17 @@ FAILURE ISOLATION
 
 SECURITY
 Never upload/paste .env, BotFather token, pairing code or auth/. Back up .env and auth/ securely.
+
+WhatsApp channel policies (v17.4). Each configured channel is fed by its own rule,
+set in .env:
+  WA_CHANNEL            main channel - every deal that passes the pipeline
+  WA_CHANNEL_UNDER99    deals up to Rs99, card/bank offers, and every product list
+  WA_CHANNEL_UNDER499   same, with a Rs499 band - picks from all sources
+  WA_CHANNEL_BEST_OF    only the single best deal available at that moment; a deal
+                        that is not a best pick is skipped here (never delayed and
+                        dumped). WA_BEST_OF_COOLDOWN_SECONDS spaces the picks out.
+WA_CHANNEL_ALL_POSTS=true overrides all of this and mirrors every post to every
+channel. Channel IDs may be an invite link or a ...@newsletter JID; a channel that
+fails to resolve once is retried every 10 minutes, and the main channel keeps
+posting meanwhile.
+
