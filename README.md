@@ -221,7 +221,7 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
-- **v17.2.1 — SOURCE FIDELITY is the rule (the user reversed the v17.1 banner
+- **v17.3 — SOURCE FIDELITY is the rule (the user reversed the v17.1 banner
   strip):** `🔥🔥 TOP DEAL OF THE DAY 🔥🔥` / `⚡️ 11 PM FLASH SALE ⚡️` are how the
   source channel writes a deal, so they are published exactly as the source wrote
   them — emoji presentation selectors included (`strip_link_fragment_tokens`
@@ -429,13 +429,13 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.2.1 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.3 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `522e4df71e766be068d9b7e58d84c9f3c83fe3a157e03488267f8f562da5403a` |
+| `bestgaa/main_bot_new.py` | `a7b8ea9c2831688c1908e31954e44855d1bbe85ee772b25baee6bb36e8462b6b` |
 | `tg-wa-bridge/bridge.js` | `c2362965868ed2d2dc4cc261b0b0a79507569154c36ea0415ed7dfdd00c4065e` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 

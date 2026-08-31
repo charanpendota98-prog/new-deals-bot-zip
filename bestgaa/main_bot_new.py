@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.2
+"""BestGAA Production Bot v17.3
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -4270,7 +4270,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.2 starting "
+    log.info("BestGAA Production Bot v17.3 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
