@@ -137,6 +137,32 @@ class DeadLinkAffiliate(FakeAffiliate):
         return False
 
 
+class HalfDeadAffiliate(FakeAffiliate):
+    """Two products, one page that is gone for us (404) and one that is fine.
+
+    This is the shape that drives the delivery-side LINK REPAIR: the pre-send pass says
+    "something is dead", the pipeline then decides per link - drop that destination, keep the
+    post. It is also the path that used to read a queue column that does not exist, which is
+    how a repair ended up losing the post it was called to save.
+    """
+
+    async def resolve(self, url):
+        slug = (url or "").rstrip("/").split("/")[-1]
+        return f"https://www.amazon.in/dp/B0{slug}"
+
+    async def convert(self, source, multi_link, resolved=None):
+        slug = (resolved or "").split("/dp/")[-1].split("?")[0] or "B0GOOD1"
+        return bot.LinkResult(source, f"https://www.amazon.in/dp/{slug}",
+                              f"https://www.amazon.in/dp/{slug}?tag={bot.OUR_TAG}",
+                              f"ASIN:{slug}")
+
+    async def link_not_broken(self, url):
+        return "DEAD" not in (url or "")
+
+    async def rendered_links_not_broken(self, text):
+        return "DEAD" not in (text or "")
+
+
 class UnresolvableAffiliate:
     """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
     sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
@@ -194,7 +220,8 @@ def target_map_for(store_targets: set[str]) -> dict[str, Ent]:
 
 async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
                   enqueue_specs: list[tuple[int, int, str]], expect_posts: int,
-                  crash_after_first: bool = False, affiliate: FakeAffiliate | None = None):
+                  crash_after_first: bool = False, affiliate: FakeAffiliate | None = None,
+                  mutate=None):
     """One isolated run: enqueue, drain (optionally twice), return the client."""
     store = bot.Store(Path(tempfile.mktemp(suffix="-sim.sqlite3")))
     if True:
@@ -205,6 +232,9 @@ async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
         try:
             for chat_id, msg_id, text in enqueue_specs:
                 await store.enqueue(chat_id, msg_id, SOURCE, text, False)
+            if mutate is not None:
+                mutate(store)          # e.g. simulate a row written before a column existed
+            store.conn.commit()
             names = {SOURCE}
             for targets in bot.SOURCE_TO_TARGETS.get(SOURCE, []):
                 names.add(targets)
@@ -588,6 +618,38 @@ def test_scenarios():
         row11 = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
         check("[S11a] the job finished (not pending-retry, not skipped)",
               row11[0] == "done" and not row11[1], str(tuple(row11)))
+
+        # ---- S12: the delivery-side link repair (a dead destination next to a live one)
+        # The repair re-writes the post, so it must not throw over a missing column, must
+        # keep every word of the deal, and must not leave an empty line where it cut a link.
+        print("\n== S12: a dead destination is cut, the post survives ==")
+        two = ("\U0001f525 Two-pack list\n"
+               "1) Multicolor Hair Clips \u20b985 https://amzn.to/GOOD1\n"
+               "2) Steel Water Bottle \u20b999 https://amzn.to/DEAD2")
+        msgs = {(-1009098, 9500): FakeMsg(two, 9500)}
+        store, client, sends, _ = await scenario("s12a", msgs, [(-1009098, 9500, two)], 1,
+                                                 affiliate=HalfDeadAffiliate())
+        ch = sorted(sends)
+        check("[S12a] the repair posted, it did not lose the deal", bool(ch), str(ch))
+        body = sends[ch[0]][0] if ch else ""
+        check("[S12a] the dead destination is gone from the copy", "DEAD" not in body, body)
+        check("[S12a] the live product line and price survive",
+              "Multicolor Hair Clips" in body and "\u20b985" in body and "Steel Water Bottle" in body, body)
+        check("[S12a] the layout has no blank line the repair created", "\n\n" not in body, repr(body))
+        row12 = store.conn.execute("select status, last_error from queue").fetchone()
+        check("[S12a] the job finished clean (no repair crash)", row12[0] == "done", str(tuple(row12)))
+
+        # the same run against a row written by an older build (no source_text on the row):
+        # an unknown layout must mean "hands off", never a crash and never a re-flow.
+        store, client, sends, _ = await scenario(
+            "s12b", msgs, [(-1009098, 9500, two)], 1, affiliate=HalfDeadAffiliate(),
+            mutate=lambda st: st.conn.execute("UPDATE queue SET source_text=NULL"))
+        ch_b = sorted(sends)
+        body_b = sends[ch_b[0]][0] if ch_b else ""
+        check("[S12b] a legacy row (no source_text) still posts, unharmed",
+              bool(ch_b) and "Multicolor Hair Clips" in body_b and "\u20b985" in body_b, str(ch_b))
+        check("[S12b] and it is not re-flowed on a guess (source layout unknown)",
+              body_b.count("1) Multicolor Hair Clips") == 1, repr(body_b[:120]))
 
         await asyncio.sleep(0)
     asyncio.run(run())

@@ -52,7 +52,7 @@ cd tg-wa-bridge && npm install \
 # Behaviour tests (no network; expects all green):
 python3 test_render_job.py        # 151 checks: routing, formatting, conversion
 python3 test_rescan.py            # ingest dead-man's switch + idempotency
-python3 test_pipeline_fixes.py    # 209 checks: immediacy, zero duplicates, quality
+python3 test_pipeline_fixes.py    # 218 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
@@ -242,6 +242,16 @@ Individual deploys:
      real deal terms (a price, a discount, a card or a service offer). A photo with no deal
      terms and a text-only line with nothing to buy are still skipped — the curated WhatsApp
      gate also still skips a link-free post, out loud, with the reason in the log.
+  3. **A repair must not crash the post it is repairing.** The layout rule added in this round
+     read `row["text"]` — a column the queue table does not have — and `sqlite3.Row` raises on a
+     missing key, so a post being repaired (a dead or unverified link) failed with
+     `JOB FAIL 1: No item with that key` and stayed pending forever. Fixed at the root: the queue
+     now stores the source text (`source_text`, added through the normal migration path and kept
+     in step by the best-copy swap), an unknown source text means **hands off** (never re-flow),
+     and `test_row_columns_exist` reads the module with `ast` to check every `row["…"]` against
+     the real `PRAGMA table_info` of the table that function queries — so this class cannot come
+     back. `test_a_live_database_from_an_older_build_is_upgraded` proves the upgrade on the
+     server's existing DB, and S12a/S12b in the duplicate sim drive both repair paths for real.
   2. **Every suite now respects the knob it depends on.** Running the suites across 20+
      environment values produced failures that were the TEST's fault, not the code's: an
      assertion that hard-codes a default (`SHORTEN_MIN_LEN`, `MAX_MEDIA_MB`,
@@ -727,15 +737,15 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `760ce3203cc04f764c635af09f4fb09d8646145bdfe13f7358fa84f659c5fa85` |
+| `bestgaa/main_bot_new.py` | `81e523963a0f0917f0ca83e3f34259d07e8402e5e9bb25995863f9737815a899` |
 | `tg-wa-bridge/bridge.js` | `458a1141984d501d79a932ec9361732664e37c8228cda8dc3304f4f44f6a723f` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
-| `test_pipeline_fixes.py` | `8a0017ab11f24bd5d47c5130f2b7bad7a72244dd2196ea3a56256b9eaa6a2b37` |
-| `test_duplicate_sim.py` | `f1413aabd456130904f9f97898d85e90404f782565694d55910bc5a0b0a6cdd5` |
+| `test_pipeline_fixes.py` | `c01e4c708e008dcb90180084cbc1086d48cc246e6b1aae5a661d1edacfb838f4` |
+| `test_duplicate_sim.py` | `5b71f2356f42fa0ca9a09c52cff74d7d9a97accfee37feb117cb89a9b54cacfd` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
 Verified on this tree (every suite also passes with the knobs flipped —
@@ -756,7 +766,7 @@ from ever disagreeing with the bot's:
   | `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`, `DROP_DEAD_LINKS=true`, the opt-in strippers,
   | and the bridge in 7 modes) — an assertion that ignores a knob it depends on is a false
   | alarm, and false alarms are how real bugs get ignored.
-  | `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
+  | `test_pipeline_fixes.py` | 218/218 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
 | `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
 | `test_rescan.py` | rescan/re-queue behaviour |

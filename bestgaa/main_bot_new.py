@@ -2738,6 +2738,11 @@ class Store:
             ("product_keys", "ALTER TABLE queue ADD COLUMN product_keys TEXT"),
             ("superseded_chat_id", "ALTER TABLE queue ADD COLUMN superseded_chat_id TEXT"),
             ("superseded_msg_id", "ALTER TABLE queue ADD COLUMN superseded_msg_id INTEGER"),
+            # v18.2: the delivery-side repairs (a link cut because it is dead or unverified)
+            # have to know whether a blank line is the SOURCE's layout or their own residue.
+            # The rendered copy alone cannot answer that, so the raw source text rides along
+            # on the row (bounded; it is bookkeeping, not content).
+            ("source_text", "ALTER TABLE queue ADD COLUMN source_text TEXT"),
         ):
             if column not in queue_columns:
                 self.conn.execute(statement)
@@ -2983,10 +2988,11 @@ class Store:
         async with self.lock:
             cur = self.conn.execute(
                 "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,"
-                "quality,product_keys) VALUES(?,?,?,?,?,?,?,?)",
+                "quality,product_keys,source_text) VALUES(?,?,?,?,?,?,?,?,?)",
                 (chat_id, msg_id, source, time.time(), priority, str(raw_chat_id(chat_id)),
                  deal_quality_score(text) if text else 0,
-                 json.dumps(sorted(product_identities(text))) if text else None),
+                 json.dumps(sorted(product_identities(text))) if text else None,
+                 (text or "")[:8000] or None),
             )
             self.conn.commit()
         inserted = cur.rowcount > 0
@@ -3051,10 +3057,11 @@ class Store:
                     # render-time product ledger already blocks a duplicate post.
                     return True
                 self.conn.execute(
-                    "UPDATE queue SET chat_id=?, msg_id=?, source=?, quality=?, product_keys=?, "
+                    "UPDATE queue SET chat_id=?, msg_id=?, source=?, quality=?, product_keys=?, source_text=?, "
                     "priority=?, rendered_text=NULL, targets_json=NULL, deal_keys_json=NULL, "
                     "attempts=0, next_at=0, superseded_chat_id=?, superseded_msg_id=? WHERE id=?",
                     (chat_id, msg_id, source, score, json.dumps(sorted(keys)),
+                     (text or "")[:8000] or None,
                      max(int(priority), int(row["priority"] or 1)),
                      str(row["chat_id"]), row["msg_id"], row["id"]),
                 )
@@ -4495,9 +4502,11 @@ def keep_source_spacing(text: str, raw_text: str) -> str:
     source had no blank line, neither does our copy; where the source DID space its blocks
     apart, that spacing is the source's own and is kept exactly as it was.
     """
-    if not text:
+    if not text or not raw_text:
+        # No source text to compare against (an older queue row) means no licence to
+        # re-flow anything: leave the layout exactly as the renderer wrote it.
         return text
-    if "\n\n" in (raw_text or ""):
+    if "\n\n" in raw_text:
         return text
     return re.sub(r"\n{2,}", "\n", text)
 
@@ -4862,7 +4871,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         rendered = tidy_post(clean_source_text(rendered))
         log.info("LINK REPAIR | queue=%s removed %s unverified link(s): %s",
                  row["id"], len(leftover), ", ".join(u[:40] for u in leftover[:4]))
-        rendered = keep_source_spacing(rendered, row["text"] or "")
+        # The source's own layout is the reference, and it lives on the row (v18.2) -
+        # reading a column that is not there would crash the repair and lose the post.
+        rendered = keep_source_spacing(rendered, row["source_text"] if "source_text" in row.keys() else "")
     if (not any(clean_url(raw) in allowed_final_urls for raw in URL_RE.findall(rendered))
             and not unresolvable and not link_free_post):
         raise PermanentSkip("no verified affiliate link survived in the rendered post")
@@ -5152,7 +5163,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.update_rendered(row["id"], rendered)
                 log.warning("LINK REPAIR | queue=%s dropped %s dead destination(s); posting the rest",
                             row["id"], len(dead))
-                rendered = keep_source_spacing(rendered, row["text"] or "")
+                rendered = keep_source_spacing(rendered, row["source_text"] if "source_text" in row.keys() else "")
             elif dead:
                 # Every link answered as an explicit "this page is gone" page - and
                 # THIS used to be a silent missing post, the exact complaint the user

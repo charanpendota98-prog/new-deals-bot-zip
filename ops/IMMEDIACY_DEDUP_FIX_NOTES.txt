@@ -835,6 +835,31 @@ v18.2 (round 14) - the last swallow, and knob-honest tests
    is the unwanted-text bug in the other direction), no deal terms => still skipped, and the
    bridge's curated WhatsApp gate keeps skipping a link-free post (with the reason logged).
 
+4. A REPAIR THAT CRASHED THE POST IT WAS SAVING. The v18.1/v18.2 layout rule (keep_source_spacing)
+   was called in the two link-repair paths as keep_source_spacing(rendered, row["text"]) - and the
+   queue table has no `text` column. sqlite3.Row raises IndexError on a missing key, so
+       JOB FAIL 1: No item with that key
+   and the deal stayed 'pending' and never posted. It only fires on the repair paths (a dead or
+   unverified link), which is exactly why no suite noticed: nothing exercised them end to end.
+
+   Fixed in two directions, because the class matters more than the one bug:
+     a) the queue now CARRIES the source text (`source_text TEXT`, added through the same
+        migration list the other columns use, bounded at 8000 chars, kept in step by the
+        "best copy" swap). A delivery-time repair can then compare layout against the source
+        instead of guessing - and keep_source_spacing treats an unknown/NULL source text as
+        HANDS OFF, never as "collapse the blank lines".
+     b) `test_pipeline_fixes.test_row_columns_exist` reads main_bot_new.py with `ast` (async
+        functions included) and checks every row["…"] key against PRAGMA table_info of the table
+        that function actually queries - 109 reads today. It failed the moment the bug was put
+        back, which is the only reason to trust a guard.
+     c) `test_duplicate_sim` S12 runs both repair paths for real: one dead destination next to a
+        live one (link cut, deal posted, no blank line left, job 'done') and the same run against
+        a legacy row with source_text NULL (posted, not re-flowed).
+     d) `test_a_live_database_from_an_older_build_is_upgraded` builds a queue table in the OLD
+        shape, inserts a pending row, opens Store on it and asserts the columns are added, the
+        row survives, and new writes carry the source text - i.e. the deploy on the server's
+        existing DB is safe.
+
 3. ZERO BUDGET MEANT SLOWER. `AffiliateClient.rendered_links_not_broken` fell back to probing
    every link SERIALLY when PRESEND_CHECK_BUDGET_SECONDS <= 0 - so the value an operator sets
    to stop a check holding a post made the check take LONGER (4 links x 0.3s instead of one
@@ -864,6 +889,8 @@ v18.2 (round 14) - the last swallow, and knob-honest tests
    suites, and that is when real bugs ship.
 
 Proof (v18.2):
+  python3 test_pipeline_fixes.py | tail -1        # 218 checks, incl. the schema guard + legacy DB
+  python3 test_duplicate_sim.py | tail -1          # S12a/S12b drive the repair paths
   for k in "SHORTEN_MIN_LEN=1" "SHORTEN_MIN_LEN=300" "PASSTHROUGH_UNMONETIZED=false"            "SAME_PRODUCT_DISCOUNT_MARGIN=0" "MAX_MEDIA_MB=1" "JOB_MAX_ATTEMPTS=3"            "PRODUCT_DEDUP_SECONDS=0" "ADD_OUR_CHANNEL_LINK_TOP=false" "MAX_ALBUM_PHOTOS=1"; do
     env $k python3 test_line_fidelity.py | tail -1; env $k python3 test_duplicate_sim.py | tail -1
   done

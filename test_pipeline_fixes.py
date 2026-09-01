@@ -8,6 +8,7 @@ Covers three bug classes the user reported:
 
 Run: python3 test_pipeline_fixes.py   (from the repo root)
 """
+import ast
 import asyncio
 import os
 import re
@@ -1357,11 +1358,134 @@ def test_nothing_added_by_us():
               < out.index("Washing Machine"))
 
 
+def test_row_columns_exist():
+    """Every `row["…"]` read in the pipeline must be a column the row can actually have.
+
+    A miss here is not cosmetic: the error is raised while a REPAIR path is running (a dead
+    link, an unverified link), and a repair that throws loses the very post it was trying to
+    save - on live traffic, where nobody is watching. This check reads the module with `ast`
+    and compares it against the real schema, so the schema and the code cannot drift apart:
+
+      * a function that runs SQL against `queue` may read queue columns;
+      * a function that runs SQL against another table may read that table's columns too;
+      * a key that belongs to no table the function queries is a bug.
+    """
+    import ast as _ast
+    root = Path(__file__).resolve().parent
+    src = (root / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    tree = _ast.parse(src)
+    with tempfile.TemporaryDirectory() as td:
+        store = bot.Store(Path(td) / "schema.sqlite3")
+        tables = {}
+        for (name,) in store.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            tables[name] = {r[1] for r in store.conn.execute(f"PRAGMA table_info({name})")}
+        store.conn.close()
+    queue_cols = tables.get("queue", set())
+
+    def literal(node):
+        return node.value if isinstance(node, _ast.Constant) and isinstance(node.value, str) else None
+
+    bad: list[str] = []
+    checked = 0
+    for func in [n for n in _ast.walk(tree)
+                 if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))]:
+        body_src = ast.get_source_segment(src, func) or ""
+        queried = {tbl for tbl in tables if re.search(rf"\b(?:FROM|INTO|UPDATE)\s+{tbl}\b", body_src)}
+        allowed = set()
+        for tbl in (queried or set()):
+            allowed |= tables[tbl]
+        if not queried:
+            # no SQL of its own: it is handed a row by a caller, so only the queue
+            # rows matter here (that is what the worker passes around)
+            allowed = queue_cols
+        for sub in _ast.walk(func):
+            if (isinstance(sub, _ast.Subscript) and isinstance(sub.value, _ast.Name)
+                    and sub.value.id in {"row", "qrow", "job_row"}
+                    and literal(sub.slice) is not None):
+                key = sub.slice.value
+                checked += 1
+                if key not in allowed:
+                    bad.append(f"{func.name}(){'' if func.col_offset else ''} reads row['{key}'] "
+                              f"(tables queried: {sorted(queried) or 'none -> queue'})")
+    check(f"every row['…'] read matches a column of the table it came from "
+          f"({checked} reads; {'; '.join(sorted(set(bad))[:3])})" if bad else
+          f"every row['…'] read matches a column of the table it came from ({checked} reads)",
+          not bad)
+    check("the queue keeps the source text so a late repair can compare layout",
+          "source_text" in queue_cols)
+    check("a database written before that column is upgraded on open, not broken",
+          "ALTER TABLE queue ADD COLUMN source_text TEXT" in src)
+    # the guard itself must not be vacuous: async functions are the ones that do the work
+    names = {n.name for n in _ast.walk(tree) if isinstance(n, _ast.AsyncFunctionDef)}
+    covers = {"render_job", "process_job"} <= names and checked >= 10
+    check(f"the row check actually covers the async pipeline functions ({checked} reads)", covers)
+
+
+async def test_a_live_database_from_an_older_build_is_upgraded():
+    """Deployment reality: the server already has a database, written by an older build,
+    whose queue table has none of the recent columns. Opening it must UPGRADE it (never
+    recreate, never lose the pending rows), and the pipeline must then read the new column
+    without throwing - a repair path that crashes on a live DB is the bug this whole round
+    exists to kill.
+    """
+    legacy_ddl = """
+    CREATE TABLE queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id INTEGER NOT NULL,
+      msg_id INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_at REAL NOT NULL DEFAULT 0,
+      rendered_text TEXT,
+      targets_json TEXT,
+      deal_keys_json TEXT,
+      last_error TEXT,
+      created_at REAL NOT NULL,
+      UNIQUE(chat_id,msg_id)
+    );
+    INSERT INTO queue(chat_id,msg_id,source,status,created_at,rendered_text,targets_json)
+    VALUES (-100555, 7001, 'dealsvelocity', 'pending', 1700000000,
+            'Legacy row Shirt ₹499 https://www.myntra.com/x', '["LootZoneIndia11"]');
+    """
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "legacy.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.executescript(legacy_ddl)
+        conn.commit()
+        conn.close()
+        store = bot.Store(db)                      # <- the upgrade happens here
+        cols = {r[1] for r in store.conn.execute("PRAGMA table_info(queue)")}
+        gained = {"quality", "product_keys", "priority", "chat_key", "source_text",
+                  "premium_score", "superseded_chat_id", "superseded_msg_id"} <= cols
+        check(f"a live queue table gains every column the code reads ({sorted(cols)[:4]}…)", gained)
+        rows = store.conn.execute("SELECT * FROM queue").fetchall()
+        intact = len(rows) == 1 and rows[0]["rendered_text"].startswith("Legacy row")
+        check(f"and its pending rows survive the upgrade untouched ({len(rows)} row(s))", intact)
+        row = rows[0]
+        guarded = row["source_text"] if "source_text" in row.keys() else ""
+        check(f"an old row's missing source text reads as unknown, not as a crash ({guarded!r})",
+              guarded is None or guarded == "")
+        # and keep_source_spacing must treat "unknown" as hands-off, never as "collapse it"
+        noflow = bot.keep_source_spacing("A\n\nB", guarded or "") == "A\n\nB"
+        check("unknown layout is never re-flowed", noflow)
+        fresh = "New deal ₹199\n\nhttps://amzn.to/legacy1"
+        await store.enqueue(-100556, 7002, "dealsvelocity", fresh, False)
+        stored = store.conn.execute(
+            "SELECT source_text FROM queue WHERE msg_id=7002").fetchone()["source_text"]
+        check(f"a row written after the upgrade carries the source text ({stored!r})",
+              stored == fresh)
+        store.conn.close()
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
         bot.store = store
         test_text_quality()
+        test_row_columns_exist()
+        await test_a_live_database_from_an_older_build_is_upgraded()
         test_final_text_fidelity()
         await test_collapse_migration(store)
         await test_dedup(store)
