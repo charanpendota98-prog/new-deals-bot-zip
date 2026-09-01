@@ -494,21 +494,43 @@ function normalizeNestedLinks(text) {
 // any fragment longer than 12-14 chars, which is exactly how those appeared in
 // front of subscribers. WhatsApp formatting is deliberately left alone
 // ("*bold*" headers are ours, only the source's broken markdown is repaired).
+// An Amazon/Flipkart coupon code: all caps, letters plus optional digits, 3-20 chars.
+const COUPON_CODE_RE = /^[A-Z][A-Z0-9_-]{2,19}$/   // SAVE_200 is as spendable as SAVE200
+const PRICE_UNITS = new Set(('pcs pack packs pair pairs kg gm g ml ltr ltrs l litre litres cm mm ' +
+  'mah gb tb w v inch inches ft in').split(' '))
+
+// Rebuild one "<price><token>" pair, judging the token by its SHAPE - the exact rule
+// main_bot_new._keep_code_as_is applies, kept in step by hand because WhatsApp must not
+// show a different price line from Telegram. An all-caps code (PEOPLE200) is money the
+// reader can spend, so it is un-glued with a space and KEPT; a mixed-case run
+// (tG7oChgiQuTgS25b) is a torn shortener and must go; a glued token with a letter in it
+// is never real text; words and units after a space stay put.
+function keepCodeAsIs(price, gap, tail) {
+  if (!tail || '\u279c\u27a1\u2192\u2022\u00b7#'.includes(tail[0])) return price + gap + tail
+  const core = tail.replace(/[).,;:!?\u2026]+$/, '')
+  const trail = tail.slice(core.length)
+  if (!core) return price + gap + tail
+  if (!gap && COUPON_CODE_RE.test(core)) return `${price} ${core}${trail}`
+  if (gap && (PRICE_UNITS.has(core.toLowerCase()) || !/\d/.test(core))) return `${price} ${core}${trail}`
+  if (gap && COUPON_CODE_RE.test(core) && /\d/.test(core)) return `${price} ${core}${trail}`
+  if (/^[A-Za-z0-9_-]{2,12}$/.test(core) && /[A-Za-z]/.test(core)) return `${price}${trail}`.trimEnd()
+  if (/^[A-Za-z0-9_-]{2,64}$/.test(core) && /[A-Za-z]/.test(core) && /\d/.test(core)) return `${price}${trail}`.trimEnd()
+  return price + gap + tail
+}
+
 function stripPriceJunk(text) {
   if (!text) return ''
   // Real links are masked first: a link glued straight onto a price
-  // ("₹260https://bitli.in/x") must keep its protocol - cutting "https" as if it
-  // were a junk token used to leave "₹260://bitli.in/x" behind.
+  // ("\u20b9260https://bitli.in/x") must keep its protocol - cutting "https" as if it
+  // were a junk token used to leave "\u20b9260://bitli.in/x" behind.
   const urls = [...new Set(String(text).match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
   let masked = String(text)
   urls.forEach((u, i) => { masked = masked.split(u).join(`\u0002P${i}\u0003`) })
-  let out = masked
-    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b/g, '$1')
-    .replace(/(₹\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b/g, '$1')
-    .replace(/(₹\s*[\d,]+)[ \t]+(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)/gmi, '$1')
+  let out = masked.replace(/(\u20b9\s*[\d,]+)([ \t]*)(\S+)/g,
+    (all, price, gap, tail) => keepCodeAsIs(price, gap, tail))
   urls.forEach((u, i) => { out = out.split(`\u0002P${i}\u0003`).join(u) })
   // Keep a glued link apart from the word/price in front of it.
-  return out.replace(/([\w₹)\]>"'])(?=https?:\/\/)/g, '$1 ')
+  return out.replace(/([\w\u20b9)\]>"'])(?=https?:\/\/)/g, '$1 ').replace(/[ \t]{2,}/g, ' ')
 }
 function fixUnbalancedParens(line) {
   if (!line) return line
@@ -1299,8 +1321,17 @@ function classifyPost(text, hasMedia = false) {
   }
 }
 function explicitDiscount(text) {
-  const values = [...(text || '').matchAll(/\b([1-9]\d?|100)\s*%\s*(?:off|discount)\b/gi)]
-    .map(match => Number(match[1]))
+  // Both shapes a loot channel actually writes: "26% OFF" and the label-first
+  // "Discount: 26%" / "Discount - 26 percent". main_bot_new.parse_discount accepts
+  // both, and this number decides whether a deal counts as the best pick on the
+  // curated channel, so a form the bot understands must never read as 0 here.
+  // Cashback percentages stay out of it: a 5% cashback line is not a price cut.
+  const body = String(text || '')
+  const values = [
+    ...[...body.matchAll(/\b([1-9]\d?|100)\s*%\s*(?:off|discount)\b/gi)].map(m => Number(m[1])),
+    ...[...body.matchAll(/\b(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)/gi)]
+      .map(m => Number(m[1])),
+  ]
   return values.length ? Math.max(...values) : null
 }
 function isPreferredShoppingCategory(text) {
@@ -2390,6 +2421,47 @@ async function verifyBestGaaProvenance(urls) {
     child.stdin.end(JSON.stringify(urls))
   })
 }
+// One merchant link may be verified "dead" by our probe (Amazon and Flipkart answer
+// exactly this way to datacenter IPs) - that is NOT a reason to swallow a post, so
+// the default logs and sends. WA_DROP_DEAD_LINKS=true restores the old hard skip for
+// an operator who prefers to lose the deal than risk a dead page.
+const WA_DROP_DEAD_LINKS = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WA_DROP_DEAD_LINKS || '').trim().toLowerCase())
+
+// Share/forward/invite links (wa.me, t.me, tg://, addtoany) are not product pages.
+// They must never be probed as a destination and never decide whether a post goes out -
+// on Telegram a share button in the source text used to retry the job until the price
+// expired, which is how a deal the source posted never reached our channels.
+const SHARE_INTENT_HOSTS = new Set(['wa.me', 'api.whatsapp.com', 'chat.whatsapp.com', 'web.whatsapp.com',
+  'whatsapp.com', 'wa.link', 'telegram.me', 'telegram.dog', 'tl.me', 't.me', 'telegram.org',
+  'addtoany.com', 'sharethis.com', 'getpocket.com', 'pocket.co', 'vk.com', 'twitter.com', 'x.com',
+  'facebook.com', 'viber.com', 'line.me'])
+
+function isShareIntent(url) {
+  const raw = String(url || '')
+  if (/^(tg:\/\/|whatsapp:\/\/|viber:\/\/|line:\/\/|sms:|mailto:|tel:)/i.test(raw)) return true
+  const host = (raw.match(/^[a-z][a-z0-9.+-]*:\/\/([^/?#]+)/i) || [])[1] || ''
+  const bare = host.replace(/^www\./, '').toLowerCase()
+  return SHARE_INTENT_HOSTS.has(bare) || [...SHARE_INTENT_HOSTS].some(h => bare.endsWith('.' + h))
+}
+
+async function deadDestinations(job, urls) {
+  const dead = []
+  for (const url of urls.filter(u => !isShareIntent(u))) {
+    const target = job?.resolvedLinks?.[url] || url
+    if (!(await notBroken(target))) dead.push(target)
+  }
+  return dead
+}
+
+async function assertLinksHealthy(job, urls) {
+  const dead = await deadDestinations(job, urls)
+  if (!dead.length) return
+  if (WA_DROP_DEAD_LINKS) throw new Error(`Broken destination: ${dead[0]}`)
+  log.warn({ id: job?.id, dead: dead.slice(0, 3), total: dead.length },
+    'link health says dead; posting anyway (WA_DROP_DEAD_LINKS=false)')
+}
+
 async function verifyJob(job) {
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
@@ -2401,10 +2473,7 @@ async function verifyJob(job) {
   const toVerify = urlsForProvenance(job, urls)
   const missing = toVerify.length ? await verifyBestGaaProvenance(toVerify) : []
   if (missing.length) throw new Error(`Provenance mismatch: ${missing[0]}`)
-  for (const url of urls) {
-    const target = job?.resolvedLinks?.[url] || url
-    if (!(await notBroken(target))) throw new Error(`Broken destination: ${target}`)
-  }
+  await assertLinksHealthy(job, urls)
   // All links verified — now swap very long DISPLAY links for shorts (Bitly
   // when WA_BITLY_TOKENS is set, else the tokenless is.gd fallback). Cap per
   // post protects the shortener quota on mega lists. A failed shortening keeps
@@ -3467,6 +3536,33 @@ if (process.argv.includes('--identity-probe')) {
     process.stdout.write(JSON.stringify({ line, identity: productNameIdentity(line) }) + '\n')
   }
   process.exit(0)
+}
+
+{
+  // A link-health probe is allowed to make a post honest, never to make it
+  // disappear. A 404/repair page is exactly what Amazon and Flipkart answer to a
+  // server IP, and this path used to drop the WhatsApp post outright (the user's
+  // "source lo post vasthundi, mana target lo raledu").
+  const savedNotBroken = notBroken
+  const probeUrls = ['https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21']
+  try {
+    notBroken = async () => false
+    const dead = await deadDestinations({ id: 'probe-dead' }, probeUrls)
+    if (dead.length !== 1 || dead[0] !== probeUrls[0]) {
+      throw new Error('deadDestinations must report the dead link')
+    }
+    if (WA_DROP_DEAD_LINKS) {
+      let threw = false
+      try { await assertLinksHealthy({ id: 'probe-dead' }, probeUrls) } catch { threw = true }
+      if (!threw) throw new Error('WA_DROP_DEAD_LINKS=true must still refuse a dead destination')
+    } else {
+      await assertLinksHealthy({ id: 'probe-dead' }, probeUrls)   // must NOT throw
+    }
+    notBroken = async () => true
+    await assertLinksHealthy({ id: 'probe-alive' }, probeUrls)     // must NOT throw
+  } finally {
+    notBroken = savedNotBroken
+  }
 }
 
 if (process.argv.includes('--self-test')) {
@@ -4687,6 +4783,28 @@ https://fktr.in/MANY${i}`,
     if (/tG7oChgiQuTgS25b|260t/.test(cleaned)) throw new Error('random fragment after price survived: ' + cleaned)
     const spaced = stripPriceJunk('Sony Headphones ₹1,499 Xk9LaMn20QpR7 extra bass')
     if (/Xk9LaMn20QpR7/.test(spaced) || !/extra bass/.test(spaced)) throw new Error('spaced fragment/content: ' + spaced)
+    // A coupon code glued to a price is the reader's discount, not junk: the price is
+    // separated from it and the code SURVIVES (this is what "₹ 199HFJF" needs).
+    const code = stripPriceJunk('✅Deal Price: ₹ 199HFJF')
+    if (code !== '✅Deal Price: ₹ 199 HFJF') throw new Error('glued coupon code: ' + code)
+    if (stripPriceJunk('Deal ₹1,099PEOPLE200') !== 'Deal ₹1,099 PEOPLE200') throw new Error('un-glue PEOPLE200')
+    if (stripPriceJunk('₹249 SAVE_200') !== '₹249 SAVE_200') throw new Error('spaced code must be left alone')
+    if (stripPriceJunk('₹ 199 HFJF') !== '₹ 199 HFJF') throw new Error('un-gluing must be idempotent')
+    if (stripPriceJunk('❌MRP: ₹ 270\nDiscount: 26%') !== '❌MRP: ₹ 270\nDiscount: 26%') {
+      throw new Error('price walk must not cross a line break')
+    }
+    if (explicitDiscount('✅Deal Price: ₹ 199\nDiscount: 26%') !== 26) {
+      throw new Error('"Discount: 26%" must count as 26 (it decides the best-pick ranking)')
+    }
+    if (explicitDiscount('Extra 5% cashback on SBI Card') !== null) throw new Error('cashback is not a discount')
+    // A share/forward button is not a destination and must never be judged as one.
+    for (const share of ['https://wa.me/?text=https%3A%2F%2Ft.me%2Fdeals%2F1', 'https://t.me/loots/156757',
+                         'tg://share?url=x', 'https://api.whatsapp.com/send?text=hi']) {
+      if (!isShareIntent(share)) throw new Error('share link not recognised: ' + share)
+    }
+    for (const shop of ['https://www.amazon.in/dp/B0GH2374K3', 'https://www.flipkart.com/x/p/itmy']) {
+      if (isShareIntent(shop)) throw new Error('merchant page mistaken for a share link: ' + shop)
+    }
     const kept = cleanDealText('Cotton Tshirt Pack of 2 ₹249 (500ml, 2pcs, 65w, 20000mAh)\nUse code: SAVE_200 for ₹200 off\nPrice ₹249 (55% OFF)')
     for (const frag of ['(500ml, 2pcs, 65w, 20000mAh)', 'SAVE_200', '₹249', '(55% OFF)']) {
       if (!kept.includes(frag)) throw new Error('real content lost from the post: ' + frag + ' -> ' + kept)

@@ -737,3 +737,84 @@ PROOF COMMANDS (repo root):
    cd tg-wa-bridge && node bridge.js --self-test
    printf 'boAt Airdopes 141 TWS Earbuds\n' | node tg-wa-bridge/bridge.js --identity-probe
    python3 ops/identity_probe.py "<headline A>" "<headline B>   # same product? both engines
+
+================================================================================
+v18.0 (round 12) - "source lo post vasthundi, mana target lo raledu": the post
+was being SWALLOWED, and the fix for a glued price is "un-glue", not "delete"
+================================================================================
+
+The user's live example, verbatim:
+
+    Lizol Floor Cleaner Shakti Disinfectant with Jasmine Fragrance 900ml (Pack of 2) ...
+    (Deal Price: Rs 199HFJF)   (MRP: Rs 270)   (Discount: 26%)
+    share button:  [https://t.me/loots/156757](https://wa.me/?text=...)
+    product link:  [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://new.growseek.io/...)
+
+Three defects, each proved on that exact text rather than inferred from the code:
+
+1. SWALLOW (the missing post). wa.me/?text= is the SOURCE's own forward button, but
+   render_job collects destinations from the RAW message, tried to monetize it, got
+   nothing, and raised:
+
+       RuntimeError: conversion retry required: affiliate conversion returned no link: wa.me
+       queue row: ('pending', 1, 'conversion retry required: ... wa.me')
+
+   The job retried until the deal aged out (a loot price is stale in hours) and then
+   died - zero posts, on every channel. Fix: is_share_intent() /
+   SHARE_INTENT_DOMAINS in the bot, isShareIntent() in the bridge. A share/invite/
+   app-scheme link is never converted and never health-checked, because it is not a
+   product page; it can no longer hold up the deal printed next to it.
+2. SWALLOW (second door, same complaint). "Every destination answered 404" used to be
+   PermanentSkip("every destination is a confirmed dead merchant page") in the bot and
+   `throw new Error('Broken destination: ...')` in the bridge - fatal, so the job was
+   dropped instantly. That verdict is not proof: Amazon and Flipkart serve the repair
+   page to a datacenter IP all day, and to any ASIN created minutes ago. Both services
+   now post the deal and log "LINK UNVERIFIED ... posting anyway"; the operator can
+   restore the hard block with DROP_DEAD_LINKS=true / WA_DROP_DEAD_LINKS=true.
+3. GLUE (the junk next to the price). Cleaning deleted the token glued after a rupee
+   amount, so HFJF - a real coupon code, i.e. money for the reader - vanished while
+   "Rs 199" stayed. A coupon code is all caps; a torn shortener fragment is not, so
+   both engines share one token-shape rule (_keep_code_as_is / keepCodeAsIs).
+   Deleting the glued token was the other option and was rejected: it loses source
+   content, which is its own bug class here.
+   Bonus, same root cause (a form the source writes that our parser did not read):
+   "Discount: 26%" with a colon after the label returned None from parse_discount and
+   0 from the bridge's explicitDiscount, and that number drives best-pick ranking and
+   price-tier routing. Both read it now; "Extra 5% cashback" is still NOT a discount.
+
+BEHAVIOUR TABLE - identical on Telegram and WhatsApp
+
+    (Deal Price: Rs 199HFJF)      -> "Deal Price: Rs 199 HFJF"    price parses 199, code kept
+    (Deal Rs1,099PEOPLE200)       -> "Deal Rs1,099 PEOPLE200"     the Rs200-off code survives
+    (Rs1,099SAVE_200)            -> "Rs1,099 SAVE_200"           underscore codes too
+    (Price Rs199 SAVE200)        -> unchanged                     already separated: hands off
+    (Rs260tG7oChgiQuTgS25b)      -> "Rs260"                       torn shortener: cut
+    (MRP: Rs 270 / Discount: 26%) -> still TWO lines              the walk never crosses a newline
+    [amazon-URL](foreign-shortener) -> the amazon URL (the LABEL), then rewritten to OUR link
+    post carrying a wa.me share button -> posted to every target, one link, ours
+
+PROOF COMMANDS (six suites + auditor + self-test must stay green; S9 pins its own knob
+state so it tests the DEFAULT regardless of the caller's environment):
+
+  python3 test_duplicate_sim.py            # S9: this exact post, dead-probe links
+  python3 test_line_fidelity.py            # un-glue rule, line-break guard, markdown label
+  python3 test_pipeline_fixes.py
+  python3 test_render_job.py
+  python3 test_best_copy.py
+  python3 test_rescan.py
+  python3 ops/sync_identity.py --check
+  python3 ops/identity_probe.py "boAt Airdopes 141 TWS Earbuds with ENx" "boAt Airdopes 141 True Wireless Earbuds"
+  (cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=1:dummy WA_PHONE=910000000000 \
+     WA_CHANNEL=@selftest node bridge.js --self-test)
+  DROP_DEAD_LINKS=true python3 test_duplicate_sim.py
+  STRIP_CAMPAIGN_BANNERS=true SAME_PRODUCT_SKIP_SECONDS=0 ADD_OUR_CHANNEL_FOOTER=true \
+     DROP_DEAD_LINKS=true python3 test_line_fidelity.py
+
+NOT DEPLOYED (per the user's instruction: fix everything first). This is repo source on
+arena/01a0583b-new-deals-bot-zip. The live host is believed to run a pre-v17.5 build,
+which is itself enough to reproduce every symptom the user reported - check it before
+shipping anything:
+
+  bash ops/deploy_and_verify.sh --verify-only     # what is live right now
+  bash ops/diagnose.sh                            # deployed-fix markers + coverage
+  bash ops/deploy_and_verify.sh --with-tests      # ship this build

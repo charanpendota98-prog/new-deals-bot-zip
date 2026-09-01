@@ -166,6 +166,13 @@ CORPUS = {
         "SBI Card: 5% cashback up to \u20b92,500\n"
         "Coupons: CH720OFF\n"
         "More deals here: https://amzn.to/ch720deal\n"),
+    "price glued to a coupon code": (
+        "Lizol Floor Cleaner Shakti Disinfectant with Jasmine Fragrance 900ml (Pack of 2)\n"
+        "\u2705Deal Price: \u20b9 199HFJF\n"
+        "\u274cMRP: \u20b9 270\n"
+        "Discount: 26%\n"
+        "Use code HFJF for Extra Discount\n"
+        "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)\n"),
 }
 
 
@@ -193,9 +200,14 @@ def run_case(name: str, text: str):
                       r"more|for|deals?|offers?|loots?|updates?|link)\b", " ", line)
         if not re.search(r"[A-Za-z]{3}", line):
             continue                       # nothing but boilerplate to begin with
-        words = [w.strip("().,:;").lower() for w in line.split() if any(c.isalpha() for c in w)]
+        # "199HFJF" and "199 HFJF" are the same content: a price that was glued to a
+        # code in the source is intentionally un-glued by cleaning, so the comparison
+        # splits digit/letter junctions on BOTH sides instead of demanding the glue.
+        def _unglue(value: str) -> str:
+            return re.sub(r"(?<=[0-9])(?=[A-Za-z])|(?<=[A-Za-z])(?=[0-9])", " ", value)
+        words = [w.strip("().,:;").lower() for w in _unglue(line).split() if any(c.isalpha() for c in w)]
         numbers = re.findall(r"\d[\d,.]*", line)
-        ok_words = all(w in rendered.lower() for w in words if len(w) > 2)
+        ok_words = all(w in _unglue(rendered.lower()) for w in words if len(w) > 2)
         ok_numbers = all(n in rendered for n in numbers)
         if not (ok_words and ok_numbers):
             missing.append(line)
@@ -471,6 +483,48 @@ def test_cleaning_never_eats_a_line():
           "1)" in bot.sanitize_outbound_text("1) boAt Airdopes 141 TWS \u2013 \u20b91,099 (78% off)"))
     check("an empty bracket pair left by a stripped phrase goes",
           "(" not in bot.sanitize_outbound_text("Price \u20b9499 ( ) extra"))
+    # A glued coupon code is the reader's money, not "random junk": it is separated
+    # from the price and KEPT, while mixed-case link debris is still cut. And the
+    # price walk must never reach past its own line - an early draft treated the next
+    # line's first word as glued and joined "MRP: \u20b9 270" with "Discount: 26%".
+    for line, token, wanted_price in [
+        ("\u2705Deal Price: \u20b9 199HFJF", "HFJF", 199),
+        ("Deal \u20b91,099PEOPLE200", "PEOPLE200", 1099),
+        ("\u274cMRP: \u20b9270XYZ", "XYZ", 270),
+    ]:
+        out = bot.strip_price_junk(line)
+        check(f"glued code survives: '{line[:26]}\u2026'", token in out, out)
+        check(f"price reads clean after un-gluing '{line[:26]}\u2026'", bot.parse_price(out) == wanted_price, out)
+        check(f"the code is no longer glued: '{line[:26]}\u2026'", line not in out or " " in out, out)
+    check("un-gluing never fuses two lines",
+          bot.strip_price_junk("\u274cMRP: \u20b9 270\nDiscount: 26%").splitlines()
+          == ["\u274cMRP: \u20b9 270", "Discount: 26%"])
+    check("link debris glued to a price is still cut",
+          bot.strip_price_junk("\u20b9260tG7oChgiQuTgS25b") == "\u20b9260")
+    check("a glued lowercase tail is cut as before", bot.strip_price_junk("\u20b9122oya") == "\u20b9122")
+    check("a spaced code is left exactly as written",
+          bot.strip_price_junk("Price \u20b9199 SAVE200") == "Price \u20b9199 SAVE200")
+    check("cleaning a glued code is idempotent",
+          bot.strip_price_junk("\u20b9 199 HFJF") == "\u20b9 199 HFJF")
+
+
+def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
+    """[https://amazon.in/dp/X](https://some-shortener/y) must publish X, not y.
+
+    The label is the canonical merchant page, which our own provenance layer turns
+    into our affiliate link; the href is a third-party shortener we never publish.
+    Deciding this once here stops the two passes from disagreeing later.
+    """
+    line = ("\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21]"
+            "(https://new.growseek.io/45934/abc?shortlink=6328a1d4)")
+    cleaned = bot.clean_source_text(line)
+    check("a URL label beats a foreign shortener href",
+          "amazon.in/dp/B0GH2374K3" in cleaned and "growseek" not in cleaned, cleaned)
+    check("and no markdown brackets are left behind",
+          "[" not in cleaned and "]" not in cleaned, cleaned)
+    text_only = "\U0001f449 [Buy Now](https://new.growseek.io/45934/abc)"
+    check("a plain text label keeps the href it points at",
+          "growseek.io/45934/abc" in bot.clean_source_text(text_only), bot.clean_source_text(text_only))
 
 
 def main() -> int:
@@ -481,6 +535,7 @@ def main() -> int:
     test_chunking_never_cuts_a_link()
     test_whatsapp_identity_is_the_same_rule()
     test_cleaning_never_eats_a_line()
+    test_markdown_link_with_a_url_label_keeps_the_merchant_url()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

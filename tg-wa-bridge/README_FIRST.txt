@@ -240,3 +240,23 @@ twice:
     an unpaid sale, and a customer who saw a half a URL. captionCutAt() breaks at a
     space OUTSIDE any URL instead (or right after the URL when the URL alone is too
     long), and the self-test fails if a link is ever bisected or printed twice.
+
+  v18.0 (round 12) - the WhatsApp half of "the source posted it, our channel did not":
+  - A share/forward link is not a destination. isShareIntent() (wa.me,
+    api.whatsapp.com, chat/web.whatsapp.com, t.me, tg://, addtoany, sharethis,
+    getpocket, vk.com, m.me, ...) is skipped inside deadDestinations(), so a
+    "share this on WhatsApp" link in the source text can never make a post look
+    broken. On the bot the same idea also keeps it out of the conversion list, which
+    is where the user's Lizol post was dying ("conversion retry required: ... wa.me").
+  - WA_DROP_DEAD_LINKS=false (default): if every destination answers as a merchant
+    404/repair page - normal for a fresh ASIN seen from a datacenter IP - the post
+    goes out and the log says so, instead of throwing `Broken destination:` and having
+    the job dropped as permanently failed. Set it to true for the old hard block.
+  - stripPriceJunk + keepCodeAsIs are the bridge's copy of the bot's rule:
+    "Rs 199HFJF" -> "Rs 199 HFJF" (a coupon code is money: un-glued, kept),
+    "Rs260tG7oChgiQuTgS25b" -> "Rs260" (link debris cut), a spaced code is left
+    exactly as written, and the price walk never crosses a newline.
+  - explicitDiscount() reads the "Discount: 26%" colon form like the bot does, so a
+    post written that way is no longer ranked as 0% off by the best-pick logic.
+  - node bridge.js --self-test pins all of the above, and passes with either setting
+    of WA_DROP_DEAD_LINKS.

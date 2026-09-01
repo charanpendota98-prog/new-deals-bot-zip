@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.9
+"""BestGAA Production Bot v18.0
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -9,6 +9,10 @@ immediately, exactly once, clean":
 - concurrent resolve / convert / health-check / shorten per post with cached
   verdicts and hard time budgets, so one slow site cannot delay everything
 - EarnKaro conversion with retry/cache/circuit breaker
+- a post that reached the intake ALWAYS reaches the targets: a share button in
+  the source text, a merchant page that 404s to our datacenter IP, or a coupon
+  code glued to a price can veto nothing - they are cleaned or ignored, never a
+  reason to retry a job until the deal expires
 - strict generated-link-only output (source links are always replaced by ours;
   an unverified leftover link is repaired out instead of dropping the deal)
 - best-copy selection: when several sources post the same product (exact merchant
@@ -218,6 +222,11 @@ PRESEND_CHECK_BUDGET_SECONDS = _num("PRESEND_CHECK_BUDGET_SECONDS", 6, 0, 240)
 # sees as "the bot posts late". A site that does not answer in time is
 # inconclusive, not dead: the deal goes out.
 LINK_PROBE_BUDGET_SECONDS = _num("LINK_PROBE_BUDGET_SECONDS", 3.5, 0.5, 60)
+# A probe is allowed to make a post HONEST, never to make it disappear: DROP_DEAD_LINKS
+# is therefore false by default (post with an unverified link) and only an operator who
+# would rather lose the deal than risk a dead page turns it on.
+DROP_DEAD_LINKS = os.getenv("DROP_DEAD_LINKS", "false").strip().lower() in ("1", "true", "yes", "on")
+
 # A huge source video must never freeze a worker; oversized/slow media is
 # posted as text so the deal itself goes out on time.
 MAX_MEDIA_MB = _num("MAX_MEDIA_MB", 45, 1, 2048)
@@ -508,6 +517,38 @@ NON_STORE_DOMAINS = {
     "twitter.com", "x.com", "reddit.com", "whatsapp.com", "discord.com", "pinterest.com",
     "linkedin.com", "github.com", "google.com", "drive.google.com", "imgur.com",
 }
+# A share/forward/invite link is not a destination: nothing is bought at
+# "wa.me/?text=..." or "t.me/share/url", and a link to another channel's post is
+# that channel's promotion, not our reader's deal. These hosts are still excluded from
+# the merchant destination list on purpose - and the reason matters. A source post
+# carrying a WhatsApp share button used to be retried forever ("affiliate conversion
+# returned no link: wa.me") and then dropped when the price went stale: the source
+# channel had the deal, our channels never saw it. So a share link is never converted,
+# never health-checked, and above all never a reason to swallow a post.
+SHARE_INTENT_DOMAINS = NON_STORE_DOMAINS | {
+    "wa.me", "api.whatsapp.com", "chat.whatsapp.com", "web.whatsapp.com", "wa.link",
+    "telegram.me", "telegram.dog", "tl.me", "addtoany.com", "sharethis.com",
+    "getpocket.com", "pocket.co", "vk.com", "twitter.com", "x.com", "m.me", "facebook.net",
+    "viber.com", "line.me",
+}
+
+
+def is_share_intent(url: str) -> bool:
+    """True for share / forward / invite links, which are not merchant pages."""
+    raw = str(url or "")
+    if raw.startswith(("tg://", "whatsapp://", "viber://", "line://", "sms:", "mailto:", "tel:")):
+        return True
+    if "wa.me/" in raw.lower() and "/sendtext=" in raw.lower():
+        return True
+    host = (urlparse(raw).hostname or "").lower()
+    if not host:
+        return False
+    if in_domains(host, SHARE_INTENT_DOMAINS):
+        return True
+    # t.me/<channel>/<id> and t.me/+invite are channel links, never product pages.
+    return host in ("t.me", "telegram.me", "telegram.dog", "telegram.org", "tl.me")
+
+
 BROKEN_PAGE_MARKERS = (
     "just a quick repair needed",
     "we're doing everything we can to fix this",
@@ -1050,7 +1091,10 @@ def parse_discount(text: str, price: int | None = None) -> int | None:
     found: list[int] = []
     patterns = (
         r"(?:up\s*to|upto|flat|save|get)?\s*([1-9]\d?|100)\s*%\s*(?:off|discount)",
-        r"(?:off|discount)\s*(?:up\s*to|upto|flat)?\s*([1-9]\d?|100)\s*%",
+        # "Discount: 26%" is how a loot channel actually writes it - the colon after
+        # the label used to lose the whole percentage, which matters because the
+        # discount decides which price-tier channel a deal is routed to.
+        r"(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, value, re.I):
@@ -1804,38 +1848,75 @@ def strip_url_residue(text: str) -> str:
 # single source of truth: clean_source_text, tidy_post and the final outbound
 # guard all share them, so a token cannot survive by dodging one of the passes.
 
-def strip_price_junk(text: str) -> str:
-    """Cut random tokens glued to (or hanging right after) a \u20b9 price.
+# An Amazon/Flipkart coupon code: all caps, letters plus optional digits, 3-20 chars.
+_COUPON_CODE_RE = re.compile(r"[A-Z][A-Z0-9_-]{2,19}")   # SAVE_200 is as spendable as SAVE200
+# The gap is [ \t]* and never \s*: a token on the NEXT line is not glued to this
+# price, and rewriting the pair must not swallow the newline that keeps the source's
+# layout (an earlier draft joined "MRP: ₹ 270" and "Discount: 26%" into one line).
+_PRICE_WITH_TAIL = re.compile(r"(\u20b9\s*[\d,]+)([ \t]*)(\S+)")
 
-    Real links are masked first: a link glued straight onto a price
-    ("\u20b9260https://bitli.in/x") must keep its protocol - cutting the "https"
-    as if it were junk used to leave "\u20b9260://bitli.in/x" behind.
+
+def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
+    """Rebuild one "<price><token>" pair, judging the token by its SHAPE.
+
+    The three shapes a source post actually contains, in order of how much they
+    matter: an all-caps code (PEOPLE200, HFJF) is money the reader can spend, so it
+    is UN-GLUED with a space and kept - deleting it was losing the best part of the
+    deal; a real unit ("500ml", "2pcs") spaced after the price is legitimate text and
+    stays; a mixed-case run ("tG7oChgiQuTgS25b") is what a broken shortener leaves
+    behind and must go, because "\u20b9260://bitli.in/x" is a dead link, not a discount.
+    A glued token with a letter in it is never real text - the price ended and the
+    paste ran on - so it is cut, exactly as before this code existed.
+    """
+    if not tail or tail[0] in "\u279c\u27a1\u2192\u2022\u00b7#":
+        return f"{price}{gap}{tail}"
+    core = tail.rstrip(").,;:!?\u2026")
+    trail = tail[len(core):]
+    if not core:
+        return f"{price}{gap}{tail}"
+    if not gap and _COUPON_CODE_RE.fullmatch(core):
+        return f"{price} {core}{trail}"                 # un-glue a code, keep it
+    if gap and (core.lower() in _PRICE_UNITS or not re.search(r"\d", core)):
+        return f"{price} {core}{trail}"                  # words and units stay put
+    if gap and _COUPON_CODE_RE.fullmatch(core) and re.search(r"\d", core):
+        return f"{price} {core}{trail}"                   # already spaced code: keep
+    if re.fullmatch(r"[A-Za-z0-9_-]{2,12}", core) and re.search(r"[A-Za-z]", core):
+        return f"{price}{trail}".rstrip()
+    if (re.fullmatch(r"[A-Za-z0-9_-]{2,64}", core) and re.search(r"[A-Za-z]", core)
+            and re.search(r"\d", core)):
+        return f"{price}{trail}".rstrip()
+    return f"{price}{gap}{tail}"
+
+
+_PRICE_UNITS = frozenset(
+    "pcs pack packs pair pairs kg gm g ml ltr ltrs l litre litres cm mm mah gb tb "
+    "w v inch inches ft in".split())
+
+
+def strip_price_junk(text: str) -> str:
+    """Un-glue a coupon code from a \u20b9 price and cut real link debris off it.
+
+    Two different things look the same in a source post: "\u20b91,099PEOPLE200" is a
+    price plus the code that saves the reader \u20b9200, while "\u20b9260tG7oChgiQuTgS25b"
+    is a half-torn shortener URL. The first must survive (deleting it was losing the
+    deal's best part), the second must go. The shape tells them apart, so this walks
+    every "<price><glued token>" pair once and decides per token - never per regex,
+    which is how the old three-pass version ate codes along with the debris.
+
+    Real links are masked first so a glued link keeps its protocol: cutting "https"
+    out of "\u20b9260https://bitli.in/x" used to leave "\u20b9260://bitli.in/x".
     """
     if not text:
         return text
     urls = list(dict.fromkeys(URL_RE.findall(text)))
     for index, url in enumerate(urls):
         text = text.replace(url, f"\x02P{index}\x03")
-    # Letters-only tail directly after the price stays conservative (<=12) so a
-    # real word can never be eaten ("\u20b9122oya" -> "\u20b9122").
-    text = re.sub(r"(\u20b9\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{2,12}\b", r"\1", text)
-    # A tail that mixes letters AND digits is a shortener/link fragment, never a
-    # word: allow up to 64 chars ("\u20b9260tG7oChgiQuTgS25b" -> "\u20b9260").
-    text = re.sub(
-        r"(\u20b9\s*[\d,]+)(?=[A-Za-z0-9_-]*[A-Za-z])(?=[A-Za-z0-9_-]*\d)[A-Za-z0-9_-]{2,64}\b",
-        r"\1", text)
-    # Same thing when a space separates it from the price ("\u20b9260 tG7oChgi...").
-    # Genuine units and quantities are excluded so "500ml"/"2pcs" survive.
-    text = re.sub(
-        r"(\u20b9\s*[\d,]+)[ \t]+"
-        r"(?!\d+(?:pcs?|packs?|pairs?|kg|gm?|ml|ltrs?|l|cm|mm|mah|gb|tb|w|v|inch(?:es)?)\b)"
-        r"(?=[A-Za-z\d]*\d)(?=\d*[A-Za-z])[A-Za-z\d]{3,64}(?=[ \t]|$)",
-        r"\1", text, flags=re.M | re.I,
-    )
+    text = _PRICE_WITH_TAIL.sub(lambda m: _keep_code_as_is(m.group(1), m.group(2), m.group(3)), text)
     for index, url in enumerate(urls):
         text = text.replace(f"\x02P{index}\x03", url)
     # Keep a glued link apart from the word/price in front of it.
-    return re.sub(r'([\w\u20b9)\]>"\'])(?=https?://)', r"\1 ", text)
+    out = re.sub(r'([\w\u20b9)\]>"\'])(?=https?://)', r"\1 ", text)
+    return re.sub(r"[ \t]{2,}", " ", out)
 
 
 def strip_link_fragment_tokens(text: str) -> str:
@@ -4309,8 +4390,12 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             log.warning("RESOLVE failed %s: %s", source_url[:60], resolved)
             resolved = source_url
         host = (urlparse(str(resolved)).hostname or "").lower()
-        if not in_domains(host, NON_STORE_DOMAINS):
-            candidates.append((source_url, str(resolved)))
+        if is_share_intent(resolved) or in_domains(host, NON_STORE_DOMAINS):
+            # A share button in the source text is content, not a destination: it is
+            # left in the post (minus the cleaning that already handles it) but it can
+            # never hold up or cancel the deal next to it.
+            continue
+        candidates.append((source_url, str(resolved)))
     if not candidates:
         raise PermanentSkip("no monetizable URLs")
 
@@ -4766,6 +4851,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         merchant_health_text = rendered
         for owned_url in owned_external:
             merchant_health_text = merchant_health_text.replace(owned_url, "")
+        # Share/forward links are excluded from the health verdict too: they can 4xx,
+        # be bot-blocked, or be a plain "tg://" scheme, and none of that says anything
+        # about whether the product page is live.
+        for share_url in URL_RE.findall(merchant_health_text):
+            if is_share_intent(share_url):
+                merchant_health_text = merchant_health_text.replace(share_url, " ")
         if URL_RE.search(merchant_health_text) and not await affiliate.rendered_links_not_broken(merchant_health_text):
             # One dead probe used to throw the ENTIRE post away, i.e. another
             # silent missing post. Now only the broken destination is dropped;
@@ -4786,12 +4877,19 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 log.warning("LINK REPAIR | queue=%s dropped %s dead destination(s); posting the rest",
                             row["id"], len(dead))
             elif dead:
-                # Every entry here carried an EXPLICIT merchant "this offer is
-                # gone" page - a slow site is inconclusive and posts (see the
-                # probe budget). Re-rendering the whole job only costs the queue
-                # 3-20s per attempt and never revives a dead page, so the verdict
-                # is made once, here, with the reason on the log.
-                raise PermanentSkip("every destination is a confirmed dead merchant page")
+                # Every link answered as an explicit "this page is gone" page - and
+                # THIS used to be a silent missing post, the exact complaint the user
+                # brought back after v17.9 ("source lo post vasthundi, mana target
+                # lo raledu"). It is not proof: Amazon and Flipkart serve 404/repair
+                # pages to a datacenter IP all day long, and a link a human source
+                # channel just published is far more likely alive than our probe is
+                # right. A deal our readers can still use beats a suppressed one, so
+                # the post goes out and the log says which link was unverified.
+                if DROP_DEAD_LINKS:
+                    raise PermanentSkip("every destination is a confirmed dead merchant page")
+                log.warning("LINK UNVERIFIED | queue=%s %s destination(s) answered as a dead "
+                            "page (our IP may simply be blocked); posting anyway",
+                            row["id"], len(dead))
         premium_defer_until = None
         first_target_sent = False
         for target in await store.pending_targets(row["id"]):
@@ -4900,7 +4998,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.9 starting "
+    log.info("BestGAA Production Bot v18.0 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

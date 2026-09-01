@@ -122,6 +122,21 @@ def deal(price: str, pct: str, name: str = "Prestige 3L Induction Base Cooker",
     return (f"{name}\n{R}{price} today only\n{tail} {R}1,999, {pct}% off\n{link}")
 
 
+class DeadLinkAffiliate(FakeAffiliate):
+    """Monetizes like the live service, but every merchant page answers 404 to us.
+
+    That is the normal result for a fresh ASIN from a datacenter IP, and it used to
+    kill the whole post. The links still work for a human reader, so the verdict must
+    be "unverified", never "do not post".
+    """
+
+    async def link_not_broken(self, url):
+        return False
+
+    async def rendered_links_not_broken(self, text):
+        return False
+
+
 class UnresolvableAffiliate:
     """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
     sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
@@ -426,6 +441,49 @@ def test_scenarios():
         check("[S8] the skip window is a documented number",
               bot.SAME_PRODUCT_SKIP_SECONDS >= 0,
               f"window={bot.SAME_PRODUCT_SKIP_SECONDS}")
+
+        # ---- S9: the user's live post - glued code, and a link that reads dead ----
+        # Two complaints in one shape: "\u20b9 199HFJF" reached the channel with the coupon
+        # glued to the price, and (worse) the post never reached the channel at all,
+        # because Amazon answers a fresh ASIN with a repair page to our IP and the job
+        # was thrown away as a "broken destination". Arrival must mean delivery; only
+        # the cleaning may change what the source wrote.
+        print("\n== S9: glued coupon code + a link that reads dead ==")
+        lizol = (
+            "Lizol Floor Cleaner Shakti Disinfectant with Jasmine Fragrance 900ml "
+            "(Pack of 2) Surface Cleaning  | Toilet Cleaner, 900 ml (2 x 900 ml)\n"
+            "\u2705Deal Price: \u20b9 199HFJF\n\u274cMRP: \u20b9 270\nDiscount: 26%\n"
+            "\U0001f449 [https://t.me/loots/156757](https://wa.me/?text=https%3A%2F%2Ft.me%2Floots%2F156757)\n"
+            "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)")
+        old_drop = bot.DROP_DEAD_LINKS
+        try:
+            # The default must be tested as the default: an operator who exports
+            # DROP_DEAD_LINKS=true in this environment would otherwise flip the
+            # expectation of the run below, and the run below is the whole point.
+            bot.DROP_DEAD_LINKS = False
+            store, client, sends, _ = await scenario(
+                "s9a", {(-1009030, 1601): FakeMsg(lizol, 1601)},
+                [(-1009030, 1601, lizol)], 1, affiliate=DeadLinkAffiliate())
+            joined = "\n".join(text for texts in sends.values() for text in texts)
+            check("[S9a] every routed channel got the post even though the link read dead",
+                  bool(sends) and all(texts for texts in sends.values()),
+                  str({name: len(v) for name, v in sends.items()}))
+            check("[S9a] the price is clean and the code survived",
+                  "199 HFJF" in joined and "199HFJF" not in joined, joined[:140])
+            check("[S9a] name, MRP and discount all arrived, with a link",
+                  all(x in joined for x in ["Lizol Floor Cleaner", "\u20b9 270", "26%", "https://"]),
+                  joined[:200])
+            check("[S9a] the link that went out is one we generated, never the shortener",
+                  "amzn.to/lizol77" not in joined and ("amazon.in/dp/" in joined or OUR_LINK in joined),
+                  joined[:200])
+            bot.DROP_DEAD_LINKS = True
+            store, client, sends_dead, _ = await scenario(
+                "s9b", {(-1009031, 1602): FakeMsg(lizol, 1602)},
+                [(-1009031, 1602, lizol)], 1, affiliate=DeadLinkAffiliate())
+            check("[S9b] DROP_DEAD_LINKS=true still hands the operator the old hard block",
+                  not sends_dead, str({name: len(v) for name, v in sends_dead.items()}))
+        finally:
+            bot.DROP_DEAD_LINKS = old_drop
 
         await asyncio.sleep(0)
     asyncio.run(run())

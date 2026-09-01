@@ -231,6 +231,45 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.0 — a post that arrived must reach our channels: three ways it was being
+  swallowed, all closed (proved by running the user's own live post through the real
+  `process_job`, not by reading the code):**
+  1. **A share button is not a destination.** The source post carried
+     `👉 [https://t.me/loots/156757](https://wa.me/?text=…)` — a "forward this on
+     WhatsApp" link. `render_job` builds its destination list from the *raw* message,
+     tried to monetize `wa.me`, got nothing back, and raised
+     `conversion retry required: affiliate conversion returned no link: wa.me`, which
+     retried the whole job until the price went stale and then dropped it: nothing was
+     posted, on any channel. `SHARE_INTENT_DOMAINS` + `is_share_intent()` now keep
+     share/invite/app-scheme links (`wa.me`, `api.whatsapp.com`, `t.me/…`, `tg://`,
+     addtoany, sharethis, getpocket, `vk.com`, `m.me`, …) out of the destination list
+     *and* out of the health gate — a link we do not publish can veto nothing.
+  2. **A link that reads dead is not a dead deal.** When every destination answered as
+     a merchant repair page, `render_job` raised
+     `PermanentSkip("every destination is a confirmed dead merchant page")`, and the
+     bridge threw `Broken destination:`, which `isPermanent` treats as fatal. Amazon
+     serves exactly that page to a datacenter IP and to any freshly-created ASIN, so a
+     live deal was being silenced by a bot check. Both services now log
+     `LINK UNVERIFIED | queue=… posting anyway` (bridge: `link health says dead;
+     posting anyway`) and deliver; the hard block is opt-in
+     (`DROP_DEAD_LINKS=true` / `WA_DROP_DEAD_LINKS=true`).
+  3. **Cleaning had started eating money.** `✅Deal Price: ₹ 199HFJF` lost `HFJF`,
+     because the price cleaner deleted whatever was glued after a `₹` amount — right for
+     a torn shortener (`₹260tG7oChgiQuTgS25b`), wrong for a coupon code, which is the
+     reader's discount. Both engines now share one token-shape rule
+     (`_keep_code_as_is` / `keepCodeAsIs`): an all-caps alnum token (underscore/hyphen
+     allowed) is UN-GLUED with a space and kept, mixed-case link debris is cut, a
+     space-separated code is left exactly as the source wrote it, and the walk never
+     crosses a line break. A reader sees `✅Deal Price: ₹ 199 HFJF`.
+  One more form the sources write and the parsers did not read: `Discount: 26%` (colon
+  after the label) returned None from `parse_discount` and 0 from the bridge's
+  `explicitDiscount`, which is what decides the best-pick and the price-tier routing —
+  both read it now, and `Extra 5% cashback` is still not mistaken for a discount.
+  `test_duplicate_sim.py` S9 posts the user's exact text and requires every routed
+  channel to receive it complete, with `199 HFJF` and no `199HFJF`;
+  `test_line_fidelity.py` pins the un-glue rule, the "never fuse two lines" guard, and
+  that a markdown link whose label is itself a URL keeps the **label** (the canonical
+  merchant page we can monetize) rather than the third-party shortener in its href.
 - **v17.9 — the same-product rule was still wrong, and it is fixed at the root:**
   auditing v17.8 rather than trusting it found that the product signature hashed the
   **first eight words of the headline in order**, which fails in both directions:
@@ -572,8 +611,9 @@ because every number is clamped into a safe range.
 | `MAX_MEDIA_MB` / `MEDIA_DOWNLOAD_TIMEOUT_SECONDS` | 45 / 120 | oversized or slow source media is skipped (text still posts) |
 | `SOURCE_RESCAN_SECONDS` / `SOURCE_RESCAN_LIMIT` / `SOURCE_RESCAN_CONCURRENCY` | 120 / 40 / 4 | ingest dead-man's switch cadence |
 | `SOURCE_REFRESH_SECONDS` | 180 | retry joining sources that failed at startup |
-| `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0.4 / 1.2 | random gap between the fan-out targets of one job |
+| `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0 / 0 (max clamped to 60, min to 30) | no gap by default — Telegram never waits (round 9); these exist only as an escape hatch for a target that rate-limits us |
 | `PASSTHROUGH_UNMONETIZED` | true | publish a store link the affiliate network cannot monetize as a clean untagged merchant link (false = retry then skip, i.e. lose the deal) |
+| `DROP_DEAD_LINKS` / `WA_DROP_DEAD_LINKS` | false | a link probe may make a post honest, never make it disappear: `true` refuses a post whose every destination answered as a confirmed dead merchant page (the pre-v18.0 behaviour) |
 | `PREMIUM_MAX_PER_NIGHT` / `PREMIUM_GAP_MIN_SECONDS` / `PREMIUM_GAP_MAX_SECONDS` | 12 / 900 / 2100 | Premium channel curation (the only place the bot intentionally waits) |
 | `WA_BEST_GATE` etc. | see bridge | WhatsApp best-deal gate, unchanged |
 
@@ -607,36 +647,38 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.9 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.0 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `e9fcabf0bbcf27caf2fb4f619d8a14929bb1974ce45cd9655004695fe297acb1` |
-| `tg-wa-bridge/bridge.js` | `f1080aa4a8f3c9d295d05d3c73ea124465f24be7de707464c277046d18e0133d` |
+| `bestgaa/main_bot_new.py` | `c81e813fcd03ff90cc1132994ef6e14d7c81a3ecfa447afc45dafc16cd9404f5` |
+| `tg-wa-bridge/bridge.js` | `a071f47a27d11c3982eee68bf47c45a5476516e2a88a1514b8b742f54c237838` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `8370eaab0ea7572a4cb972c50f6f233a8798f416cf00d884e29f0602e6780dba` |
+| `test_line_fidelity.py` | `d7f845f2e3718db2646e2a1b72c8eab5d5d0f06138c6626b5d874ffd4d45a1af` |
 | `test_pipeline_fixes.py` | `42ae61431a0f60987deb6a025efff083fb102db369ff6416b63afb26f8fa57f0` |
-| `test_duplicate_sim.py` | `c76e610233a18fd1f6c577645f14e00b77c35b69194babd62f70fb72ea15d189` |
+| `test_duplicate_sim.py` | `4e2034ec2b900b7a6e2e8ba47eaaa41d78ccbb37b9ea64237c958801ac04dbbe` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
-Verified on this tree (every suite also passes with the new knobs flipped off —
+Verified on this tree (every suite also passes with the knobs flipped —
 `SAME_PRODUCT_SKIP_SECONDS=0`, `ADD_OUR_CHANNEL_FOOTER=true`,
-`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`), and
+`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`, and the two
+link-health blocks `DROP_DEAD_LINKS=true` / `WA_DROP_DEAD_LINKS=true`; the bridge
+self-test passes in all seven of those modes), and
 `python3 ops/sync_identity.py --check` keeps the auditor's copy of the identity rule
 from ever disagreeing with the bot's:
 
 | Suite | What it pins |
 |---|---|
-| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's |
+| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL
 | `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
 | `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
-| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped) |
+| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9 is the user's own live post run end to end - a share button and a link that 404s to our IP may not swallow it, and the glued coupon code arrives un-glued and intact |
 | `test_rescan.py` | rescan/re-queue behaviour |
 | `node tg-wa-bridge/bridge.js --self-test` | passes in **12** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps, `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, and combinations |
 
