@@ -214,6 +214,8 @@ def run_case(name: str, text: str):
     check("every source line survives in full", not missing, str(missing))
 
     check("the post is never cut with an ellipsis", "\u2026" not in rendered)
+    check("the post's blank lines are the source's own",
+          "\n\n" in "\n".join(source_lines(text)) or "\n\n" not in rendered, repr(rendered[:80]))
     if bot.ADD_OUR_CHANNEL_FOOTER:
         # Opt-in mode: the family footer may appear (only where the code puts it -
         # card/bank offers), so the promise becomes: never a second block of it,
@@ -483,29 +485,47 @@ def test_cleaning_never_eats_a_line():
           "1)" in bot.sanitize_outbound_text("1) boAt Airdopes 141 TWS \u2013 \u20b91,099 (78% off)"))
     check("an empty bracket pair left by a stripped phrase goes",
           "(" not in bot.sanitize_outbound_text("Price \u20b9499 ( ) extra"))
-    # A glued coupon code is the reader's money, not "random junk": it is separated
-    # from the price and KEPT, while mixed-case link debris is still cut. And the
-    # price walk must never reach past its own line - an early draft treated the next
-    # line's first word as glued and joined "MRP: \u20b9 270" with "Discount: 26%".
-    for line, token, wanted_price in [
-        ("\u2705Deal Price: \u20b9 199HFJF", "HFJF", 199),
-        ("Deal \u20b91,099PEOPLE200", "PEOPLE200", 1099),
-        ("\u274cMRP: \u20b9270XYZ", "XYZ", 270),
+    # USER RULE (round 13): text glued onto a price is UNWANTED, whatever it looks like
+    # - the live channel's price line arrives as "₹85h" / "₹ 199HFJF" / "₹85jsjd".
+    # It is cut, nothing of ours is written in its place, and the LINE survives with its
+    # price. What the source wrote APART (a labelled code, a unit, an ordinary word) is
+    # left exactly as written - cleaning must never eat real text.
+    for line, price, must_not_survive in [
+        ("\u2705Deal Price: \u20b9 199HFJF", 199, "HFJF"),
+        ("Deal \u20b91,099PEOPLE200", 1099, "PEOPLE200"),
+        ("\U0001f525 Hair Clips at \u20b985h", 85, "h"),
+        ("\u274cMRP: \u20b9270jsjd", 270, "jsjd"),
     ]:
         out = bot.strip_price_junk(line)
-        check(f"glued code survives: '{line[:26]}\u2026'", token in out, out)
-        check(f"price reads clean after un-gluing '{line[:26]}\u2026'", bot.parse_price(out) == wanted_price, out)
-        check(f"the code is no longer glued: '{line[:26]}\u2026'", line not in out or " " in out, out)
+        check(f"glued scrap is cut: '{line[:24]}\u2026'", must_not_survive not in out, out)
+        check(f"price survives clean: '{line[:24]}\u2026'", bot.parse_price(out) == price, out)
+        check(f"nothing of ours is added: '{line[:24]}\u2026'",
+              all(w.strip("().,:;") in line for w in out.split()), out)
+    check("a spaced, labelled code is real text and stays",
+          bot.strip_price_junk("Use code HFJF for \u20b9199 off") == "Use code HFJF for \u20b9199 off")
+    check("a spaced all-caps code is left alone",
+          bot.strip_price_junk("Price \u20b9199 SAVE200") == "Price \u20b9199 SAVE200")
+    check("units and ordinary words after a price stay",
+          bot.strip_price_junk("500ml \u20b9260 offer") == "500ml \u20b9260 offer")
+    check("torn shortener debris glued to a price is cut",
+          bot.strip_price_junk("\u20b9260tG7oChgiQuTgS25b") == "\u20b9260")
+    check("a glued lowercase tail is cut as before", bot.strip_price_junk("\u20b9122oya") == "\u20b9122")
     check("un-gluing never fuses two lines",
           bot.strip_price_junk("\u274cMRP: \u20b9 270\nDiscount: 26%").splitlines()
           == ["\u274cMRP: \u20b9 270", "Discount: 26%"])
-    check("link debris glued to a price is still cut",
-          bot.strip_price_junk("\u20b9260tG7oChgiQuTgS25b") == "\u20b9260")
-    check("a glued lowercase tail is cut as before", bot.strip_price_junk("\u20b9122oya") == "\u20b9122")
-    check("a spaced code is left exactly as written",
-          bot.strip_price_junk("Price \u20b9199 SAVE200") == "Price \u20b9199 SAVE200")
-    check("cleaning a glued code is idempotent",
-          bot.strip_price_junk("\u20b9 199 HFJF") == "\u20b9 199 HFJF")
+    check("cutting a glued scrap is idempotent",
+          bot.strip_price_junk("\u2705Deal Price: \u20b9 199") == "\u2705Deal Price: \u20b9 199")
+
+
+def test_layout_is_the_sources_blank_lines_only():
+    """A line we deleted must not survive as a blank line, and a blank line the source
+    wrote must not be squeezed out. 'exactly like the source' includes the spacing."""
+    check("no blank line the source did not write",
+          bot.keep_source_spacing("A\n\nB\n\nC", "A\nB\nC") == "A\nB\nC",
+          bot.keep_source_spacing("A\n\nB\n\nC", "A\nB\nC"))
+    check("the source's own spacing is kept exactly",
+          bot.keep_source_spacing("A\n\nB", "A\n\nB") == "A\n\nB")
+    check("empty text is not turned into a line", bot.keep_source_spacing("", "A") == "")
 
 
 def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
@@ -527,6 +547,192 @@ def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
           "growseek.io/45934/abc" in bot.clean_source_text(text_only), bot.clean_source_text(text_only))
 
 
+def test_photos_arrive_as_the_source_posted_them():
+    """A loot channel sends its photos as ONE album (a grid in one bubble). Our channel
+    has to show the same grid - not the first image and nothing else - and a photo that
+    cannot be fetched, or a Telegram call that refuses, must never cost us the deal."""
+    import asyncio as _aio
+    import tempfile as _tf
+    from types import SimpleNamespace
+
+    class FakePhoto:
+        def __init__(self, index, grouped=True):
+            self.id = 900 + index
+            self.photo = f"PHOTO{index}"
+            self.media = object()
+            self._index = index
+            self.grouped_id = 77 if grouped else None
+
+        async def get_grouped_items(self):
+            return [FakePhoto(i) for i in range(3)]
+
+    class RecClient:
+        def __init__(self, fail=(), no_refs=False, no_raw_call=False):
+            self.fails, self.calls, self.files = set(fail), [], []
+            self.no_refs, self.no_raw_call = no_refs, no_raw_call
+
+        async def download_media(self, msg, file=None):
+            if getattr(msg, "_index", 0) in self.fails:
+                raise OSError("photo vanished")
+            path = f"{file}_{getattr(msg, '_index', 0)}"
+            Path(path).write_bytes(b"xx")
+            self.files.append(path)
+            return path
+
+        async def get_input_entity(self, entity):
+            return "peer"
+
+        async def upload_file(self, path):
+            self.calls.append("upload_file")
+            return SimpleNamespace(id=1, parts=1, name="p", md5_checksum="")
+
+        async def __call__(self, request):
+            name = type(request).__name__
+            if self.no_raw_call:
+                raise RuntimeError("not a real client")
+            if name == "UploadMediaRequest":
+                return SimpleNamespace(media=SimpleNamespace(photo="UPLOADED"))
+            self.calls.append(name)
+            self.last = request
+            return SimpleNamespace(id=1)
+
+        async def send_file(self, entity, media, caption=None, parse_mode=None):
+            self.calls.append("send_file")
+            self.files_sent = getattr(self, "files_sent", []) + [(media, caption)]
+
+    wanted = min(3, bot.MAX_ALBUM_PHOTOS)          # the cap is an operator knob
+    async def drive():
+        with _tf.TemporaryDirectory() as td:
+            base = Path(td) / "post"
+            client = RecClient()
+            paths, refs = await bot.download_album(client, FakePhoto(0), base, 1)
+            check("an album is downloaded IN FULL (up to MAX_ALBUM_PHOTOS), in the source's order",
+                  len(paths) == wanted and len(refs) == wanted and paths[0].endswith("_0"),
+                  f"{paths} cap={bot.MAX_ALBUM_PHOTOS}")
+            # a photo that will not download is left out; the rest still go
+            # The cap applies FIRST (only the first MAX_ALBUM_PHOTOS photos are looked
+            # at), so the survivors are those of THOSE that downloaded.
+            partial_paths, partial_refs = await bot.download_album(
+                RecClient(fail=(1,)), FakePhoto(0), base, 1)
+            expected_partial = wanted - (1 if wanted > 1 else 0)
+            check("a photo that will not download is left out, the rest still go",
+                  len(partial_paths) == expected_partial and len(partial_refs) == expected_partial,
+                  f"{partial_paths} cap={bot.MAX_ALBUM_PHOTOS}")
+            solo_paths, _ = await bot.download_album(RecClient(), FakePhoto(0, grouped=False), base, 1)
+            check("a single-photo post keeps its own path (no album machinery)",
+                  len(solo_paths) == 1, str(solo_paths))
+
+            sent = RecClient()
+            await bot.send_media_item(sent, "entity", paths, "deal text", refs)
+            req = getattr(sent, "last", None)
+            if wanted >= 2:
+                check("2+ photos go out as ONE album (grid), caption on the first item",
+                      type(req).__name__ == "SendMultiMediaRequest"
+                      and len(req.multi_media) == wanted
+                      and req.multi_media[0].message == "deal text"
+                      and req.multi_media[1].message == "", str(sent.calls))
+            else:
+                # MAX_ALBUM_PHOTOS=1 is "behave like before the album existed" - and that
+                # has to be a real promise: one file with the caption, no grouped call.
+                check("MAX_ALBUM_PHOTOS=1 means one photo with the caption, no album at all",
+                      req is None and sent.calls == ["send_file"], str(sent.calls))
+            check("the album reuses the source's photo refs - nothing is re-uploaded",
+                  "upload_file" not in sent.calls, str(sent.calls))
+
+            if wanted >= 2:
+                uploaded = RecClient(no_refs=True)
+                ok = await bot.send_media_group(uploaded, "entity", "cap", paths, [None] * len(paths))
+                check("without usable refs the photos are uploaded once each, then grouped",
+                      ok and uploaded.calls.count("upload_file") == len(paths), str(uploaded.calls))
+            else:
+                check("with a one-photo cap nothing is grouped, so nothing is uploaded either",
+                      bot.outbound_parts("t", paths)[0][0] == "file" and len(paths) == 1, str(paths))
+
+            fallback = RecClient(no_raw_call=True)
+            await bot.send_media_item(fallback, "entity", paths, "deal text", refs)
+            check("a client that cannot group sends the first photo WITH the caption, "
+                  "then the rest, so no image is lost",
+                  len(fallback.files_sent) == wanted
+                  and fallback.files_sent[0][1] == "deal text"
+                  and all(cap is None for _, cap in fallback.files_sent[1:]), str(fallback.files_sent))
+
+            one = RecClient()
+            await bot.send_media_item(one, "entity", paths[:1], "deal text", refs[:1])
+            check("one photo is sent as one photo, not as a one-item album",
+                  one.calls == ["send_file"] and not hasattr(one, "last"), str(one.calls))
+            parts = bot.outbound_parts("a" * 10, paths)
+            check("an album is ONE resumable part, never six",
+                  len(parts) == 1 and parts[0][0] == "file", str(parts))
+            check("the cap never lets more photos out than the operator allowed",
+                  wanted <= bot.MAX_ALBUM_PHOTOS, f"{wanted} vs {bot.MAX_ALBUM_PHOTOS}")
+    _aio.run(drive())
+
+
+def test_lists_are_shortened_with_our_bitly_and_stay_neat():
+    """USER RULE: several links in one post (a list) go out as OUR short links, one per
+    line; a tidy single Amazon link stays direct so the Bitly quota is never spent on it;
+    and if Bitly is down or out of quota the deal still posts, never waits, never vanishes.
+    """
+    class NoSession:  # never used: the shortener itself is stubbed below
+        pass
+
+    aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
+    calls: list[str] = []
+
+    async def fake_bitly(url):
+        calls.append(url)
+        return "https://bit.ly/OURSHORT"
+
+    aff.bitly = fake_bitly
+    # The links a loot channel actually pastes: a /dp/ path plus tag, linkCode and a
+    # long ref chain - well over SHORTEN_MIN_LEN, which is exactly what must not sit in
+    # a channel post.
+    tail = "?tag=deals0911-21&linkCode=sl1&ref_=sxtby_sp_he_ll_d_m_l_image_d_1_2_2&psc=1&th=1"
+    long_two = (f"1) Steel Tiffin \u20b9399 https://www.amazon.in/dp/B0TIF1{tail}\n"
+                f"2) Casserole \u20b9499 https://www.amazon.in/dp/B0CASS2{tail}")
+    out = asyncio.run(aff.shorten_long_urls_in_text(long_two))
+    check("every long link in a list becomes our short link",
+          out.count("https://bit.ly/OURSHORT") == 2 and "amazon.in/dp/B0TIF1" not in out, out)
+    check("and each item keeps its own line, so the list reads neat",
+          all(line.startswith(("1)", "2)")) for line in out.splitlines() if line.strip()), out)
+    check("the rule is lists + long urls, not every post",
+          bot.should_use_bitly("https://www.amazon.in/dp/B0X", True) is True
+          and bot.should_use_bitly("https://www.amazon.in/dp/B0X", False) is False
+          and bot.SHORTEN_MIN_LEN >= 50, str(bot.SHORTEN_MIN_LEN))
+    tidy = "Boat Airdopes \u20b91,099 https://www.amazon.in/dp/B0AIR1?tag=deals0911-21"
+    check("a short single link stays direct (no quota spent)",
+          asyncio.run(aff.shorten_long_urls_in_text(tidy)) == tidy, tidy)
+
+    async def out_of_quota(url):
+        raise RuntimeError("Bitly quota exhausted")
+
+    aff.bitly = out_of_quota
+    # Fresh URLs: a shortener that already answered for a link keeps that answer (that
+    # is the cache doing its job), so the "Bitly is down" case needs unseen links.
+    other = (f"1) Pressure Cooker \u20b9899 https://www.amazon.in/dp/B0COOK1{tail}\n"
+             f"2) Water Bottle \u20b9299 https://www.amazon.in/dp/B0BOTT2{tail}")
+    kept = asyncio.run(aff.shorten_long_urls_in_text(other))
+    check("Bitly down: the deal still goes out with the tagged merchant links",
+          "amazon.in/dp/B0COOK1" in kept and "bit.ly" not in kept, kept[:140])
+
+
+def test_our_channel_link_sits_on_the_top_line_once():
+    """The one thing of ours a reader sees above the deal (their ask), and nothing else."""
+    body = "Lizol Floor Cleaner 900ml\n\u2705Deal Price: \u20b9 199\nhttps://www.amazon.in/dp/B0X"
+    topped = bot.prepend_channel_header(body)
+    first = topped.splitlines()[0]
+    check("the top line is our family link", first.startswith("\U0001f449") and bot.OUR_FOLDER_LINK in first, first)
+    check("the deal text below is untouched", topped.endswith(body), topped[:80])
+    check("it is never added twice", bot.prepend_channel_header(topped) == topped)
+    check("no other channel is linked",
+          [u for u in re.findall(r"https?://\S+", topped) if "t.me" in u] == [bot.OUR_FOLDER_LINK], topped)
+    # and the stored copy stays the source's: the header is a delivery-time line only
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    gate = src[src.index("def render_job"):]
+    check("render_job never writes the header into the stored post",
+          "prepend_channel_header" not in gate[:gate.index("async def process_job")], "header in render path")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -536,6 +742,10 @@ def main() -> int:
     test_whatsapp_identity_is_the_same_rule()
     test_cleaning_never_eats_a_line()
     test_markdown_link_with_a_url_label_keeps_the_merchant_url()
+    test_layout_is_the_sources_blank_lines_only()
+    test_lists_are_shortened_with_our_bitly_and_stay_neat()
+    test_photos_arrive_as_the_source_posted_them()
+    test_our_channel_link_sits_on_the_top_line_once()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

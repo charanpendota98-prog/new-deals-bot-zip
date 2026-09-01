@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.0
+"""BestGAA Production Bot v18.1
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -9,6 +9,13 @@ immediately, exactly once, clean":
 - concurrent resolve / convert / health-check / shorten per post with cached
   verdicts and hard time budgets, so one slow site cannot delay everything
 - EarnKaro conversion with retry/cache/circuit breaker
+- a dead short link, an unresolvable destination or an oversized photo costs the post
+  NOTHING: the offending link is cut and the deal goes out complete (never a retry-until-
+  stale, never a skip)
+- the source's photos are posted the way the source posted them: a multi-photo album
+  arrives as ONE album (the grid), and only the source's own links are ever replaced
+- exactly one line of ours may sit above the deal - our own channel link, added on the
+  way out so the stored copy stays the source's - and never a second one
 - a post that reached the intake ALWAYS reaches the targets: a share button in
   the source text, a merchant page that 404s to our datacenter IP, or a coupon
   code glued to a price can veto nothing - they are cleaned or ignored, never a
@@ -230,6 +237,16 @@ DROP_DEAD_LINKS = os.getenv("DROP_DEAD_LINKS", "false").strip().lower() in ("1",
 # A huge source video must never freeze a worker; oversized/slow media is
 # posted as text so the deal itself goes out on time.
 MAX_MEDIA_MB = _num("MAX_MEDIA_MB", 45, 1, 2048)
+# USER RULE (round 13): the source posts its photos as ONE album - a grid inside a
+# single bubble - so our channel has to show the same grid, every photo in the source's
+# order, and never only the first image. 10 is Telegram's own album ceiling.
+MAX_ALBUM_PHOTOS = int(_num("MAX_ALBUM_PHOTOS", 10, 1, 10))
+# USER RULE (round 13): one neat line at the TOP with our own channel link, so a reader
+# on any of our channels can reach the rest of the family instead of wandering off to
+# someone else's. It is the ONLY thing of ours that may sit above the deal text, it never
+# appears twice, and the Tricks path (its own footer) is left exactly as it was.
+ADD_OUR_CHANNEL_LINK_TOP = os.getenv(
+    "ADD_OUR_CHANNEL_LINK_TOP", "true").strip().lower() in ("1", "true", "yes", "on")
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = _num("MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 120, 5, 900)
 SOURCE_REFRESH_SECONDS = _num("SOURCE_REFRESH_SECONDS", 180, 60, 3600)
 # Dead-man's switch: re-scan every live source's recent messages on a short
@@ -525,6 +542,34 @@ NON_STORE_DOMAINS = {
 # returned no link: wa.me") and then dropped when the price went stale: the source
 # channel had the deal, our channels never saw it. So a share link is never converted,
 # never health-checked, and above all never a reason to swallow a post.
+# A host whose only job is redirecting. Enumerating them is hopeless (a source channel
+# posts bit.ly today and bitly.com/74265 tomorrow), so this list is only the part we are
+# SURE about - is_unresolvable_short_link() below adds the shape test and is what decides.
+# Anything here whose link never resolves is cut from the copy; the deal still goes out.
+SHORTENER_HOSTS = (FOREIGN_ECHO_DOMAINS | OUR_RUNTIME_SHORTENER_DOMAINS
+                   | OUR_SHORTENER_DOMAINS
+                   | {"bit.ly", "j.mp", "bitly.com", "t.co", "buff.ly", "ow.ly",
+                      "tiny-urls", "short.link", "go.link", "spl.ink", "tini.go",
+                      "tidd.ly", "geni.us", "amzn.to", "amzn.in", "s.click"})
+
+
+def is_unresolvable_short_link(host: str, url: str) -> bool:
+    """True for a link that exists only to redirect and gave us nothing.
+
+    Such a link is not a destination: it has no product page behind it that we could
+    publish, monetize or verify. Retrying the WHOLE post for it (the old behaviour) is how
+    a source post vanished - so the caller cuts the link and posts the deal. The shape does
+    the work here, not a blocklist: any host that is not a known merchant or service store
+    and carries a single short slug is a shortener as far as we are concerned.
+    """
+    if not host or in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, SERVICE_OFFER_DOMAINS):
+        return False
+    if in_domains(host, SHORTENER_HOSTS):
+        return True
+    path = (urlparse(str(url or "")).path or "").strip("/")
+    return bool(path) and "/" not in path and len(path) <= 24
+
+
 SHARE_INTENT_DOMAINS = NON_STORE_DOMAINS | {
     "wa.me", "api.whatsapp.com", "chat.whatsapp.com", "web.whatsapp.com", "wa.link",
     "telegram.me", "telegram.dog", "tl.me", "addtoany.com", "sharethis.com",
@@ -1874,15 +1919,27 @@ def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
     trail = tail[len(core):]
     if not core:
         return f"{price}{gap}{tail}"
-    if not gap and _COUPON_CODE_RE.fullmatch(core):
-        return f"{price} {core}{trail}"                 # un-glue a code, keep it
-    if gap and (core.lower() in _PRICE_UNITS or not re.search(r"\d", core)):
+    if not gap:
+        # USER RULE (round 13): a token glued straight onto a price is UNWANTED text,
+        # whatever it looks like - the live channel's price line arrives as
+        # "₹85h" / "₹ 199HFJF" / "₹85jsjd" and the reader needs the PRICE, not the
+        # scrap. It is cut, and nothing of ours is written in its place. A code the
+        # source really wants the reader to use is written separately ("Use code
+        # PEOPLE200", "₹1,099 SAVE200"), and that spacing is what keeps it: this walk
+        # only ever touches what is fused to the digits.
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", core) and re.search(r"[A-Za-z]", core):
+            return f"{price}{trail}".rstrip()
+        return f"{price}{gap}{tail}"
+    if core.lower() in _PRICE_UNITS or not re.search(r"\d", core):
         return f"{price} {core}{trail}"                  # words and units stay put
-    if gap and _COUPON_CODE_RE.fullmatch(core) and re.search(r"\d", core):
-        return f"{price} {core}{trail}"                   # already spaced code: keep
-    if re.fullmatch(r"[A-Za-z0-9_-]{2,12}", core) and re.search(r"[A-Za-z]", core):
-        return f"{price}{trail}".rstrip()
-    if (re.fullmatch(r"[A-Za-z0-9_-]{2,64}", core) and re.search(r"[A-Za-z]", core)
+    if _COUPON_CODE_RE.fullmatch(core) and re.search(r"\d", core):
+        return f"{price} {core}{trail}"                    # spaced code: keep verbatim
+    # A SPACED token is deleted only when it is machine-shaped - mixed case, long, and
+    # holding a digit, which is what a torn shortener looks like when the paste broke
+    # ("₹260 tG7oChgiQuTgS25b"). No human writes a coupon or a quantity that way, so
+    # nothing of the source's own words is ever lost here.
+    if (len(core) >= 8 and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", core)
+            and re.search(r"[a-z]", core) and re.search(r"[A-Z]", core)
             and re.search(r"\d", core)):
         return f"{price}{trail}".rstrip()
     return f"{price}{gap}{tail}"
@@ -3262,6 +3319,14 @@ class Store:
                     self.conn.rollback()
                     return False, []
             if not new_keys:
+                # A post with NO identifiable product at all (every link in it was a
+                # dead shortener, cut above) has no keys to reserve, and calling that a
+                # "duplicate deal" of nothing is how a real post went missing. The
+                # content fingerprint above is the honest check for it: same text twice
+                # is still refused, this text once is a first.
+                if not keys and content_key:
+                    self.conn.commit()
+                    return True, []
                 self.conn.rollback()
                 return False, []
             self.conn.commit()
@@ -4281,9 +4346,165 @@ def media_is_too_large(msg) -> bool:
     return bool(sizes) and max(sizes) > limit
 
 
+def media_list(media) -> list[str]:
+    """One path, a list of paths or nothing - all three arrive here; deliver as a list."""
+    if not media:
+        return []
+    if isinstance(media, (list, tuple)):
+        return [str(x) for x in media if x]
+    return [str(media)]
+
+
+async def album_messages(client, msg) -> list:
+    """Every message of the source album, in the order the source posted them.
+
+    A loot channel sending six product photos does NOT send six posts: it sends one
+    album, and Telethon exposes the siblings through `grouped_id`. A client or a message
+    without that support is just [msg], so a normal single-photo post keeps the exact
+    code path it always had.
+    """
+    primary = [msg]
+    if not getattr(msg, "grouped_id", None):
+        return primary
+    try:
+        siblings = list(await msg.get_grouped_items())
+    except Exception as exc:  # noqa: BLE001 - a missing lookup must never lose the post
+        log.info("ALBUM | sibling lookup failed (%s); posting the photo we have", exc)
+        return primary
+    photos = [m for m in siblings if getattr(m, "photo", None) is not None]
+    photos.sort(key=lambda m: getattr(m, "id", 0) or 0)
+    if not photos:
+        return primary
+    if not any(getattr(m, "id", None) == getattr(msg, "id", None) for m in photos):
+        photos.insert(0, msg)
+    return photos[:max(1, MAX_ALBUM_PHOTOS)]
+
+
+async def download_album(client, msg, base_target, queue_id) -> tuple[list[str], list]:
+    """Download the album's photos with the same per-file budget as a single photo, and
+    keep each photo's Telegram reference.
+
+    A photo that is slow or missing is LEFT OUT rather than stalling the deal: six
+    images are nicer than one, but a deal that goes out late is no deal at all. The
+    references are what let the target post go out as one grid without re-uploading a
+    single byte, which is the difference between "posted now" and "posted after six
+    uploads".
+    """
+    paths: list[str] = []
+    refs: list = []
+    for index, item in enumerate(await album_messages(client, msg)):
+        target = base_target if index == 0 else Path(f"{base_target}_{index}")
+        try:
+            saved = await asyncio.wait_for(
+                client.download_media(item, file=str(target)),
+                timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            log.warning("MEDIA SLOW | queue=%s album item %s exceeded %ss; posting the rest",
+                        queue_id, index, int(MEDIA_DOWNLOAD_TIMEOUT_SECONDS))
+            saved = None
+        except Exception as exc:  # noqa: BLE001 - never fail a post over one image
+            log.warning("MEDIA FAILED | queue=%s album item %s: %s", queue_id, index, exc)
+            saved = None
+        if saved:
+            paths.append(str(saved))
+            refs.append(getattr(item, "photo", None))
+    return paths, refs
+
+
+def _random_id() -> int:
+    import random
+    return random.randrange(1, 2 ** 63)
+
+
+async def send_media_group(client, entity, caption: str, paths: list[str], refs: list) -> bool:
+    """Post the photos as ONE album - the grid a source channel's post shows.
+
+    Telethon 1.44 has no `send_media_group` helper, so the raw `SendMultiMediaRequest`
+    is used. When the source photo references are still usable nothing is uploaded at
+    all; otherwise each file is uploaded first. False means "this client or Telegram
+    would not do the grid", and the caller then sends plain files - a photo layout is
+    never worth a missing deal.
+    """
+    try:
+        from telethon import functions, types as tl_types
+        medias: list = []
+        if refs and len(refs) == len(paths) and all(ref is not None for ref in refs):
+            medias = [tl_types.InputMediaPhoto(id=ref) for ref in refs]
+        else:
+            peer = await client.get_input_entity(entity)
+            for path in paths:
+                handle = await client.upload_file(path)
+                uploaded = await client(functions.messages.UploadMediaRequest(
+                    peer, media=tl_types.InputMediaUploadedPhoto(file=handle)))
+                photo = getattr(getattr(uploaded, "media", None), "photo", None)
+                if photo is None:
+                    return False
+                medias.append(tl_types.InputMediaPhoto(id=photo))
+        await client(functions.messages.SendMultiMediaRequest(
+            entity,
+            multi_media=[tl_types.InputSingleMedia(
+                media=media, message=caption if index == 0 else "", random_id=_random_id())
+                for index, media in enumerate(medias)],
+        ))
+        return True
+    except Exception as exc:  # noqa: BLE001 - the caller falls back to single files
+        log.warning("ALBUM | grouped send not possible (%s); sending the photos as usual", exc)
+        return False
+
+
+async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
+    """One photo with its caption, or the whole album as one grid, with real fallbacks.
+
+    If the grid cannot be sent, the first photo goes out with the caption - exactly what
+    the bot always did - and the remaining photos follow as their own messages, so the
+    reader still gets every image the source posted.
+    """
+    paths = media_list(media)
+    if len(paths) <= 1:
+        await client.send_file(entity, paths[0] if paths else None, caption=caption,
+                               parse_mode=None)
+        return
+    if await send_media_group(client, entity, caption, paths, list(refs or [])):
+        return
+    await client.send_file(entity, paths[0], caption=caption, parse_mode=None)
+    for extra in paths[1:]:
+        with contextlib.suppress(Exception):
+            await client.send_file(entity, extra, parse_mode=None)
+
+
+def channel_header_line() -> str:
+    return f"\U0001f449 All Loot Channels: {OUR_FOLDER_LINK}"
+
+
+def keep_source_spacing(text: str, raw_text: str) -> str:
+    """Layout is part of "exactly like the source", so a blank line WE created goes.
+
+    A line our own passes deleted - a foreign channel's share button, a stripped CTA
+    clause, a link cut because it never resolved - used to stay behind as an empty line,
+    and subscribers read that as the bot adding space that the source never wrote. If the
+    source had no blank line, neither does our copy; where the source DID space its blocks
+    apart, that spacing is the source's own and is kept exactly as it was.
+    """
+    if not text:
+        return text
+    if "\n\n" in (raw_text or ""):
+        return text
+    return re.sub(r"\n{2,}", "\n", text)
+
+
+def prepend_channel_header(text: str) -> str:
+    """The one-line family link on top, never a second time, never on a post that
+    already carries it. Nothing else is added: the deal text below stays the source's."""
+    body = (text or "").strip("\n")
+    if OUR_FOLDER_LINK in body:
+        return body
+    return f"{channel_header_line()}\n{body}" if body else channel_header_line()
+
+
 def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
     """Build deterministic chunks so a retry can resume after the last sent part."""
-    if media_path:
+    if media_list(media_path):
         caption_parts = chunks(text, 1024)
         parts: list[tuple[str, str]] = [("file", caption_parts[0])]
         remainder = "\n".join(caption_parts[1:]).strip()
@@ -4293,7 +4514,8 @@ def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
 
 
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
-                  progress_callback=None, link_preview: bool = True) -> tuple[bool, str]:
+                  progress_callback=None, link_preview: bool = True,
+                  media_refs: list | None = None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
@@ -4307,7 +4529,7 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
         for attempt in range(POST_RETRIES):
             try:
                 if kind == "file":
-                    await client.send_file(entity, media_path, caption=content, parse_mode=None)
+                    await send_media_item(client, entity, media_path, content, media_refs)
                 else:
                     await client.send_message(
                         entity, content, parse_mode=None, link_preview=link_preview
@@ -4448,6 +4670,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         log.info("PASSTHROUGH | queue=%s unmonetizable link kept clean: %s",
                  row["id"], clean_resolved[:70])
 
+    unresolvable: list[str] = []
     for (source_url, resolved), result in zip(store_candidates, convert_results):
         if isinstance(result, BaseException):
             transient_errors.append(str(result))
@@ -4458,11 +4681,21 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             resolved_host = (urlparse(resolved).hostname or "").lower()
             before = len(passthrough)
             keep_passthrough(source_url, resolved)
-            if len(passthrough) == before:
-                # Unknown destination: never publish an unvetted domain, retry.
-                transient_errors.append(
-                    f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
-                )
+            if len(passthrough) > before:
+                continue
+            if (is_unresolvable_short_link(resolved_host, source_url)
+                    and clean_url(source_url) == clean_url(str(resolved or ""))):
+                # Nothing resolved: the ONLY reason the whole deal used to disappear for
+                # a "₹85 https://bit.ly/xxxx" post. A dead short link is permanent, so
+                # neither retry nor skip is right - cut the link, keep the post.
+                unresolvable.append(source_url)
+                log.warning("LINK DROPPED | queue=%s short link never resolves, posting the "
+                            "deal without it: %s", row["id"], source_url[:70])
+                continue
+            # Unknown destination: never publish an unvetted domain, retry.
+            transient_errors.append(
+                f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
+            )
     if transient_errors and row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
         # A temporary API/Bitly/network failure must retry the whole job so a
         # monetizable link is not silently lost.
@@ -4479,7 +4712,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         for source_url, resolved in store_candidates:
             if clean_url(source_url) not in already:
                 keep_passthrough(source_url, resolved)
-    if not converted and not service_pairs and not passthrough:
+    if not converted and not service_pairs and not passthrough and not unresolvable:
         raise PermanentSkip("no monetizable URLs")
 
     # Preserve distinct variant links (colour/gender/size/category filters) inside
@@ -4505,7 +4738,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Service-only posts have an empty `converted` by design (their links are
     # pass-through, already reserved via their product keys above) — only a
     # STORE-only post can be fully duplicated this way.
-    if not converted and not service_pairs and not passthrough:
+    if not converted and not service_pairs and not passthrough and not unresolvable:
         raise DuplicateDeal("all products already posted")
 
     mapping = {clean_url(r.source): r.affiliate for r in converted}
@@ -4551,7 +4784,17 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if multi_product_list:
         rendered = format_clustered_product_list(rendered)
     rendered = strict_orphan_token_cleanup(rendered)
-    if not rendered or not URL_RE.search(rendered):
+    # Cut the dead short links out of the copy itself. Leaving them in would publish a
+    # foreign, unverified link (the provenance rule); removing them must not remove the
+    # deal, so a post whose only link was dead goes out as complete text instead of
+    # being skipped - "source lo vasthundi, mana target lo raledu" is the bug, a dead
+    # shortener is not a reason for it.
+    for dead_link in unresolvable:
+        for variant in dict.fromkeys(v for v in (dead_link, clean_url(dead_link)) if v):
+            rendered = rendered.replace(variant, " ")
+    if unresolvable:
+        rendered = sanitize_outbound_text(tidy_post(clean_source_text(rendered)))
+    if not rendered or (not URL_RE.search(rendered) and not unresolvable):
         raise PermanentSkip("rendered post has no affiliate URL")
 
     discount = parse_discount(text, price)
@@ -4562,7 +4805,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Card / bank offers: user wants them on EVERY owned channel at once plus
     # the premium channel, with the Loots Family folder link appended. These
     # are the strongest, most time-sensitive deals, so fanning out is correct.
-    if card_offer and ADD_OUR_CHANNEL_FOOTER:
+    if card_offer and ADD_OUR_CHANNEL_FOOTER and OUR_FOLDER_LINK not in rendered:
         # "nothing of ours in the post" - the folder link is our own promo text,
         # so it only rides along when the operator asks for it. The card offer
         # itself is published complete either way.
@@ -4592,8 +4835,16 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         rendered = tidy_post(clean_source_text(rendered))
         log.info("LINK REPAIR | queue=%s removed %s unverified link(s): %s",
                  row["id"], len(leftover), ", ".join(u[:40] for u in leftover[:4]))
-    if not any(clean_url(raw) in allowed_final_urls for raw in URL_RE.findall(rendered)):
+        rendered = keep_source_spacing(rendered, row["text"] or "")
+    if (not any(clean_url(raw) in allowed_final_urls for raw in URL_RE.findall(rendered))
+            and not unresolvable):
         raise PermanentSkip("no verified affiliate link survived in the rendered post")
+    if unresolvable and not URL_RE.search(rendered):
+        # Every link this post carried was a dead shortener, so the deal goes out as
+        # complete text. Refusing it here would repeat the old sin: the source has the
+        # post, our channel does not.
+        log.warning("LINK-FREE POST | queue=%s posted complete, without a link "
+                    "(source's short link no longer resolves)", row["id"])
 
     # PowerLoots1 is now a global filtered destination across ALL configured
     # sources. Remove legacy unconditional routing, then add it only when the
@@ -4703,7 +4954,12 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     except Exception as exc:  # noqa: BLE001 - a gate must never lose a live deal
         log.warning("PRICE FIDELITY check skipped (post kept as rendered): %s", exc)
     if not URL_RE.search(rendered):
-        raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
+        if unresolvable:
+            log.warning("LINK-FREE POST | queue=%s every link the source wrote was a dead "
+                        "short link - posting the deal complete, without a link", row["id"])
+        else:
+            raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
+    rendered = keep_source_spacing(rendered, raw_text)
     # Persist only the products actually rendered/reserved; never extend the
     # dedup timestamp of products filtered as already-posted.
     commit_keys = list(new_keys)
@@ -4775,7 +5031,9 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
 
 
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
-    media_path = None
+    # a list of files (with their Telegram refs) when the source posted an album
+    media_path: list[str] = []
+    media_refs: list = []
     successes = 0
     price = None
     try:
@@ -4822,29 +5080,17 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             else:
                 # Parent exists and no fake .bin extension: Telethon preserves the
                 # actual photo/video/document type so target posts render correctly.
+                # An album (a grid of photos in one bubble) is downloaded IN FULL -
+                # the source's own layout is what the target must show.
                 media_target = MEDIA_DIR / f"{row['chat_id']}_{row['msg_id']}"
-                try:
-                    # A slow/huge download used to freeze a worker for minutes,
-                    # which pushed every OTHER deal behind it. Text beats waiting.
-                    media_path = await asyncio.wait_for(
-                        client.download_media(msg, file=str(media_target)),
-                        timeout=MEDIA_DOWNLOAD_TIMEOUT_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    log.warning("MEDIA SLOW | queue=%s download exceeded %ss; posting text-only",
-                                row["id"], int(MEDIA_DOWNLOAD_TIMEOUT_SECONDS))
-                    media_path = None
-                    with contextlib.suppress(Exception):
-                        Path(media_target).unlink(missing_ok=True)
-                except Exception as exc:
-                    log.warning("MEDIA FAILED | queue=%s %s (posting text-only)", row["id"], exc)
-                    media_path = None
-                    with contextlib.suppress(Exception):
-                        Path(media_target).unlink(missing_ok=True)
+                media_path, media_refs = await download_album(client, msg, media_target, row["id"])
         # Final provenance gate runs again immediately before target delivery.
         owned_candidates = {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
         owned_external = {url for url in owned_candidates if url in rendered}
-        if not await store.verify_generated_text(rendered, owned_external):
+        # A post with no URL at all has nothing to prove (this happens only when every
+        # link the source wrote was a dead short link, cut above): the deal text still
+        # goes out rather than being skipped.
+        if URL_RE.search(rendered) and not await store.verify_generated_text(rendered, owned_external):
             raise PermanentSkip("final provenance recheck failed")
         # Owned Telegram promo links are not merchant destinations; all other
         # generated shopping links still receive the normal health check.
@@ -4876,6 +5122,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.update_rendered(row["id"], rendered)
                 log.warning("LINK REPAIR | queue=%s dropped %s dead destination(s); posting the rest",
                             row["id"], len(dead))
+                rendered = keep_source_spacing(rendered, row["text"] or "")
             elif dead:
                 # Every link answered as an explicit "this page is gone" page - and
                 # THIS used to be a silent missing post, the exact complaint the user
@@ -4942,12 +5189,22 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
 
             # Power and Premium use filtering/scheduling only. Keep one clean,
             # source-derived post with no repetitive bot-added headers/footers.
+            # USER RULE (round 13): our own family link on the TOP line - a reader of any
+            # of our channels can reach the rest of the family instead of wandering into
+            # somebody else's. It goes on the way OUT, after the stored copy is final: the
+            # ledger, the auditor and the chunk-resume logic keep seeing exactly the
+            # source-derived text, no cleaning pass can eat the line as "join my channel",
+            # and the Tricks posts, which have their own footer, are left untouched.
+            # (Toggling the knob between two chunks of ONE long post would shift the
+            # boundaries, so it is an operator switch, not a per-post experiment.)
             target_text = rendered
             allow_preview = await store.preview_allowed(target_text)
+            if ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES:
+                target_text = prepend_channel_header(target_text)
             ok, error = await deliver(
                 client, entity, target_text, media_path,
                 start_chunk=start_chunk, progress_callback=checkpoint,
-                link_preview=allow_preview,
+                link_preview=allow_preview, media_refs=media_refs,
             )
             if premium_claimed:
                 await store.complete_premium(row["id"], ok)
@@ -4971,9 +5228,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         log.exception("JOB FAIL %s: %s", row["id"], exc)
         await store.fail_job(row, str(exc))
     finally:
-        if media_path:
+        for leftover in media_list(media_path):
             with contextlib.suppress(Exception):
-                Path(media_path).unlink(missing_ok=True)
+                Path(leftover).unlink(missing_ok=True)
 
 # ---------------------------------------------------------------------------
 # Main
@@ -4998,7 +5255,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.0 starting "
+    log.info("BestGAA Production Bot v18.1 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

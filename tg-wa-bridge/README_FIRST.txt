@@ -252,11 +252,27 @@ twice:
     404/repair page - normal for a fresh ASIN seen from a datacenter IP - the post
     goes out and the log says so, instead of throwing `Broken destination:` and having
     the job dropped as permanently failed. Set it to true for the old hard block.
-  - stripPriceJunk + keepCodeAsIs are the bridge's copy of the bot's rule:
-    "Rs 199HFJF" -> "Rs 199 HFJF" (a coupon code is money: un-glued, kept),
-    "Rs260tG7oChgiQuTgS25b" -> "Rs260" (link debris cut), a spaced code is left
-    exactly as written, and the price walk never crosses a newline.
+  - stripPriceJunk + keepCodeAsIs are the bridge's copy of the bot's rule (v18.1:
+    "Rs 199HFJF" -> "Rs 199" - a token FUSED to a price is unwanted text, so it is cut,
+    and nothing is written in its place; "Rs260tG7oChgiQuTgS25b" -> "Rs260" as before).
+    What the source wrote APART survives untouched ("Use code HFJF for Rs199 off",
+    "Price Rs199 SAVE200", "500ml Rs260 offer"); a spaced token is deleted only when it
+    is machine-shaped (mixed case, 8+ chars, holds a digit). The walk never crosses a
+    newline.
   - explicitDiscount() reads the "Discount: 26%" colon form like the bot does, so a
     post written that way is no longer ranked as 0% off by the best-pick logic.
   - node bridge.js --self-test pins all of the above, and passes with either setting
     of WA_DROP_DEAD_LINKS.
+
+  v18.1 (round 13) - the WhatsApp side keeps pace with the bot:
+  - the glued-price rule flipped to "cut" (above) - the channel owner ruled that
+    "h"/"htt"/"jsjd"-style text next to a price must never be shown, and that nothing of
+    ours may be added in its place either;
+  - explicitDiscount / stripPriceJunk / isShareIntent stay mirrored with the bot's
+    parse_discount / strip_price_junk / is_share_intent, and --self-test pins all of them
+    (a price walk that must not fuse two lines, share links never judged as
+    destinations, cashback never read as a discount);
+  - the bot's new delivery-time top line (our own channel link) is NOT re-implemented
+    here: the bridge reads the SOURCE channels, so WhatsApp copy stays exactly what this
+    file's formatters produce. If the family link is ever wanted on WhatsApp too, that is
+    a one-knob decision, not a rewrite.

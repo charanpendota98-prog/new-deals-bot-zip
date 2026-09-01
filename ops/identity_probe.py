@@ -59,11 +59,13 @@ def main(argv: list[str]) -> int:
         return 2
     texts = [argv[0]] + (argv[1:2] or [])
     ids = [bot.product_signature(t) for t in texts]
+    readable_ids: list[tuple | None] = []
     for text, key in zip(texts, ids):
         first = next((line.strip() for line in text.splitlines() if line.strip()), "")
         headline = next((line.strip() for line in text.splitlines()
                          if line.strip() and "http" not in line), "")
         readable = bot._product_identity(headline)
+        readable_ids.append(tuple(readable) if readable else None)
         print(f"  headline : {first[:78]}")
         print(f"  identity : {'|'.join(readable) if readable else 'none - this post is never skipped'}")
         print(f"  telegram : {key or 'no identity (never skipped)'}")
@@ -73,7 +75,17 @@ def main(argv: list[str]) -> int:
     if len(ids) == 1:
         return 0
     same = ids[0] is not None and ids[0] == ids[1]
-    print(f"VERDICT: {'SAME product' if same else 'DIFFERENT products'}")
+    if same:
+        print("VERDICT: SAME product")
+        return 0
+    if all(x is None for x in ids) and readable_ids[0] is not None and readable_ids[0] == readable_ids[1]:
+        # Two bare headlines: the identity RULE says one product, but neither text is a
+        # single-product deal post, so the ledger never keys them and nothing is skipped.
+        # Saying "DIFFERENT products" here would contradict the identities printed above.
+        print("VERDICT: SAME product by identity; neither text is a postable single-product "
+              "deal, so no copy would be skipped (paste the whole posts for that answer)")
+        return 0
+    print("VERDICT: DIFFERENT products")
     if same:
         price_a, disc_a = bot.parse_price(texts[0]), bot.parse_discount(texts[0])
         price_b, disc_b = bot.parse_price(texts[1]), bot.parse_discount(texts[1])

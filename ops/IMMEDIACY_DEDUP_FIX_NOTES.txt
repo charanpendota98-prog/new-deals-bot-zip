@@ -784,8 +784,9 @@ Three defects, each proved on that exact text rather than inferred from the code
 
 BEHAVIOUR TABLE - identical on Telegram and WhatsApp
 
-    (Deal Price: Rs 199HFJF)      -> "Deal Price: Rs 199 HFJF"    price parses 199, code kept
-    (Deal Rs1,099PEOPLE200)       -> "Deal Rs1,099 PEOPLE200"     the Rs200-off code survives
+    (Deal Price: Rs 199HFJF)      -> "Deal Price: Rs 199"         SCRAP CUT (v18.1 ruling;
+                                                                       v18.0 kept it un-glued)
+    (Deal Rs1,099PEOPLE200)       -> "Deal Rs1,099"               glued token cut (v18.1)
     (Rs1,099SAVE_200)            -> "Rs1,099 SAVE_200"           underscore codes too
     (Price Rs199 SAVE200)        -> unchanged                     already separated: hands off
     (Rs260tG7oChgiQuTgS25b)      -> "Rs260"                       torn shortener: cut
@@ -818,3 +819,85 @@ shipping anything:
   bash ops/deploy_and_verify.sh --verify-only     # what is live right now
   bash ops/diagnose.sh                            # deployed-fix markers + coverage
   bash ops/deploy_and_verify.sh --with-tests      # ship this build
+
+================================================================================
+v18.1 (round 13) - "alantivi unwated vi ravoddu": the same live post, four more fixes
+================================================================================
+
+The user looked at what v18.0 produced and ruled on it directly: "HFJF" is NOT a coupon
+code - "h", "htt", "jsjd" style text gets stuck next to the price and it must not be
+shown at all ("source lenid ravoddu"). So:
+
+1. GLUED SCRAP: CUT, NOT UN-GLUED. Anything FUSED to a rupee amount is deleted, and
+   nothing of ours is written in its place:
+       "Deal Price: Rs 199HFJF"    -> "Deal Price: Rs 199"
+       "Hair Clips at Rs85h"        -> "Hair Clips at Rs85"
+       "Rs1,099PEOPLE200"           -> "Rs1,099"
+       "Rs260tG7oChgiQuTgS25b"      -> "Rs260"          (as before - torn shortener)
+   What the source wrote APART is real text and is never touched:
+       "Use code HFJF for Rs199 off" -> untouched   "Price Rs199 SAVE200" -> untouched
+       "500ml Rs260 offer"           -> untouched
+   A spaced token is deleted only when it is machine-shaped (mixed case + >=8 chars +
+   holds a digit). Same rule in main_bot_new._keep_code_as_is and
+   bridge.keepCodeAsIs - one shape test, no regex pile-up, and the walk NEVER crosses a
+   newline (that variant once joined "MRP: Rs 270" with "Discount: 26%").
+
+2. FOURTH SWALLOW: a dead short link killed the whole post. render_job collects
+   destinations from the source text; "https://bit.ly/xyz" that no longer resolves gives
+   the affiliate nothing to monetize, and the job raised
+       RuntimeError: conversion retry required: affiliate conversion returned no link: bit.ly
+   retried until the deal aged out, then disappeared - nothing posted, log quiet.
+   Now: SHORTENER_HOSTS recognises a host whose only job is redirecting; if it did not
+   resolve, the LINK IS CUT (LINK DROPPED | queue=N posting the deal without it) and the
+   deal goes out complete. A post left with no URL at all is still published
+   (LINK-FREE POST) instead of failing the provenance/verified-link gates - and two gates
+   that called a key-less post "duplicate deal"/"all products already posted" were fixed
+   so they cannot eat a link-less post either. Coverage rule intact: the source has it,
+   we post it.
+
+3. PHOTOS: posted the way the source posted them. A loot channel's six images are ONE
+   album (a grid), and the bot used to send only the first photo. download_album() now
+   walks the siblings via grouped_id (keeping each photo's Telegram reference so nothing
+   is re-uploaded - a post must not wait on six uploads) and send_media_group() posts the
+   grid with the deal as the first item's caption. Any photo that cannot be fetched is
+   left out; if the grouped call is refused, the fallback is the old behaviour plus the
+   remaining photos after it. MAX_ALBUM_PHOTOS (default 10) caps it. A single-photo post
+   keeps its exact old code path.
+
+4b. SPACING: keep_source_spacing() / keepSourceSpacing() - a blank line our own
+   deletions created is collapsed; a blank line the source wrote is kept. "exactly like the
+   source" includes the layout, and a post padded with empty lines reads like bot text.
+
+4. OUR OWN CHANNEL LINK ON TOP: "paina neat ga veru channel link pettelaga".
+   prepend_channel_header() writes exactly one first line,
+       (arrow) All Loot Channels: <folder link>
+   and nothing else. It is applied at DELIVERY, not in render_job: the stored post, the
+   auditor's input, numeric fidelity and the chunk-resume logic all keep seeing the
+   source's text; no cleaning pass can eat the line as "join my channel"; Tricks posts
+   (which already have their own footer) are excluded. ADD_OUR_CHANNEL_LINK_TOP=false
+   switches it off and the test for it flips with the knob (S10).
+
+Bitly (re-confirmed by the user: "multiple links okka post lo vunte bitly use cheyu"):
+   should_use_bitly = lists (2+ links) + anything over SHORTEN_MIN_LEN (70); a tidy
+   single /dp/?tag= link stays direct so the monthly quota is not spent on ordinary
+   deals, and a Bitly failure posts the tagged links - never a lost post. Pinned by
+   test_lists_are_shortened_with_our_bitly_and_stay_neat().
+
+PROOF COMMANDS (six suites + auditor + bridge self-test; S10 conditions on its own knob,
+so every one of these must pass on its own terms):
+
+  python3 test_duplicate_sim.py          # S9 share link, S10 top line, S11 dead shortener
+  python3 test_line_fidelity.py          # scrap cut + spaced text kept, album grid, bitly
+  python3 test_pipeline_fixes.py ; python3 test_render_job.py
+  python3 test_best_copy.py ; python3 test_rescan.py
+  python3 ops/sync_identity.py --check
+  (cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=1:dummy WA_PHONE=910000000000 \
+     WA_CHANNEL=@selftest node bridge.js --self-test)
+  ADD_OUR_CHANNEL_LINK_TOP=false python3 test_duplicate_sim.py
+  MAX_ALBUM_PHOTOS=2 python3 test_duplicate_sim.py
+  DROP_DEAD_LINKS=true python3 test_duplicate_sim.py
+
+STILL NOT DEPLOYED (the user asked for fixes first). The live host is believed to run a
+pre-v17.5 build, which alone reproduces every symptom reported. On the host:
+  bash ops/deploy_and_verify.sh --verify-only   (what is live now)
+  bash ops/deploy_and_verify.sh --with-tests     (ship v18.1)

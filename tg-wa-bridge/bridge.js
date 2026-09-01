@@ -502,19 +502,30 @@ const PRICE_UNITS = new Set(('pcs pack packs pair pairs kg gm g ml ltr ltrs l li
 // Rebuild one "<price><token>" pair, judging the token by its SHAPE - the exact rule
 // main_bot_new._keep_code_as_is applies, kept in step by hand because WhatsApp must not
 // show a different price line from Telegram. An all-caps code (PEOPLE200) is money the
-// reader can spend, so it is un-glued with a space and KEPT; a mixed-case run
-// (tG7oChgiQuTgS25b) is a torn shortener and must go; a glued token with a letter in it
-// is never real text; words and units after a space stay put.
+// reader can spend only when the source WROTE IT APART from the price ("Use code
+// PEOPLE200", "₹1,099 SAVE200") - a spaced word, unit or code is left exactly as
+// written. Anything FUSED to the digits (h, htt, jsjd, HFJF, tG7oChgiQuTgS25b) is the
+// source's own paste residue and is cut: same rule as the bot, decided by shape.
 function keepCodeAsIs(price, gap, tail) {
   if (!tail || '\u279c\u27a1\u2192\u2022\u00b7#'.includes(tail[0])) return price + gap + tail
   const core = tail.replace(/[).,;:!?\u2026]+$/, '')
   const trail = tail.slice(core.length)
   if (!core) return price + gap + tail
-  if (!gap && COUPON_CODE_RE.test(core)) return `${price} ${core}${trail}`
-  if (gap && (PRICE_UNITS.has(core.toLowerCase()) || !/\d/.test(core))) return `${price} ${core}${trail}`
-  if (gap && COUPON_CODE_RE.test(core) && /\d/.test(core)) return `${price} ${core}${trail}`
-  if (/^[A-Za-z0-9_-]{2,12}$/.test(core) && /[A-Za-z]/.test(core)) return `${price}${trail}`.trimEnd()
-  if (/^[A-Za-z0-9_-]{2,64}$/.test(core) && /[A-Za-z]/.test(core) && /\d/.test(core)) return `${price}${trail}`.trimEnd()
+  if (!gap) {
+    // USER RULE (round 13): whatever is glued straight onto a price is unwanted text -
+    // the live source writes "₹85h" / "₹ 199HFJF" / "₹85jsjd" and the reader needs the
+    // PRICE. It is cut, nothing of ours is written in its place. A code the source means
+    // the reader to use is written apart from the price ("Use code PEOPLE200",
+    // "₹1,099 SAVE200") - that spacing is what keeps it.
+    if (/^[A-Za-z0-9_-]{1,64}$/.test(core) && /[A-Za-z]/.test(core)) return `${price}${trail}`.trimEnd()
+    return price + gap + tail
+  }
+  if (PRICE_UNITS.has(core.toLowerCase()) || !/\d/.test(core)) return `${price} ${core}${trail}`
+  if (COUPON_CODE_RE.test(core) && /\d/.test(core)) return `${price} ${core}${trail}`
+  // A SPACED token is deleted only when it is machine-shaped (mixed case + long + has a
+  // digit): a torn shortener, never a coupon or a quantity. Mirrors the bot exactly.
+  if (core.length >= 8 && /^[A-Za-z0-9_-]{8,64}$/.test(core) && /[a-z]/.test(core)
+      && /[A-Z]/.test(core) && /\d/.test(core)) return `${price}${trail}`.trimEnd()
   return price + gap + tail
 }
 
@@ -1595,6 +1606,16 @@ function splitClauses(text) {
     .map(c => stripInlineCta(c).replace(/\s{2,}/g, ' ').trim())
     .filter(Boolean)
 }
+// Layout is part of "exactly like the source": a blank line our own passes created (a
+// removed link line, a stripped CTA clause) must not stay behind, because subscribers read
+// it as the bot spacing things out. Where the source itself left a blank line, that spacing
+// is the source's and is kept. Same rule as keep_source_spacing in main_bot_new.py.
+function keepSourceSpacing(body, sourceText) {
+  if (!body) return body
+  if ((sourceText || '').includes('\n\n')) return body
+  return body.replace(/\n{2,}/g, '\n')
+}
+
 function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // v17.5 - the WhatsApp post IS the source post: cleaned, never rewritten.
   //
@@ -1638,7 +1659,7 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // cap here cut the source's own lines off with an ellipsis, which is the single
   // complaint "text is being lost" in one line of code - so no path may truncate.
   void bodyMax
-  return body
+  return keepSourceSpacing(body, job?.text)
 }
 
 function formatWhatsAppPost(job, options) { return formatPostBody(job, options) }
@@ -4785,11 +4806,24 @@ https://fktr.in/MANY${i}`,
     if (/Xk9LaMn20QpR7/.test(spaced) || !/extra bass/.test(spaced)) throw new Error('spaced fragment/content: ' + spaced)
     // A coupon code glued to a price is the reader's discount, not junk: the price is
     // separated from it and the code SURVIVES (this is what "₹ 199HFJF" needs).
-    const code = stripPriceJunk('✅Deal Price: ₹ 199HFJF')
-    if (code !== '✅Deal Price: ₹ 199 HFJF') throw new Error('glued coupon code: ' + code)
-    if (stripPriceJunk('Deal ₹1,099PEOPLE200') !== 'Deal ₹1,099 PEOPLE200') throw new Error('un-glue PEOPLE200')
+    // USER RULE: what is glued to a price is unwanted text - cut it, add nothing.
+    const scrapCut = stripPriceJunk('✅Deal Price: ₹ 199HFJF')
+    if (scrapCut !== '✅Deal Price: ₹ 199') throw new Error('glued scrap after price: ' + scrapCut)
+    if (stripPriceJunk('Deal ₹1,099PEOPLE200') !== 'Deal ₹1,099') throw new Error('glued code cut: PEOPLE200')
+    for (const scrap of ['₹85h', '₹85jsjd', '₹85htt']) {
+      if (stripPriceJunk('Clip at ' + scrap) !== 'Clip at ₹85') throw new Error('scrap survived: ' + scrap)
+    }
+    // What the source wrote APART stays: a code, a unit, an ordinary word.
+    if (stripPriceJunk('Deal ₹1,099 PEOPLE200') !== 'Deal ₹1,099 PEOPLE200') throw new Error('spaced code lost')
+    if (stripPriceJunk('Use code HFJF for ₹199 off') !== 'Use code HFJF for ₹199 off') throw new Error('labelled code lost')
     if (stripPriceJunk('₹249 SAVE_200') !== '₹249 SAVE_200') throw new Error('spaced code must be left alone')
-    if (stripPriceJunk('₹ 199 HFJF') !== '₹ 199 HFJF') throw new Error('un-gluing must be idempotent')
+    if (stripPriceJunk('₹ 199 HFJF') !== '₹ 199 HFJF') throw new Error('spaced text must be untouched')
+    if (keepSourceSpacing('A\n\nB\n\nC', 'one line source') !== 'A\nB\nC') {
+      throw new Error('a blank line our own passes created must be collapsed')
+    }
+    if (keepSourceSpacing('A\n\nB', 'source had\n\nblank lines') !== 'A\n\nB') {
+      throw new Error("the source's own spacing must survive")
+    }
     if (stripPriceJunk('❌MRP: ₹ 270\nDiscount: 26%') !== '❌MRP: ₹ 270\nDiscount: 26%') {
       throw new Error('price walk must not cross a line break')
     }

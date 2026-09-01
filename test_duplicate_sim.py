@@ -468,8 +468,9 @@ def test_scenarios():
             check("[S9a] every routed channel got the post even though the link read dead",
                   bool(sends) and all(texts for texts in sends.values()),
                   str({name: len(v) for name, v in sends.items()}))
-            check("[S9a] the price is clean and the code survived",
-                  "199 HFJF" in joined and "199HFJF" not in joined, joined[:140])
+            check("[S9a] the unwanted scrap glued to the price is gone, price intact",
+                  "\u20b9 199" in joined and "HFJF" not in joined and "199HFJF" not in joined,
+                  joined[:140])
             check("[S9a] name, MRP and discount all arrived, with a link",
                   all(x in joined for x in ["Lizol Floor Cleaner", "\u20b9 270", "26%", "https://"]),
                   joined[:200])
@@ -484,6 +485,68 @@ def test_scenarios():
                   not sends_dead, str({name: len(v) for name, v in sends_dead.items()}))
         finally:
             bot.DROP_DEAD_LINKS = old_drop
+
+        # ---- S10: our own channel link, once, on top - and nothing else of ours ----
+        print("\n== S10: the top family link ==")
+        text_a = deal("899", "55")
+        store, client, sends, _ = await scenario("s10a", {(-1009040, 1701): FakeMsg(text_a, 1701)},
+                                                 [(-1009040, 1701, text_a)], 1)
+        posts = [p for texts in sends.values() for p in texts]
+        header = bot.channel_header_line()
+        stored = store.conn.execute("SELECT rendered_text FROM queue").fetchone()[0]
+        if bot.ADD_OUR_CHANNEL_LINK_TOP:
+            check("[S10a] every post opens with exactly one family link line",
+                  bool(posts) and all(p.splitlines()[0] == header for p in posts), str(posts[:1]))
+            check("[S10a] it is OUR link, and no other channel is linked",
+                  all(p.count("t.me/") == 1 and bot.OUR_FOLDER_LINK in p for p in posts),
+                  str(posts[:1]))
+            check("[S10a] the second line is still the source's own text",
+                  all(p.splitlines()[1].startswith("Prestige") for p in posts), str(posts[:1]))
+            check("[S10a] the stored copy stays the source's - the line is added on the way out",
+                  bot.OUR_FOLDER_LINK not in stored, stored[:90])
+        else:
+            # An operator who exported ADD_OUR_CHANNEL_LINK_TOP=false must get the plain
+            # source text, so the promise flips with the knob - and it is still a promise:
+            # no line of ours anywhere, and the deal itself is untouched.
+            check("[S10a] with the knob off, nothing of ours is added anywhere",
+                  bool(posts) and all(header not in p and "t.me/" not in p for p in posts),
+                  str(posts[:1]))
+            check("[S10a] and the post still opens with the source's own headline",
+                  all(p.startswith("Prestige") for p in posts), str(posts[:1]))
+        old_top = bot.ADD_OUR_CHANNEL_LINK_TOP
+        try:
+            bot.ADD_OUR_CHANNEL_LINK_TOP = False
+            store, client, sends_off, _ = await scenario(
+                "s10b", {(-1009041, 1702): FakeMsg(deal("799", "60", name="Havells Table Fan"), 1702)},
+                [(-1009041, 1702, deal("799", "60", name="Havells Table Fan"))], 1)
+            off = [p for texts in sends_off.values() for p in texts]
+            check("[S10b] ADD_OUR_CHANNEL_LINK_TOP=false posts the source text with nothing added",
+                  bool(off) and all(header not in p and "t.me/" not in p for p in off), str(off[:1]))
+        finally:
+            bot.ADD_OUR_CHANNEL_LINK_TOP = old_top
+
+        # ---- S11: a post whose ONLY link is a dead shortener still reaches us ----
+        # A short link dies every day (quota, expired campaign, deleted post). Retrying
+        # the whole job until the price goes stale is how a source post vanished with
+        # nothing in the log to show for it, so the link is cut and the deal is posted.
+        print("\n== S11: dead short link, live deal ==")
+        dead = ("Cello Stoneware Casserole 1.5L\n\u2705Deal Price: \u20b9499\n\u274cMRP: \u20b91,299 "
+                "(62% off)\nhttps://bit.ly/deadshortlink12345")
+        store, client, sends, _ = await scenario("s11a", {(-1009042, 1703): FakeMsg(dead, 1703)},
+                                                 [(-1009042, 1703, dead)], 1)
+        posts = [p for texts in sends.values() for p in texts]
+        check("[S11a] the post was NOT swallowed by the dead link",
+              bool(sends) and all(texts for texts in sends.values()),
+              str({n: len(v) for n, v in sends.items()}))
+        joined = "\n".join(posts)
+        check("[S11a] the deal is complete: name, price, MRP, discount",
+              all(x in joined for x in ["Cello Stoneware Casserole", "\u20b9499", "\u20b91,299", "62%"]),
+              joined[:160])
+        check("[S11a] and no foreign link was published in its place",
+              "bit.ly" not in joined and "shorturl" not in joined, joined[:160])
+        row11 = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
+        check("[S11a] the job finished (not pending-retry, not skipped)",
+              row11[0] == "done" and not row11[1], str(tuple(row11)))
 
         await asyncio.sleep(0)
     asyncio.run(run())

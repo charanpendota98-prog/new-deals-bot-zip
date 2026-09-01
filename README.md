@@ -231,6 +231,49 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.1 — the user's ruling on the same example: `unwanted text` must go, and the
+  post must look like the source's** (four things, all on the same live text):
+  1. **A glued scrap after a price is CUT, not un-glued.** v18.0 separated `₹ 199HFJF`
+     into `₹ 199 HFJF` and kept it; the answer from the channel owner was that this is
+     not a coupon at all — `h`, `htt`, `jsjd` are paste residue from a short link, and
+     nothing that is not in the source may sit in our post. So both engines now delete
+     whatever is FUSED to the digits (`_keep_code_as_is` / `keepCodeAsIs`) and write
+     nothing in its place. What the source wrote APART is still real text and survives
+     untouched: `Use code HFJF for ₹199 off`, `Price ₹199 SAVE200`, `500ml ₹260 offer`.
+     A spaced token is deleted only if it is machine-shaped (mixed case, long, with a
+     digit — a torn shortener), never a word, a unit or an upper-case code.
+  2. **Third swallow, closed: a dead short link used to kill the post.** `render_job`
+     turns every link into a destination; when `https://bit.ly/…` no longer resolves, the
+     affiliate returns nothing, the destination is unknown, and the whole job raised
+     `conversion retry required: … bit.ly` — retried until the price went stale, then
+     dropped. `SHORTENER_HOSTS` now recognises that case: the link is cut out of the copy
+     (`LINK DROPPED | queue=… posting the deal without it`), the deal is posted complete,
+     and a post left without any link is still published rather than skipped
+     (`LINK-FREE POST`) — provenance has nothing to prove when there is no URL. Two
+     follow-on gates that used to call a key-less post a "duplicate" were fixed the same way.
+  3. **Photos arrive as the source posted them.** A loot channel sends six images as ONE
+     album (a grid in one bubble); the bot used to download the first photo only.
+     `download_album()` walks the album through `grouped_id`, keeps each photo's Telegram
+     reference, and `send_media_group()` posts the grid with the deal text as the first
+     item's caption — no re-upload, no waiting. Every step is optional in the honest
+     sense: one bad photo is left out, and a client or a Telegram that refuses the grid
+     falls back to the first photo with the caption and the rest after it, so a photo
+     layout can never be the reason a deal is missing (`MAX_ALBUM_PHOTOS`, default 10).
+  5. **Spacing is the source's, not ours.** A line our own passes deleted (a foreign
+     channel's share button, a stripped CTA clause, a cut link) used to remain as an empty
+     line, which reads like the bot padding the post. `keep_source_spacing()` (and
+     `keepSourceSpacing()` in the bridge) collapses a blank line only when the source wrote
+     none — where the source *did* space its blocks apart, that layout survives untouched.
+  4. **Our own channel link, neatly, on the TOP line** — the user asked for a line that
+     lets a reader reach the rest of our channels instead of wandering to somebody else's.
+     `prepend_channel_header()` writes exactly `👉 All Loot Channels: <folder link>` as
+     the first line, never twice, never on the Tricks path (its own footer stays as it
+     was), and it is added **on the way out**, so the stored post, the auditor's input and
+     the chunk-resume logic keep seeing the source's text alone (`ADD_OUR_CHANNEL_LINK_TOP=false`
+     turns it off). The Bitly rule the user re-confirmed is verified by a test too: several
+     links in one post (or any long link) go out as our short links one per line, a tidy
+     single `/dp/` link stays direct so the quota is never spent, and Bitly being down
+     posts the tagged links instead of losing the deal (item 5 covers the layout).
 - **v18.0 — a post that arrived must reach our channels: three ways it was being
   swallowed, all closed (proved by running the user's own live post through the real
   `process_job`, not by reading the code):**
@@ -256,11 +299,10 @@ Individual deploys:
   3. **Cleaning had started eating money.** `✅Deal Price: ₹ 199HFJF` lost `HFJF`,
      because the price cleaner deleted whatever was glued after a `₹` amount — right for
      a torn shortener (`₹260tG7oChgiQuTgS25b`), wrong for a coupon code, which is the
-     reader's discount. Both engines now share one token-shape rule
-     (`_keep_code_as_is` / `keepCodeAsIs`): an all-caps alnum token (underscore/hyphen
-     allowed) is UN-GLUED with a space and kept, mixed-case link debris is cut, a
-     space-separated code is left exactly as the source wrote it, and the walk never
-     crosses a line break. A reader sees `✅Deal Price: ₹ 199 HFJF`.
+     reader's discount. Both engines shared one token-shape rule that UN-GLUED an
+     all-caps code and kept it. *(Superseded in v18.1: the channel owner ruled that this
+     shape is paste residue, not a code, so a glued token is cut and only what the source
+     wrote APART is kept — see the v18.1 bullet.)*
   One more form the sources write and the parsers did not read: `Discount: 26%` (colon
   after the label) returned None from `parse_discount` and 0 from the bridge's
   `explicitDiscount`, which is what decides the best-pick and the price-tier routing —
@@ -614,6 +656,8 @@ because every number is clamped into a safe range.
 | `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0 / 0 (max clamped to 60, min to 30) | no gap by default — Telegram never waits (round 9); these exist only as an escape hatch for a target that rate-limits us |
 | `PASSTHROUGH_UNMONETIZED` | true | publish a store link the affiliate network cannot monetize as a clean untagged merchant link (false = retry then skip, i.e. lose the deal) |
 | `DROP_DEAD_LINKS` / `WA_DROP_DEAD_LINKS` | false | a link probe may make a post honest, never make it disappear: `true` refuses a post whose every destination answered as a confirmed dead merchant page (the pre-v18.0 behaviour) |
+| `ADD_OUR_CHANNEL_LINK_TOP` | true | the ONE line of ours that may sit above a deal: our own folder/channel link on the top line, added at delivery, never twice, never on Tricks posts |
+| `MAX_ALBUM_PHOTOS` | 10 | how many photos of a source album we repost as one grid (Telegram's own album ceiling) |
 | `PREMIUM_MAX_PER_NIGHT` / `PREMIUM_GAP_MIN_SECONDS` / `PREMIUM_GAP_MAX_SECONDS` | 12 / 900 / 2100 | Premium channel curation (the only place the bot intentionally waits) |
 | `WA_BEST_GATE` etc. | see bridge | WhatsApp best-deal gate, unchanged |
 
@@ -647,21 +691,21 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.0 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.1 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `c81e813fcd03ff90cc1132994ef6e14d7c81a3ecfa447afc45dafc16cd9404f5` |
-| `tg-wa-bridge/bridge.js` | `a071f47a27d11c3982eee68bf47c45a5476516e2a88a1514b8b742f54c237838` |
+| `bestgaa/main_bot_new.py` | `1f28990be7d06d4db8149947bbd0510383b14f689da83a4f76f306d29459f8df` |
+| `tg-wa-bridge/bridge.js` | `e2a1ba128f83a747cf126dcd7700fb5515bbeffa92a191f70a0677f4c43a6af5` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `d7f845f2e3718db2646e2a1b72c8eab5d5d0f06138c6626b5d874ffd4d45a1af` |
+| `test_line_fidelity.py` | `2f4c11a3c4499f01b39c447c00c48e727d9fcd298f743d3d9c3d8f4347227cf2` |
 | `test_pipeline_fixes.py` | `42ae61431a0f60987deb6a025efff083fb102db369ff6416b63afb26f8fa57f0` |
-| `test_duplicate_sim.py` | `4e2034ec2b900b7a6e2e8ba47eaaa41d78ccbb37b9ea64237c958801ac04dbbe` |
+| `test_duplicate_sim.py` | `250b4b18361a2a6d896d6d85609da00e7a8efab0a2709535905177ca527fd9a6` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
 Verified on this tree (every suite also passes with the knobs flipped —
@@ -674,11 +718,11 @@ from ever disagreeing with the bot's:
 
 | Suite | What it pins |
 |---|---|
-| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL
+| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL ; a scrap glued to a price is cut while spaced text survives, an album of photos is posted as one grid (with its fallbacks), several links leave as our Bitly links and a dead shortener never costs the post, and the top line is our own channel link exactly once
 | `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
 | `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
-| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9 is the user's own live post run end to end - a share button and a link that 404s to our IP may not swallow it, and the glued coupon code arrives un-glued and intact |
+| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
 | `test_rescan.py` | rescan/re-queue behaviour |
 | `node tg-wa-bridge/bridge.js --self-test` | passes in **12** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps, `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, and combinations |
 
