@@ -1,4 +1,4 @@
-"""v17.6 tests: best-copy selection, numeric fidelity gate, quality auditor.
+"""v17.6/v17.7 tests: best-copy selection, numeric fidelity gate, quality auditor.
 
 Three guarantees this file pins down:
   1. BEST COPY - when several sources post the SAME product (exact merchant id),
@@ -169,6 +169,39 @@ def test_numeric_fidelity_gate():
     check("1,999 and 1999 are the same number to the gate", notes2 == [] and f"{R}1999" in out2, str(notes2))
 
 
+def test_link_policy():
+    """What counts as OUR link, and what must never leave a channel."""
+    print("\n== link ownership policy ==")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("quality_audit", ROOT / "ops" / "quality_audit.py")
+    qa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qa)
+    tag = "deals0911-21"
+    ours = [
+        f"https://bitli.in/TqmFyPp/AbC1",
+        "https://www.bitlyskj.com/zz",
+        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21",
+        "https://www.amazon.in/dp/B0TAGGED002?tag=deals0911-21&linkCode=x",
+        "https://www.myntra.com/x/1/detail",              # unmonetizable store, clean page
+        "https://www.flipkart.com/pride/p/itcx?pids=flipkart_karos_offers_sphome.7264141.p1",
+        "https://t.me/addlist/abcDEF",                      # our Loots Family folder
+        "https://d7zd1k.earnkaro.com/s/click-link/xyz",
+    ]
+    theirs = [
+        "https://amzn.to/sourceShort",                      # the source's own link
+        "https://www.amazon.in/dp/B0NOTAGGED01",            # ours never goes untagged
+        "https://www.amazon.in/dp/B0X?tag=competitor",
+        "https://bitly.com/sponsorOnly",
+        "https://www.flipkart.com/buy/p?affid=otherpub",
+        "https://www.amazon.in/dp/B0X?tag=deals0911-21&affid=zz",
+    ]
+    for url in ours:
+        check(f"accepted as ours: {url[:44]}", qa.why_not_our_link(url, tag) is None,
+              str(qa.why_not_our_link(url, tag)))
+    for url in theirs:
+        check(f"refused as not ours: {url[:44]}", qa.why_not_our_link(url, tag) is not None)
+
+
 def test_quality_auditor():
     print("\n== ops/quality_audit.py catches every class of defect ==")
     with tempfile.TemporaryDirectory() as td:
@@ -191,13 +224,16 @@ def test_quality_auditor():
                                    (key, queue_id, now))
 
         clean_post = (f"Prestige 2L Pressure Cooker ({R}899)\n"
-                      f"MRP {R}1,999 | 55% off\nhttps://bitli.in/TqmFyPp/Cook99")
+                      f"MRP {R}1,999 | 55% off\nhttps://bitli.in/TqmFyPp/Cook99\n"
+                      f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21")
         put(1, "lootnow", 101, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(2, "lootnow", 102, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(3, "under499loots", 103,
             f"{R}640\n**Deal**\nhttps://www.amazon.in/dp/B0FOREIGN01\n✅ Verified deals • Enjoy Grab fast",
             ["Under499Deals11"])
-        put(4, "lootnow", 104, f"Cool thing {R}1,999\nhttps://bitly.com/sponsorOnly", ["PowerLoots1"])
+        put(4, "lootnow", 104, f"Cool thing {R}1,999\nhttps://bitly.com/sponsorOnly\n"
+                              f"https://www.amazon.in/dp/B0NOTAGGED1\n"
+                              f"https://www.ajio.com/p/900123?tag=rivalpub", ["PowerLoots1"])
         put(5, "lootnow", 105, f"{R}1,999 cooker\nhttps://bitli.in/TqmFyPp/x1", ["Under99Deals11"])
         put(6, "lootnow", 106, "", ["LootZoneIndia11"], status="failed",
             error="RuntimeError: EarnKaro 503 kept retrying", sent=0)
@@ -216,8 +252,11 @@ def test_quality_auditor():
         check("invented text / markdown debris is caught",
               any("OURS" == k for k in kinds) and
               len(kinds.get("OURS", [])) >= 2, str(kinds.get("OURS")))
-        check("a foreign link is caught",
-              any("not our link" in item["detail"] for item in kinds.get("LINKS", [])), str(kinds.get("LINKS")))
+        link_details = " | ".join(item["detail"] for item in kinds.get("LINKS", []))
+        check("a third-party shortener is caught", "shortener" in link_details, link_details)
+        check("an Amazon link without our tag is caught", "without our tag" in link_details, link_details)
+        check("a link tagged to another publisher is caught",
+              "somebody else" in link_details, link_details)
         check("a price-tier misroute is caught", "MISROUTE" in kinds, str(kinds.get("MISROUTE")))
         check("a lost post (failed, no send, no policy reason) is caught",
               "COVERAGE" in kinds, str(kinds.get("COVERAGE")))
@@ -243,6 +282,7 @@ def test_quality_auditor():
 
 if __name__ == "__main__":
     test_product_identity_matching()
+    test_link_policy()
     test_best_copy_swap()
     test_numeric_fidelity_gate()
     test_quality_auditor()

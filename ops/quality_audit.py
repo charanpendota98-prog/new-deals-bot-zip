@@ -17,11 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
 import time
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 RUPEE = "\u20b9"
 OURS_MARKERS = (
@@ -36,17 +38,71 @@ OURS_MARKERS = (
     "UNDER ₹499 •", "BANK / CARD OFFER", "LOOT ZONE — INDIA",
 )
 ANY_LINK = re.compile(r"https?://\S+")
-OUR_LINKS = re.compile(
-    r"https?://(?:(?:www\.)?bitli\.in/TqmFyPp|(?:www\.)?bitlyskj\.(?:com|in|net)/"
-    r"|amzn\.to/|[^/\s]*earnkaro\.com/|gop\.im/)", re.I)
+# What "our link" means for this bot, in the bot's own terms:
+#   * our shortener (the one the user owns) or our EarnKaro / gop.im output,
+#   * an Amazon page carrying OUR tag - the pipeline publishes those when no
+#     shortener/affiliate route was used, and the tag IS the monetization,
+#   * a clean merchant page for a store we cannot monetize (a deal must not be
+#     lost because a campaign is missing),
+#   * our own channels and the Loots Family folder.
+# Everything else - the source's own short link, someone else's shortener, a link
+# tagged to another publisher - is a link that should never have been sent.
+OUR_SHORTENER = re.compile(r"https?://(?:(?:www\.)?bitli\.in/TqmFyPp|(?:www\.)?bitlyskj\.(?:com|in|net)/)", re.I)
+OUR_HOSTS = re.compile(r"https?://(?:[^/\s]*earnkaro\.com/|gop\.im/)", re.I)
+OUR_T_ME = re.compile(r"https?://t\.me/(?:addlist/|LootZoneIndia11\b|SecretLootIndia1\b)", re.I)
+AMAZON_HOST = re.compile(r"^(?:www\.|m\.)?amazon\.[a-z.]{2,8}$", re.I)
+AMAZON_SHORT = re.compile(r"^(?:www\.)?amzn\.(?:to|in)$", re.I)
+FOREIGN_SHORTENERS = re.compile(
+    r"https?://(?:[^/\s]*\.)?(?:bit\.ly|bitly\.com|tinyurl\.com|tinyurl\.net|cutt\.ly|t\.cg"
+    r"|gpt\.sh|shorturl\.at|is\.gd|rb\.gy|ow\.ly|rebrand\.ly|tly\.in|s\.id/)", re.I)
+# Publisher ids that are never ours. Flipkart's pid= is a PRODUCT id, so it is
+# deliberately absent here.
+AFFILIATE_ID_RE = re.compile(
+    r"[?&](?:affid|aff_id|pubid|publisherid|associateid|affextparam2|refid|clickid)=([^&#]*)", re.I)
 FOREIGN_PROMO = re.compile(r"join\s+(?:this\s+)?channel|subscribe\s+to|t\.me/\+|startapp\.bot", re.I)
 PRICE_RE = re.compile(rf"{RUPEE}\s*(\d[\d,]*)")
 LIST_MARKER_RE = re.compile(r"(?im)^\s*(?:deal\s*\d+|\d+\s*[.)])")
 POLICY_SKIPS = (
     "already posted", "duplicate deal", "duplicate product", "night window",
     "STALE DROP", "already covered", "no monetizable", "no eligible targets",
-    "not a deal", "skip list", "superseded", "not worth",
+    "not a deal", "skip list", "superseded", "not worth", "confirmed dead merchant",
 )
+
+
+def link_host(url: str) -> str:
+    match = re.match(r"https?://([^/\s?#]+)", url or "", re.I)
+    return (match.group(1) if match else "").lower()
+
+
+def why_not_our_link(url: str, our_tag: str = "") -> str | None:
+    """Why this published link is NOT one of ours (None means it is fine)."""
+    if OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url):
+        return None
+    host = link_host(url)
+    if AMAZON_SHORT.match(host):
+        return "the source's own Amazon short link was posted instead of ours"
+    if FOREIGN_SHORTENERS.match(url):
+        return "a third-party shortener leaked into the post"
+    query = urlparse(url).query.lower()
+    pairs = dict()
+    for chunk in query.split("&"):
+        if "=" in chunk:
+            key, _, value = chunk.partition("=")
+            pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
+    tags = [v for v in pairs.get("tag", []) if v]
+    ours = bool(our_tag) and our_tag.lower() in tags
+    foreign_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
+    if AMAZON_HOST.match(host):
+        if not ours:
+            return "an Amazon link without our tag reached a channel"
+        if foreign_ids:
+            return "our tag glued to somebody else's id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
+        return None
+    if tags and not ours:
+        return "tagged to somebody else (%s)" % ",".join(sorted(set(tags)))[:40]
+    if foreign_ids:
+        return "carries somebody else's affiliate id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
+    return None  # unmonetizable store, clean page: publishing it is the policy
 
 
 def flag(kind: str, detail: str, queue_id=None, target=None) -> dict:
@@ -77,7 +133,7 @@ def product_line(text: str) -> str:
     return ""
 
 
-def audit(conn: sqlite3.Connection, limit: int) -> tuple[list[dict], int]:
+def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list[dict], int]:
     conn.row_factory = sqlite3.Row
     # Every recent row is inspected, including ones that produced no post at all:
     # "we lost a deal" is as much a quality defect as a badly formatted one.
@@ -124,12 +180,13 @@ def audit(conn: sqlite3.Connection, limit: int) -> tuple[list[dict], int]:
             findings.append(flag("OURS", "a join/subscribe/referral line survived cleaning", row["id"]))
 
         # 2) links: every link must be ours, and the post must carry at least one
-        links = ANY_LINK.findall(text)
+        links = [u.rstrip(")】.,;'\"]") for u in ANY_LINK.findall(text)]
         if not links:
             findings.append(flag("LINKS", "published with no link at all", row["id"]))
         for url in links:
-            if not OUR_LINKS.match(url):
-                findings.append(flag("LINKS", f"not our link: {url[:80]}", row["id"]))
+            why = why_not_our_link(url, our_tag)
+            if why:
+                findings.append(flag("LINKS", f"{why}: {url[:80]}", row["id"]))
 
         # 3) a post must carry the deal, not only links
         if lines and all(ANY_LINK.fullmatch(line) for line in lines):
@@ -199,6 +256,8 @@ def main(argv=None) -> int:
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--strict", action="store_true", help="exit 1 when anything is found")
+    parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", "deals0911-21"),
+                        help="our Amazon affiliate tag (default: $AMAZON_TAG)")
     args = parser.parse_args(argv)
 
     if not args.db.exists():
@@ -206,7 +265,7 @@ def main(argv=None) -> int:
         return 0
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
-        findings, posts = audit(conn, args.limit)
+        findings, posts = audit(conn, args.limit, (args.tag or "").strip())
     except sqlite3.OperationalError as exc:  # a schema too old to judge
         print(f"QUALITY AUDIT: database not readable yet ({exc})")
         return 0

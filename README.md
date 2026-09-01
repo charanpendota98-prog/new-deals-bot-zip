@@ -54,6 +54,8 @@ python3 test_render_job.py        # 150 checks: routing, formatting, conversion
 python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 209 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
+python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
+python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
 # Prove the guarantees on a real (or copied) database — read-only, exit 1 with
 # --strict so cron/systemd can alert on it:
@@ -229,6 +231,34 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.7 — nothing waits, nothing leaks, and the deploy is provable:** the last
+  artificial pause on the Telegram path is gone — channel fan-out used to sleep a
+  random 0.4–1.2 s between targets (up to ~6 s across the whole matrix), which the
+  user rightly calls a bug; `TARGET_FANOUT_GAP_MIN/MAX` now default to **0** and the
+  loop only sleeps if an operator sets them. The bigger latency hole was the pre-send
+  link check: a single-link post had *no* budget at all, so one slow merchant page
+  held a live deal for `2 × 12 s`; every probe is now capped by
+  `LINK_PROBE_BUDGET_SECONDS` (3.5 s) and a page that does not answer in time is
+  treated as *inconclusive, not dead* — the deal goes out. The old "every
+  destination unverified, retry later" loop (which re-rendered the whole job 3–20 s
+  at a time) is replaced by a single verdict, and a page is only refused when it
+  carries an explicit merchant "this offer is gone" signature. `ops/quality_audit.py`
+  learned what "our link" actually means (our shortener, our EarnKaro output, an
+  Amazon page **tagged with our tag**, a clean page for a store we cannot monetize,
+  our own folder/channel links) so it stops flagging legitimate posts while still
+  catching a source `amzn.to`, a third-party shortener, or our tag glued to
+  somebody else's publisher id. `ops/deploy_and_verify.sh` is now the one command to
+  ship and *prove* it: hash-compare the deployed files, require the boot line for
+  the version we committed, re-run the bridge contract self-test on the server copy,
+  measure **median/p95 seconds from `QUEUED` to posted** from the live log, and run
+  the quality audit over the real queue. `test_duplicate_sim.py` drives the real
+  worker path (`claim_job` + `process_job` + `deliver` + `finish`) over planted
+  traffic — the same message ingested twice, the same product from three sources,
+  two copies claimed concurrently, a crash mid-delivery plus restart, the
+  best-copy rollback, identical campaign text from another source, and a
+  two-product post — and asserts one copy per channel and nothing lost in every
+  case; `QUEUED | queue=N` now carries the id so the immediacy number is computable
+  at all.
 - **v17.6 — the queue publishes the BEST copy of a product, plus a numeric
   fidelity gate and an offline auditor:** many sources post the same item minutes
   apart at different prices, and until now *whichever copy arrived first* decided
@@ -505,16 +535,16 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.6 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.7 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `fbe2a091e20fab0f62d295e122f267cc1170ca8705b66fa46b2477faf52f9d49` |
+| `bestgaa/main_bot_new.py` | `6d08a61d46a82e19ef54f558228d92a79ea2c4a6b03eba5711adcc9dcc031d05` |
 | `tg-wa-bridge/bridge.js` | `14712f26c0252c3bc893c32de734d84f126080450ef87d661df28fed4829580f` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `42922256311ba9676a931b004190c3df29a9efd9203ad83029bc0d3410fee05f` |
+| `ops/quality_audit.py` | `adf8bef891b9ead455c7fe894760c55f6b9aa857f8712b1836335df99c0fcc4e` |
 
 Verified on this tree: `test_render_job.py` 150/150 (PowerLoots takes every deal,
 premium needs a real discount, a list lands in both price channels exactly once per
@@ -525,7 +555,10 @@ pinned to a forced window instead of the wall clock, so the suite no longer pass
 only when it happens to run at night), `test_best_copy.py` (best-copy swap incl.
 "one row for a product", "a weaker copy never downgrades", "a list is never
 hijacked", "the displaced copy comes back", the numeric fidelity gate and the
-quality auditor catching each defect class), `test_rescan.py` pass, and
+quality auditor catching each defect class and the exact link-ownership policy),
+`test_duplicate_sim.py` (one copy per channel through the real worker path, in all
+seven duplicate-prone scenarios), and immediacy knobs pinned to zero waiting
+(`test_no_artificial_telegram_waits`), `test_rescan.py` pass, and
 `node tg-wa-bridge/bridge.js --self-test` pass in 10 env modes — default,
 `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`,
 `WA_BEST_OF_COOLDOWN_SECONDS=3600`, tuned gaps, `WA_MEDIA_FIRST=false`, the channel

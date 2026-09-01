@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.6
+"""BestGAA Production Bot v17.7
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -15,6 +15,8 @@ immediately, exactly once, clean":
   id) the queue publishes the STRONGER deal, as one row, with the displaced copy
   restored if the better one cannot render; a numeric fidelity gate drops prices
   or discounts the source never printed (never the post)
+- zero artificial waiting on Telegram: channel fan-out is back-to-back and one
+  merchant page probe is capped (a slow site can no longer hold a live deal)
 - per-product 10-hour cross-source dedup, backed by a canonical
   (chat_key,msg_id) unique index so one source message can never queue twice
 - 1-hour same-price fallback only when product identity is unavailable
@@ -191,7 +193,12 @@ HTTP_TOTAL_TIMEOUT_SECONDS = _num("HTTP_TOTAL_TIMEOUT_SECONDS", 12, 3, 45)
 LINK_CHECK_ATTEMPTS = max(1, int(os.getenv("LINK_CHECK_ATTEMPTS", "2")))
 LINK_CHECK_RETRY_SLEEP_SECONDS = _num("LINK_CHECK_RETRY_SLEEP_SECONDS", 0.4, 0, 10)
 LINK_HEALTH_CACHE_SECONDS = _num("LINK_HEALTH_CACHE_SECONDS", 900, 0, 86400)
-PRESEND_CHECK_BUDGET_SECONDS = _num("PRESEND_CHECK_BUDGET_SECONDS", 25, 0, 240)
+PRESEND_CHECK_BUDGET_SECONDS = _num("PRESEND_CHECK_BUDGET_SECONDS", 6, 0, 240)
+# Hard cap for ONE merchant page probe. Without it a slow site held the whole post
+# for 2 x 12s (the single-link fast path had no budget at all) - which the user
+# sees as "the bot posts late". A site that does not answer in time is
+# inconclusive, not dead: the deal goes out.
+LINK_PROBE_BUDGET_SECONDS = _num("LINK_PROBE_BUDGET_SECONDS", 3.5, 0.5, 60)
 # A huge source video must never freeze a worker; oversized/slow media is
 # posted as text so the deal itself goes out on time.
 MAX_MEDIA_MB = _num("MAX_MEDIA_MB", 45, 1, 2048)
@@ -207,8 +214,12 @@ SOURCE_RESCAN_LIMIT = max(5, int(os.getenv("SOURCE_RESCAN_LIMIT", "40")))
 SOURCE_RESCAN_CONCURRENCY = max(1, int(os.getenv("SOURCE_RESCAN_CONCURRENCY", "4")))
 # Short random gap between the fan-out targets of ONE job (Telegram never waits
 # for a human-like rhythm, this only spreads channel-to-channel delivery).
-TARGET_FANOUT_GAP_MIN = _num("TARGET_FANOUT_GAP_MIN", 0.4, 0, 30)
-TARGET_FANOUT_GAP_MAX = max(TARGET_FANOUT_GAP_MIN, _num("TARGET_FANOUT_GAP_MAX", 1.2, 0, 60))
+# USER RULE (restated in round 9): a source post must reach our channels the
+# instant it arrives - so the fan-out gap DEFAULTS TO ZERO and the delivery loop
+# does not sleep at all. The knobs stay for the rare case a target starts
+# rate-limiting: set TARGET_FANOUT_GAP_MIN/MAX (seconds) to space the copies out.
+TARGET_FANOUT_GAP_MIN = _num("TARGET_FANOUT_GAP_MIN", 0, 0, 30)
+TARGET_FANOUT_GAP_MAX = max(TARGET_FANOUT_GAP_MIN, _num("TARGET_FANOUT_GAP_MAX", 0, 0, 60))
 # Queue wake-up event, created in main(); workers stop on it instantly instead
 # of only noticing new work at the end of their idle poll.
 QUEUE_WAKE: asyncio.Event | None = None
@@ -2413,6 +2424,15 @@ class Store:
         except Exception as exc:
             log.warning("Legacy dedup migration skipped: %s", exc)
 
+    async def queue_id_for(self, chat_id: int, msg_id: int) -> int | None:
+        """The queue id behind a just-queued message - so the immediacy log line
+        can be paired with the "JOB N | ... sent=" line by the deploy verifier."""
+        key = str(raw_chat_id(chat_id))
+        async with self.lock:
+            row = self.conn.execute("SELECT id FROM queue WHERE chat_key=? AND msg_id=?",
+                                    (key, msg_id)).fetchone()
+        return int(row[0]) if row else None
+
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
         """True when this exact source message is already known to the queue."""
         key = str(raw_chat_id(chat_id))
@@ -3239,7 +3259,13 @@ class AffiliateClient:
         cached = self._health.get(key)
         if cached and time.time() - cached[0] < LINK_HEALTH_CACHE_SECONDS:
             return cached[1]
-        verdict = await self._probe_link(key)
+        try:
+            verdict = await asyncio.wait_for(self._probe_link(key),
+                                             timeout=LINK_PROBE_BUDGET_SECONDS)
+        except asyncio.TimeoutError:
+            log.info("LINK CHECK inconclusive | %.1fs budget for %s - posting anyway "
+                     "(a slow page is not a dead deal)", LINK_PROBE_BUDGET_SECONDS, key[:90])
+            verdict = True
         if LINK_HEALTH_CACHE_SECONDS > 0:
             if len(self._health) > 3000:
                 self._health.clear()
@@ -4410,19 +4436,21 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.update_rendered(row["id"], rendered)
                 log.warning("LINK REPAIR | queue=%s dropped %s dead destination(s); posting the rest",
                             row["id"], len(dead))
-            elif dead and row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
-                raise RuntimeError("every destination unverified; retry later")
             elif dead:
-                raise PermanentSkip("broken merchant destination blocked before send")
+                # Every entry here carried an EXPLICIT merchant "this offer is
+                # gone" page - a slow site is inconclusive and posts (see the
+                # probe budget). Re-rendering the whole job only costs the queue
+                # 3-20s per attempt and never revives a dead page, so the verdict
+                # is made once, here, with the reason on the log.
+                raise PermanentSkip("every destination is a confirmed dead merchant page")
         premium_defer_until = None
         first_target_sent = False
         for target in await store.pending_targets(row["id"]):
             # USER RULE: Telegram never waits — no ban rule there, keep posting.
-            # Only a tiny random jitter (TARGET_FANOUT_GAP_MIN/MAX, default
-            # 0.4-1.2s) between targets so channel-to-channel fan-out looks
-            # natural without ever slowing the deal down. Never before the
-            # first target.
-            if first_target_sent:
+            # Every target goes back to back: a gap exists only if the operator
+            # asks for one via TARGET_FANOUT_GAP_MIN/MAX (both default 0), so
+            # fan-out to six channels costs nothing.
+            if first_target_sent and TARGET_FANOUT_GAP_MAX > 0:
                 await asyncio.sleep(random.uniform(TARGET_FANOUT_GAP_MIN, TARGET_FANOUT_GAP_MAX))
             first_target_sent = True
             premium_claimed = False
@@ -4505,7 +4533,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.6 starting "
+    log.info("BestGAA Production Bot v17.7 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
@@ -4544,8 +4572,9 @@ async def main() -> None:
             global LAST_INGEST_AT
             LAST_INGEST_AT = time.time()
             if added:
-                log.info("QUEUED | priority=%s media=%s source=%s chat=%s msg=%s",
-                         classify_priority(raw, has_media), has_media, source,
+                queue_id = await store.queue_id_for(event.chat_id, event.message.id)
+                log.info("QUEUED | queue=%s priority=%s media=%s source=%s chat=%s msg=%s",
+                         queue_id, classify_priority(raw, has_media), has_media, source,
                          event.chat_id, event.message.id)
             else:
                 log.info("INGEST DUP | source=%s chat=%s msg=%s (already queued/posted)",

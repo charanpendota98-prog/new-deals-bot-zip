@@ -549,3 +549,40 @@ What changed and why (user: "anni perfect ga chesava, more and more advanced"):
 6. saveState() now returns early under --self-test: a self-test must never write (or
    corrupt) bridge-state.json, which is what makes the new intake assertions safe to
    run against the real enqueuePost path.
+
+
+================================================================================
+v17.7 (round 9) - the last waits are gone, the auditor is honest, deploy is provable
+================================================================================
+1. TELEGRAM FAN-OUT WAITS REMOVED. TARGET_FANOUT_GAP_MIN/MAX defaulted to 0.4/1.2 s,
+   so a 6-channel post slept up to ~6 s on purpose. Both default to 0 now and the
+   loop is `if first_target_sent and TARGET_FANOUT_GAP_MAX > 0` - a gap exists only
+   if someone sets the knob.
+2. PROBE BUDGET. render/deliver verified links with 2 attempts x 12 s and NO budget
+   for the single-link case (the common one) - one slow merchant site delayed a live
+   deal by ~25 s. New: LINK_PROBE_BUDGET_SECONDS=3.5 caps one probe (asyncio.wait_for
+   around _probe_link); PRESEND_CHECK_BUDGET_SECONDS 25 -> 6. A timeout is logged as
+   "LINK CHECK inconclusive ... posting anyway": a slow page is not a dead deal.
+3. NO RETRY CHURN. "every destination unverified; retry later" (RuntimeError -> 3-20s
+   backoff, re-rendering everything) is replaced by one verdict: only an EXPLICIT
+   merchant dead-page signature blocks a post, with the reason
+   "every destination is a confirmed dead merchant page" (the auditor counts that as a
+   policy skip, not a lost deal).
+4. AUDITOR LINK POLICY (was producing false positives, which would have trained
+   everyone to ignore it). Ours = our shortener (bitli.in/TqmFyPp, bitlyskj.*), our
+   EarnKaro/gop.im output, an amazon(.in) page tagged with OUR tag, a clean page for a
+   store we cannot monetize, our folder link / our channels. Never ours = amzn.to
+   (source short link), any third-party shortener (bit.ly, bitly.com, tinyurl, cutt.ly,
+   gpt.sh, ...), a foreign tag= value, a foreign affid/pubid/publisherid/affextparam2 -
+   including our tag glued to somebody else's id. Flipkart's pid= is a product id and
+   is deliberately NOT treated as a publisher id.
+5. MEASURABLE IMMEDIACY. "QUEUED | queue=N ..." now carries the queue id, so
+   ops/deploy_and_verify.sh can pair it with "JOB N | ... sent=k" and print
+   median/p95/max seconds per post; it also hash-compares the deployed files, checks
+   the boot line for the committed version, runs the bridge self-test on the server
+   copy and finishes with the quality audit.
+6. NEW: test_duplicate_sim.py drives the real worker path over planted traffic:
+   S1 same message twice, S2 same product from 3 sources (best copy wins, one post),
+   S3 two copies claimed concurrently, S4 crash mid-delivery + restart, S5 best copy
+   unrenderable -> displaced copy still posts once, S6 identical campaign text from
+   another source, S7 two products in one post (both, once, one post).
