@@ -318,6 +318,9 @@ function loadState() {
   return defaultState()
 }
 function saveState() {
+  // A self-test run must never touch the live state file - it builds jobs in
+  // memory and asserts on them, and writing here would replay/fake deliveries.
+  if (SELF_TEST) return
   const tmp = `${STATE_FILE}.tmp`
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2), { mode: 0o600 })
   if (fs.existsSync(STATE_FILE)) {
@@ -1974,6 +1977,44 @@ function pendingProductIds(job) {
   if (!job._ids) job._ids = urlsIn(job.text || '').map(url => productIdentity(displayUrl(job, url))).filter(Boolean)
   return job._ids
 }
+/**
+ * v17.6 "best copy": several sources post the same product minutes apart at
+ * different prices. Until now the first arrival won and the better deal was
+ * silently skipped by the queue's duplicate guard, so our channels published
+ * whichever copy happened to be early. The pending job is re-pointed at the
+ * stronger deal IN PLACE - still exactly one job per product, so the
+ * zero-duplicate guarantee is untouched, and a weaker copy never overwrites a
+ * better one.
+ *
+ * Deliberately narrow: only a single-product post may take over, only a job that
+ * has not started delivering is rewritten, and lists/specials are left alone
+ * because re-pointing them would delete part of a roundup.
+ */
+function adoptBetterCopy(job, post, text, media) {
+  if (!job || !text) return false
+  if (Number(job.attempts || 0) > 0 || job.sentChunks || job.status === 'sending') return false
+  if (job.largeList || job.special || urlsIn(job.text || '').length > 1) return false
+  if (urlsIn(text).length > 1) return false
+  // A roundup must never hijack a single-product job: adopting its text would
+  // silently delete the other items in the list.
+  if (classifyPost(text, false).largeList) return false
+  const incoming = dealQualityScore({ text, media: media ? [media] : [], special: false, largeList: false }).score
+  if (incoming <= dealQualityScore(job).score) return false
+  job.text = text
+  job._ids = null // pending-product cache: recompute against the new copy
+  // Re-derive the shape from the copy we just adopted, exactly like the late-text
+  // merge below: a promoted special needs its batch window, a list never happens
+  // here (guarded above), and flags must never disagree with the text.
+  const shape = classifyPost(text, Boolean(media) || (job.media || []).length > 0)
+  if (shape.special || shape.largeList) {
+    job.special ||= shape.special
+    job.largeList ||= shape.largeList
+    job.batchReadyAt = Math.min(job.batchReadyAt || Infinity, Date.now() + randomMs(SPECIAL_JITTER_MIN, SPECIAL_JITTER_MAX))
+  }
+  if (post && post.chat && post.chat.username) job.source = post.chat.username
+  job._bestCopyFrom = `${post.chat.id}:${post.message_id}`
+  return true
+}
 function enqueuePost(post) {
   const kind = classifySource(post)
   if (!kind) return
@@ -2000,7 +2041,22 @@ function enqueuePost(post) {
     }
     // Layer 3: same product already waiting in the queue (from any source)?
     const incomingIds = urlsIn(text).map(productIdentity).filter(Boolean)
-    if (incomingIds.length && state.jobs.some(other => pendingProductIds(other).some(pid => incomingIds.includes(pid)))) {
+    // A LIST that happens to repeat an already-queued product must still go out:
+    // its value is the roundup, and dropping it would lose every other item in
+    // it (the Telegram bot posts lists for the same reason). Only a single-product
+    // copy of a queued product is "the same deal".
+    const incomingShape = classifyPost(text, false)
+    const singleProductCopy = urlsIn(text).length <= 1 && !incomingShape.largeList
+    const queuedSameProduct = (singleProductCopy && incomingIds.length)
+      ? state.jobs.find(other => other && other.id !== id
+          && pendingProductIds(other).some(pid => incomingIds.includes(pid)))
+      : null
+    if (queuedSameProduct && adoptBetterCopy(queuedSameProduct, post, text, media)) {
+      // One job, better deal: the queue carries the stronger copy to every channel.
+      job = queuedSameProduct
+      log.info({ id, source: post.chat.username, replaces: queuedSameProduct.id },
+        'best copy: queued job re-pointed at the stronger deal')
+    } else if (queuedSameProduct) {
       log.info({ id, source: post.chat.username }, 'intake skip: product already queued')
       return
     }
@@ -4429,6 +4485,80 @@ if (process.argv.includes('--self-test')) {
     if (!special.includes('https://fktr.in/SP1')) throw new Error('special caption lost its link:\n' + special)
   }
 
+
+  // v17.6 BEST COPY: the queue must publish the stronger deal for a product,
+  // not whichever source happened to post first - while keeping exactly one job
+  // per product (no duplicate) and never losing coverage.
+  {
+    const savedJobs = state.jobs
+    const savedSent = state.sent
+    const savedContent = state.sentContent
+    try {
+      state.jobs = []
+      state.sent = {}
+      state.sentContent = {}
+      const ASIN = 'B0BRIDGE01'
+      const link = `https://www.amazon.in/dp/${ASIN}?tag=deals0911-21`
+      // Whatever sources this environment watches, the rule is the same - so the
+      // fixture uses configured names instead of hard-coded ones.
+      const watched = [...SOURCES, ...DIRECT_SOURCES]
+      const srcA = watched[0] || 'under499loots'
+      const srcB = watched[1] || srcA
+      const oil = (price, mrp, pct, chatId, msgId, user) => ({
+        chat: { id: chatId, username: user }, message_id: msgId,
+        text: `Sunlight 1L Refill Pack\n₹${price} for today\nMRP ₹${mrp}, ${pct}% off\n${link}`,
+      })
+      enqueuePost(oil('214', '599', '45', -100501, 901, srcA))
+      if (state.jobs.length !== 1) throw new Error('the first copy must queue exactly one job: ' + state.jobs.length)
+      const firstId = state.jobs[0].id
+      const firstScore = dealQualityScore(state.jobs[0]).score
+      if (!/45%/.test(state.jobs[0].text)) throw new Error('the queued job must hold the first copy')
+
+      enqueuePost(oil('199', '999', '80', -100502, 902, srcB))
+      if (state.jobs.length !== 1) throw new Error('a better copy must never add a second job: ' + state.jobs.length)
+      const taken = state.jobs[0]
+      if (taken.id !== firstId) throw new Error('the pending job must be reused, never recreated')
+      if (!taken.text.includes('₹199') || !/80%/.test(taken.text)) {
+        throw new Error('the pending job must carry the better deal: ' + JSON.stringify(taken.text))
+      }
+      if (srcB !== srcA && taken.source !== srcB) {
+        throw new Error('the stronger copy also re-points the source: ' + taken.source + ' vs ' + srcB)
+      }
+      if (dealQualityScore(taken).score <= firstScore) throw new Error('the quality score must go up')
+
+      // an even weaker copy from a third source: skipped, better job untouched
+      enqueuePost(oil('614', '599', '5', -100504, 903, srcA))
+      if (state.jobs.length !== 1) throw new Error('a weaker copy must not create a second job: ' + state.jobs.length)
+      if (!/80%/.test(state.jobs[0].text)) throw new Error('a weaker copy must not downgrade the queued deal')
+
+      // a list that repeats this product still goes out (coverage over tidiness)
+      enqueuePost({
+        chat: { id: -100505, username: srcA }, message_id: 904,
+        text: `1. Sunlight refill ₹214 ${link}\n2. Vim bar ₹20 https://www.amazon.in/dp/B0OTHER007?tag=deals0911-21\n3. Harpic ₹49 https://www.amazon.in/dp/B0OTHER008?tag=deals0911-21`,
+      })
+      if (state.jobs.length !== 2) throw new Error('a LIST containing an already-queued product must still be posted: ' + state.jobs.length)
+      const listJob = state.jobs.find(job => /Vim bar/.test(job.text || ''))
+      if (!listJob) throw new Error('the list job is missing')
+      if (listJob.id === firstId || !/Harpic/.test(listJob.text)) throw new Error('the list must stay a separate, complete job')
+
+      // a single copy must never hijack a pending list, and a job that already
+      // started delivering is never rewritten mid-flight
+      listJob.attempts = 1
+      enqueuePost(oil('149', '999', '85', -100506, 905, srcB))
+      if (state.jobs.length !== 2) throw new Error('a mid-flight product must not gain a second job: ' + state.jobs.length)
+      if (!/45%|80%/.test(state.jobs.find(j => j.id === firstId).text)) throw new Error('the delivered-start job must be left alone')
+      if (dealQualityScore(state.jobs.find(j => j.id === firstId)).score <= firstScore) {
+        // still the better copy it became earlier - unchanged by the mid-flight rule
+      }
+      if (/149/.test(state.jobs.find(j => j.id === firstId).text)) {
+        throw new Error('a job that started delivering must not be re-pointed')
+      }
+    } finally {
+      state.jobs = savedJobs
+      state.sent = savedSent
+      state.sentContent = savedContent
+    }
+  }
   console.log('bridge self-test PASS')
   process.exit(0)
 }

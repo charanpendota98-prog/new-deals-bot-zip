@@ -207,6 +207,23 @@ echo "  -- WhatsApp bridge (skip/err), last 8 --"
 sudo journalctl -u tg-wa-bridge -n 800 --no-pager 2>/dev/null | grep -oE '"(reason|err|msg)":"[^"]{0,110}"' | tail -8 | sed 's/^/    /' || true
 
 echo ""
+echo "==== 10. POST QUALITY AUDIT (read-only proof of the four guarantees) ===="
+# Nothing invented, our links only, no product twice, nothing lost - the auditor
+# checks exactly that on the live queue and prints the offending queue ids.
+AUDIT="$(dirname "$0")/quality_audit.py"
+# the deploy bundle drops it next to main_bot.py, so look there too
+[[ -f "$AUDIT" ]] || AUDIT="$BESTGAA_DIR/quality_audit.py"
+if [[ -f "$AUDIT" && -f "$DB" ]]; then
+  python3 "$AUDIT" --db "$DB" --limit 120 2>&1 | sed 's/^/    /'
+  python3 "$AUDIT" --db "$DB" --limit 120 --strict >/dev/null 2>&1 \
+    && ok "recent posts are clean" || warn "quality audit found posts that broke a guarantee - the list above has the queue ids"
+elif [[ ! -f "$DB" ]]; then
+  echo "    no queue database at $DB yet - nothing to audit"
+else
+  echo "    ops/quality_audit.py not found (checked $(dirname "$0") and $BESTGAA_DIR) - copy it over to get this check"
+fi
+
+echo ""
 echo "==== QUICK FIXES ===="
 echo "  * Telegram totally silent?  sudo systemctl restart bestgaa && sleep 12 && sudo journalctl -u bestgaa -n 30 --no-pager"
 echo "  * Deploy latest fixes:       cd $(dirname "$0") && ./repack_bundles.sh && ./apply_dual_hotfix.sh"

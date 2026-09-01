@@ -504,3 +504,48 @@ v17.5 - NOTHING OF OURS IS ADDED (the user's fidelity line, round 7)
   the operator's bridge-state.json during a self-test run.
   Counts: test_pipeline_fixes.py 202/202, test_render_job.py 150/150,
   test_rescan.py PASS, bridge --self-test PASS x10 modes.
+
+================================================================================
+v17.6 (round 8) - best copy of a product, numeric fidelity gate, quality auditor
+================================================================================
+What changed and why (user: "anni perfect ga chesava, more and more advanced"):
+
+1. BEST COPY (both sides). Same product posted by two sources minutes apart used to
+   be decided by arrival order: the first copy queued won and the better deal was
+   skipped as a "duplicate". Now the pending, not-yet-delivered job/row is re-pointed
+   at the stronger copy (Python Store.swap_in_better_copy, bridge adoptBetterCopy),
+   still as ONE row, so zero-duplicate is untouched. The displaced copy is remembered
+   (superseded_chat_id/superseded_msg_id) and re-queued by restore_superseded() in the
+   worker's PermanentSkip path, so a better copy that cannot render never becomes a
+   missing deal. Log lines: "BEST COPY | queue=N re-pointed ...",
+   "BEST COPY ROLLBACK | ...", bridge "best copy: queued job re-pointed at the
+   stronger deal".
+   Matching is exact-id only (/dp/ASIN, /gp/product/, ?pid=, /ip/); name-fuzzy
+   matching was rejected on purpose (a wrong match would replace a post with a
+   different product). Lists, card/bank offers and Tricks sources never take part.
+2. NUMERIC FIDELITY GATE. enforce_numeric_fidelity(raw+cleaned source, rendered) runs
+   at the end of render_job: any "₹N" or "N%" figure whose digits appear nowhere in
+   the source message is removed and logged ("PRICE FIDELITY | queue=N removed ...").
+   URLs are masked on BOTH sides so our tag (deals0911-21) and ASINs are never
+   mistaken for prices; commas are normalised (₹1,999 == ₹1999). Removing the number
+   - never the post - is deliberate: a mangled figure is a defect, a dropped deal is
+   a loss.
+3. LIST COVERAGE (bridge). Intake layer 3 used to drop any post whose product was
+   already queued - including a 5-item roundup containing it. A list is now judged by
+   its own shape: single-product copies are still skipped/upgraded, roundups enter.
+4. ops/quality_audit.py - read-only auditor over the queue DB: OURS (invented text /
+   markdown debris / surviving join-promo), LINKS (not-our-link, no-link), TEXTLESS
+   (link-only post), MISROUTE (single deal outside a price band), COVERAGE (done or
+   failed with no send and no policy reason), DUPLICATE / NEAR-DUPE (same body, or
+   same product+price, delivered twice within 6h). Hooked into ops/diagnose.sh
+   section 10; --strict for cron. Duplicate detection is done on the rendered bodies
+   because deal_claims/posted_deals are keyed by product and structurally cannot hold
+   two rows, so a ledger-based check would always pass.
+5. Test-suite hygiene: the premium pacing assertions pinned the wall clock (passed
+   only when run at night); they now force the window with a patched
+   premium_time_status and assert both branches. test_pipeline_fixes: 206 checks.
+   New file test_best_copy.py pins swap/skip/restore/list/mid-flight, the fidelity
+   gate and every auditor category.
+6. saveState() now returns early under --self-test: a self-test must never write (or
+   corrupt) bridge-state.json, which is what makes the new intake assertions safe to
+   run against the real enqueuePost path.

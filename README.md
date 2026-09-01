@@ -38,18 +38,26 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 ## Quick checks (no credentials needed)
 
 ```bash
-# Python bot — syntax + import smoke test
-python3 -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py
+# Python bot — deps (a fresh box needs aiohttp/telethon) + smoke test
+pip install --break-system-packages aiohttp telethon
+python3 -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py \
+                      ops/quality_audit.py
 
 # Bridge — deps + built-in contract tests (expects: "bridge self-test PASS").
-# Env values are arbitrary — the self-test makes no network calls:
+# Env values are arbitrary — the self-test makes no network calls (and, since
+# v17.6, it cannot write the live state file either):
 cd tg-wa-bridge && npm install \
   && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test
 
 # Behaviour tests (no network; expects all green):
-python3 test_render_job.py       # 137 checks: routing, formatting, conversion
+python3 test_render_job.py        # 150 checks: routing, formatting, conversion
 python3 test_rescan.py            # ingest dead-man's switch + idempotency
-python3 test_pipeline_fixes.py   # 49 checks: immediacy, zero duplicates, post quality
+python3 test_pipeline_fixes.py    # 209 checks: immediacy, zero duplicates, quality
+python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
+
+# Prove the guarantees on a real (or copied) database — read-only, exit 1 with
+# --strict so cron/systemd can alert on it:
+python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200
 ```
 
 The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
@@ -221,6 +229,28 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.6 — the queue publishes the BEST copy of a product, plus a numeric
+  fidelity gate and an offline auditor:** many sources post the same item minutes
+  apart at different prices, and until now *whichever copy arrived first* decided
+  what our channels showed — a 78%-off post could be skipped because a 65% copy
+  from another channel was queued seconds earlier. Both sides now re-point the
+  still-undelivered queue row at the stronger deal (Python `swap_in_better_copy`,
+  bridge `adoptBetterCopy`), so one product stays ONE row/job — the duplicate
+  guarantee is untouched — and the copy it displaced is remembered and re-queued
+  (`BEST COPY ROLLBACK`) if the better one cannot be rendered, so the selection can
+  never cost coverage. Matching is deliberately exact: only merchant product ids
+  (`/dp/ASIN`, `/gp/product/`, `?pid=`) match, so a shortener-only or
+  name-similar post is never re-pointed, and lists, card/bank offers and the Tricks
+  path are excluded on both sides. On top of that, `enforce_numeric_fidelity`
+  refuses to publish a `₹` amount or a discount percentage the source never
+  printed (URL digits are masked on both sides, so our own tag `deals0911-21` is
+  never mistaken for a price) — the bad *number* is removed, the *post* is kept.
+  The bridge also stops dropping a whole roundup because one of its items was
+  already queued (lists are coverage; only a single-product copy is "the same
+  deal"). `ops/quality_audit.py` proves all four guarantees on the live database —
+  invented text, foreign links, link-only posts, price-band misroutes, lost jobs
+  and double posts of one product — and `ops/diagnose.sh` now runs it in section 10
+  (`--strict` for cron), so a regression is visible the day it appears.
 - **v17.5 — NOTHING of ours is added to a post (WhatsApp side):** the bridge used
   to *re-layout* every deal — it hoisted a product line into a bold title, printed
   its own `💰 ₹499  |  🔥 75% OFF` badge line, dropped the source's real price line
@@ -475,21 +505,27 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.5 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.6 — **not yet deployed to a server**;
 until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
 live channels keep printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `236ce3d73cf49120074299d149a223570dd7a2e6afdddf0a2aebf8a5574159ca` |
-| `tg-wa-bridge/bridge.js` | `18d562126217cb4fa12e49d5a968cf6722e031cc4878e2290452f1e208656d9b` |
+| `bestgaa/main_bot_new.py` | `fbe2a091e20fab0f62d295e122f267cc1170ca8705b66fa46b2477faf52f9d49` |
+| `tg-wa-bridge/bridge.js` | `14712f26c0252c3bc893c32de734d84f126080450ef87d661df28fed4829580f` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
+| `ops/quality_audit.py` | `42922256311ba9676a931b004190c3df29a9efd9203ad83029bc0d3410fee05f` |
 
 Verified on this tree: `test_render_job.py` 150/150 (PowerLoots takes every deal,
 premium needs a real discount, a list lands in both price channels exactly once per
-channel), `test_pipeline_fixes.py` 202/202 (source fidelity incl. a new
+channel), `test_pipeline_fixes.py` 209/209 (source fidelity incl. a new
 "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage
-audit, price fidelity, no-silent-loss), `test_rescan.py` pass, and
+audit, price fidelity, no-silent-loss — and the premium pacing assertions are now
+pinned to a forced window instead of the wall clock, so the suite no longer passes
+only when it happens to run at night), `test_best_copy.py` (best-copy swap incl.
+"one row for a product", "a weaker copy never downgrades", "a list is never
+hijacked", "the displaced copy comes back", the numeric fidelity gate and the
+quality auditor catching each defect class), `test_rescan.py` pass, and
 `node tg-wa-bridge/bridge.js --self-test` pass in 10 env modes — default,
 `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`,
 `WA_BEST_OF_COOLDOWN_SECONDS=3600`, tuned gaps, `WA_MEDIA_FIRST=false`, the channel

@@ -10,6 +10,7 @@ Run: python3 test_pipeline_fixes.py   (from the repo root)
 """
 import asyncio
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -487,19 +488,42 @@ async def test_housekeeping(store):
           live_kept is not None)
     check("maintenance still sweeps claims of finished work", dead_gone is None)
 
-    # Premium scheduling must not crash on the gap window (it feeds randint).
+    # Premium pacing: a slot is scheduled ONLY inside the evening window, and the
+    # gap has to be a plain number of seconds (it feeds random.randint). The old
+    # assertion passed only when the suite happened to run at night; the window is
+    # now pinned both ways, so the result never depends on the wall clock.
+    real_status = bot.premium_time_status
     store.conn.execute(
-        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,status) "
-        "VALUES(?,?,?,?,?,?,?)", (-100701, 8002, "src_a", time.time(), 1, "-100701", "pending"))
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,status,premium_score) "
+        "VALUES(?,?,?,?,?,?,?,?)", (-100701, 8002, "src_a", time.time(), 1, "-100701", "pending", 900))
     store.conn.commit()
     qid = store.conn.execute("SELECT id FROM queue WHERE msg_id=8002").fetchone()[0]
-    await store.claim_premium(qid)
-    await store.complete_premium(qid, True)
-    next_at = float(store.conn.execute("SELECT next_at FROM premium_state WHERE id=1").fetchone()[0])
-    check("premium next-slot scheduled (gap is a plain number of seconds)",
-          next_at > time.time() - 1)
-    store.conn.execute("UPDATE queue SET status='done' WHERE id=?", (qid,))
+    store.conn.execute("INSERT OR REPLACE INTO deliveries(queue_id,target,status) VALUES(?,?,?)",
+                       (qid, bot.PREMIUM_TARGET, "pending"))
     store.conn.commit()
+    try:
+        bot.premium_time_status = lambda now=None: (False, "outside-night", time.time() + 3600)
+        claimed, _ = await store.claim_premium(qid)
+        check("outside the evening window no premium slot is claimed", not claimed)
+        next_at = float(store.conn.execute("SELECT next_at FROM premium_state WHERE id=1").fetchone()[0])
+        check("outside the window nothing is scheduled (the job stays queued)", next_at == 0.0)
+        bot.premium_time_status = lambda now=None: (True, "forced-night", 0.0)
+        claimed, _ = await store.claim_premium(qid)
+        check("inside the window the top premium job takes the slot", claimed)
+        await store.complete_premium(qid, True)
+        next_at = float(store.conn.execute("SELECT next_at FROM premium_state WHERE id=1").fetchone()[0])
+        check("premium next-slot scheduled (gap is a plain number of seconds)",
+              next_at > time.time() - 1)
+        gap_lo = min(int(bot.PREMIUM_GAP_MIN_SECONDS), int(bot.PREMIUM_GAP_MAX_SECONDS))
+        gap_hi = max(int(bot.PREMIUM_GAP_MIN_SECONDS), int(bot.PREMIUM_GAP_MAX_SECONDS))
+        check("the scheduled gap stays inside the configured window (no float gap bug)",
+              time.time() + gap_lo - 1 <= next_at <= time.time() + gap_hi + 2)
+    finally:
+        bot.premium_time_status = real_status
+        store.conn.execute("UPDATE premium_state SET night_key='',sent_count=0,next_at=0,"
+                           "claim_queue_id=NULL,claim_at=0 WHERE id=1")
+        store.conn.execute("UPDATE queue SET status='done' WHERE id=?", (qid,))
+        store.conn.commit()
 
 
 async def test_render_latency(store):
@@ -1252,8 +1276,14 @@ def test_nothing_added_by_us():
     check("our affiliate link survives intact",
           "https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21" in out)
     for invented in ("PREMIUM LOOT PICK", "Handpicked", "Latest deal", "DEALS OF THE DAY",
-                     "💰", "👑"):
+                     "💰", "👑", "POWER LOOT ALERT", "Price/stock may change"):
         check(f"no invented text of ours: {invented!r}", invented not in out)
+    # The wrappers that used to write those lines are deleted, not merely unused:
+    # re-wiring one would put our words back into a source post.
+    module_text = (Path(__file__).resolve().parent / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("no wrapper that adds a header/badge/footer survives in the source",
+          re.search(r"^def (?:format_premium_loot|format_power_loot|format_under99_loot)\b",
+                    module_text, re.M) is None)
     check("nothing is reordered",
           0 <= out.index("TOP DEAL OF THE DAY") < out.index("FLASH SALE") < out.index("Washing Machine"))
 

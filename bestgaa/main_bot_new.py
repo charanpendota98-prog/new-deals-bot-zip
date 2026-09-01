@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.5
+"""BestGAA Production Bot v17.6
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -11,6 +11,10 @@ immediately, exactly once, clean":
 - EarnKaro conversion with retry/cache/circuit breaker
 - strict generated-link-only output (source links are always replaced by ours;
   an unverified leftover link is repaired out instead of dropping the deal)
+- best-copy selection: when several sources post the same product (exact merchant
+  id) the queue publishes the STRONGER deal, as one row, with the displaced copy
+  restored if the better one cannot render; a numeric fidelity gate drops prices
+  or discounts the source never printed (never the post)
 - per-product 10-hour cross-source dedup, backed by a canonical
   (chat_key,msg_id) unique index so one source message can never queue twice
 - 1-hour same-price fallback only when product identity is unavailable
@@ -697,6 +701,102 @@ def content_deal_key(text: str) -> str | None:
     if len(basis) < 18 or len(basis.split()) < 3:
         return None
     return "CONTENT:" + hashlib.sha256(basis.encode()).hexdigest()
+# ---------------------------------------------------------------------------
+# v17.6 "best copy" selection + numeric fidelity gate
+# ---------------------------------------------------------------------------
+# Many sources post the SAME product within minutes at different prices. The
+# intake order used to decide which copy reached our channels, so a 78%-off
+# post could be replaced in the queue by a weaker 65% copy from another channel
+# (or the better copy silently dropped by the ledger). Now the queue keeps the
+# BEST copy of an exactly-matching product id - never a second row, so nothing
+# is duplicated, and the copy it displaced is remembered so the deal is still
+# posted if the better copy turns out to be unrenderable.
+PRODUCT_ID_RE = re.compile(
+    r"(?:/dp/|/gp/product/|/gp/aw/d/|/product[iI]d/|[?&]pid=|/ip/)([A-Za-z0-9]{6,20})")
+
+
+RUPEE = "\u20b9"  # the only currency symbol these sources publish
+
+
+def product_identities(text: str) -> list[str]:
+    """Merchant product ids a post names, readable WITHOUT the network.
+
+    Only exact ids (/dp/ASIN, flipkart pid, ...) count: a shortener-only post
+    yields nothing and is therefore never re-pointed, so a fuzzy match can never
+    drop a deal.
+    """
+    found = []
+    for raw in dict.fromkeys(URL_RE.findall(text or "")):
+        match = PRODUCT_ID_RE.search(raw)
+        if match:
+            found.append(match.group(1).upper())
+    return list(dict.fromkeys(found))
+
+
+def comparable_product_ids(items) -> set[str]:
+    """Normalise intake ids and rendered deal keys onto the same bare id."""
+    out: set[str] = set()
+    for item in items or []:
+        value = str(item).strip()
+        match = re.fullmatch(r"(?:pid|asin|amazon|flipkart):([A-Za-z0-9]{6,20})", value, re.I)
+        if match:
+            out.add(match.group(1).upper())
+        elif re.fullmatch(r"[A-Za-z0-9]{6,20}", value) and re.search(r"\d", value):
+            out.add(value.upper())
+    return out
+
+
+def deal_quality_score(text: str) -> int:
+    """How good this copy of the deal is (discount-led, price aware)."""
+    price = parse_price(text)
+    return premium_score(text, price, parse_discount(text, price))
+
+
+def numeric_tokens(text: str) -> set[str]:
+    """Every number a post states, with URLs masked out.
+
+    URL masking matters: our own affiliate tag ("deals0911-21"), an ASIN and a
+    shortener slug are digits the source text never claimed, and they must not
+    be confused with prices or discounts.
+    """
+    without_urls = URL_RE.sub(" ", text or "")
+    return {token.replace(",", "") for token in re.findall(r"\d[\d,]*", without_urls)}
+
+
+def enforce_numeric_fidelity(source_text: str, rendered: str) -> tuple[str, list[str]]:
+    """Gate: a published post may not contain a price/discount figure the source
+    never printed. Legitimate text is never touched - only a number that appears
+    NOWHERE in the source (URL digits excluded on both sides) is removed, because
+    every such number so far has been corruption (a glued shortener token, a
+    half-stripped "MRP", a mangled percent). The post itself is kept: dropping a
+    live deal to protect formatting is the worse bug.
+    """
+    allowed = numeric_tokens(source_text)
+    notes: list[str] = []
+    lines = (rendered or "").split("\n")
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        # Spans are measured on the ORIGINAL line and URL ranges are excluded, so a
+        # figure can never be cut out of the middle of a link (`/50%-sale`) while
+        # the same digits in the deal text are judged normally.
+        spans = [(m.start(), m.end()) for m in URL_RE.finditer(line)]
+        cuts: list[tuple[int, int]] = []
+        for pattern in (rf"{RUPEE}\s*\d[\d,]*", r"\b\d{1,3}\s*%"):
+            for match in re.finditer(pattern, line):
+                if any(match.start() < end and match.end() > start for start, end in spans):
+                    continue
+                digits = re.sub(r"\D", "", match.group(0))
+                if not digits or digits in allowed:
+                    continue
+                cuts.append(match.span())
+                notes.append(f"line {index + 1}: {match.group(0).strip()!r}")
+        if cuts:
+            scrubbed = line
+            for start, end in sorted(cuts, reverse=True):
+                scrubbed = scrubbed[:start] + " " + scrubbed[end:]
+            lines[index] = re.sub(r"[ \t]{2,}", " ", scrubbed).strip(" ,:;|")
+    return "\n".join(lines), notes
 
 
 def product_key(value: str) -> str:
@@ -843,19 +943,6 @@ def eligible_for_power_loots(price: int | None, discount: int | None,
         or (discount is not None and discount >= 70)
         or card_offer
     )
-
-
-def format_power_loot(text: str, price: int | None, discount: int | None,
-                      card_offer: bool = False) -> str:
-    badges = []
-    if price is not None and price <= 499:
-        badges.append(f"💸 UNDER ₹499 • ₹{price}")
-    if discount is not None and discount >= 70:
-        badges.append(f"🔥 {discount}% OFF")
-    if card_offer:
-        badges.append("💳 BANK / CARD OFFER")
-    header = "⚡ POWER LOOT ALERT ⚡\n" + "\n".join(badges)
-    return f"{header}\n\n{text.strip()}\n\n⏳ Grab Fast • Price/stock may change"
 
 
 def has_lowest_price_claim(text: str) -> bool:
@@ -2202,6 +2289,15 @@ class Store:
         queue_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(queue)")}
         if "premium_score" not in queue_columns:
             self.conn.execute("ALTER TABLE queue ADD COLUMN premium_score INTEGER")
+        # v17.6: "best copy" bookkeeping (see product_identities).
+        for column, statement in (
+            ("quality", "ALTER TABLE queue ADD COLUMN quality INTEGER"),
+            ("product_keys", "ALTER TABLE queue ADD COLUMN product_keys TEXT"),
+            ("superseded_chat_id", "ALTER TABLE queue ADD COLUMN superseded_chat_id TEXT"),
+            ("superseded_msg_id", "ALTER TABLE queue ADD COLUMN superseded_msg_id INTEGER"),
+        ):
+            if column not in queue_columns:
+                self.conn.execute(statement)
         if "priority" not in queue_columns:
             self.conn.execute("ALTER TABLE queue ADD COLUMN priority INTEGER NOT NULL DEFAULT 1")
         if "chat_key" not in queue_columns:
@@ -2375,11 +2471,24 @@ class Store:
         if text and await self.is_duplicate_content(text):
             log.info("INTAKE DEDUP | source=%s msg=%s (already posted or queued)", source, msg_id)
             return False
+        # v17.6: same product, better copy -> the pending row is re-pointed at the
+        # stronger deal instead of a coin flip deciding what our channels post. An
+        # error here must never cost coverage, so it degrades to plain insert.
+        if text:
+            try:
+                swapped = await self.swap_in_better_copy(chat_id, msg_id, source, text, priority)
+            except Exception as exc:  # noqa: BLE001 - enhancement, never a blocker
+                log.warning("BEST COPY check skipped: %s", exc)
+                swapped = False
+            if swapped:
+                return False
         async with self.lock:
             cur = self.conn.execute(
-                "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) "
-                "VALUES(?,?,?,?,?,?)",
-                (chat_id, msg_id, source, time.time(), priority, str(raw_chat_id(chat_id))),
+                "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,"
+                "quality,product_keys) VALUES(?,?,?,?,?,?,?,?)",
+                (chat_id, msg_id, source, time.time(), priority, str(raw_chat_id(chat_id)),
+                 deal_quality_score(text) if text else 0,
+                 json.dumps(sorted(product_identities(text))) if text else None),
             )
             self.conn.commit()
         inserted = cur.rowcount > 0
@@ -2388,6 +2497,103 @@ class Store:
             # next idle poll cycle (that polling gap was a visible posting lag).
             notify_queue()
         return inserted
+
+    async def swap_in_better_copy(self, chat_id: int, msg_id: int, source: str,
+                                  text: str, priority: int) -> bool:
+        """Re-point a still-undelivered queue row at a better copy of the same product.
+
+        Deliberately narrow, because losing a post is worse than posting the
+        weaker copy: only a SINGLE-product post (one link, one price), never a
+        Tricks/card/service post, and only when an exact merchant product id
+        matches a row that has not been claimed yet. One row in, one row out -
+        the duplicate guarantee is untouched - and the displaced copy is
+        remembered so `restore_superseded` can queue it if the better one fails.
+        """
+        keys = product_identities(text)
+        if not keys or source in TRICKS_SOURCES or has_card_offer(text):
+            return False
+        # A single product, by the only signals intake can see without rendering:
+        # at most one link, and no list markers (these sources put one link per
+        # item, so a roundup with several products is never re-pointed).
+        links = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text or "")))
+        if len(links) > 1:
+            return False
+        if re.search(r"(?im)^\s*(?:deal\s*\d+|\d+\s*[.)])|(?:MEGA DEAL LIST|DEAL LIST)", text or ""):
+            return False
+        score = deal_quality_score(text)
+        wanted = comparable_product_ids(keys)
+        async with self.lock:
+            rows = self.conn.execute(
+                "SELECT id, chat_key, chat_id, msg_id, source, priority, quality, "
+                "product_keys, deal_keys_json FROM queue WHERE status='pending'"
+            ).fetchall()
+            for row in rows:
+                if (row["source"] or "") in TRICKS_SOURCES:
+                    continue
+                pending_keys = json.loads(row["product_keys"] or "[]")
+                if len(pending_keys) > 1:
+                    # A list post stands for several products; re-pointing it at one
+                    # product would delete the rest of the roundup.
+                    continue
+                pending_ids = comparable_product_ids(pending_keys)
+                if not pending_ids:
+                    try:
+                        pending_ids |= comparable_product_ids(json.loads(row["deal_keys_json"] or "[]"))
+                    except (TypeError, ValueError):
+                        pass
+                if not (wanted & pending_ids):
+                    continue
+                if row["quality"] is None:
+                    # A row created before this feature (or without text) has no
+                    # score to compare against: leave it alone rather than risk a
+                    # downgrade.
+                    continue
+                if score <= (row["quality"] or 0):
+                    # The queued copy is at least as good: nothing to gain, and the
+                    # render-time product ledger already blocks a duplicate post.
+                    return True
+                self.conn.execute(
+                    "UPDATE queue SET chat_id=?, msg_id=?, source=?, quality=?, product_keys=?, "
+                    "priority=?, rendered_text=NULL, targets_json=NULL, deal_keys_json=NULL, "
+                    "attempts=0, next_at=0, superseded_chat_id=?, superseded_msg_id=? WHERE id=?",
+                    (chat_id, msg_id, source, score, json.dumps(sorted(keys)),
+                     max(int(priority), int(row["priority"] or 1)),
+                     str(row["chat_id"]), row["msg_id"], row["id"]),
+                )
+                self.conn.commit()
+                log.info("BEST COPY | queue=%s re-pointed at %s msg=%s for %s (score %s beats %s)",
+                         row["id"], source, msg_id, ",".join(sorted(wanted)),
+                         score, row["quality"] or 0)
+                notify_queue()
+                return True
+        return False
+
+    async def restore_superseded(self, row: sqlite3.Row) -> bool:
+        """Queue the copy a "best copy" swap displaced, so a failing better post
+        can never turn into a missing deal."""
+        keys = row.keys()
+        old_chat = row["superseded_chat_id"] if "superseded_chat_id" in keys else None
+        old_msg = row["superseded_msg_id"] if "superseded_msg_id" in keys else None
+        if not old_chat or not old_msg:
+            return False
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE queue SET superseded_chat_id=NULL, superseded_msg_id=NULL WHERE id=?",
+                (row["id"],),
+            )
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,quality) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (int(old_chat), int(old_msg), row["source"], time.time(), 3,
+                 str(raw_chat_id(int(old_chat))), 0),
+            )
+            self.conn.commit()
+        if cur.rowcount:
+            log.info("BEST COPY ROLLBACK | queue=%s restored the original copy (msg=%s)",
+                     row["id"], old_msg)
+            notify_queue()
+            return True
+        return False
 
     async def claim_job(self) -> sqlite3.Row | None:
         async with self.lock:
@@ -2449,6 +2655,15 @@ class Store:
             log.info("STALE DROP | %s pending job(s) older than %sh skipped instead of posted late",
                      len(rows), hours)
         return len(rows)
+
+    async def remember_products(self, queue_id: int, keys: list[str]) -> None:
+        """Persist the product ids a queue row stands for (see swap_in_better_copy)."""
+        if not keys:
+            return
+        async with self.lock:
+            self.conn.execute("UPDATE queue SET product_keys=? WHERE id=?",
+                              (json.dumps(list(keys)[:12]), queue_id))
+            self.conn.commit()
 
     async def save_render(self, queue_id: int, text: str, targets: list[str], keys: list[str],
                           premium_rank: int | None = None) -> None:
@@ -4022,6 +4237,19 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # multi-link shortens) before persisting/sending.
     rendered = await affiliate.shorten_long_urls_in_text(rendered)
     rendered = sanitize_outbound_text(rendered)
+    # v17.6 numeric fidelity gate: a figure the source never printed is corruption,
+    # so the NUMBER goes out of the post - never the post out of the channel.
+    # The basis is the RAW source message (not the cleaned copy): cleaning may
+    # drop a promo clause that sat next to a price, and the renderer legitimately
+    # re-prints that price in the tidied header. Numbers the source itself never
+    # printed are what gets removed - nothing else.
+    try:
+        rendered, fidelity_notes = enforce_numeric_fidelity(f"{raw_text}\n{text}", rendered)
+        for note in fidelity_notes:
+            log.info("PRICE FIDELITY | queue=%s removed %s", row["id"], note)
+        rendered = rendered.strip() or ""
+    except Exception as exc:  # noqa: BLE001 - a gate must never lose a live deal
+        log.warning("PRICE FIDELITY check skipped (post kept as rendered): %s", exc)
     if not URL_RE.search(rendered):
         raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
     # Persist only the products actually rendered/reserved; never extend the
@@ -4032,6 +4260,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     await store.save_render(
         row["id"], rendered, list(dict.fromkeys(base_targets)), commit_keys, premium_rank
     )
+    if product_identities(text) or commit_keys:
+        # Remember what products this row stands for, so a better copy arriving
+        # later can find (and take over) this pending job.
+        await store.remember_products(row["id"], sorted(set(product_identities(text))
+                                                         | comparable_product_ids(commit_keys)))
     return msg, rendered, price
 
 
@@ -4237,6 +4470,10 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     except PermanentSkip as exc:
         log.info("SKIP | queue=%s | %s", row["id"], exc)
         await store.mark_done(row["id"], str(exc))
+        # If this row was re-pointed at a better copy of the same product and the
+        # better copy cannot be posted, the original copy goes back in the queue.
+        with contextlib.suppress(Exception):
+            await store.restore_superseded(row)
     except Exception as exc:
         log.exception("JOB FAIL %s: %s", row["id"], exc)
         await store.fail_job(row, str(exc))
@@ -4268,7 +4505,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.5 starting "
+    log.info("BestGAA Production Bot v17.6 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

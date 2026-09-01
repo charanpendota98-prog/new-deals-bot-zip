@@ -159,3 +159,15 @@ is only the link: every merchant link becomes OUR monetized link, one per line.
 If a source opens with its own "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" line, that line is
 published exactly as the source wrote it; set WA_STRIP_CAMPAIGN_BANNERS=true only if
 you want those hype lines gone.
+
+v17.6 intake rule (same on the Telegram bot): the queue always publishes the BEST
+copy of a product. When a second source posts the same merchant product id while the
+first copy is still waiting to be delivered, the waiting job is re-pointed at the
+stronger deal ("best copy: queued job re-pointed") instead of the newer post being
+dropped as a duplicate - so the price/discount our channels show is the best one
+that existed at that moment, not a race result. Safety rules that never change:
+one job per product (this is a swap, not a second job), the swap only matches EXACT
+product ids (a shortener-only post is never matched by name), a list or a
+photo-special already in the queue is never rewritten, a job that already started
+delivering is left alone, and a list that merely contains an already-queued product
+is still posted in full (dropping it would lose the other items).
