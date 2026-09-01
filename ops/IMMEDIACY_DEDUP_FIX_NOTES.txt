@@ -847,8 +847,11 @@ shown at all ("source lenid ravoddu"). So:
    the affiliate nothing to monetize, and the job raised
        RuntimeError: conversion retry required: affiliate conversion returned no link: bit.ly
    retried until the deal aged out, then disappeared - nothing posted, log quiet.
-   Now: SHORTENER_HOSTS recognises a host whose only job is redirecting; if it did not
-   resolve, the LINK IS CUT (LINK DROPPED | queue=N posting the deal without it) and the
+   Now: a host whose only job is redirecting is recognised by SHAPE, not only by a list
+   (is_unresolvable_short_link: not a known merchant or service-store host + one short slug +
+   it never resolved; SHORTENER_HOSTS still names the ones we are sure about). Shape because
+   the live miss was https://bitly.com/74265 while a list of bit.ly/shorturl.at kept missing
+   it - and every miss on that list costs a deal. If such a link did not resolve, the LINK IS CUT (LINK DROPPED | queue=N posting the deal without it) and the
    deal goes out complete. A post left with no URL at all is still published
    (LINK-FREE POST) instead of failing the provenance/verified-link gates - and two gates
    that called a key-less post "duplicate deal"/"all products already posted" were fixed
@@ -864,10 +867,6 @@ shown at all ("source lenid ravoddu"). So:
    remaining photos after it. MAX_ALBUM_PHOTOS (default 10) caps it. A single-photo post
    keeps its exact old code path.
 
-4b. SPACING: keep_source_spacing() / keepSourceSpacing() - a blank line our own
-   deletions created is collapsed; a blank line the source wrote is kept. "exactly like the
-   source" includes the layout, and a post padded with empty lines reads like bot text.
-
 4. OUR OWN CHANNEL LINK ON TOP: "paina neat ga veru channel link pettelaga".
    prepend_channel_header() writes exactly one first line,
        (arrow) All Loot Channels: <folder link>
@@ -877,6 +876,10 @@ shown at all ("source lenid ravoddu"). So:
    (which already have their own footer) are excluded. ADD_OUR_CHANNEL_LINK_TOP=false
    switches it off and the test for it flips with the knob (S10).
 
+5. SPACING: keep_source_spacing() (and keepSourceSpacing() in the bridge) collapses a blank
+   line our own deletions created, and leaves a blank line the SOURCE wrote exactly as it is.
+   "exactly like the source" includes the layout: a post with a line punched out of the middle
+   reads like bot text, and a re-stuffed one loses the source's own rhythm.
 Bitly (re-confirmed by the user: "multiple links okka post lo vunte bitly use cheyu"):
    should_use_bitly = lists (2+ links) + anything over SHORTEN_MIN_LEN (70); a tidy
    single /dp/?tag= link stays direct so the monthly quota is not spent on ordinary
