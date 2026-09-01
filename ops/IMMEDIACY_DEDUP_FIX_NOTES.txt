@@ -821,6 +821,55 @@ shipping anything:
   bash ops/deploy_and_verify.sh --with-tests      # ship this build
 
 ================================================================================
+v18.2 (round 14) - the last swallow, and knob-honest tests
+================================================================================
+
+1. LINK-FREE MEDIA POST (the FIFTH swallow). `if not source_urls: raise
+   PermanentSkip("no URLs")` deleted a photo/video post whose caption is the deal - which is
+   how a source channel posts a price burned INTO the image, or writes "link in the first
+   comment". The post reached the queue and produced nothing at all. render_job now computes
+   link_free_post = (no usable link) AND (the message carries media) AND (the caption states
+   deal terms: price, discount, card or service offer) and threads it through the 8 gates that
+   used to require a link. `LINK-FREE POST | queue=N the source posted this with no link at
+   all - publishing it exactly as posted`. Deliberate guards: no media => still skipped (that
+   is the unwanted-text bug in the other direction), no deal terms => still skipped, and the
+   bridge's curated WhatsApp gate keeps skipping a link-free post (with the reason logged).
+
+3. ZERO BUDGET MEANT SLOWER. `AffiliateClient.rendered_links_not_broken` fell back to probing
+   every link SERIALLY when PRESEND_CHECK_BUDGET_SECONDS <= 0 - so the value an operator sets
+   to stop a check holding a post made the check take LONGER (4 links x 0.3s instead of one
+   concurrent pass). 0 now means what it says: skip the extra pass, keep the render-path
+   verdict, post the deal. Documented in the README env table.
+
+2. KNOB-HONEST TESTS. A 24-value knob matrix over the six suites (and the bridge self-test in
+   7 modes) produced failures that were the TEST lying, not the code: assertions written
+   against a hard-coded default. Fixed by deriving the expectation from the live value:
+     - test_line_fidelity pins PASSTHROUGH_UNMONETIZED (it renders with an Amazon-only fake
+       affiliate; the knob's own behaviour is tested in pipeline/sim) and builds its Bitly
+       fixtures from SHORTEN_MIN_LEN, asserting "over the threshold => shortened, under it =>
+       direct" in BOTH directions.
+     - test_render_job pins the documented threshold for its render fixtures and states the
+       shortening predicate as the caller states it (list OR long).
+     - test_pipeline_fixes asserts the intake-dedup promise against PRODUCT_DEDUP_SECONDS,
+       sizes its media fixtures from MAX_MEDIA_MB, and uses JOB_MAX_ATTEMPTS /
+       JOB_RETRY_MAX_SECONDS instead of the magic 6 and 30.
+     - test_duplicate_sim derives "is the second copy news?" from the same comparison the
+       store makes (price lower, or discount ahead by SAME_PRODUCT_DISCOUNT_MARGIN), so
+       SAME_PRODUCT_DISCOUNT_MARGIN=0/1/50 are all correct behaviour, and it states S8 in
+     both directions under PASSTHROUGH_UNMONETIZED=false.
+     - bridge --self-test judges the gate through gateAccepts/gateSkips (WA_BEST_GATE=false
+       must skip NOTHING), the dedup rule through duplicateProductReason (not through the
+       gate that wraps it), and every link against SHORTEN_MIN_LEN rather than 65.
+   Why this matters: an operator who sets a knob and then sees a red suite stops trusting the
+   suites, and that is when real bugs ship.
+
+Proof (v18.2):
+  for k in "SHORTEN_MIN_LEN=1" "SHORTEN_MIN_LEN=300" "PASSTHROUGH_UNMONETIZED=false"            "SAME_PRODUCT_DISCOUNT_MARGIN=0" "MAX_MEDIA_MB=1" "JOB_MAX_ATTEMPTS=3"            "PRODUCT_DEDUP_SECONDS=0" "ADD_OUR_CHANNEL_LINK_TOP=false" "MAX_ALBUM_PHOTOS=1"; do
+    env $k python3 test_line_fidelity.py | tail -1; env $k python3 test_duplicate_sim.py | tail -1
+  done
+  (cd tg-wa-bridge && for e in "" "WA_BEST_GATE=false" "WA_SHORTEN_MIN_LEN=1"       "WA_PRODUCT_DEDUP_HOURS=0" "WA_DROP_DEAD_LINKS=true"; do env $e ... node bridge.js --self-test; done)
+
+================================================================================
 v18.1 (round 13) - "alantivi unwated vi ravoddu": the same live post, four more fixes
 ================================================================================
 
@@ -876,7 +925,14 @@ shown at all ("source lenid ravoddu"). So:
    (which already have their own footer) are excluded. ADD_OUR_CHANNEL_LINK_TOP=false
    switches it off and the test for it flips with the knob (S10).
 
-5. SPACING: keep_source_spacing() (and keepSourceSpacing() in the bridge) collapses a blank
+5. LINK-FREE MEDIA POST (the fifth swallow): a source post with media and real deal terms but
+   NO link died at PermanentSkip("no URLs"). render_job now sets link_free_post for exactly
+   that case (media AND a price/discount/card/service signal) and every later gate that used
+   to require a link honours it. Guards kept on purpose: no media or no deal terms => still
+   skipped (that is the "unwanted text" bug in the other direction), and the bridge's curated
+   WhatsApp gate still skips a link-free post - out loud, with the reason in the log.
+
+6. SPACING: keep_source_spacing() (and keepSourceSpacing() in the bridge) collapses a blank
    line our own deletions created, and leaves a blank line the SOURCE wrote exactly as it is.
    "exactly like the source" includes the layout: a post with a line punched out of the middle
    reads like bot text, and a re-stuffed one loses the source's own rhythm.
@@ -903,4 +959,4 @@ so every one of these must pass on its own terms):
 STILL NOT DEPLOYED (the user asked for fixes first). The live host is believed to run a
 pre-v17.5 build, which alone reproduces every symptom reported. On the host:
   bash ops/deploy_and_verify.sh --verify-only   (what is live now)
-  bash ops/deploy_and_verify.sh --with-tests     (ship v18.1)
+  bash ops/deploy_and_verify.sh --with-tests     (ship v18.2)

@@ -50,7 +50,7 @@ cd tg-wa-bridge && npm install \
   && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test
 
 # Behaviour tests (no network; expects all green):
-python3 test_render_job.py        # 150 checks: routing, formatting, conversion
+python3 test_render_job.py        # 151 checks: routing, formatting, conversion
 python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 209 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
@@ -231,6 +231,27 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.2 — the last structural swallow, and the test suites stopped ignoring their own
+  knobs**:
+  1. **A photo post with no link is a post.** `PermanentSkip("no URLs")` deleted every source
+     message that carried no URL — which is exactly how a channel posts a price inside the
+     image, or writes "link in the first comment". Now such a post is published as the source
+     wrote it (its own caption + its own album, `LINK-FREE POST | the source posted this with
+     no link at all`), with the one line of ours on top so the reader still has a way in.
+     Two guards keep this from becoming noise: the message must carry media, and it must state
+     real deal terms (a price, a discount, a card or a service offer). A photo with no deal
+     terms and a text-only line with nothing to buy are still skipped — the curated WhatsApp
+     gate also still skips a link-free post, out loud, with the reason in the log.
+  2. **Every suite now respects the knob it depends on.** Running the suites across 20+
+     environment values produced failures that were the TEST's fault, not the code's: an
+     assertion that hard-codes a default (`SHORTEN_MIN_LEN`, `MAX_MEDIA_MB`,
+     `JOB_MAX_ATTEMPTS`, `PASSTHROUGH_UNMONETIZED`, `SAME_PRODUCT_DISCOUNT_MARGIN`, the
+     bridge's `WA_BEST_GATE` / `WA_PRODUCT_DEDUP_HOURS`) cries wolf the moment an operator
+     moves the knob — and a false alarm is how a real bug gets ignored. The fixtures and
+     expectations are now derived from the live values (and, for the duplicate rule, from the
+     store's own "is this copy better" comparison), so `PASSTHROUGH_UNMONETIZED=false` asserts
+     the documented skip, `WA_BEST_GATE=false` asserts that nothing is skipped, and a link is
+     judged against the threshold that is actually set.
 - **v18.1 — the user's ruling on the same example: `unwanted text` must go, and the
   post must look like the source's** (four things, all on the same live text):
   1. **A glued scrap after a price is CUT, not un-glued.** v18.0 separated `₹ 199HFJF`
@@ -259,6 +280,15 @@ Individual deploys:
      sense: one bad photo is left out, and a client or a Telegram that refuses the grid
      falls back to the first photo with the caption and the rest after it, so a photo
      layout can never be the reason a deal is missing (`MAX_ALBUM_PHOTOS`, default 10).
+  6. **Fifth swallow, closed: a post the source published with NO link.** A photo/video
+     post whose caption carries the deal (`🔥 (Pack Of 20) Multicolor Hair Clips at ₹85,
+     90% off`, the link only inside the image) reached the queue and died at
+     `PermanentSkip: no URLs`. It is published now — text and media exactly as posted,
+     nothing invented (`LINK-FREE POST | the source posted this with no link at all`).
+     The two guards that keep this from becoming junk: the message must carry media, and it
+     must state real deal terms (a price, a discount, a card or service offer). A photo with
+     no deal terms and a text-only line with nothing to buy are still skipped, and the
+     curated WhatsApp gate still skips a link-free post out loud.
   5. **Spacing is the source's, not ours.** A line our own passes deleted (a foreign
      channel's share button, a stripped CTA clause, a cut link) used to remain as an empty
      line, which reads like the bot padding the post. `keep_source_spacing()` (and
@@ -649,7 +679,7 @@ because every number is clamped into a safe range.
 | `HTTP_TOTAL_TIMEOUT_SECONDS` | 12 | per-request budget for resolve/health/EarnKaro |
 | `LINK_CHECK_ATTEMPTS` / `LINK_CHECK_RETRY_SLEEP_SECONDS` | 2 / 0.4 | health-probe behaviour |
 | `LINK_HEALTH_CACHE_SECONDS` | 900 | a URL is probed once per job, not once per stage |
-| `PRESEND_CHECK_BUDGET_SECONDS` | 25 | hard wall-clock cap on the pre-send link check |
+| `PRESEND_CHECK_BUDGET_SECONDS` | 6 | hard wall-clock cap on the pre-send link check; **0 switches the extra pass off** (it used to serialise every probe, which was slower than checking at all) |
 | `MAX_MEDIA_MB` / `MEDIA_DOWNLOAD_TIMEOUT_SECONDS` | 45 / 120 | oversized or slow source media is skipped (text still posts) |
 | `SOURCE_RESCAN_SECONDS` / `SOURCE_RESCAN_LIMIT` / `SOURCE_RESCAN_CONCURRENCY` | 120 / 40 / 4 | ingest dead-man's switch cadence |
 | `SOURCE_REFRESH_SECONDS` | 180 | retry joining sources that failed at startup |
@@ -691,21 +721,21 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.1 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.2 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `1f28990be7d06d4db8149947bbd0510383b14f689da83a4f76f306d29459f8df` |
-| `tg-wa-bridge/bridge.js` | `e2a1ba128f83a747cf126dcd7700fb5515bbeffa92a191f70a0677f4c43a6af5` |
+| `bestgaa/main_bot_new.py` | `760ce3203cc04f764c635af09f4fb09d8646145bdfe13f7358fa84f659c5fa85` |
+| `tg-wa-bridge/bridge.js` | `458a1141984d501d79a932ec9361732664e37c8228cda8dc3304f4f44f6a723f` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `2f4c11a3c4499f01b39c447c00c48e727d9fcd298f743d3d9c3d8f4347227cf2` |
-| `test_pipeline_fixes.py` | `42ae61431a0f60987deb6a025efff083fb102db369ff6416b63afb26f8fa57f0` |
-| `test_duplicate_sim.py` | `250b4b18361a2a6d896d6d85609da00e7a8efab0a2709535905177ca527fd9a6` |
+| `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
+| `test_pipeline_fixes.py` | `8a0017ab11f24bd5d47c5130f2b7bad7a72244dd2196ea3a56256b9eaa6a2b37` |
+| `test_duplicate_sim.py` | `f1413aabd456130904f9f97898d85e90404f782565694d55910bc5a0b0a6cdd5` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
 Verified on this tree (every suite also passes with the knobs flipped —
@@ -720,7 +750,13 @@ from ever disagreeing with the bot's:
 |---|---|
 | `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL ; a scrap glued to a price is cut while spaced text survives, an album of photos is posted as one grid (with its fallbacks), several links leave as our Bitly links and a dead shortener never costs the post, and the top line is our own channel link exactly once
 | `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
-| `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
+| *Every suite above passes at the defaults AND with each knob moved*
+  | (`SHORTEN_MIN_LEN`, `MAX_ALBUM_PHOTOS`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
+  | `PASSTHROUGH_UNMONETIZED=false`, `SAME_PRODUCT_*`, `PRODUCT/PRICE_DEDUP_SECONDS=0`,
+  | `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`, `DROP_DEAD_LINKS=true`, the opt-in strippers,
+  | and the bridge in 7 modes) — an assertion that ignores a knob it depends on is a false
+  | alarm, and false alarms are how real bugs get ignored.
+  | `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
 | `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
 | `test_rescan.py` | rescan/re-queue behaviour |

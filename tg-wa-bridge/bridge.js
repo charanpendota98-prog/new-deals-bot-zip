@@ -1758,7 +1758,11 @@ function passesBestDealGate(job) {
   if (!BEST_DEAL_GATE) return { ok: true, reason: '' }
   const text = job.text || ''
   const urls = urlsIn(text)
-  if (!urls.length) return { ok: false, reason: 'no link in post' }
+  // Deliberate asymmetry with the bot (v18.1): the bot publishes a photo post the source
+  // wrote with no link, because on Telegram the channel must not be missing a post. WhatsApp
+  // here is CURATED (the user's rule), and a post with nothing to tap on is not a best pick,
+  // so a link-free post is skipped with the reason logged - not swallowed silently.
+  if (!urls.length) return { ok: false, reason: 'no link in post (curated: skipped)' }
   if (!extractDealName(text)) return { ok: false, reason: 'no readable deal name' }
   // No repeats: the same product does not come again inside the dedup window.
   const dupReason = duplicateProductReason(text, job)
@@ -3663,8 +3667,24 @@ if (process.argv.includes('--self-test')) {
   }
   // Long links must be flagged for shortening while a clean short amazon /dp
   // link and already-short hosts are left alone (quota protection).
-  if (!needsShortening('https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=' + AMAZON_TAG)) throw new Error('long amazon search link must be shortened')
-  if (needsShortening('https://www.amazon.in/dp/B0GLY3Q2XR?tag=' + AMAZON_TAG)) throw new Error('clean short amazon dp link must NOT burn quota')
+  {
+    const searchLink = 'https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=' + AMAZON_TAG
+    if (searchLink.length > SHORTEN_MIN_LEN && !needsShortening(searchLink)) {
+      throw new Error('long amazon search link must be shortened')
+    }
+  }
+  // The promise is about the THRESHOLD, so it is stated against it: a link shorter than
+  // WA_SHORTEN_MIN_LEN is left alone (no quota burned), one at or over it is shortened.
+  // Hard-coding the default 65 here would cry wolf the moment an operator moves the knob.
+  {
+    const cleanDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=' + AMAZON_TAG
+    if (cleanDp.length < SHORTEN_MIN_LEN && needsShortening(cleanDp)) {
+      throw new Error('a link under the shorten threshold must NOT burn quota')
+    }
+    if (cleanDp.length > SHORTEN_MIN_LEN && !needsShortening(cleanDp)) {
+      throw new Error('a link over the shorten threshold must be shortened')
+    }
+  }
   const danglingSlots = cleanDealText('Lunchbox @ ₹88\n\n🔗\n🔗\n🔗 https://www.amazon.in/dp/B0DY7V1G9M?th=1&tag=deals0911-21')
   if (!danglingSlots.includes('B0DY7V1G9M')) throw new Error('real link missing after empty-slot cleanup')
   // No line may be a bare 🔗 (or any link bullet) with no URL after it.
@@ -4140,27 +4160,36 @@ https://fktr.in/MANY${i}`,
   if (namedItem.includes('➜')) throw new Error('a digest must not decorate links with characters of ours:\n' + namedItem)
 
   // Best-deal gate: verify before sending — skip when it is not a best deal.
-  if (!passesBestDealGate({ text: 'Nice Cotton Saree at ₹299\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must pass a priced deal with a name')
-  if (passesBestDealGate({ text: '₹49\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must skip a nameless price post')
-  if (passesBestDealGate({ text: 'Something about a product here\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must skip a post without price/discount/special signal')
-  if (!passesBestDealGate({ text: 'Sneakers 70% OFF today\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must pass a 70% off deal')
-  if (!passesBestDealGate({ text: 'Lunch Box https://a.test/1 https://a.test/2 https://a.test/3 https://a.test/4', media: [], special: false, largeList: false }).ok) throw new Error('gate must pass a mega list')
-  // ADVANCED QUALITY GATE: a photo alone must NOT pass (that was the loophole
-  // that let worst deals into the WhatsApp channel).
-  if (passesBestDealGate({ text: 'Camera with photo\nhttps://a.test/1', media: [{}], special: false, largeList: false }).ok) throw new Error('gate must REJECT a photo-only post with no price/discount')
-  // A photo WITH a real good discount + price is a top deal -> pass.
-  if (!passesBestDealGate({ text: 'Wireless Earbuds ₹799 55% OFF\nhttps://a.test/1', media: [{}], special: false, largeList: false }).ok) throw new Error('gate must pass a photo deal with good price+discount')
-  // Expensive + weak discount must be rejected even with a photo (worst deals).
-  if (passesBestDealGate({ text: 'Smart Watch ₹2499 15% OFF\nhttps://a.test/1', media: [{}], special: false, largeList: false }).ok) throw new Error('gate must REJECT an expensive weak-discount photo deal')
-  if (passesBestDealGate({ text: 'Premium Fridge ₹29999 10% OFF\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must REJECT an expensive weak-discount text deal')
-  // No price AND no discount (signal-less post) is junk even with a name.
-  if (passesBestDealGate({ text: 'Random Electronic Gadget thing here\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must REJECT a signal-less post')
-  // Cheap useful single product passes (₹99-or-less auto-pass).
-  if (!passesBestDealGate({ text: 'Cotton Socks Pack ₹99\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must pass an under-₹99 product')
+  // WA_BEST_GATE=false switches the gate off by design, so each promise below is judged
+  // against the mode that is actually running (an assertion that ignores the knob it depends
+  // on is a false alarm waiting for an operator). With the gate off the one thing that must
+  // still hold is that NOTHING of ours gets skipped, so only the "must pass" checks apply.
+  const gateOn = BEST_DEAL_GATE
+  const gateAccepts = (job) => (gateOn ? passesBestDealGate(job).ok : true)
+  // A "must be skipped" promise is vacuously satisfied when the operator turned the gate off
+  // - nothing is skipped then, by design - so it holds in both modes instead of lying.
+  const gateSkips = (job) => !gateOn || !passesBestDealGate(job).ok
+  const dedupBlocks = (job) => Boolean(duplicateProductReason(job.text, job))
+  const gate = (text, media = []) => ({ text, media, special: false, largeList: false })
+  if (!gateAccepts(gate('Nice Cotton Saree at \u20b9299\nhttps://a.test/1'))) throw new Error('gate must pass a priced deal with a name')
+  if (!gateSkips(gate('\u20b949\nhttps://a.test/1'))) throw new Error('gate must skip a nameless price post')
+  if (!gateSkips(gate('Something about a product here\nhttps://a.test/1'))) throw new Error('gate must skip a post without price/discount/special signal')
+  if (!gateAccepts(gate('Sneakers 70% OFF today\nhttps://a.test/1'))) throw new Error('gate must pass a 70% off deal')
+  if (!gateAccepts(gate('Lunch Box https://a.test/1 https://a.test/2 https://a.test/3 https://a.test/4'))) throw new Error('gate must pass a mega list')
+  // ADVANCED QUALITY GATE: a photo alone must NOT pass (that was the loophole that let the
+  // worst deals into the WhatsApp channel); a photo WITH real price + discount must.
+  if (!gateSkips(gate('Camera with photo\nhttps://a.test/1', [{}]))) throw new Error('gate must REJECT a photo-only post with no price/discount')
+  if (!gateAccepts(gate('Wireless Earbuds \u20b9799 55% OFF\nhttps://a.test/1', [{} ]))) throw new Error('gate must pass a photo deal with good price+discount')
+  // Expensive + weak discount is rejected with a photo or without one.
+  if (!gateSkips(gate('Smart Watch \u20b92499 15% OFF\nhttps://a.test/1', [{}]))) throw new Error('gate must REJECT an expensive weak-discount photo deal')
+  if (!gateSkips(gate('Premium Fridge \u20b929999 10% OFF\nhttps://a.test/1'))) throw new Error('gate must REJECT an expensive weak-discount text deal')
+  if (!gateSkips(gate('Random Electronic Gadget thing here\nhttps://a.test/1'))) throw new Error('gate must REJECT a signal-less post')
+  // Cheap useful single product passes (\u20b999-or-less auto-pass).
+  if (!gateAccepts(gate('Cotton Socks Pack \u20b999\nhttps://a.test/1'))) throw new Error('gate must pass an under-\u20b999 product')
   // A modest-discount mid-price USEFUL product clears the quality score.
-  if (!passesBestDealGate({ text: 'Running Shoes ₹899 40% OFF\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must pass a useful mid-price 40% deal')
-  // A ₹1500 20% off non-essential with no photo does not reach the score.
-  if (passesBestDealGate({ text: 'Generic Gadget ₹1500 20% OFF\nhttps://a.test/1', media: [], special: false, largeList: false }).ok) throw new Error('gate must REJECT a weak mid-price low-score deal')
+  if (!gateAccepts(gate('Running Shoes \u20b9899 40% OFF\nhttps://a.test/1'))) throw new Error('gate must pass a useful mid-price 40% deal')
+  // A \u20b91500 20% off non-essential with no photo does not reach the score.
+  if (!gateSkips(gate('Generic Gadget \u20b91500 20% OFF\nhttps://a.test/1'))) throw new Error('gate must REJECT a weak mid-price low-score deal')
   // Service offers (Zomato/Swiggy/Zepto/movies/cards) are specials and skip the
   // affiliate provenance DB check; store links keep full verification.
   if (!isServiceOffer('Zomato 50% OFF today\nhttps://zom.to/abc')) throw new Error('zomato service offer detection failed')
@@ -4200,11 +4229,11 @@ https://fktr.in/MANY${i}`,
     // must still be recognized as the same product.
     const jobA = { text: 'Cotton Kurta ₹499\nhttps://www.amazon.in/dp/B0TESTPROD?tag=deals0911-21', media: [], special: false, largeList: false }
     const jobB = { text: 'Same kurta new price ₹449\nhttps://www.amazon.in/dp/B0TESTPROD?tag=other-tag', media: [], special: false, largeList: false }
-    if (!passesBestDealGate(jobA).ok) throw new Error('fresh product wrongly blocked by dedup')
+    if (PRODUCT_DEDUP_HOURS > 0 && dedupBlocks(jobA)) throw new Error('fresh product wrongly blocked by dedup')
     markProductSent(jobA)
-    if (passesBestDealGate(jobB).ok) throw new Error('same product (different URL/tag) not caught by product dedup')
+    if (PRODUCT_DEDUP_HOURS > 0 && !dedupBlocks(jobB)) throw new Error('same product (different URL/tag) not caught by product dedup')
     state.sentProducts['amazon:B0TESTPROD'] = Date.now() - (PRODUCT_DEDUP_HOURS + 1) * 3600_000
-    if (!passesBestDealGate(jobB).ok) throw new Error('product older than the dedup window wrongly blocked')
+    if (PRODUCT_DEDUP_HOURS > 0 && dedupBlocks(jobB)) throw new Error('product older than the dedup window wrongly blocked')
     delete state.sentProducts['amazon:B0TESTPROD']
     state.sentNamePrice = beforeNamePrice
     saveState() // persist the cleanup for any pre-existing state file
@@ -4215,12 +4244,12 @@ https://fktr.in/MANY${i}`,
   {
     state.sentNamePrice = {}
     const dealA = { text: 'boAt Rockerz Earbuds Bluetooth Black\n75% OFF MRP ₹3199\nDeal Price ₹799\nGrab fast buy now\nhttps://fktr.in/AAA111', media: [], special: false, largeList: false }
-    if (!passesBestDealGate(dealA).ok) throw new Error('fresh shortlink product wrongly blocked')
+    if (PRODUCT_DEDUP_HOURS > 0 && dedupBlocks(dealA)) throw new Error('fresh shortlink product wrongly blocked')
     markProductSent(dealA)
     const dealAsame = { text: 'boAt Rockerz Earbuds Bluetooth Black\n75% OFF only ₹799\nLimited time offer click here\nhttps://bit.ly/ZZZ999', media: [{}], special: false, largeList: false }
-    if (passesBestDealGate(dealAsame).ok) throw new Error('same product (shortlink, same price, different link/caption) not caught by name+price dedup')
+    if (PRODUCT_DEDUP_HOURS > 0 && !dedupBlocks(dealAsame)) throw new Error('same product (shortlink, same price, different link/caption) not caught by name+price dedup')
     const dealADrop = { text: 'boAt Rockerz Earbuds Bluetooth Black\n78% OFF MRP ₹3199\nDeal Price ₹699\nhttps://fktr.in/AAA222', media: [], special: false, largeList: false }
-    if (!passesBestDealGate(dealADrop).ok) throw new Error('genuine price drop (₹799->₹699) must NOT be treated as a duplicate')
+    if (PRODUCT_DEDUP_HOURS > 0 && dedupBlocks(dealADrop)) throw new Error('genuine price drop (₹799->₹699) must NOT be treated as a duplicate')
     state.sentNamePrice = {}
     saveState()
   }
@@ -4326,13 +4355,34 @@ https://fktr.in/MANY${i}`,
   // (2+ links) always; a normal short single amazon dp link posts as-is so
   // the Bitly monthly quota is never wasted on ordinary product deals.
   const longAmazon = `https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21&m=abc123&ascsubtag=${'x'.repeat(120)}`
-  if (!needsShortening(longAmazon)) throw new Error('long amazon link must be shortened')
+  if (longAmazon.length > SHORTEN_MIN_LEN && !needsShortening(longAmazon)) throw new Error('long amazon link must be shortened')
   if (needsShortening('https://bit.ly/abc')) throw new Error('already-short link must not be re-shortened')
   if (needsShortening('https://bit.ly/abc', true)) throw new Error('already-short link must not be re-shortened even in a list')
   if (needsShortening('https://zom.to/abc')) throw new Error('service short link must not be shortened')
-  if (needsShortening('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('short single amazon link must NOT burn Bitly quota')
+  {
+    // Stated against WA_SHORTEN_MIN_LEN rather than its default, so the assertion stays
+    // true when an operator moves the knob (the policy IS the threshold).
+    const tidyDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21'
+    if (tidyDp.length < SHORTEN_MIN_LEN && needsShortening(tidyDp)) {
+      throw new Error('a single tidy link under the threshold must NOT burn Bitly quota')
+    }
+    if (tidyDp.length > SHORTEN_MIN_LEN && !needsShortening(tidyDp)) {
+      throw new Error('a single link over the threshold must be shortened')
+    }
+  }
   if (!needsShortening('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21', true)) throw new Error('every list link must be shortened')
-  if (needsShortening('https://www.flipkart.com/x/p/itm1')) throw new Error('short flipkart link must not be shortened')
+  {
+    // Same rule as above, expressed against the knob: a tidy deep link is left alone
+    // while it is UNDER WA_SHORTEN_MIN_LEN; an operator who lowers the threshold to 1
+    // has asked for everything to be shortened, and that is what must happen.
+    const tidyFlipkart = 'https://www.flipkart.com/x/p/itm1'
+    if (tidyFlipkart.length <= SHORTEN_MIN_LEN && needsShortening(tidyFlipkart)) {
+      throw new Error('a short flipkart link under the threshold must not be shortened')
+    }
+    if (tidyFlipkart.length > SHORTEN_MIN_LEN && !needsShortening(tidyFlipkart)) {
+      throw new Error('a flipkart link over the threshold must be shortened')
+    }
+  }
   if (displayUrl({ shortLinks: { a: 'b' } }, 'a') !== 'b') throw new Error('displayUrl must use the shortened link')
   if (displayUrl({}, 'a') !== 'a' || displayUrl({ shortLinks: {} }, 'a') !== 'a') throw new Error('displayUrl must fall back to the original link')
   {
@@ -4523,8 +4573,12 @@ https://fktr.in/MANY${i}`,
       text: 'Cotton Kurta lowest price ₹499\nhttps://amzn.to/COPY1',
       resolvedLinks: { 'https://amzn.to/COPY1': 'https://www.amazon.in/dp/B0DEDUPTST?ref=raw' },
     }
-    const verdict = passesBestDealGate(directCopy)
-    if (verdict.ok || !/duplicate product/.test(verdict.reason)) throw new Error('direct copy of an already-posted deal must be dedup-skipped, got: ' + verdict.reason)
+    // The rule under test is the product dedup itself; asking the gate about it would make
+    // this assertion depend on WA_BEST_GATE for no reason.
+    const dupReason = duplicateProductReason(directCopy.text, directCopy)
+    if (PRODUCT_DEDUP_HOURS > 0 && !/duplicate product/.test(dupReason || '')) {
+      throw new Error('direct copy of an already-posted deal must be dedup-skipped, got: ' + dupReason)
+    }
     delete state.sentProducts['amazon:B0DEDUPTST']
     saveState()
   }

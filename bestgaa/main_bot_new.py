@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.1
+"""BestGAA Production Bot v18.2
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -12,6 +12,8 @@ immediately, exactly once, clean":
 - a dead short link, an unresolvable destination or an oversized photo costs the post
   NOTHING: the offending link is cut and the deal goes out complete (never a retry-until-
   stale, never a skip)
+- a source post with a photo and NO link is still a post: it goes out as written (deal
+  terms required, nothing invented); a caption with no deal terms is not a deal and stays out
 - the source's photos are posted the way the source posted them: a multi-photo album
   arrives as ONE album (the grid), and only the source's own links are ever replaced
 - exactly one line of ours may sit above the deal - our own channel link, added on the
@@ -3790,11 +3792,18 @@ class AffiliateClient:
         if the whole budget runs out we keep the render-path verdict instead of
         delaying a live deal, because a slow probe is not a broken deal.
         """
+        if PRESEND_CHECK_BUDGET_SECONDS <= 0:
+            # A zero budget is the operator saying "never hold a post for this extra
+            # check" - and it used to mean the OPPOSITE (fall back to probing every link
+            # SERIALLY, which is slower than the concurrent default). The render path has
+            # already verified these links, so the honest reading is: skip the pre-send
+            # pass, keep the post, and say nothing.
+            return True
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
         if not urls:
             return False
-        if len(urls) == 1 or PRESEND_CHECK_BUDGET_SECONDS <= 0:
-            return all([await self.link_not_broken(url) for url in urls])
+        if len(urls) == 1:
+            return await self.link_not_broken(urls[0])
         sem = asyncio.Semaphore(max(1, EK_MAX_CONCURRENCY))
 
         async def check(url: str) -> bool:
@@ -4586,6 +4595,16 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         not in_domains((urlparse(url).hostname or "").lower(), NON_STORE_DOMAINS)
         for url in source_urls
     )
+    msg_media = getattr(msg, "media", None)
+    has_media_now = bool(msg_media) and not isinstance(
+        msg_media, (MessageMediaWebPage, MessageMediaInvoice))
+    # Only a post that shows the deal (a photo/video of it) AND states real deal terms
+    # qualifies. A caption with no price, no discount and no card/service offer is a
+    # screenshot, not a deal - publishing that is exactly the "unwanted text" the user
+    # forbids, so it keeps the skip it always had.
+    link_free_candidate = (not source_urls or not has_merchant_candidate) and has_media_now and (
+        parse_price(text) is not None or parse_discount(text) is not None
+        or has_card_offer(text) or has_service_offer(text))
     had_social_promo = bool(TRICK_PROMO_LINK_RE.search(raw_text)) or any(
         in_domains((urlparse(url).hostname or "").lower(), NON_STORE_DOMAINS)
         for url in source_urls
@@ -4595,7 +4614,13 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if had_social_promo and not has_merchant_candidate:
         return await render_trick_promo(row, msg, raw_text)
 
-    if not source_urls:
+    # A photo/video post with no link is still a post the source published, and the
+    # reader can still see the product: the old `no URLs` skip deleted those. Such a post
+    # now goes out exactly as the source wrote it (text + media, no invented link), because
+    # "source lo vasthundi, mana target lo raledu" is the bug and a missing link is not a
+    # reason for it. A TEXT-only message with nothing to buy stays skipped.
+    link_free_post = bool(link_free_candidate)
+    if not source_urls and not link_free_post:
         raise PermanentSkip("no URLs")
 
     # Resolve first so social/footer URLs do not inflate the 2+ Bitly threshold.
@@ -4618,7 +4643,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             # never hold up or cancel the deal next to it.
             continue
         candidates.append((source_url, str(resolved)))
-    if not candidates:
+    if not candidates and not link_free_post:
         raise PermanentSkip("no monetizable URLs")
 
     # Service/lifestyle offers (Zomato, Swiggy, Zepto, movies, payment-app and
@@ -4635,7 +4660,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 service_pairs.append((source_url, clean_resolved))
         else:
             store_candidates.append((source_url, resolved))
-    if not store_candidates and not service_pairs:
+    if not store_candidates and not service_pairs and not link_free_post:
         raise PermanentSkip("no monetizable URLs")
 
     multi_link = len(store_candidates) >= 2
@@ -4712,7 +4737,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         for source_url, resolved in store_candidates:
             if clean_url(source_url) not in already:
                 keep_passthrough(source_url, resolved)
-    if not converted and not service_pairs and not passthrough and not unresolvable:
+    if (not converted and not service_pairs and not passthrough
+            and not unresolvable and not link_free_post):
         raise PermanentSkip("no monetizable URLs")
 
     # Preserve distinct variant links (colour/gender/size/category filters) inside
@@ -4738,7 +4764,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Service-only posts have an empty `converted` by design (their links are
     # pass-through, already reserved via their product keys above) — only a
     # STORE-only post can be fully duplicated this way.
-    if not converted and not service_pairs and not passthrough and not unresolvable:
+    if (not converted and not service_pairs and not passthrough
+            and not unresolvable and not link_free_post):
         raise DuplicateDeal("all products already posted")
 
     mapping = {clean_url(r.source): r.affiliate for r in converted}
@@ -4794,7 +4821,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             rendered = rendered.replace(variant, " ")
     if unresolvable:
         rendered = sanitize_outbound_text(tidy_post(clean_source_text(rendered)))
-    if not rendered or (not URL_RE.search(rendered) and not unresolvable):
+    if not rendered or (not URL_RE.search(rendered) and not unresolvable and not link_free_post):
         raise PermanentSkip("rendered post has no affiliate URL")
 
     discount = parse_discount(text, price)
@@ -4837,7 +4864,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                  row["id"], len(leftover), ", ".join(u[:40] for u in leftover[:4]))
         rendered = keep_source_spacing(rendered, row["text"] or "")
     if (not any(clean_url(raw) in allowed_final_urls for raw in URL_RE.findall(rendered))
-            and not unresolvable):
+            and not unresolvable and not link_free_post):
         raise PermanentSkip("no verified affiliate link survived in the rendered post")
     if unresolvable and not URL_RE.search(rendered):
         # Every link this post carried was a dead shortener, so the deal goes out as
@@ -4954,7 +4981,10 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     except Exception as exc:  # noqa: BLE001 - a gate must never lose a live deal
         log.warning("PRICE FIDELITY check skipped (post kept as rendered): %s", exc)
     if not URL_RE.search(rendered):
-        if unresolvable:
+        if link_free_post:
+            log.warning("LINK-FREE POST | queue=%s the source posted this with no link at all "
+                        "- publishing it exactly as posted", row["id"])
+        elif unresolvable:
             log.warning("LINK-FREE POST | queue=%s every link the source wrote was a dead "
                         "short link - posting the deal complete, without a link", row["id"])
         else:
@@ -5255,7 +5285,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.1 starting "
+    log.info("BestGAA Production Bot v18.2 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

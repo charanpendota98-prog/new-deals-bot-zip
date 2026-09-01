@@ -32,6 +32,13 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
+# This suite is about the TEXT of a post, and it renders with a fake affiliate that only
+# monetizes Amazon. It therefore needs unmonetized store links to survive the pipeline,
+# which is exactly what PASSTHROUGH_UNMONETIZED controls. Pin it here (that knob's own
+# behaviour is tested in test_pipeline_fixes / test_duplicate_sim), so running this file
+# under PASSTHROUGH_UNMONETIZED=false compares the same text instead of erroring out.
+bot.PASSTHROUGH_UNMONETIZED = True
+
 R = "\u20b9"
 FAILS: list[str] = []
 
@@ -54,11 +61,14 @@ class FakeMsg:
 
 
 class FakeClient:
-    def __init__(self, text: str):
+    def __init__(self, text: str, media=None):
         self.text = text
+        self.media = media
 
     async def get_messages(self, chat_id, ids=None):
-        return FakeMsg(self.text, int(ids or 1))
+        msg = FakeMsg(self.text, int(ids or 1))
+        msg.media = self.media
+        return msg
 
 
 class MerchantAffiliate:
@@ -528,6 +538,54 @@ def test_layout_is_the_sources_blank_lines_only():
     check("empty text is not turned into a line", bot.keep_source_spacing("", "A") == "")
 
 
+async def render_media(text: str, with_media: bool = True) -> str:
+    """Same render path, on a message that carries a photo and no link at all."""
+    with tempfile.TemporaryDirectory() as td:
+        store = bot.Store(Path(td) / "fid-media.sqlite3")
+        old_store = bot.store
+        bot.store = store
+        try:
+            store.conn.execute(
+                "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key)"
+                "VALUES(?,?,?,?,?,?)", (-100777002, 4243, "dealsvelocity", time.time(), 2, "777002"))
+            store.conn.commit()
+            row = store.conn.execute("SELECT * FROM queue WHERE msg_id=4243").fetchone()
+            client = FakeClient(text, None if not with_media else object())
+            # (render_job re-fetches the message, so the media flag lives on the client)   # render_job re-fetches the msg
+            _m, rendered, _p = await bot.render_job(client, MerchantAffiliate(), row)
+            return rendered
+        finally:
+            bot.store = old_store
+
+
+def test_a_photo_post_with_no_link_is_still_posted():
+    """Round 13: the last swallow was structural, not about links - a source post with a
+    photo and no URL at all ("link in the photo", "link in the comments") used to die at
+    `no URLs`. The source published it, so our channels must have it too, as posted.
+    A photo with no deal terms is not a deal, and a text-only line with nothing to buy
+    stays skipped - publishing those would be the unwanted-text bug in the other direction."""
+    import asyncio as _aio
+    clip = "🔥 (Pack Of 20) Multicolor Hair Clips at ₹85 only, 90% off"
+    got = _aio.run(render_media(clip))
+    check("a photo post with a price and no link is published",
+          "Multicolor Hair Clips" in got and "₹85" in got and "90%" in got, repr(got))
+    check("no link is invented for a link-free post", not bot.URL_RE.search(got), repr(got))
+    check("the source's own price line survives untouched", "at ₹85 only" in got, repr(got))
+    skipped = None
+    try:
+        _aio.run(render_media("📸 just look at this photo, nothing to buy here"))
+    except bot.PermanentSkip as exc:
+        skipped = str(exc)
+    check("a photo with no deal terms is still not posted", skipped == "no URLs", repr(skipped))
+    skipped = None
+    try:
+        _aio.run(render_media("🔥 Hair Clips ₹85 only", with_media=False))
+    except bot.PermanentSkip as exc:
+        skipped = str(exc)
+    check("a text-only line with nothing to buy is still not posted", skipped == "no URLs",
+          repr(skipped))
+
+
 def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
     """[https://amazon.in/dp/X](https://some-shortener/y) must publish X, not y.
 
@@ -684,12 +742,17 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
         return "https://bit.ly/OURSHORT"
 
     aff.bitly = fake_bitly
-    # The links a loot channel actually pastes: a /dp/ path plus tag, linkCode and a
-    # long ref chain - well over SHORTEN_MIN_LEN, which is exactly what must not sit in
-    # a channel post.
-    tail = "?tag=deals0911-21&linkCode=sl1&ref_=sxtby_sp_he_ll_d_m_l_image_d_1_2_2&psc=1&th=1"
-    long_two = (f"1) Steel Tiffin \u20b9399 https://www.amazon.in/dp/B0TIF1{tail}\n"
-                f"2) Casserole \u20b9499 https://www.amazon.in/dp/B0CASS2{tail}")
+    # The threshold itself is a knob, so the fixtures are BUILT from it: a link padded
+    # past the current SHORTEN_MIN_LEN must be shortened, one under it must not. A test
+    # that hard-codes 65 would cry wolf the moment an operator moves the knob (and the
+    # last round's knob matrix showed exactly that class of false alarm in the bridge).
+    min_len = int(bot.SHORTEN_MIN_LEN)
+    base = "https://www.amazon.in/dp/B0TIF1?tag=deals0911-21"
+    tail = "&ref_=" + "s" * max(0, min_len + 40 - len(base) - len("&ref_="))
+    long_one = base + tail
+    assert len(long_one) > min_len, (len(long_one), min_len)
+    long_two = (f"1) Steel Tiffin \u20b9399 {long_one}\n"
+                f"2) Casserole \u20b9499 {long_one.replace('B0TIF1', 'B0CASS2')}")
     out = asyncio.run(aff.shorten_long_urls_in_text(long_two))
     check("every long link in a list becomes our short link",
           out.count("https://bit.ly/OURSHORT") == 2 and "amazon.in/dp/B0TIF1" not in out, out)
@@ -697,11 +760,16 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
           all(line.startswith(("1)", "2)")) for line in out.splitlines() if line.strip()), out)
     check("the rule is lists + long urls, not every post",
           bot.should_use_bitly("https://www.amazon.in/dp/B0X", True) is True
-          and bot.should_use_bitly("https://www.amazon.in/dp/B0X", False) is False
-          and bot.SHORTEN_MIN_LEN >= 50, str(bot.SHORTEN_MIN_LEN))
-    tidy = "Boat Airdopes \u20b91,099 https://www.amazon.in/dp/B0AIR1?tag=deals0911-21"
-    check("a short single link stays direct (no quota spent)",
-          asyncio.run(aff.shorten_long_urls_in_text(tidy)) == tidy, tidy)
+          and bot.should_use_bitly("https://www.amazon.in/dp/B0X", False) is False,
+          str(bot.SHORTEN_MIN_LEN))
+    tidy_link = "https://www.amazon.in/dp/B0AIR1?tag=deals0911-21"
+    tidy = f"Boat Airdopes \u20b91,099 {tidy_link}"
+    if len(tidy_link) > min_len:
+        check("a single link OVER the threshold is shortened too",
+              "bit.ly/OURSHORT" in asyncio.run(aff.shorten_long_urls_in_text(tidy)), tidy)
+    else:
+        check("a short single link stays direct (no quota spent)",
+              asyncio.run(aff.shorten_long_urls_in_text(tidy)) == tidy, tidy)
 
     async def out_of_quota(url):
         raise RuntimeError("Bitly quota exhausted")
@@ -709,8 +777,8 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
     aff.bitly = out_of_quota
     # Fresh URLs: a shortener that already answered for a link keeps that answer (that
     # is the cache doing its job), so the "Bitly is down" case needs unseen links.
-    other = (f"1) Pressure Cooker \u20b9899 https://www.amazon.in/dp/B0COOK1{tail}\n"
-             f"2) Water Bottle \u20b9299 https://www.amazon.in/dp/B0BOTT2{tail}")
+    other = (f"1) Pressure Cooker \u20b9899 {'https://www.amazon.in/dp/B0COOK1?tag=deals0911-21' + tail}\n"
+             f"2) Water Bottle \u20b9299 {'https://www.amazon.in/dp/B0BOTT2?tag=deals0911-21' + tail}")
     kept = asyncio.run(aff.shorten_long_urls_in_text(other))
     check("Bitly down: the deal still goes out with the tagged merchant links",
           "amazon.in/dp/B0COOK1" in kept and "bit.ly" not in kept, kept[:140])
@@ -742,6 +810,7 @@ def main() -> int:
     test_whatsapp_identity_is_the_same_rule()
     test_cleaning_never_eats_a_line()
     test_markdown_link_with_a_url_label_keeps_the_merchant_url()
+    test_a_photo_post_with_no_link_is_still_posted()
     test_layout_is_the_sources_blank_lines_only()
     test_lists_are_shortened_with_our_bitly_and_stay_neat()
     test_photos_arrive_as_the_source_posted_them()

@@ -375,6 +375,11 @@ def test_scenarios():
         better = f"{ac_name}\nNow {R}33,490 only (54% off)\nhttps://www.croma.com/ac-detail-a3"
         other = f"LG Neo Duetto 7Kg Front Load Washing Machine\n{R}31,990 (44% off)\nhttps://www.croma.com/wash-b1"
         aff = UnresolvableAffiliate()
+        # PASSTHROUGH_UNMONETIZED=false is the operator's documented choice to SKIP a deal
+        # nothing can be monetized on, so S8's promises flip with that knob in both
+        # directions - an assertion that ignores a knob it depends on is a false alarm (or,
+        # worse, a bug hidden behind one).
+        keep_unmonetized = bool(bot.PASSTHROUGH_UNMONETIZED)
 
         # a) fidelity first: every line the source wrote reaches the channel
         store, client, sends, _ = await scenario("s8a", {(-1009020, 1201): FakeMsg(first, 1201)},
@@ -385,30 +390,65 @@ def test_scenarios():
         wanted = [f"{R}74,990", "LGAC1500", "No cost EMI", f"{R}36,990"]
         if not bot.STRIP_CAMPAIGN_BANNERS:
             wanted.insert(0, "PRICE DROP")
-        check("[S8a] the post carries every source line (banner, MRP, coupon, EMI)",
-              bool(solo) and all(all(x in t for x in wanted) for t in solo), str(solo[:1]))
-        check("[S8a] and it carries our destination link, once",
-              bool(solo) and all(t.count("croma.com/ac-detail-a1") == 1 for t in solo), str(solo[:1]))
+        if keep_unmonetized:
+            check("[S8a] the post carries every source line (banner, MRP, coupon, EMI)",
+                  bool(solo) and all(all(x in t for x in wanted) for t in solo), str(solo[:1]))
+            check("[S8a] and it carries our destination link, once",
+                  bool(solo) and all(t.count("croma.com/ac-detail-a1") == 1 for t in solo), str(solo[:1]))
+        else:
+            rows = store.conn.execute("select status, last_error from queue").fetchall()
+            state = [(r["status"], r["last_error"] or "") for r in rows]
+            check("[S8a] PASSTHROUGH_UNMONETIZED=false posts no fragment of an unmonetizable deal",
+                  not sends and state and all(
+                      status in ("pending", "processing", "done")
+                      and ("no monetizable URLs" in err or "conversion retry required" in err)
+                      for status, err in state),
+                  str(state))
 
         # b) the same product again at the same price: the channel stays quiet
         store, client, sends, _ = await scenario(
             "s8b", {(-1009021, 1301): FakeMsg(first, 1301), (-1009022, 1302): FakeMsg(repeat, 1302)},
             [(-1009021, 1301, first), (-1009022, 1302, repeat)], 1, affiliate=aff)
         hits = {t: product_hits(v, word) for t, v in sends.items()}
-        if bot.SAME_PRODUCT_SKIP_SECONDS > 0:
+        # "is the second copy news?" is not a constant, it is the module's OWN rule
+        # (Store line: discount >= last + SAME_PRODUCT_DISCOUNT_MARGIN), so the expectation
+        # is computed with that rule instead of assuming the default margin. Under a knob
+        # that makes this repeat "better", two posts is the correct outcome - not a leak.
+        # the same two comparisons Store.product_already_posted makes, on the same inputs
+        _fp, _rp = bot.parse_price(first), bot.parse_price(repeat)
+        first_disc = bot.parse_discount(first, _fp) or 0
+        repeat_disc = bot.parse_discount(repeat, _rp) or 0
+        # Order-independent on purpose: the queue may render either copy first, and the
+        # store then compares the arrival against what THAT channel already carried. So the
+        # promise is "a copy whose figures differ by at least the margin is news whichever
+        # way it arrives" - which is exactly what the store's own rule gives.
+        repeat_is_news = ((_rp is not None and _fp is not None and _rp != _fp)
+                          or abs(repeat_disc - first_disc) >= bot.SAME_PRODUCT_DISCOUNT_MARGIN)
+        expected_count = 2 if (repeat_is_news or bot.SAME_PRODUCT_SKIP_SECONDS == 0) else 1
+        expected_copies = expected_count * len(sends)   # set once, adjusted by the checks below
+        if not keep_unmonetized:
+            check("[S8b] with the knob off nothing is posted, so nothing repeats",
+                  not sends, str({t: len(v) for t, v in sends.items()}))
+        elif bot.SAME_PRODUCT_SKIP_SECONDS > 0 and not repeat_is_news:
             check("[S8b] a channel that has carried the product does not carry it again",
                   bool(sends) and all(count == 1 for count in hits.values()), str(hits))
-            expected_copies = len(sends)
-        else:
+        elif bot.SAME_PRODUCT_SKIP_SECONDS > 0:
+            check("[S8b] a copy that beats the margin (or SAME_PRODUCT_DISCOUNT_MARGIN lowered) is news, not a duplicate",
+                  bool(sends) and all(count == 2 for count in hits.values()), str(hits))
+        elif bot.SAME_PRODUCT_SKIP_SECONDS == 0:
             # The knob is the operator's escape hatch, and it has to be a REAL one:
             # with SAME_PRODUCT_SKIP_SECONDS=0 the second copy goes out as before.
             check("[S8b] SAME_PRODUCT_SKIP_SECONDS=0 turns the skipper off for real",
                   bool(sends) and all(count == 2 for count in hits.values()), str(hits))
             expected_copies = 2 * len(sends)
         kept = [t for texts in sends.values() for t in texts if word in t]
+        if not keep_unmonetized:
+            kept = [] if not sends else kept
+            expected_copies = 0
         check("[S8b] every copy that goes out is complete, never a fragment",
-              bool(kept) and len(kept) >= expected_copies and all(
-                  f"{R}36,990" in t and "croma.com/ac-detail-a" in t and word in t for t in kept),
+              (bool(kept) and len(kept) >= expected_copies and all(
+                  f"{R}36,990" in t and "croma.com/ac-detail-a" in t and word in t for t in kept))
+              if keep_unmonetized else not sends,
               str(kept[:1]))
 
         # c) a cheaper copy of the same product is news, not a duplicate
@@ -418,7 +458,8 @@ def test_scenarios():
         hits = {t: product_hits(v, word) for t, v in sends.items()}
         cheaper = [t for texts in sends.values() for t in texts if f"{R}33,490" in t]
         check("[S8c] the strictly better copy still reaches every channel",
-              bool(sends) and all(v for v in sends.values()) and bool(cheaper),
+              (bool(sends) and all(v for v in sends.values()) and bool(cheaper))
+              if keep_unmonetized else not sends,
               str({t: len(v) for t, v in sends.items()}))
         check("[S8c] and the same product is never carried more than twice",
               all(1 <= count <= 2 for count in hits.values()), str(hits))
@@ -427,7 +468,7 @@ def test_scenarios():
         store, client, sends, _ = await scenario("s8d", {(-1009025, 1501): FakeMsg(other, 1501)},
                                                   [(-1009025, 1501, other)], 1, affiliate=aff)
         check("[S8d] another product from the same store still reaches every channel",
-              bool(sends) and all(v for v in sends.values()),
+              (bool(sends) and all(v for v in sends.values())) if keep_unmonetized else not sends,
               str({t: len(v) for t, v in sends.items()}))
 
         # e) the identity rule is offline: no network wait was added for it
@@ -554,8 +595,14 @@ def test_scenarios():
 
 def test_no_artificial_telegram_waits():
     print("\n== no artificial waiting on the Telegram path ==")
-    check("channel fan-out has no gap by default",
-          bot.TARGET_FANOUT_GAP_MAX == 0 and bot.TARGET_FANOUT_GAP_MIN == 0,
+    # What must be true is the CODE DEFAULT (nobody waits unless they ask); an operator who
+    # sets TARGET_FANOUT_GAP_MIN/MAX has asked for a gap, and that is honoured, not denied.
+    src_defaults = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("channel fan-out ships with no gap (the default in the code)",
+          '_num("TARGET_FANOUT_GAP_MIN", 0' in src_defaults
+          and '_num("TARGET_FANOUT_GAP_MAX", 0' in src_defaults, "the defaults changed")
+    check("and the running gap stays inside what the operator configured",
+          0 <= bot.TARGET_FANOUT_GAP_MIN <= bot.TARGET_FANOUT_GAP_MAX,
           f"{bot.TARGET_FANOUT_GAP_MIN}-{bot.TARGET_FANOUT_GAP_MAX}")
     check("the whole pre-send link check is capped at seconds, not 25s",
           bot.PRESEND_CHECK_BUDGET_SECONDS <= 8, str(bot.PRESEND_CHECK_BUDGET_SECONDS))

@@ -264,6 +264,15 @@ twice:
   - node bridge.js --self-test pins all of the above, and passes with either setting
     of WA_DROP_DEAD_LINKS.
 
+  v18.2 (round 14):
+  - a link-free post (the source published a photo with the price inside the image) is
+    published on Telegram as written; on WhatsApp the curated gate still skips it, and the
+    reason is in the log ("no link in post (curated: skipped)") rather than being silent.
+  - the self-test is knob-honest: gate promises are judged through the mode that is running
+    (WA_BEST_GATE=false must skip NOTHING), product dedup is judged by duplicateProductReason
+    instead of the gate that wraps it, and every link is compared to WA_SHORTEN_MIN_LEN
+    instead of the default 65. An operator moving a knob should never see a red self-test.
+
   v18.1 (round 13) - the WhatsApp side keeps pace with the bot:
   - the glued-price rule flipped to "cut" (above) - the channel owner ruled that
     "h"/"htt"/"jsjd"-style text next to a price must never be shown, and that nothing of

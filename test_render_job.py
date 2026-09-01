@@ -17,6 +17,14 @@ sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
 
+# This suite checks how a post is RENDERED, and its link fixtures were written for the
+# documented SHORTEN_MIN_LEN. The threshold's own behaviour (over the limit = shortened,
+# under it = left direct, in both directions) is pinned in test_line_fidelity against
+# the live value, so the operator can set SHORTEN_MIN_LEN to anything without this file
+# crying wolf.
+bot.SHORTEN_MIN_LEN = 70
+
+
 class FakeMsg:
     def __init__(self, text):
         self.text = text
@@ -650,11 +658,18 @@ async def main():
         check("standalone+inline CTA removed, content kept",
               "grab now" not in cleaned_mid and "Premium leather" in cleaned_mid)
         # 10. Long links qualify for shortening; a clean short amazon /dp does not.
+        # The fixtures are written against the DOCUMENTED default threshold (this file pins
+        # it at import), so the check below states the rule - over the threshold means
+        # shortened - rather than trusting one number.
         long_link = ("https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031"
                      "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=deals0911-21")
         short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
-        check("long link flagged for shortening", len(long_link) > bot.SHORTEN_MIN_LEN)
-        check("short amazon dp not shortened", not (bot.should_use_bitly(short_dp, False) or len(short_dp) > bot.SHORTEN_MIN_LEN))
+        # the caller's real predicate: shorten when it is a LIST or when the link is long
+        wants_short = lambda u, multi: bot.should_use_bitly(u, multi) or len(u) > bot.SHORTEN_MIN_LEN
+        check(f"long link flagged for shortening (threshold={bot.SHORTEN_MIN_LEN})",
+              wants_short(long_link, False))
+        check("short amazon dp not shortened", not wants_short(short_dp, False))
+        check("but the same short dp IS shortened inside a list", wants_short(short_dp, True))
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:

@@ -152,8 +152,14 @@ async def test_dedup(store):
     store.conn.execute("INSERT OR REPLACE INTO posted_deals VALUES(?,?,?,?)",
                        (key, 1099, time.time(), 1))
     store.conn.commit()
-    check("already-posted campaign refused at intake",
-          await store.enqueue(-100999, 901, "src_b", text) is False)
+    # PRODUCT_DEDUP_SECONDS=0 closes the window by design, and then re-queueing the same
+    # campaign is the CORRECT behaviour, so the promise is stated against the knob.
+    if bot.PRODUCT_DEDUP_SECONDS > 0:
+        check("already-posted campaign refused at intake",
+              await store.enqueue(-100999, 901, "src_b", text) is False)
+    else:
+        check("PRODUCT_DEDUP_SECONDS=0 re-queues a campaign on purpose",
+              await store.enqueue(-100999, 901, "src_b", text) is True)
 
     # An in-flight claim held by a LIVE job must not expire (that window used to
     # let the same product through from a second source an hour later).
@@ -194,16 +200,20 @@ async def test_dedup(store):
 async def test_latency(store):
     print("\n== immediacy (source post -> target post without waiting) ==")
     # Retry backoff is seconds, not minutes.
+    # A job that still HAS attempts left is the one that gets deferred; "6" would be an
+    # exhausted job the moment an operator lowers JOB_MAX_ATTEMPTS.
+    still_retryable = max(1, bot.JOB_MAX_ATTEMPTS - 1)
     store.conn.execute("INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,status,attempts) "
                        "VALUES(?,?,?,?,?,?,?,?)",
-                       (-1001, 1001, "src_a", time.time(), 1, "-1001", "pending", 6))
+                       (-1001, 1001, "src_a", time.time(), 1, "-1001", "pending", still_retryable))
     store.conn.commit()
     row = store.conn.execute("SELECT * FROM queue WHERE msg_id=1001").fetchone()
     await store.save_render(row["id"], "pending target text", ["LootZoneIndia11"], [])
     await store.finish(row, 0, None)
     deferred = store.conn.execute("SELECT next_at,created_at FROM queue WHERE msg_id=1001").fetchone()
     wait = deferred[0] - time.time()
-    check("retry for undelivered targets waits <30s (was up to 300s)", 0 < wait < 30)
+    check(f"retry for undelivered targets waits under the configured cap ({int(bot.JOB_RETRY_MAX_SECONDS)}s, was up to 300s)",
+          0 < wait <= bot.JOB_RETRY_MAX_SECONDS + 5)
 
     check("job_retry_delay stays bounded",
           all(bot.job_retry_delay(a) <= bot.JOB_RETRY_MAX_SECONDS + 2 for a in range(12)))
@@ -266,10 +276,18 @@ async def test_http_pipeline():
     started = time.monotonic()
     ok = await client.rendered_links_not_broken(text)
     elapsed = time.monotonic() - started
-    check("all links still health-checked before sending", ok is True)
-    check(f"4 links checked concurrently ({elapsed:.2f}s < 0.9s serial floor)",
-          elapsed < 0.9)
-    check("each URL probed exactly once (cached verdicts)", len(session.calls) == 4)
+    if bot.PRESEND_CHECK_BUDGET_SECONDS <= 0:
+        # PRESEND_CHECK_BUDGET_SECONDS=0 is the operator switching the extra pass OFF, and
+        # then the promise is "the post is not held up at all" - not the timing of a pass
+        # that is not running.
+        check(f"PRESEND_CHECK_BUDGET_SECONDS=0 skips the extra pass without probing "
+              f"({len(session.calls)} calls, {elapsed:.2f}s)",
+              ok is True and not session.calls and elapsed < 0.2)
+    else:
+        check("all links still health-checked before sending", ok is True)
+        check(f"4 links checked concurrently ({elapsed:.2f}s < 0.9s serial floor)",
+              elapsed < 0.9)
+        check("each URL probed exactly once (cached verdicts)", len(session.calls) == 4)
     calls_after = len(session.calls)
     ok2 = await client.rendered_links_not_broken(text)
     check("second pass reuses the cache (no repeat 18s waits)",
@@ -277,8 +295,14 @@ async def test_http_pipeline():
 
     broken_session = FakeSession(delay=0.3, broken=[urls[2]])
     broken_client = bot.AffiliateClient(broken_session)
-    check("a dead merchant page is still blocked",
-          await broken_client.rendered_links_not_broken(text) is False)
+    if bot.PRESEND_CHECK_BUDGET_SECONDS > 0:
+        check("a dead merchant page is still blocked",
+              await broken_client.rendered_links_not_broken(text) is False)
+    else:
+        # With the pre-send pass switched off (budget 0) nothing is probed here at all, so
+        # the honest promise is that the post survives - the render path stays the gate.
+        check("PRESEND_CHECK_BUDGET_SECONDS=0 leaves the render-path verdict in charge",
+              await broken_client.rendered_links_not_broken(text) is True)
 
     slow = FakeSession(delay=3.0)
     slow_client = bot.AffiliateClient(slow)
@@ -294,10 +318,13 @@ async def test_http_pipeline():
     # Oversized/slow media must not freeze a worker.
     big = types.SimpleNamespace(media=types.SimpleNamespace(
         video=types.SimpleNamespace(size=int((bot.MAX_MEDIA_MB + 5) * 1024 * 1024))))
+    # "normal" means normal FOR THIS LIMIT, so the fixture is half the configured cap
+    # instead of a hard-coded 2 MB that a MAX_MEDIA_MB=1 operator would (rightly) reject.
+    normal_bytes = max(64 * 1024, int(bot.MAX_MEDIA_MB * 1024 * 1024 * 0.5))
     small = types.SimpleNamespace(media=types.SimpleNamespace(
-        video=types.SimpleNamespace(size=2 * 1024 * 1024)))
+        video=types.SimpleNamespace(size=normal_bytes)))
     photo = types.SimpleNamespace(media=types.SimpleNamespace(
-        video=None, document=None, sizes=[types.SimpleNamespace(size=90_000)]))
+        video=None, document=None, sizes=[types.SimpleNamespace(size=min(90_000, normal_bytes))]))
     check("oversized source video is skipped (text still posts)",
           bot.media_is_too_large(big) is True)
     check("normal video and photos are downloaded",
@@ -583,6 +610,11 @@ async def test_price_gate_is_a_fallback(store):
     print("\n== same-price gate never eats a different product ==")
     price = 99
     old_window = bot.PRICE_DEDUP_SECONDS
+    old_ignores_identity = bot.PRICE_DEDUP_IGNORES_IDENTITY
+    # The first case below is only true with the DEFAULT policy, so the case sets it
+    # explicitly (an operator's PRICE_DEDUP_IGNORES_IDENTITY=true must not turn this
+    # assertion red - the strict-gate case a few lines further down is exactly that mode).
+    bot.PRICE_DEDUP_IGNORES_IDENTITY = False
     bot.PRICE_DEDUP_SECONDS = 3600  # the deployed .env value; code default is off
     # Fresh dedup state for this case only.
     store.conn.execute("DELETE FROM price_posts")
@@ -604,7 +636,7 @@ async def test_price_gate_is_a_fallback(store):
     ok4, _ = await store.reserve(4, ["ASIN:B0PRICE003"], price, True)
     check("PRICE_DEDUP_IGNORES_IDENTITY=true restores the strict legacy gate",
           ok4 is False)
-    bot.PRICE_DEDUP_IGNORES_IDENTITY = False
+    bot.PRICE_DEDUP_IGNORES_IDENTITY = old_ignores_identity
     bot.PRICE_DEDUP_SECONDS = old_window
     store.conn.execute("DELETE FROM price_posts")
     store.conn.execute("DELETE FROM deal_claims")
@@ -723,6 +755,17 @@ async def test_no_silent_loss(store):
         (-100778, 7200, "shirt_src", time.time(), 1, bot.JOB_MAX_ATTEMPTS, str(bot.raw_chat_id(-100778))))
     store.conn.commit()
     row = store.conn.execute("SELECT * FROM queue WHERE msg_id=7200").fetchone()
+    if not bot.PASSTHROUGH_UNMONETIZED:
+        # Documented behaviour of that knob: with unmonetized pass-through turned OFF the
+        # deal is skipped instead of published. Assert the skip, then hand the suite the
+        # default so the rest of its text checks still run against the same code path.
+        try:
+            await bot.render_job(FakeClient(), NoCampaignAffiliate(), row)
+            check("PASSTHROUGH_UNMONETIZED=false skips an unmonetizable deal (posted anyway)", False)
+        except bot.PermanentSkip as exc:
+            check(f"PASSTHROUGH_UNMONETIZED=false skips it as documented ({exc})",
+                  "no monetizable URLs" in str(exc))
+        bot.PASSTHROUGH_UNMONETIZED = True
     _msg, rendered, price = await bot.render_job(FakeClient(), NoCampaignAffiliate(), row)
     check("an unmonetizable store post is still published (was silently lost)",
           "Regular Fit Shirt" in rendered and "\u20b9599" in rendered)
