@@ -237,6 +237,23 @@ def test_quality_auditor():
         put(5, "lootnow", 105, f"{R}1,999 cooker\nhttps://bitli.in/TqmFyPp/x1", ["Under99Deals11"])
         put(6, "lootnow", 106, "", ["LootZoneIndia11"], status="failed",
             error="RuntimeError: EarnKaro 503 kept retrying", sent=0)
+        # the round-10 classes: one figure printed twice inside a single post, a
+        # post that was cut instead of deferred, and the same product re-posted to
+        # the same channel at a WORSE price
+        put(7, "lootnow", 107,
+            f"Sony WH-CH720N Wireless Headphones\nNow {R}5,990 (MRP {R}10,990)\n"
+            f"Pay {R}5,990 with code SONY10\nhttps://bitli.in/TqmFyPp/Sony7", ["LootZoneIndia11"])
+        put(8, "lootnow", 108,
+            f"Sony WH-CH720N Wireless Headphones with mic and case, battery…",
+            ["LootZoneIndia11"])
+        tv = f"Samsung 43 Inch Crystal 4K Smart Television\nNow {{price}} (MRP {R}74,900)\n"
+        put(10, "lootnow", 110, tv.format(price=f"{R}8,990") + "https://bitli.in/TqmFyPp/Tv10",
+            ["LootZoneIndia11"])
+        put(11, "lootnow", 111, tv.format(price=f"{R}7,490") + "https://bitli.in/TqmFyPp/Tv11",
+            ["LootZoneIndia11"])
+        put(9, "lootnow", 109,
+            f"Sony WH-CH720N Wireless Headphones\nNow {R}6,490 (MRP {R}10,990)\n"
+            f"https://bitli.in/TqmFyPp/Sony9", ["LootZoneIndia11"])
         store.conn.commit()
         store.conn.close()
 
@@ -258,6 +275,17 @@ def test_quality_auditor():
         check("a link tagged to another publisher is caught",
               "somebody else" in link_details, link_details)
         check("a price-tier misroute is caught", "MISROUTE" in kinds, str(kinds.get("MISROUTE")))
+        check("a post cut with an ellipsis is caught", "CUT" in kinds, str(list(kinds)))
+        check("a figure repeated inside one single-product post is caught",
+              "DOUBLE" in kinds and any("5990" in item["detail"] for item in kinds["DOUBLE"]),
+              str(kinds.get("DOUBLE")))
+        sony_dupes = [item for item in kinds.get("SAME-PRODUCT", []) if "sony" in item["detail"].lower()]
+        check("the same product carried twice by one channel is caught",
+              len(sony_dupes) == 1 and "7" in sony_dupes[0]["detail"], str(kinds.get("SAME-PRODUCT")))
+        check("a cheaper re-post of the same product is NOT called a duplicate",
+              not any("samsung" in item["detail"].lower()
+                      for item in kinds.get("SAME-PRODUCT", [])),
+              str(kinds.get("SAME-PRODUCT")))
         check("a lost post (failed, no send, no policy reason) is caught",
               "COVERAGE" in kinds, str(kinds.get("COVERAGE")))
         check("the clean post itself is not flagged",

@@ -14,6 +14,9 @@ reached each channel:
   S6 fan-out to every channel of the matrix, then an identical campaign text
      arriving from another source
   S7 price-tier channels: one copy per channel, never two
+  S8 the SAME product arriving under two SHORT LINKS the resolver cannot open
+     (no ASIN, no PID): the product's own words must still recognise it, skip it
+     on every channel, and let a strictly cheaper copy through
 
 Run: python3 test_duplicate_sim.py   (from the repo root)
 """
@@ -117,6 +120,33 @@ class FakeAffiliate:
 def deal(price: str, pct: str, name: str = "Prestige 3L Induction Base Cooker",
         link: str = "https://amzn.to/simprod", tail: str = "Free shipping | MRP") -> str:
     return (f"{name}\n{R}{price} today only\n{tail} {R}1,999, {pct}% off\n{link}")
+
+
+class UnresolvableAffiliate:
+    """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
+    sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
+    Nothing about the LINK tells us it is the same air conditioner - no ASIN, no
+    PID, no shared URL - which is exactly how a channel used to carry the same
+    product twice. The product's own words are the only identity available."""
+
+    async def resolve(self, url):
+        return url                    # the merchant page is used as it stands
+
+    async def convert(self, source, multi_link, resolved=None):
+        return None                   # unmonetizable: passes through, provenance
+                                      # is remembered for the post itself
+
+    async def cache_link(self, *args, **kwargs):
+        return None
+
+    async def shorten_long_urls_in_text(self, text):
+        return text
+
+    async def link_not_broken(self, url):
+        return True
+
+    async def rendered_links_not_broken(self, text):
+        return True
 
 
 async def drain(store, client, affiliate, target_map, limit=20) -> int:
@@ -314,6 +344,72 @@ def test_scenarios():
             check(f"[S7] {target} carries both products once, in one post",
                   product_hits(texts) == 1 and "Vim" in joined and "https://" in joined,
                   str(texts[:1]))
+        # ---- S8: same product, two short links nobody can resolve -------------
+        print("\n== S8: same product through unresolvable short links ==")
+        # ---- S8: ONE product, two links, no merchant id anywhere --------------
+        # Nothing in the URL says "this is the same air conditioner" (no ASIN, no
+        # PID, a different path per source), so this is where a channel used to
+        # post the same product twice. The product's own words are the identity.
+        print("\n== S8: same product through unidentifiable links ==")
+        ac_name = "LG 1.5 Ton 5 Star Inverter Split AC"
+        word = ac_name.split()[1]
+        first = (f"\U0001F525 PRICE DROP \U0001F525\n{ac_name}\nNow {R}36,990 (MRP {R}74,990, 50% off)\n"
+                 f"Use code: LGAC1500 | No cost EMI\nBuy \U0001F449 https://www.croma.com/ac-detail-a1?size=M")
+        repeat = (f"{ac_name}\n{R}36,990 (50% off)\nFree installation this week\n"
+                  f"https://www.croma.com/ac-detail-a2")
+        better = f"{ac_name}\nNow {R}33,490 only (54% off)\nhttps://www.croma.com/ac-detail-a3"
+        other = f"LG Neo Duetto 7Kg Front Load Washing Machine\n{R}31,990 (44% off)\nhttps://www.croma.com/wash-b1"
+        aff = UnresolvableAffiliate()
+
+        # a) fidelity first: every line the source wrote reaches the channel
+        store, client, sends, _ = await scenario("s8a", {(-1009020, 1201): FakeMsg(first, 1201)},
+                                                 [(-1009020, 1201, first)], 1, affiliate=aff)
+        solo = [t for texts in sends.values() for t in texts if word in t]
+        check("[S8a] the post carries every source line (banner, MRP, coupon, EMI)",
+              bool(solo) and all(all(x in t for x in ("PRICE DROP", f"{R}74,990", "LGAC1500",
+                                                      "No cost EMI", f"{R}36,990"))
+                                 for t in solo), str(solo[:1]))
+        check("[S8a] and it carries our destination link, once",
+              bool(solo) and all(t.count("croma.com/ac-detail-a1") == 1 for t in solo), str(solo[:1]))
+
+        # b) the same product again at the same price: the channel stays quiet
+        store, client, sends, _ = await scenario(
+            "s8b", {(-1009021, 1301): FakeMsg(first, 1301), (-1009022, 1302): FakeMsg(repeat, 1302)},
+            [(-1009021, 1301, first), (-1009022, 1302, repeat)], 1, affiliate=aff)
+        hits = {t: product_hits(v, word) for t, v in sends.items()}
+        check("[S8b] a channel that has carried the product does not carry it again",
+              bool(sends) and all(count == 1 for count in hits.values()), str(hits))
+        kept = [t for texts in sends.values() for t in texts if word in t]
+        check("[S8b] the one copy that goes out is complete, never a fragment",
+              len(kept) == len(sends) and all(
+                  f"{R}36,990" in t and "croma.com/ac-detail-a" in t and word in t for t in kept),
+              str(kept[:1]))
+
+        # c) a cheaper copy of the same product is news, not a duplicate
+        store, client, sends, _ = await scenario(
+            "s8c", {(-1009023, 1401): FakeMsg(first, 1401), (-1009024, 1402): FakeMsg(better, 1402)},
+            [(-1009023, 1401, first), (-1009024, 1402, better)], 1, affiliate=aff)
+        hits = {t: product_hits(v, word) for t, v in sends.items()}
+        cheaper = [t for texts in sends.values() for t in texts if f"{R}33,490" in t]
+        check("[S8c] the strictly better copy still reaches every channel",
+              bool(sends) and all(v for v in sends.values()) and bool(cheaper),
+              str({t: len(v) for t, v in sends.items()}))
+        check("[S8c] and the same product is never carried more than twice",
+              all(1 <= count <= 2 for count in hits.values()), str(hits))
+
+        # d) a DIFFERENT product from the same source is never skipped
+        store, client, sends, _ = await scenario("s8d", {(-1009025, 1501): FakeMsg(other, 1501)},
+                                                  [(-1009025, 1501, other)], 1, affiliate=aff)
+        check("[S8d] another product from the same store still reaches every channel",
+              bool(sends) and all(v for v in sends.values()),
+              str({t: len(v) for t, v in sends.items()}))
+
+        # e) the identity rule is offline: no network wait was added for it
+        check("[S8] the product signature is pure text (no HTTP, no sleep)",
+              bot.product_signature(repeat) == bot.product_signature(first)
+              and bot.SAME_PRODUCT_SKIP_SECONDS > 0,
+              f"window={bot.SAME_PRODUCT_SKIP_SECONDS}")
+
         await asyncio.sleep(0)
     asyncio.run(run())
 

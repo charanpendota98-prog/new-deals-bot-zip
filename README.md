@@ -231,6 +231,52 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.8 — the same product once per channel, and not one source line lost:** the
+  user's three remaining complaints were all real. (1) *Duplicates.* Identity used
+  to be the link, so the same air conditioner linked through two different
+  shorteners — or the same Flipkart page written as a slug link by one source and a
+  `/p/<id>` link by another — looked like two products and the channel carried it
+  twice. `extract_product_id()` now reads the product id out of every merchant link
+  shape (Flipkart/Myntra/Ajio paths, `/product/<id>`, `/it/<id>`, an SKU tail), and
+  on top of that a **product signature** (the product's own words plus any
+  size/capacity token, price and MRP masked out because those change between copies
+  of the same deal) is ledgered per channel in `posted_products`
+  (`SAME_PRODUCT_SKIP_SECONDS`, default 3 days): a channel that has carried the
+  product stays quiet, while a **strictly better** copy (cheaper, or ≥5 points
+  deeper discount — a 1-point difference is measurement noise) still posts, so
+  coverage is never traded for tidiness. The list is deliberately narrow: no
+  identity for a roundup, nothing that looks like a category phrase, nothing for
+  the Tricks path. `ops/quality_audit.py` counts it as `SAME-PRODUCT` when a channel
+  carries a product twice at a same-or-worse price. (2) *Lost text.* Cleaning used
+  to eat real source text: the CTA patterns swallowed "everything to the end of the
+  line", so `More offers: Apply coupon PEOPLE200` lost the coupon and
+  `More deals here: <link>` lost *the whole post* (no link left → permanent skip);
+  `fix_unbalanced_parens` then deleted characters until the brackets counted even,
+  mangling every numbered list (`1)` → `1`) and every `(78% off)`. A CTA clause may
+  now only swallow **plain words** — a price, a digit, a percentage, a code or a
+  link ends it — both cleaners trim the punctuation a removal leaves behind, the
+  bracket fixer only touches a bracket that stands alone, and `strip_inline_cta`
+  undoes itself whenever a figure disappears. `test_line_fidelity.py` renders a
+  corpus through the real pipeline and asserts every source line survives, that no
+  `…` appears, and that no amount or percentage is printed more often than the
+  source wrote it. (3) *WhatsApp lost the most text and showed the price twice*:
+  a digest item was a 90-character name plus an invented `₹price • x% OFF` badge
+  (that badge *is* the second price) cut to 220/160/100/60 characters to fit one
+  message; a special offer's caption was cut at 1000 characters; a long list line
+  was cut at 650. Digest items are now the source post itself, numbered — nothing
+  invented, nothing cut — and when the bucket holds more deals than fit, the digest
+  carries **fewer complete posts** and the rest ride in the next one. A caption too
+  long for a photo is split at a line boundary and the remainder follows it
+  (`splitCaptionForMedia`), and the bridge gained the same product-identity rule
+  (`nameOnlyKey`/`state.sentNames`, `WA_SAME_PRODUCT_HOURS`, `WA_SAME_PRODUCT_MARGIN`)
+  plus the same "cleaning may not delete a fact" guard, so the WhatsApp channels
+  recognise a product the way the Telegram ones do. (4) Our own footer
+  (`🔥 JOIN OUR COMPLETE LOOT FAMILY`) and the folder link on card offers were text
+  *we* added to someone else's post — both are off by default now and come back only
+  with `ADD_OUR_CHANNEL_FOOTER=true`; the Tricks channel keeps its footer untouched.
+  `ops/deploy_and_verify.sh --with-tests` runs every suite on the machine that will
+  be shipped from, and the bridge self-test now proves the digest/caption fidelity
+  rules on the deployed copy too.
 - **v17.7 — nothing waits, nothing leaks, and the deploy is provable:** the last
   artificial pause on the Telegram path is gone — channel fan-out used to sleep a
   random 0.4–1.2 s between targets (up to ~6 s across the whole matrix), which the
@@ -535,40 +581,45 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.7 — **not yet deployed to a server**;
-until `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh` is run on the host, the
-live channels keep printing exactly what the older build was coded to print):
+Current **repo source** on this branch (v17.8 — **not yet deployed to a server**;
+until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
+printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `6d08a61d46a82e19ef54f558228d92a79ea2c4a6b03eba5711adcc9dcc031d05` |
-| `tg-wa-bridge/bridge.js` | `14712f26c0252c3bc893c32de734d84f126080450ef87d661df28fed4829580f` |
+| `bestgaa/main_bot_new.py` | `948bc1450a01c680f953a58734726b09f626e36ec0ea9bbbf5ef7ff8358aaf7c` |
+| `tg-wa-bridge/bridge.js` | `ec95b5f1907bc229d369f46fc361d89659f5470877a5cf61c635e9b0cb91ee02` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `adf8bef891b9ead455c7fe894760c55f6b9aa857f8712b1836335df99c0fcc4e` |
+| `ops/quality_audit.py` | `224ac8f7f459bb6a09087b24f10a9a29dd27e1ec5da8b355316045bc38c81c51` |
+| `test_line_fidelity.py` | `d281205591ed15ba06ba7203aa07d05e0566e8f5cf617fef9a9c70ccfef06051` |
+| `test_pipeline_fixes.py` | `42ae61431a0f60987deb6a025efff083fb102db369ff6416b63afb26f8fa57f0` |
+| `test_duplicate_sim.py` | `c13f074d5330991cd4f7466fce9b520311f5269e65934213902e29c14d031c9a` |
+| `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
+| `ops/deploy_and_verify.sh` | `8d16b344674996c4a44828bfdba54fe7786f8bada3fac091da77bb6aba710dae` |
 
-Verified on this tree: `test_render_job.py` 150/150 (PowerLoots takes every deal,
-premium needs a real discount, a list lands in both price channels exactly once per
-channel), `test_pipeline_fixes.py` 209/209 (source fidelity incl. a new
-"nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage
-audit, price fidelity, no-silent-loss — and the premium pacing assertions are now
-pinned to a forced window instead of the wall clock, so the suite no longer passes
-only when it happens to run at night), `test_best_copy.py` (best-copy swap incl.
-"one row for a product", "a weaker copy never downgrades", "a list is never
-hijacked", "the displaced copy comes back", the numeric fidelity gate and the
-quality auditor catching each defect class and the exact link-ownership policy),
-`test_duplicate_sim.py` (one copy per channel through the real worker path, in all
-seven duplicate-prone scenarios), and immediacy knobs pinned to zero waiting
-(`test_no_artificial_telegram_waits`), `test_rescan.py` pass, and
-`node tg-wa-bridge/bridge.js --self-test` pass in 10 env modes — default,
-`WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`,
-`WA_BEST_OF_COOLDOWN_SECONDS=3600`, tuned gaps, `WA_MEDIA_FIRST=false`, the channel
-matrix (all four channels), and combinations. The self-test also asserts the channel
-policy matrix (₹89 vs ₹399 vs ₹24999, list-agnostic price rule, card offers
-everywhere), that a 10-deal burst produces exactly one best-of post, and that the
-WhatsApp output of the user's real post is the source text with our 4 links — no
-asterisks, no badges, no banner of ours, `(74% OFF)` brackets and `SAVE_200` intact — the self-test also asserts the channel
-policy matrix (₹89 vs ₹399 vs ₹24999, list-agnostic price rule, card offers
-everywhere) and that a 10-deal burst produces exactly one best-of post.
+Verified on this tree (every suite also passes with the new knobs flipped off —
+`SAME_PRODUCT_SKIP_SECONDS=0`, `ADD_OUR_CHANNEL_FOOTER=true`,
+`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`):
+
+| Suite | What it pins |
+|---|---|
+| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links, refuses to key a roundup or a bare category phrase, and a multi-link/list post is never skipped |
+| `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
+| `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
+| `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
+| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped) |
+| `test_rescan.py` | rescan/re-queue behaviour |
+| `node tg-wa-bridge/bridge.js --self-test` | passes in **12** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps, `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, and combinations |
+
+The bridge self-test additionally asserts the channel policy matrix (₹89 vs ₹399 vs
+₹24999, the list-agnostic price rule, card offers everywhere), that a 10-deal burst
+produces exactly one best-of post, that no anti-ban gap can exceed
+`WA_MAX_MESSAGE_GAP_SECONDS`, that a WhatsApp post never repeats a price or drops a
+line, that the name-only product skipper recognises the same AC through two links and
+still allows a cheaper copy, and that the user's real post reaches WhatsApp as the
+source text with our 4 links — no asterisks, no badges, no banner of ours,
+`(74% OFF)` brackets and `SAVE_200` intact.
+
 
 > Note: the hash list at the bottom of `ops/WHATSAPP_MEDIA_FIX_NOTES.txt`
 > (`51c3791b…` / `5d8e1f50…` / `28656d74…`) predates this build and is stale.

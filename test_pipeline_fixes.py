@@ -983,10 +983,15 @@ async def test_list_post_shapes(store):
                   or bot.is_campaign_banner_line(ln) for ln in lines))
         check("[%s] the price used for routing is the source price" % name, price == 260)
         if "banners" in name:
-            # SOURCE FIDELITY (the user's rule): the posting channel's own hype
-            # header is part of its post and must be published as written.
-            check("[%s] source banner lines kept verbatim" % name,
-                  "TOP DEAL OF THE DAY" in rendered and "FLASH SALE" in rendered)
+            if bot.STRIP_CAMPAIGN_BANNERS:
+                # Opt-in mode: the operator asked for the hype to be removed.
+                check("[%s] banner stripper (opt-in) drops the hype, keeps the deal" % name,
+                      "TOP DEAL OF THE DAY" not in rendered and "\u20b9260" in rendered)
+            else:
+                # SOURCE FIDELITY (the user's rule): the posting channel's own hype
+                # header is part of its post and must be published as written.
+                check("[%s] source banner lines kept verbatim" % name,
+                      "TOP DEAL OF THE DAY" in rendered and "FLASH SALE" in rendered)
         else:
             check("[%s] no hype or junk that the source did not write" % name,
                   "Refer" not in rendered and "notifications" not in rendered)
@@ -1084,11 +1089,16 @@ def test_unwanted_text_never_posts():
     clean = bot.clean_source_text(pasted)
     # FIDELITY: the source's own header lines stay exactly as written; only the
     # referral/app-install farming line is cut.
-    check("source keeps its own header, product line and link",
-          clean == ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
-                    "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
-                    "Top Loading Washing Machine Cover @ \u20b9260\n"
-                    "\u279c https://bitli.in/IKthI4w"))
+    if bot.STRIP_CAMPAIGN_BANNERS:
+        check("source keeps its product line and link (banners stripped by the opt-in)",
+              clean == ("Top Loading Washing Machine Cover @ \u20b9260\n"
+                        "\u279c https://bitli.in/IKthI4w"))
+    else:
+        check("source keeps its own header, product line and link",
+              clean == ("\ud83d\udd25\ud83d\udd25 TOP DEAL OF THE DAY \ud83d\udd25\ud83d\udd25\n"
+                        "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f\u26a1\ufe0f\n\n"
+                        "Top Loading Washing Machine Cover @ \u20b9260\n"
+                        "\u279c https://bitli.in/IKthI4w"))
     check("tidy_post damages nothing already clean (idempotent, nothing eaten)",
           bot.tidy_post(clean) == clean and bot.clean_source_text(clean) == clean)
     check("no invented text anywhere", "Refer" not in clean and "Install" not in clean)
@@ -1217,8 +1227,12 @@ def test_campaign_banner_lines():
             "\ud83d\udd25 LOOT ZONE INDIA \u2014 Join for more loot\n"
             "Get Flipkart App - Refer 3 friends and \u20b9100 referral bonus")
     out = bot.clean_source_text(post)
-    check("source hype survives cleaning",
-          "TOP DEAL OF THE DAY" in out and "FLASH SALE" in out)
+    if bot.STRIP_CAMPAIGN_BANNERS:
+        check("the opt-in stripper is what removes the hype",
+              "TOP DEAL OF THE DAY" not in out and "FLASH SALE" not in out)
+    else:
+        check("source hype survives cleaning",
+              "TOP DEAL OF THE DAY" in out and "FLASH SALE" in out)
     check("the product line and the price survive", "Men Cotton T-Shirt" in out and "https://a.co/x" in out)
     check("branding line removed", "LOOT ZONE INDIA" not in out and "Join for" not in out)
     check("referral/app-install line removed", "Refer 3 friends" not in out and "Install" not in out)
@@ -1262,10 +1276,15 @@ def test_nothing_added_by_us():
     out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(src)))
     lines = [ln for ln in out.split("\n") if ln.strip()]
     check("markdown asterisks never print", "*" not in out)
-    check("the source's own hype header survives verbatim as line 1",
-          lines[0] == "🔥🔥 TOP DEAL OF THE DAY 🔥🔥")
-    check("the source's second header survives with its emoji intact",
-          "⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️" in out)
+    if bot.STRIP_CAMPAIGN_BANNERS:
+        # The opt-in stripper removes the source's hype lines; the deal stays first.
+        check("with the opt-in stripper the hype is gone and the deal leads",
+              "TOP DEAL OF THE DAY" not in out and "Top Loading Washing Machine Cover" in lines[0])
+    else:
+        check("the source's own hype header survives verbatim as line 1",
+              lines[0] == "🔥🔥 TOP DEAL OF THE DAY 🔥🔥")
+        check("the source's second header survives with its emoji intact",
+              "⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️" in out)
     check("product + price + balanced parentheses survive",
           f"Top Loading Washing Machine Cover @ {R}260 (74% OFF)" in out)
     check("MRP / shipping detail survives", f"MRP {R}999" in out and "Free shipping above" in out)
@@ -1284,8 +1303,15 @@ def test_nothing_added_by_us():
     check("no wrapper that adds a header/badge/footer survives in the source",
           re.search(r"^def (?:format_premium_loot|format_power_loot|format_under99_loot)\b",
                     module_text, re.M) is None)
-    check("nothing is reordered",
-          0 <= out.index("TOP DEAL OF THE DAY") < out.index("FLASH SALE") < out.index("Washing Machine"))
+    if bot.STRIP_CAMPAIGN_BANNERS:
+        # With the opt-in banner stripper ON, the hype lines are gone by design and
+        # the order check has nothing to compare; what must survive is the deal.
+        check("banner stripper (opt-in) removed the hype lines and kept the product",
+              "TOP DEAL OF THE DAY" not in out and "Washing Machine" in out)
+    else:
+        check("nothing is reordered",
+              0 <= out.index("TOP DEAL OF THE DAY") < out.index("FLASH SALE")
+              < out.index("Washing Machine"))
 
 
 async def main():

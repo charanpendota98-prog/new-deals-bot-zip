@@ -586,3 +586,108 @@ v17.7 (round 9) - the last waits are gone, the auditor is honest, deploy is prov
    S3 two copies claimed concurrently, S4 crash mid-delivery + restart, S5 best copy
    unrenderable -> displaced copy still posts once, S6 identical campaign text from
    another source, S7 two products in one post (both, once, one post).
+
+================================================================================
+v17.8 (round 10) - same product once per channel, no lost line, no double price
+================================================================================
+
+The user's words: "same product aaite malli malli send cheyoddu ... correct ga
+gurthinchali, okasari mana channel lo vasthe skip cheyali"; "unwanted text assalu
+ravoddu"; "source lo text/headings neat ga unte mana targets lo miss avuthunna -
+WhatsApp lo inka"; "WhatsApp channels lo oka post lo price 2 times".
+
+THE THREE DEFECTS, AS FOUND (not as guessed - each one was reproduced first):
+
+1. SAME PRODUCT, DIFFERENT LINK  ->  posted twice.
+   Identity was the LINK: product_key() = extract_product_id(url) or
+   "URL:"+sha256(merchant url). Two sources pasting the same AC under two short
+   links (or Flipkart as /slug/p/ITMx vs /ITMx) produced two different keys, so
+   both posts went out. Fix, two layers, both OFFLINE (no resolve, no waiting):
+     a. extract_product_id() now parses the id out of every merchant link shape it
+        can: /p/<id>, /product(s)/<slug>, /it/<id>, <slug>-<id>.html, plus the
+        existing ASIN / ?pid= / myntra / ajio forms. Same page, any decoration ->
+        same key.
+     b. product_signature(text): the product's OWN WORDS (first real line after
+        prices, MRP clauses and marketing vocabulary are masked) + size/capacity
+        tokens. Ledgered per channel in posted_products
+        (SAME_PRODUCT_SKIP_SECONDS, default 3 days). A channel that already carried
+        the product does not carry it again; a strictly better copy (lower price, or
+        >= SAME_PRODUCT_DISCOUNT_MARGIN points deeper discount) still posts, so a
+        genuine price drop is never suppressed. Skips are logged as
+        "DUPLICATE PRODUCT (signature) | queue=N | target=..." and the auditor
+        reports the same defect as SAME-PRODUCT.
+   Brakes, on purpose: a roundup (3+ merchant links) has no single-product
+   identity; a headline shorter than 4 product words (or 3 with a model number) is
+   too generic to key; a category phrase ("Men Cotton Shirt") yields nothing; the
+   Tricks path is untouched. Worst case of a false match is one skipped copy, worst
+   case of the old bug was the audience losing trust - the user picked, so this
+   errs toward skipping.
+   Mirrored in the bridge: nameOnlyKey()/state.sentNames with
+   WA_SAME_PRODUCT_HOURS (48) and WA_SAME_PRODUCT_MARGIN (5), consulted by
+   duplicateProductReason() -> the WhatsApp curated channels stop repeating a
+   product too, and a cheaper copy still goes out.
+
+2. TEXT LOST BY CLEANING (Telegram AND WhatsApp, WhatsApp worse).
+   a. The CTA patterns ended with "[^.\n|]*$" = "delete everything to the end of
+      the line". "More offers: Apply coupon PEOPLE200" lost the coupon;
+      "More deals here: <link>" lost the LINK, and a post with no link is a
+      permanent skip - a whole deal vanished because of a regex tail. Both sides
+      now use a CTA_TAIL that may only swallow PLAIN WORDS: a price, a digit, a
+      percentage, a code-like token or a link ENDS the clause, and the rest of the
+      line is published as written.
+   b. fix_unbalanced_parens deleted characters until the bracket counts matched,
+      so every "1) Product ... (78% off)" lost both closing brackets. It now
+      removes only a bracket that STANDS ALONE (whitespace on both sides) - the
+      residue a stripped phrase really leaves - and otherwise leaves the source
+      alone.
+   c. A removed clause must not leave its punctuation: strip_inline_cta trims both
+      ends now, so no line starts with a stray ":".
+   d. Guard on both renderers: if cleaning deleted an amount / percentage /
+      coupon-code token that the source line contained, the deletion is undone for
+      that line (deal_payload_signature / dealPayloadOf + payloadLacks).
+   e. WhatsApp was worse because the DIGEST truncated: an item was a 90-char name
+      plus a badge, cut to 220/160/100/60 chars so ten deals would fit. A digest
+      item is now the source post itself, numbered - nothing invented, nothing cut.
+      If the bucket holds more complete posts than fit, the digest carries FEWER of
+      them and the leftovers stay queued for the next one (buildBucketDigest returns
+      {digest, used}; prepareRotationalDigest only consumes what was used).
+   f. A special offer's caption was cut at 1000 chars with an ellipsis; large-list
+      lines were cut at 650. Both cuts are gone: splitCaptionForMedia puts whole
+      lines on the photo and sends the remainder right behind it, and
+      compactLargeLine no longer shortens (max=0 means "keep the line").
+
+3. TWO PRICES IN ONE WHATSAPP POST.
+   formatDigestItem synthesised "  (₹1,099 - 78% OFF)" next to a label that
+   already contained the source's price line. Nothing is invented any more, and
+   the self-test counts the figures: in a digest of six posts each of
+   "₹899", "₹2,495", "₹1,500" must appear exactly six times - once per post, not
+   twice. test_line_fidelity.py asserts the same invariant per post on the
+   Telegram side, and ops/quality_audit.py reports DOUBLE when a single-product
+   post prints one amount on two lines.
+
+4. TEXT WE ADDED (the user's standing "chudu" rule).
+   tricks_footer() used to be appended to ANY post whose source carried a social
+   link, and append_folder_link() to every card offer. Both are our words in
+   someone else's post; they are now off by default and come back only with
+   ADD_OUR_CHANNEL_FOOTER=true. The Tricks channel keeps its footer, untouched.
+
+5. FLAKY GATE FIXED. The bridge self-test asserted a pacing ceiling of
+   ANTIBAN_LONG_IDLE_MAX*1.4 while scheduleNext() could still multiply the
+   (already clamped) gap by 1.5 x 1.25 x 1.5 and add an hourly break - so the
+   deploy gate failed about one run in six AND the channel could in fact be parked
+   for 70+ minutes. One documented ceiling now bounds the SCHEDULED gap
+   (WA_MAX_MESSAGE_GAP_SECONDS, 3600s) and the assertion tests that number: 8/8
+   consecutive self-test runs pass where the old one failed at 6.
+
+6. KNOB MATRIX. Because a check that ignores a knob either fails an operator's
+   mode or passes for the wrong reason, every suite was re-run with the new
+   knobs flipped: SAME_PRODUCT_SKIP_SECONDS=0, ADD_OUR_CHANNEL_FOOTER=true,
+   STRIP_CAMPAIGN_BANNERS=true, SAME_PRODUCT_DISCOUNT_MARGIN=20 - all pass. The
+   bridge self-test passes in 12 env modes, including the ones that turn the
+   product skipper off (it must then stay off, not half-work) and the ones that
+   change the discount margin.
+
+PROOF COMMANDS (repo root):
+   python3 test_line_fidelity.py        # nothing lost, nothing added, no double figure
+   python3 test_duplicate_sim.py        # S8a-S8d: same product via unidentifiable links
+   bash ops/deploy_and_verify.sh --verify-only --with-tests

@@ -133,6 +133,59 @@ def product_line(text: str) -> str:
     return ""
 
 
+# Words every loot channel puts in front of a product. They carry no identity,
+# so a signature built from a line that still contains them would match two
+# different products - which would make the auditor invent duplicates.
+NOISE_WORDS = set("""
+deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save
+savings grab hurry now today daily best top hot new buy shop link links here below click free
+shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india
+official telegram whatsapp channel group join follow subscribe share forward for the a an and or
+of to on at by with your our this that it is are be get got have has men mens women womens unisex
+""".split())
+
+
+def targets_of(row) -> list[str]:
+    """The channels a queue row actually went to (targets_json, defensively)."""
+    try:
+        targets = json.loads(row["targets_json"] or "[]")
+    except (TypeError, ValueError):
+        return []
+    return [str(t) for t in targets if t]
+
+
+def product_signature(text: str) -> str:
+    """What the bot itself keys a repeat on: the product's words + size tokens.
+
+    Mirrored from `main_bot_new.product_signature()` on purpose: an auditor that
+    uses a different rule than the code it audits can only produce findings that
+    mean nothing, which is the mistake this file was written to avoid.
+    """
+    body = text or ""
+    named = None
+    for line in body.splitlines():
+        line = line.strip()
+        if not line or ANY_LINK.search(line):
+            continue
+        words = [w for w in re.sub(r"[^\w\s]", " ", re.sub(
+            r"(?i)[₹$]\s*[\d,.]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b"
+            r"|\b(?:mrp|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*",
+            " ", line), flags=re.U).split() if re.search(r"[A-Za-z0-9]", w) and not w.isdigit()]
+        keep = [w for w in words if w.lower() not in NOISE_WORDS]
+        if len(keep) < 3:
+            continue
+        if not any(re.search(r"\d", w) for w in keep) and len(keep) < 4:
+            continue
+        named = " ".join(keep[:8]).lower()
+        break
+    if not named:
+        return ""
+    sizes = sorted({re.sub(r"\s+", "", x).lower() for x in re.findall(
+        r"\b\d{1,4}(?:\.\d+)?\s*(?:gb|tb|mb|mah|kg|gm|ml|ltr|l|w|ton|hp|inch|pcs|pack|pair|years?)\b",
+        body, re.I)})
+    return f"{named}|{','.join(sizes)}"
+
+
 def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list[dict], int]:
     conn.row_factory = sqlite3.Row
     # Every recent row is inspected, including ones that produced no post at all:
@@ -200,6 +253,22 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list
         prices = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
         priced_lines = sum(1 for line in lines if PRICE_RE.search(line))
         listy = priced_lines >= 3 or bool(LIST_MARKER_RE.search(text))
+        # 3b) the two text defects the user named: text that was CUT away, and a
+        #     figure printed twice inside one post (our old price badge did that).
+        if "\u2026" in text:
+            findings.append(flag("CUT", "the post ends mid-sentence with an ellipsis - "
+                                        "source text was dropped, not deferred", row["id"]))
+        if not listy and len(lines) > 1:
+            per_line: dict[str, int] = {}
+            for line in lines:
+                for amount in re.findall(rf"{RUPEE}\s*\d[\d,.]*", line):
+                    key = re.sub(r"\D", "", amount)
+                    per_line[key] = per_line.get(key, 0) + 1
+            twice = [f"{RUPEE}{value}" for value, hits in per_line.items() if hits > 1]
+            if twice:
+                findings.append(flag("DOUBLE", f"{', '.join(twice)} printed on two lines of one post",
+                                     row["id"]))
+
         if prices and not listy:
             cheapest = min(prices)
             for target in targets:
@@ -227,6 +296,37 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list
         prices = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
         near.setdefault((product_line(text), min(prices) if prices else 0), []).append(int(row["id"]))
     matched: set[int] = set()
+    same_product: dict[tuple, list[int]] = {}
+    for row in rows:
+        text = row["rendered_text"] or ""
+        if not text or (row["created_at"] or 0) < fresh_cutoff or not sent_counts.get(int(row["id"])):
+            continue
+        signature = product_signature(text)
+        if not signature:
+            continue
+        priced = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
+        # A channel, not a job: "okasari mana channel lo vasthe skip cheyali".
+        for target in targets_of(row):
+            same_product.setdefault((signature, str(target)), []).append(
+                (int(row["id"]), min(priced) if priced else 0))
+    for (signature, target), entries in same_product.items():
+        if len(entries) < 2:
+            continue
+        ids = [e[0] for e in entries]
+        if set(ids) <= matched:
+            continue
+        entries = sorted(entries)
+        first_price = entries[0][1]
+        cheaper_later = [p for _queue_id, p in entries[1:] if p]
+        # The bot is ALLOWED to carry a product again when the later copy is
+        # strictly cheaper - that is a new deal, not a repeat. Anything else
+        # (same price, a dearer price, no price at all) is the defect.
+        if first_price and cheaper_later and min(cheaper_later) < first_price:
+            continue
+        matched.update(ids)
+        findings.append(flag("SAME-PRODUCT",
+                             f"{signature[:52]!r} carried twice by {target} (queues {ids})", ids[0]))
+
     for key, ids in exact.items():
         if len(ids) < 2 or not key:
             continue

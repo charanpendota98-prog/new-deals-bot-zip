@@ -896,6 +896,7 @@ function scheduleNext() {
     state.breakState.nextTrigger += randomInt(5, 10)
     rested = true
   }
+  gap = Math.min(Math.max(gap, MIN_WA_MESSAGE_GAP_SECONDS * 1000), MAX_WA_MESSAGE_GAP_SECONDS * 1000)
   state.nextAllowedAt = Date.now() + gap
   // Pin a scheduled anti-ban rest so the queue accelerator cannot truncate it:
   // a long human-like pause must be honoured even when many deals are ready.
@@ -919,6 +920,13 @@ const ANTIBAN_HOUR_BREAK_MAX = Number(process.env.WA_ANTIBAN_HOUR_BREAK_MAX || 5
 const ANTIBAN_LONG_IDLE_EVERY = Math.max(4, Number(process.env.WA_ANTIBAN_LONG_IDLE_EVERY || 14)) // ~1 in N gaps
 const ANTIBAN_LONG_IDLE_MIN = Number(process.env.WA_ANTIBAN_LONG_IDLE_MIN || 600)  // ~10 min
 const ANTIBAN_LONG_IDLE_MAX = Number(process.env.WA_ANTIBAN_LONG_IDLE_MAX || 1100) // ~18 min
+// v17.8 ONE CEILING for everything the pacing policy can stack. A long idle, the
+// hourly break, the morning stretch and a near-cap hour each multiply or extend
+// the gap, and combined they used to be able to park the channel for over an hour
+// - which no operator asked for and no auditor can distinguish from a stall. The
+// scheduled gap is now clamped, so the worst case is a documented number.
+const MAX_WA_MESSAGE_GAP_SECONDS = Math.max(
+  MIN_WA_MESSAGE_GAP_SECONDS, Number(process.env.WA_MAX_MESSAGE_GAP_SECONDS || 3600))
 function smartGapMs(policy) {
   // Base human gap: policy range x a 0.85-1.4 random multiplier, so consecutive
   // gaps never repeat a number (a fixed interval is a bot tell).
@@ -1434,24 +1442,32 @@ function cleanBodyLine(line, urls) {
 // end). Only unambiguous channel boilerplate is listed; genuine deal content
 // ("use code X", "free shipping", "limited stock", coupon/cashback/product
 // words) is never touched, so a real product description can't be mangled.
+// v17.8 A CTA clause may only ever swallow PLAIN WORDS. The tails used to be
+// `[^.\n|]*` - "everything to the end of the line" - so "More offers: Apply
+// coupon PEOPLE200" lost its coupon code and "…(78% off) buy now ₹199" lost the
+// deal. A price, a digit, a percentage or a link now ENDS the clause: whatever
+// the source wrote after it stays in the post, verbatim.
+const CTA_TAIL = String.raw`(?:[ \t]+(?![₹$%])(?![A-Za-z0-9+/.\-*]*\d)(?![A-Za-z0-9+/.\-*]*%)(?![A-Za-z]*:\/\/)[^\s₹$%|]+)*`
+const cta = (body, flags = 'gi') => new RegExp(`${body}${CTA_TAIL}`, flags)
+
 const GLOBAL_CTA_PATTERNS = [
   /\b(?:buy|shop|order|grab|get)\s+(?:it\s+)?now\b[!^1-9]*/gi,
   /\bgrab\s+(?:it|this|your|yours|fast)\s*(?:now|fast|soon)?\b[!^1-9]*/gi,
   /\bget\s+yours?\b[!^1-9]*/gi,
   /\bbuy\s+(?:it\s+)?here\b/gi, /\bshop\s+here\b/gi, /\border\s+here\b/gi,
-  /\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b[^.\n|]*/gi,
-  /\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b[^.\n|]*/gi,
+  cta(String.raw`\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b`),
+  cta(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b`),
   /\bhurry\s*up?\b[!^1-9]*/gi,
-  /\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b[^.\n|₹$]*?(?=$|[.\n|])/gim,
+  cta(String.raw`\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b`, 'gim'),
   /\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me\/\S+/gi,
-  /\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b[^.\n|₹$]*$/gim,
-  /\bturn\s+on\s+notifications?\b[^.\n|]*/gi,
-  /\bstay\s+tuned\b[^.\n|]*/gi,
-  /\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b[^.\n|]*/gi,
-  /\bcheck\s+(?:link|bio|description|comments?|pinned|our\s+channel)\b[^.\n|]*/gi,
-  /\bshare\s+(?:it\s+)?(?:with|to)\s+[^.\n|]*\b(?:friends?|family|groups?|everyone)\b[^.\n|]*/gi,
+  cta(String.raw`\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b`, 'gim'),
+  cta(String.raw`\bturn\s+on\s+notifications?\b`),
+  cta(String.raw`\bstay\s+tuned\b`),
+  cta(String.raw`\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b`),
+  cta(String.raw`\bcheck\s+(?:link|bio|description|comments?|pinned|our\s+channel)\b`),
+  cta(String.raw`\bshare\s+(?:it\s+)?(?:with|to)\s+[^.\n|]*\b(?:friends?|family|groups?|everyone)\b`),
   /\bforward\s+to\s+@?\w+[^.\n|]*/gi,
-  /\b(?:visit|open)\s+(?:our\s+)?(?:channel|t\.me\/\S+|whatsapp\s+channel)\b[^.\n|]*/gi,
+  cta(String.raw`\b(?:visit|open)\s+(?:our\s+)?(?:channel|t\.me\/\S+|whatsapp\s+channel)\b`),
   /\bt\.me\/\S+/gi, /\bwhatsapp\.com\/(?:channel|invite)\/\S+/gi, /\bwa\.me\/\S+/gi,
   /[\u{1F4E2}\u{1F514}\u{1F4E3}\u{23F0}\u{1F6A8}]/gu, // 📢🔔📣⏰🚨 announcement bells
 ]
@@ -1466,16 +1482,40 @@ function stripInlineCta(line) {
     // A trailing CTA that once pointed at the now-removed link: "Buy at",
     // "Shop here", "Order from" left dangling after the URL is extracted.
     .replace(/\s*\b(?:buy|shop|order|grab|get)\s+(?:at|here|from|now|it|fast|below)\b\s*[.!]?\s*$/gi, ' ')
-    .replace(/\b(?:buy|shop|order|grab|get|check|add\s+to\s+cart)\s+(?:it|now|fast|soon|today|yours?|this|the\s+deal|deal|fast\s+guys?|guys?|at|here)\b[^.|\n!]*[.!]?\s*$/gi, ' ')
-    .replace(/\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+buy|to\s+order|to\s+shop)\b[^.|\n!]*[.!]?\s*$/gi, ' ')
-    .replace(/\b(?:don'?t|do\s+not|never)\s+miss\b[^.|\n!]*[.!]?\s*$/gi, ' ')
-    .replace(/\bmiss\s+(?:it|this|out|the\s+deal)\b[^.|\n!]*[.!]?\s*$/gi, ' ')
+    .replace(new RegExp(String.raw`\b(?:buy|shop|order|grab|get|check|add\s+to\s+cart)\s+(?:it|now|fast|soon|today|yours?|this|the\s+deal|deal|fast\s+guys?|guys?|at|here)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
+    .replace(new RegExp(String.raw`\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+buy|to\s+order|to\s+shop)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
+    .replace(new RegExp(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
+    .replace(new RegExp(String.raw`\bmiss\s+(?:it|this|out|the\s+deal)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
     .replace(/\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$/gi, ' ')
     // Social/channel CTAs (join/subscribe/follow/share/notifications/t.me) are
     // handled by the STRICT global patterns above (which never eat a following
     // price); no greedy end-of-line social strip here.
     .replace(/\b(?:link\s+in\s+bio|link\s+below|check\s+(?:link|bio|description|comments?|pinned))\b[^.|\n]*$/gi, ' ')
-  return out.replace(/\s{2,}/g, ' ').replace(/[\s|*•:,\-]+$/g, '').trim()
+  out = out.replace(/\s{2,}/g, ' ').replace(/^[\s|*•:,;\-]+|[\s|*•:,;\-]+$/g, '').trim()
+  // Fidelity rule (user, round 10): a LOST line is as much a bug as an added one.
+  // If a CTA clause took the price, the discount or the coupon code with it, the
+  // clause removal is undone for that line - the source wrote those words.
+  const before = dealPayloadOf(line)
+  const after = dealPayloadOf(out)
+  if (payloadLacks(before, after)) {
+    return String(line || '').replace(/\*+/g, ' ').replace(/\s{2,}/g, ' ').trim()
+  }
+  return out
+}
+
+// Amounts / codes a line states, for the "cleaning may not delete a fact" guard.
+function dealPayloadOf(text) {
+  const body = String(text || '')
+  const prices = new Set((body.match(/[₹$]\s*\d[\d,.]*/g) || []).map(x => x.replace(/\D/g, '')))
+  const percents = new Set((body.match(/\b\d{1,3}\s*(?:%|percent)/gi) || []).map(x => x.replace(/\D/g, '')))
+  const codes = new Set((body.match(/\b(?:[A-Z]{2,}\d[A-Z\d]*|\d{2,}[A-Z]{2,}[A-Z\d]*)\b/g) || [])
+    .filter(x => x.length >= 5).map(x => x.toUpperCase()))
+  return { prices, percents, codes }
+}
+function payloadLacks(before, after) {
+  const gone = (from, to) => [...from].some(value => !to.has(value))
+  return gone(before.prices, after.prices) || gone(before.percents, after.percents)
+    || gone(before.codes, after.codes)
 }
 // A body line that says ONLY the deal price (e.g. "Deal Price: ₹499",
 // "₹499", "Price: ₹499", "Only ₹499"). When the 💰 price badge is shown this
@@ -1740,8 +1780,9 @@ function duplicateProductReason(text, job = null) {
     const last = state.sentProducts?.[id]
     if (last && now - last <= windowMs) return `duplicate product within ${PRODUCT_DEDUP_HOURS}h (${id})`
   }
-  // Shortlink products have no ASIN/slug — the name+price key catches them.
-  return namePriceDupReason(text, job)
+  // Shortlink products have no ASIN/slug — the name+price key catches them, and
+  // the name-only key catches the same product at a changed price (v17.8).
+  return namePriceDupReason(text, job) || nameOnlyDupReason(text, job)
 }
 // Record a successfully sent job's products so the same product is not posted
 // again inside the dedup window (intake + gate both consult this map).
@@ -1756,6 +1797,7 @@ function markProductSent(job) {
     for (const key of keys.slice(0, keys.length - 1000)) delete state.sentProducts[key]
   }
   markNamePriceSent(job)
+  markNameOnlySent(job)
   saveState()
 }
 // ---------------------------------------------------------------------------
@@ -1781,6 +1823,86 @@ function namePriceKey(text) {
   if (norm.split(' ').length < 2) return null
   return `${norm}#${price}`
 }
+// v17.8 SAME PRODUCT - not merely the same caption. `namePriceKey` above only
+// catches a repeat that keeps the SAME price, so a source re-posting the same
+// earphones at ₹1,049 instead of ₹1,099 (or with a rewritten caption) sailed
+// straight through and the channel carried the product twice. The key below
+// identifies the PRODUCT: its own words plus any size/capacity token, with
+// prices and MRP clauses masked out because those change between copies of the
+// same deal. Skipping the wrong post costs one deal; a duplicate costs the
+// audience's trust - and the user named the duplicate as the mistake - so this
+// is allowed to skip, with two brakes: the name must be specific (campaign
+// banners and roundups never key), and a STRICTLY better copy (cheaper, or the
+// same price at a deeper discount) still goes out.
+const WA_SAME_PRODUCT_HOURS = Number(process.env.WA_SAME_PRODUCT_HOURS || 48)
+const WA_SAME_PRODUCT_MARGIN = Number(process.env.WA_SAME_PRODUCT_MARGIN || 5)
+const NAME_ONLY_STOP = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on at by with your our this that it is are be get got have has men mens women womens unisex pack pcs pair').split(' '))
+
+function nameOnlyKey(text, job = null) {
+  const body = String(text || '')
+  const urls = urlsIn(body)
+  // A post with three or more merchant links is a ROUNDUP: two roundups share
+  // items all day and must never be judged as one product.
+  const merchantLinks = urls.filter(url => {
+    const host = (url.replace(/^https?:\/\//, '').split(/[/?#]/)[0] || '').toLowerCase()
+    return host && !/\b(?:t|telegram)\.me$|^whatsapp\.com$|^t\.me$/.test(host)
+  })
+  if (!merchantLinks.length || merchantLinks.length >= 3) return null
+  const name = extractDealName(body) || ''
+  if (!name || isCampaignBannerLine(name)) return null
+  const words = name
+    .replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[₹$]\s*[\d,.]+/g, ' ')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b/gi, ' ')
+    .replace(/\b(?:mrp|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|\n]*/gi, ' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\u0900-\u097F\u0C00-\u0C7F]+/g, ' ')
+    .split(/\s+/).filter(Boolean)
+    .filter(w => !NAME_ONLY_STOP.has(w))
+  // Specific enough to be an identity? A model number plus two words, or four
+  // product words. Anything shorter is a category ("Cotton Shirt") and two
+  // different shirts would look alike.
+  const hasModel = words.some(w => /\d/.test(w))
+  if (words.length < (hasModel ? 3 : 4)) return null
+  const sizes = [...new Set((body.match(/\b\d{1,4}(?:\.\d+)?\s*(?:gb|tb|mb|mah|kg|gm|ml|ltr|w|ton|hp|inch|pcs|pack|pair|years?)\b/gi) || [])
+    .map(x => x.replace(/\s+/g, '').toLowerCase()))].sort()
+  return `name-only:${words.slice(0, 8).join(' ')}${sizes.length ? `|${sizes.join(',')}` : ''}`
+}
+
+function nameOnlyDupReason(text, job = null) {
+  if (!(WA_SAME_PRODUCT_HOURS > 0)) return null
+  const key = nameOnlyKey(text, job)
+  if (!key) return null
+  const seen = state.sentNames?.[key]
+  if (!seen || !seen.at) return null
+  const ageMs = Date.now() - Number(seen.at)
+  if (ageMs > WA_SAME_PRODUCT_HOURS * 3600_000) return null
+  const price = detectedPrice(text)
+  const discount = explicitDiscount(text)
+  if (price != null && (seen.price == null || price < Number(seen.price))) return null
+  // A 1-point difference is measurement noise (a source that spells out the MRP
+  // reads slightly higher than the same deal without it), so a repeat only counts
+  // as news when the discount is meaningfully deeper or the price is lower.
+  if (discount != null && Number(discount) >= Number(seen.discount || 0) + WA_SAME_PRODUCT_MARGIN) return null
+  return `same product already sent to WhatsApp ${Math.max(1, Math.round(ageMs / 3600000))}h ago`
+}
+
+function markNameOnlySent(job) {
+  const key = nameOnlyKey(job.text || '', job)
+  if (!key) return
+  state.sentNames ||= {}
+  state.sentNames[key] = {
+    price: detectedPrice(job.text || ''),
+    discount: explicitDiscount(job.text || ''),
+    at: Date.now(),
+  }
+  const keys = Object.keys(state.sentNames)
+  if (keys.length > 1500) {
+    keys.sort((a, b) => state.sentNames[a].at - state.sentNames[b].at)
+    for (const key of keys.slice(0, keys.length - 1500)) delete state.sentNames[key]
+  }
+}
+
 function namePriceDupReason(text, job = null) {
   const key = namePriceKey(text)
   if (!key) return null
@@ -2521,51 +2643,74 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (jid !== targets[targets.length - 1]) await interTargetGap()
   }
 }
-function formatDigestItem(job, number, bodyMax = 220) {
-  const urls = urlsIn(job.text)
-  let label = extractDealName(job.text) || ''
-  if (!label) {
-    label = cleanDealText(job.text)
-    for (const url of urls) label = label.replace(url, '')
-    label = label
-      .split('\n').map(ln => stripInlineCta(ln)).join('\n')
-      .replace(/\b(?:buy\s+now|shop\s+now)\b/gi, '')
-      .replace(/^[-–—_=]{3,}$/gm, '')
-      .replace(/[ \t]+$/gm, '')
-      .replace(/\n{3,}/g, '\n\n')
-      .trim()
+function formatDigestItem(job, number) {
+  // v17.8 A DIGEST ITEM IS THE SOURCE POST, just numbered. The old item printed a
+  // 90-character name we had pulled out, added a `₹price • x% OFF` badge WE had
+  // invented, and then cut the text to 220/160/100/60 characters so that ten
+  // deals would fit one message. Both halves were the bugs the user reported:
+  // the badge re-stated a price the source had already written on its own line
+  // (TWO prices in the same WhatsApp post), and the cut silently deleted
+  // everything the source wrote after the label - the MRP line, the coupon,
+  // "ends tonight 11:59 PM" - which is exactly why WhatsApp carried less text
+  // than Telegram. Nothing is invented now and nothing is cut: an item that
+  // does not fit the message budget rides in the NEXT digest instead.
+  const body = formatPostBody(job)
+  if (!body) {
+    const only = urlsIn(job.text || '').map(url => displayUrl(job, url)).join('\n')
+    return only ? `*${number}.*\n${only}` : ''
   }
-  // v17.5: no invented "Latest deal" text - a numbered item with just its
-  // link is still truthful; a fabricated headline is not.
-  if (!label) {
-    const only = urls.map(url => displayUrl(job, url)).join('\n')
-    return `*${number}.*\n${only}`
+  const [first, ...rest] = body.split('\n')
+  return [`*${number}.* ${first}`, ...rest].join('\n')
+}
+
+function splitCaptionForMedia(text, limit = 1024) {
+  // A WhatsApp caption holds ~1024 characters. Truncating there (the old
+  // behaviour) deleted the source's own lines, so instead the caption carries as
+  // many WHOLE lines as fit and the remainder is sent right behind the photo.
+  const body = String(text || '')
+  if (body.length <= limit) return { head: body, tail: '' }
+  const lines = body.split('\n')
+  let head = ''
+  let index = 0
+  for (; index < lines.length; index++) {
+    const candidate = head ? `${head}\n${lines[index]}` : lines[index]
+    if (candidate.length > limit) break
+    head = candidate
   }
-  const price = detectedPrice(job.text)
-  const discount = explicitDiscount(job.text)
-  const badges = []
-  if (price != null) badges.push(`₹${price.toLocaleString('en-IN')}`)
-  if (discount) badges.push(`${discount}% OFF`)
-  const badgeSuffix = badges.length ? `  (${badges.join(' • ')})` : ''
-  if (label.length > bodyMax) label = `${label.slice(0, Math.max(1, bodyMax - badgeSuffix.length - 1)).trim()}…`
-  // v17.5: the link goes on its own line bare - an "➜" we add is a character the
-  // source never wrote.
-  return `*${number}.* ${label}${badgeSuffix}\n${urls.map(url => displayUrl(job, url)).join('\n')}`
+  if (!head) {
+    // One line longer than the caption limit: break it at a space, never in the
+    // middle of a word, and never with an ellipsis - the tail follows as text.
+    const cut = body.lastIndexOf(' ', limit)
+    head = body.slice(0, cut > 0 ? cut : limit).trimEnd()
+    index = lines.length
+    const rest = body.slice(head.length).trimStart()
+    return { head, tail: rest }
+  }
+  return { head, tail: lines.slice(index).join('\n').trim() }
 }
 
 function buildBucketDigest(bucket, selected) {
-  for (const bodyMax of [220, 160, 100, 60]) {
-    // v17.5: the digest no longer opens with a "DEALS OF THE DAY / LOOT ZONE"
-    // banner of our own making - the numbered deals and their links are the post.
-    let digest = bucket.header ? `${bucket.header}\n\n` : ''
-    selected.forEach((job, index) => {
-      const separator = index ? '\n\n━━━━━━━━━━━━━━━━━━\n\n' : ''
-      digest += separator + formatDigestItem(job, index + 1, bodyMax)
-    })
-    digest = digest.replace(/^\n+/, '')
-    if (digest.length <= DIGEST_MAX_CHARS) return digest
+  // v17.8: WHOLE items only. DIGEST_MAX_CHARS is a budget for how many complete
+  // deals fit in one message - it is never a licence to shorten what the source
+  // wrote. Anything that does not fit stays in the queue for the next digest.
+  const header = bucket.header ? `${bucket.header}\n\n` : ''
+  const separator = '\n\n━━━━━━━━━━━━━━━━━━\n\n'
+  let digest = ''
+  const used = []
+  for (const job of selected) {
+    const item = formatDigestItem(job, used.length + 1)
+    if (!item) continue
+    const candidate = digest ? `${digest}${separator}${item}` : item
+    if (digest && (header + candidate).length > DIGEST_MAX_CHARS) break
+    digest = candidate
+    used.push(job)
+    // A single deal longer than the budget is still published complete (a
+    // WhatsApp text message takes far more than this) - only the items after it
+    // wait for the next digest.
+    if ((header + digest).length > DIGEST_MAX_CHARS) break
   }
-  return null
+  if (!used.length) return null
+  return { digest: `${header}${digest}`.replace(/^\n+/, ''), used }
 }
 
 async function prepareRotationalDigest(quietOnlyUnder99 = false) {
@@ -2647,13 +2792,15 @@ async function prepareRotationalDigest(quietOnlyUnder99 = false) {
       continue
     }
 
-    const digest = buildBucketDigest(bucket, selected)
-    if (!digest) {
+    const built = buildBucketDigest(bucket, selected)
+    if (!built) {
       log.error({ bucket: bucket.source }, 'required product list exceeds safe WhatsApp text size; held for review')
       continue
     }
+    // Items that did not fit stay queued (their jobs are untouched) so the next
+    // digest carries them - the source text is never trimmed to make a fit.
     saveState()
-    return { selected, digest, bucket, bucketIndex }
+    return { selected: built.used, digest: built.digest, bucket, bucketIndex }
   }
   saveState()
   return null
@@ -2668,11 +2815,13 @@ function formatSpecialCaption(job) {
   // post and our links, nothing else.
   const urls = urlsIn(job.text)
   const multi = urls.length >= 2
-  let body = formatPostBody(job, { includeLinks: multi })
+  const body = formatPostBody(job, { includeLinks: multi })
     .replace(/^[-–—_=]{3,}$/gm, '').replace(/\n{3,}/g, '\n\n').trim()
+  // v17.8: this used to cut the body at 1000 characters with an ellipsis, which
+  // deleted the source's own lines whenever a special offer had a long caption.
+  // The caption limit is a SPLIT problem, not a permission to drop text - see
+  // splitCaptionForMedia at the send site.
   const links = multi ? '' : urls.map(url => displayUrl(job, url)).join('\n')
-  const bodyLimit = Math.max(120, 1000 - links.length - 2)
-  if (body.length > bodyLimit) body = `${body.slice(0, bodyLimit - 1).trim()}…`
   return [body, links].filter(Boolean).join('\n\n')
 }
 
@@ -2689,9 +2838,13 @@ async function sendSpecialOffer(job) {
   await verifyJob(job)
   const caption = formatSpecialCaption(job)
   const item = job.media[0]
+  const { head, tail } = splitCaptionForMedia(caption)
   if (item) {
-    await broadcastMediaItem(wa, job, item, caption)
+    await broadcastMediaItem(wa, job, item, head)
     job.nextMedia = 1
+    // Whatever did not fit in the caption goes out immediately behind the photo:
+    // one special offer, complete text, nothing thrown away.
+    if (tail) await broadcastText(wa, job, 'special-tail', tail)
   } else {
     await broadcastText(wa, job, 'special', caption)
   }
@@ -2703,18 +2856,21 @@ async function sendSpecialOffer(job) {
   return 'sent'
 }
 
-function compactLargeLine(line, job, max = 650) {
+function compactLargeLine(line, job, max = 0) {
+  // v17.8: `max` used to default to 650 characters and an over-long source line
+  // was cut with an ellipsis. A list line now keeps every word the source wrote;
+  // the chunker below decides where a message ends.
   const urls = urlsIn(line)
   if (!urls.length) {
     const clean = stripInlineCta(line)
-    return clean.length <= max ? clean : `${clean.slice(0, max - 1).trim()}…`
+    return max > 0 && clean.length > max ? clean : clean
   }
   let label = line
   for (const url of urls) label = label.replace(url, '')
   label = stripInlineCta(label).replace(/\s*[:\-–—]+\s*$/, '').trim()
   const links = urls.map(url => displayUrl(job, url)).join('\n')
-  const labelMax = Math.max(30, max - links.length - 1)
-  if (label.length > labelMax) label = `${label.slice(0, labelMax - 1).trim()}…`
+  const labelMax = max > 0 ? Math.max(30, max - links.length - 1) : 0
+  if (labelMax && label.length > labelMax) label = `${label.slice(0, labelMax - 1).trim()}…`
   return `${label ? `${label}\n` : ''}${links}`.trim()
 }
 function buildLargeListChunks(job) {
@@ -3491,21 +3647,165 @@ if (process.argv.includes('--self-test')) {
   } else if (!ordinaryJobExpiryReason({ text: 'Ordinary ₹49 deal https://a/1', createdAt: Date.UTC(2026, 7, 22, 21, 30), media: [] }, Date.UTC(2026, 7, 23, 0, 40))) {
     throw new Error('stale ordinary deal not expired with zero-width quiet window')
   }
+  // v17.8 THE SAME PRODUCT, NOT THE SAME CAPTION. Two WhatsApp-side rules the
+  // user named: a product already sent must not come again, and a cleaned line
+  // must never lose the deal it was about.
+  {
+    const acA = `LG 1.5 Ton 5 Star Inverter Split AC\nNow ₹36,990 (MRP ₹74,990, 50% off)\nhttps://www.croma.com/ac-a1?size=M`
+    const acB = `LG 1.5 Ton 5 Star Inverter Split AC\n₹36,990 (50% off)\nFree installation this week\nhttps://www.croma.com/ac-b2`
+    if (!nameOnlyKey(acA) || nameOnlyKey(acA) !== nameOnlyKey(acB)) {
+      throw new Error('the same product under two links must share one identity: '
+        + `${nameOnlyKey(acA)} vs ${nameOnlyKey(acB)}`)
+    }
+    const washer = `LG Neo Duetto 7Kg Front Load Washing Machine\n₹31,990 (44% off)\nhttps://www.croma.com/ac-b2`
+    if (nameOnlyKey(washer) === nameOnlyKey(acA)) throw new Error('two different products must not share an identity')
+    const list = `1. Shirt A ₹599 https://a.test/1\n2. Shirt B ₹699 https://a.test/2\n3. Shirt C ₹799 https://a.test/3`
+    if (nameOnlyKey(list) !== null) throw new Error('a roundup must never be keyed as one product: ' + nameOnlyKey(list))
+    const banner = `TOP DEAL OF THE DAY\nBest deal of the day only\nhttps://a.test/x`
+    if (nameOnlyKey(banner) !== null) throw new Error('a campaign banner is not a product name')
+
+    const saved = { sentNames: state.sentNames }
+    try {
+      state.sentNames = {}
+      if (nameOnlyDupReason(acA) !== null) throw new Error('a first copy is never a duplicate')
+      markNameOnlySent({ text: acA })
+      if (!(WA_SAME_PRODUCT_HOURS > 0)) {
+        // The operator switched the rule off, so the only promise left is that it
+        // really is off - a silent re-post while claiming to skip would be worse.
+        if (nameOnlyDupReason(acB) !== null) {
+          throw new Error('WA_SAME_PRODUCT_HOURS=0 must turn the product skipper off')
+        }
+      } else {
+        if (nameOnlyDupReason(acB) === null) throw new Error('the same product at the same price must be skipped')
+        // a strictly better copy is news, not a repeat
+        const cheaper = `LG 1.5 Ton 5 Star Inverter Split AC\nNow ₹33,490 only (54% off)\nhttps://www.croma.com/ac-c3`
+        if (nameOnlyDupReason(cheaper) !== null) throw new Error('a cheaper copy of the same product must still post')
+        const deeper = `LG 1.5 Ton 5 Star Inverter Split AC\n₹36,990 (60% off)\nhttps://www.croma.com/ac-c4`
+        if (WA_SAME_PRODUCT_MARGIN <= 10 && nameOnlyDupReason(deeper) !== null) {
+          throw new Error('the same price at a clearly deeper discount must still post')
+        }
+        const sameer = `LG 1.5 Ton 5 Star Inverter Split AC\n₹36,990 (52% off)\nhttps://www.croma.com/ac-c5`
+        if (WA_SAME_PRODUCT_MARGIN > 2 && nameOnlyDupReason(sameer) === null) {
+          throw new Error('a discount difference smaller than the margin must not re-post the same product')
+        }
+        const old = state.sentNames[nameOnlyKey(acA)]
+        old.at = Date.now() - (WA_SAME_PRODUCT_HOURS + 2) * 3600_000
+        if (nameOnlyDupReason(acB) !== null) throw new Error('outside the window the product may be shown again')
+      }
+    } finally {
+      state.sentNames = saved.sentNames
+    }
+  }
+  // v17.8 CLEANING MAY NOT DELETE A FACT - the same rule the Python side has: a
+  // promo clause is removed, the coupon / price / percentage beside it is not.
+  {
+    const coupon = stripInlineCta('More offers: Apply coupon PEOPLE200 on shirts')
+    if (!/PEOPLE200/.test(coupon)) throw new Error('a coupon code was eaten by CTA cleaning: ' + coupon)
+    const priced = stripInlineCta(`Noise Buds ₹999 buy now and grab fast`)
+    if (!/₹999/.test(priced) || !/Noise Buds/.test(priced)) throw new Error('deal text lost next to a CTA: ' + priced)
+    const pct = stripInlineCta(`Premium Cotton T-Shirt 78% off, only today`)
+    if (!/78%/.test(pct)) throw new Error('a discount figure was eaten by CTA cleaning: ' + pct)
+    const boiler = stripInlineCta('For more deals join our channel and turn on notifications')
+    if (/join our channel|notifications/i.test(boiler)) throw new Error('channel boilerplate survived: ' + boiler)
+  }
+  // v17.8 A CAPTION THAT DOES NOT FIT IS SPLIT, NEVER CUT WITH AN ELLIPSIS.
+  {
+    const long = Array.from({ length: 30 }, (_, i) => `Line ${i + 1} of the source post describing the offer in words`).join('\n')
+    const { head, tail } = splitCaptionForMedia(long, 1024)
+    if (head.includes('…') || tail.includes('…')) throw new Error('a caption was truncated instead of split')
+    if (`${head}\n${tail}`.trim() !== long.trim()) throw new Error('caption split lost source text')
+    if (head.length > 1024) throw new Error(`caption head still exceeds the limit: ${head.length}`)
+    const oneLine = `x`.repeat(3000)
+    const split = splitCaptionForMedia(oneLine, 1024)
+    if (split.head.includes('…') || `${split.head}${split.tail}` !== oneLine) {
+      throw new Error('a single long line must be broken at a space, never truncated')
+    }
+    const short = splitCaptionForMedia('Small post with one line', 1024)
+    if (short.head !== 'Small post with one line' || short.tail !== '') {
+      throw new Error('a short caption must pass through untouched: ' + JSON.stringify(short))
+    }
+  }
+  // v17.8 A DIGEST ITEM IS THE SOURCE POST: no invented badge, so a figure the
+  // source stated once is printed once.
+  {
+    const job = { text: `Cover for iPhone 13\nNow ₹260 (74% off)\nMRP ₹999 with free delivery\nhttps://fktr.in/CASE1` }
+    const item = formatDigestItem(job, 1)
+    for (const figure of ['₹260', '74% off', '₹999']) {
+      const hits = (item.match(new RegExp(figure.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
+      if (hits !== 1) throw new Error(`${figure} printed ${hits} times in one digest item:\n${item}`)
+    }
+    if (item.includes('…')) throw new Error('a digest item was cut short:\n' + item)
+    if (!/^\*1\.\* /m.test(item)) throw new Error('a digest item must carry its number:\n' + item)
+  }
   if (!isSpecialOffer('₹2200 Off with PNB Credit Card') || !isSpecialOffer('FLASH 90% OFF')) throw new Error('special offer detection failed')
   const specialCaption = formatSpecialCaption({ text: 'Gold Pendant ₹2200 Off with PNB Credit Card\nhttps://fktr.in/OUR' })
   if (!specialCaption.includes('Gold Pendant ₹2200 Off with PNB Credit Card')) throw new Error('special caption must print the source line as written:\n' + specialCaption)
   if (!specialCaption.includes('https://fktr.in/OUR')) throw new Error('special caption lost its link')
   if (/LOOT ZONE|SPECIAL OFFER|Verified • Enjoy/i.test(specialCaption)) throw new Error('special caption must not carry our own wrapper:\n' + specialCaption)
   const five = Array.from({ length: 5 }, (_, i) => ({ text: `Product ${i + 1} at ₹${90 + i}\nhttps://fktr.in/OUR${i + 1}` }))
-  const under99Digest = buildBucketDigest(BUCKETS[0], five)
-  if (!under99Digest) throw new Error('under99 digest not built')
+  const under99Built = buildBucketDigest(BUCKETS[0], five)
+  if (!under99Built) throw new Error('under99 digest not built')
+  const under99Digest = under99Built.digest
   if (/DEALS OF THE DAY|UNDER ₹99|Verified deals • Enjoy|LOOT ZONE/i.test(under99Digest)) {
     throw new Error('a digest must not open with a banner of ours:\n' + under99Digest.slice(0, 120))
   }
   if ((under99Digest.match(/https:\/\/fktr\.in\/OUR/g) || []).length !== 5) throw new Error('under99 five-product digest test failed:\n' + under99Digest)
   const ten = Array.from({ length: 10 }, (_, i) => ({ text: `Loot product ${i + 1}\nhttps://fktr.in/LOOT${i + 1}` }))
-  const lootDigest = buildBucketDigest(BUCKETS[2], ten)
-  if (!lootDigest || (lootDigest.match(/https:\/\/fktr\.in\/LOOT/g) || []).length !== 10 || lootDigest.length > DIGEST_MAX_CHARS) throw new Error('LootZone ten-product digest test failed')
+  const lootBuilt = buildBucketDigest(BUCKETS[2], ten)
+  if (!lootBuilt || (lootBuilt.digest.match(/https:\/\/fktr\.in\/LOOT/g) || []).length !== 10
+      || lootBuilt.digest.length > DIGEST_MAX_CHARS) throw new Error('LootZone ten-product digest test failed')
+  // v17.8 DIGEST FIDELITY - the two mistakes the user named on WhatsApp:
+  // (1) a price the source wrote once printed TWICE (our invented badge sat next
+  // to the source's own price line), and (2) the item cut to a few dozen
+  // characters so the MRP, the coupon and the closing note simply vanished.
+  {
+    const items = Array.from({ length: 6 }, (_, i) => ({
+      text: [
+        `Prestige PKFR 1.2L Fryo Classic Fry Pan (Red) ${i + 1}`,
+        `Now ₹899 (MRP ₹2,495 64% OFF)`,
+        `Use code: SALE${i}100 for extra savings`,
+        `Exchange offer up to ₹1,500 on this pan`,
+        `https://fktr.in/FID${i}`,
+      ].join('\n'),
+    }))
+    const built = buildBucketDigest(BUCKETS[0], items)
+    if (!built) throw new Error('digest fidelity test: nothing built')
+    for (const job of items) {
+      for (const line of job.text.split('\n')) {
+        if (!built.digest.includes(line)) {
+          throw new Error(`digest lost a source line (${line}):\n${built.digest}`)
+        }
+      }
+    }
+    if (built.digest.includes('…')) throw new Error('a digest must never cut source text:\n' + built.digest)
+    const escape = x => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    for (const price of ['₹899', '₹2,495', '₹1,500']) {
+      const hits = (built.digest.match(new RegExp(escape(price), 'g')) || []).length
+      if (hits !== 6) throw new Error(`${price} appears ${hits} times in a digest of 6 posts - each post must state a figure exactly as often as its source did:\n${built.digest}`)
+    }
+    if (/\b64% OFF\b[^\n]*\b64% OFF\b/.test(built.digest)) throw new Error('discount printed twice on one line:\n' + built.digest)
+    if (built.used.length !== items.length) throw new Error('every fitting item must be used')
+    // Too many deals for one message: the digest carries FEWER COMPLETE posts,
+    // it never truncates them, and the leftovers are reported as unused so they
+    // stay in the queue for the next list.
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      text: `Borot${i} Heavy Duty Mixer Grinder 750W 3 Jars
+${`Now ₹${2000 + i} MRP ₹6,999 with a long descriptive tail of source words to push this item over the budget`.repeat(3)}
+https://fktr.in/MANY${i}`,
+    }))
+    const overflow = buildBucketDigest(BUCKETS[2], many)
+    if (!overflow) throw new Error('overflow digest not built')
+    if (overflow.used.length >= many.length) throw new Error('an over-budget bucket must carry fewer items')
+    if (overflow.digest.length > DIGEST_MAX_CHARS + Math.max(...overflow.used.map(job => (job.text || '').length))) {
+      throw new Error('overflow digest is unreasonably large')
+    }
+    if (overflow.digest.includes('…')) throw new Error('overflow digest truncated a deal instead of deferring it')
+    for (const job of overflow.used) {
+      for (const line of job.text.split('\n')) {
+        if (line.trim() && !overflow.digest.includes(line)) throw new Error(`overflow digest lost a line of an item it did send:\n${line}`)
+      }
+    }
+  }
   const sameCampaignA = 'Upto 85% Off On Branded Shoes.\nPuma https://fktr.in/A'
   const sameCampaignB = 'Upto 85% Off On Branded Shoes.\nPuma https://fktr.in/B\nNike https://fktr.in/C'
   if (contentFingerprint(sameCampaignA) !== contentFingerprint(sameCampaignB)) throw new Error('content duplicate fingerprint test failed')
@@ -3975,7 +4275,14 @@ if (process.argv.includes('--self-test')) {
     }
     const minMs = MIN_WA_MESSAGE_GAP_SECONDS * 1000
     if (gaps.some(g => g < minMs - 2000)) throw new Error('anti-ban gap below the hard floor')
-    if (gaps.some(g => g > ANTIBAN_LONG_IDLE_MAX * 1000 * 1.4 + 1000)) throw new Error('anti-ban gap above the safety ceiling')
+    if (gaps.some(g => g > MAX_WA_MESSAGE_GAP_SECONDS * 1000 + 1000)) {
+      throw new Error(`anti-ban gap above the scheduled ceiling (${Math.max(...gaps) / 1000}s > ${MAX_WA_MESSAGE_GAP_SECONDS}s)`)
+    }
+    // The stacked multipliers must never be able to park the channel for an hour
+    // even when every one of them fires at once (v17.8 clamp in scheduleNext).
+    if (gaps.some(g => g > MAX_WA_MESSAGE_GAP_SECONDS * 1000)) {
+      throw new Error('a scheduled gap went past the clamp: ' + Math.max(...gaps))
+    }
     const distinct = new Set(gaps.map(g => Math.round(g / 1000)))
     if (distinct.size < 8) throw new Error('gaps look too regular (bot cadence)')
     if (restedCount < 3) throw new Error('burst/hourly rests almost never scheduled')

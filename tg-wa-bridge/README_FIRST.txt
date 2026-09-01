@@ -171,3 +171,45 @@ product ids (a shortener-only post is never matched by name), a list or a
 photo-special already in the queue is never rewritten, a job that already started
 delivering is left alone, and a list that merely contains an already-queued product
 is still posted in full (dropping it would lose the other items).
+
+v17.8 (round 10) - nothing is cut to make a message fit, and a product is not sent
+twice:
+  * A DIGEST ITEM IS THE SOURCE POST, numbered. It used to print a 90-character
+    name plus a badge WE invented ("₹1,099 • 78% OFF") and then cut the item to
+    220/160/100/60 characters so that ten deals would fit one message - that is
+    where the user's "price appears twice in one WhatsApp post" and "text is
+    missing on WhatsApp" both came from. formatDigestItem now renders the cleaned
+    source body with our links, invents nothing, and buildBucketDigest returns
+    {digest, used}: if the bucket holds more complete posts than fit, the digest
+    carries FEWER of them and the rest stay queued for the next list. Truncating a
+    source line to squeeze more items in is not an option any more.
+  * A PHOTO CAPTION TOO LONG FOR WHATSAPP IS SPLIT, NOT CUT. formatSpecialCaption
+    no longer ends with an ellipsis; splitCaptionForMedia puts whole lines on the
+    photo and the remainder is sent as a message right behind it.
+    compactLargeLine no longer shortens list lines either (max defaults to 0).
+  * CLEANING MAY NOT DELETE A FACT. The CTA clause patterns ended with
+    "[^.\n|]*$", which deleted the rest of the line - a coupon code after "More
+    offers:" went away, and a line like "More deals here: <link>" lost the link,
+    which is how a whole post once disappeared. CTA_TAIL may only swallow plain
+    words: a price, a digit, a percentage, a code-like token or a link ends the
+    clause. If a cleanup did take an amount/percentage/code away, stripInlineCta
+    undoes itself for that line (dealPayloadOf / payloadLacks), exactly like the
+    bot's strip_inline_cta.
+  * SAME PRODUCT, ONE CHANNEL, ONE TIME. nameOnlyKey() identifies a product by its
+    own words plus size/capacity tokens (prices and MRP clauses masked, because
+    those change between copies of one deal) and duplicateProductReason() skips a
+    product the channel already carried inside WA_SAME_PRODUCT_HOURS (default 48) -
+    unless the new copy is strictly better: cheaper, or at least
+    WA_SAME_PRODUCT_MARGIN (default 5) points deeper discounted, because a 1-point
+    difference is measurement noise and must not re-post the same item. A roundup
+    (3+ merchant links), a campaign banner and a bare category phrase never get an
+    identity. state.sentNames is the ledger; markProductSent() writes it.
+    The v17.6 swap rule is unchanged and stays exact-id only: this key may SKIP a
+    repeat, it never re-points or rewrites a queued job.
+  * ONE CEILING ON PACING. scheduleNext() could multiply an already-clamped gap by
+    the morning stretch, the near-cap-hour stretch and the quiet-hours factor and
+    then add the hourly break, so the WhatsApp channels could be parked for more
+    than an hour by accident (and the self-test ceiling was wrong about it, which
+    made the deploy gate fail roughly one run in six). The scheduled gap is now
+    clamped to WA_MAX_MESSAGE_GAP_SECONDS (default 3600) and the self-test asserts
+    that number.

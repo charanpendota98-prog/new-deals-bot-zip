@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.7
+"""BestGAA Production Bot v17.8
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -132,6 +132,25 @@ except ValueError:
     AMAZON_EARNKARO_RATIO = 0.0
 
 PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
+# v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
+# product id, which is exact but blind while a short link has not been resolved
+# yet - so the same earphones re-posted by a second source under a different
+# bitli link used to reach LootZoneIndia11 twice. `product_signature()` below
+# recognises the product from its own words instead, and the channel that has
+# already carried it stays quiet for this window (0 turns the rule off). A
+# strictly better copy of the product (cheaper or deeper discount) still posts.
+SAME_PRODUCT_SKIP_SECONDS = max(0, int(os.getenv("SAME_PRODUCT_SKIP_SECONDS", str(3 * 24 * 3600))))
+# How much deeper a discount has to be before a repeat of an already-posted
+# product counts as news (percentage points).
+try:
+    SAME_PRODUCT_DISCOUNT_MARGIN = min(50, max(1, int(os.getenv("SAME_PRODUCT_DISCOUNT_MARGIN", "5"))))
+except ValueError:
+    SAME_PRODUCT_DISCOUNT_MARGIN = 5
+# User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
+# and nothing we invent. Our own "join the loot family" footer and the folder
+# link are therefore OFF by default; set ADD_OUR_CHANNEL_FOOTER=true to put them
+# back on ordinary deal posts (the Tricks channel always keeps its footer).
+ADD_OUR_CHANNEL_FOOTER = os.getenv("ADD_OUR_CHANNEL_FOOTER", "false").strip().lower() in ("1", "true", "yes", "on")
 PRICE_DEDUP_SECONDS = max(0, int(os.getenv("PRICE_DEDUP_SECONDS", "0")))
 # The one-hour same-price gate is a FALLBACK for posts with no product identity
 # (no ASIN/PID). Set it to true to also block a different product that happens
@@ -664,6 +683,21 @@ def extract_product_id(value: str) -> str | None:
             match = re.search(r"/p/([A-Z0-9]+)", parsed.path, re.I)
             if match:
                 return "AJIO:" + match.group(1).upper()
+        # v17.8: the SAME product reaches us from several sources, each with its
+        # own link shape (a slug link, a variant link, an extra ?size= parameter).
+        # Keying those on the URL hash made them look like different deals, so the
+        # channel posted the same product three times. Every merchant below has a
+        # stable product id in its path - take that instead of the whole URL.
+        for pattern, label in (
+            (r"/p/([A-Za-z0-9]{6,})", "PID"),                  # flipkart /p/ITM..
+            (r"/product(?:s)?/[A-Za-z0-9_-]*?-?([A-Za-z0-9]{6,})(?:[/?#]|$)", "PROD"),
+            (r"/it/([A-Za-z0-9_-]{4,})", "IT"),                 # croma / reliancetrend
+            (r"/([A-Za-z0-9_-]{3,})-([A-Za-z0-9]{6,})\.html", "SKU"),
+            (r"/products?/([A-Za-z0-9_-]{6,})", "PROD"),
+        ):
+            match = re.search(pattern, parsed.path, re.I)
+            if match:
+                return f"{label}:{host}:{'/'.join(g.lower() for g in match.groups())}"
     except Exception:
         pass
     return None
@@ -808,6 +842,88 @@ def enforce_numeric_fidelity(source_text: str, rendered: str) -> tuple[str, list
                 scrubbed = scrubbed[:start] + " " + scrubbed[end:]
             lines[index] = re.sub(r"[ \t]{2,}", " ", scrubbed).strip(" ,:;|")
     return "\n".join(lines), notes
+
+
+# Words that name the PRODUCT, not the campaign. A signature is only trusted
+# when the headline survives this filter with substance left over, so a shared
+# "TOP DEAL OF THE DAY" can never make two different products look identical.
+_SIG_STOP_WORDS = frozenset("""
+deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off
+save savings grab hurry now today daily best top hot new buy shop link links here below click
+free shipping delivery cod return warranty genuine flash super mega amazing awesome alert
+in india official telegram whatsapp channel group join follow subscribe share forward for
+the a an and or of to on in at by with your our this that it is are be get got have has
+""".split())
+_SIG_SIZE_RE = re.compile(
+    r"\b(\d{1,4}(?:\.\d+)?\s*(?:gb|tb|mb|mah|kg|gm|g\b|ml|ltr|l\b|w\b|ton|hp|inch|in\b|pcs|pack|pair|years?))",
+    re.I)
+
+
+def product_signature(text: str) -> str | None:
+    """A conservative "which product is this?" key, used ONLY to skip a repeat.
+
+    Why not the link: two sources paste the same product through two different
+    shorteners, and until each one is resolved the merchant ids simply look
+    different - which is how a channel carried the same earphones twice. So the
+    identity here is the product's OWN words, plus any size/capacity token, and
+    nothing else: identical for an /dp/ASIN post and a bitli post of the same
+    item, different for 128GB vs 256GB.
+
+    Deliberately narrow so a real deal is never lost on a false match:
+      * a single-product post only (3+ merchant links is a roundup, and roundups
+        legitimately share items with each other);
+      * a headline that keeps at least three product words once the marketing
+        vocabulary is gone, and looks specific (a model number or four words);
+      * a merchant link must be present at all (a pure text blurb gets no key).
+    The key never swaps, reorders or rewrites anything: its whole job is to skip
+    a product this channel has already shown - which is what the user asked for.
+    """
+    if not text:
+        return None
+    urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text))]
+    merchant_links = 0
+    for url in urls:
+        host = (urlparse(url).hostname or "").lower()
+        if host and not in_domains(host, NON_STORE_DOMAINS):
+            merchant_links += 1
+    if merchant_links == 0 or merchant_links >= 3:
+        return None
+    headline = None
+    for line in clean_source_text(text).splitlines():
+        line = line.strip()
+        if not line or URL_RE.search(line):
+            continue
+        if TIME_OF_DAY_RE.search(line) or GENERIC_HEADLINE_RE.fullmatch(line.lower()):
+            continue                       # a hype banner is not a product name
+        if not re.search(r"[A-Za-z]", line):
+            continue                       # a bare price / separator line
+        # Price, MRP and discount figures are NOT part of the product's identity:
+        # a re-posted line "boAt Airdopes 141 - MRP ₹4,990" must still match the
+        # same product written "boAt Airdopes 141 TWS Earbuds ₹1,099 (78% off)".
+        # The number inside a model name ("Airdopes 141") survives because only
+        # amounts (a currency figure, a percentage, an MRP clause) are masked.
+        named = re.sub(
+            r"(?i)[₹$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+            r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*",
+            " ", line)
+        words = [w for w in re.sub(r"[^\w\s]", " ", named, flags=re.U).split()
+                 if re.search(r"[A-Za-z0-9]", w) and not w.isdigit()]
+        keep = [w for w in words if w.lower() not in _SIG_STOP_WORDS]
+        if len(keep) < 3:
+            continue
+        if not any(re.search(r"\d", w) for w in keep) and len(keep) < 4:
+            continue                       # too generic to be an identity
+        headline = " ".join(keep[:8])
+        break
+    if not headline:
+        return None
+    parts = [headline.lower()]
+    if sizes := _SIG_SIZE_RE.findall(text):
+        parts.append(" ".join(sorted({re.sub(r"\s+", "", x).lower() for x in sizes})))
+    basis = "|".join(parts)
+    if len(basis) < 16:
+        return None
+    return "SIG:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
 
 
 def product_key(value: str) -> str:
@@ -1201,29 +1317,50 @@ def is_promo_noise_line(line: str) -> bool:
 # ("use code X", "free shipping", coupon/cashback/product terms) are untouched.
 # Runs only on SOURCE text (our own headers/footers are added afterwards, so our
 # branding is never affected).
+# v17.8 A CTA clause may only ever swallow PLAIN WORDS. The tails used to be
+# `[^.\n|]*$` - "everything up to the end of the line" - so a source line like
+# "More offers: Apply coupon PEOPLE200" lost its coupon code and "…(78% off) buy
+# now ₹199" lost the deal. A price, a digit, a percentage, a code-looking token
+# or a link now ends the clause, and the rest of the line is published verbatim.
+CTA_TAIL_PY = (
+    r"(?:[ \t]+(?![₹$%])(?![A-Za-z0-9+/.*\-]*\d)(?![A-Za-z0-9+/.\-]*%)"
+    r"(?![A-Za-z]*://)[^\s₹$%|]+)*"
+)
+
 GLOBAL_CTA_PATTERNS_PY = (
     r"\b(?:buy|shop|order|grab|get)\s+(?:it\s+)?now\b[!^0-9]*",
     r"\bgrab\s+(?:it|this|your|yours|fast)\s*(?:now|fast|soon)?\b[!^0-9]*",
     r"\bget\s+yours?\b[!^0-9]*",
     r"\bbuy\s+(?:it\s+)?here\b", r"\bshop\s+here\b", r"\border\s+here\b",
-    r"\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b[^.\n|]*",
-    r"\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b[^.\n|]*",
+    rf"\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
+    rf"\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b{CTA_TAIL_PY}",
     r"\bhurry\s*up?\b[!^0-9]*",
-    r"\bturn\s+on\s+notifications?\b[^.\n|]*",
-    r"\bstay\s+tuned\b[^.\n|]*",
-    r"\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b[^.\n|]*",
-    r"\bcheck\s+(?:link|bio|description|comments?|pinned|our\s+channel)\b[^.\n|]*",
-    r"\bshare\s+(?:it\s+)?(?:with|to)\s+[^.\n|]*\b(?:friends?|family|groups?|everyone)\b[^.\n|]*",
+    rf"\bturn\s+on\s+notifications?\b{CTA_TAIL_PY}",
+    rf"\bstay\s+tuned\b{CTA_TAIL_PY}",
+    rf"\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b{CTA_TAIL_PY}",
+    rf"\bcheck\s+(?:link|bio|description|comments?|pinned|our\s+channel)\b{CTA_TAIL_PY}",
+    rf"\bshare\s+(?:it\s+)?(?:with|to)\s+[^.\n|]*\b(?:friends?|family|groups?|everyone)\b{CTA_TAIL_PY}",
     r"\bforward\s+to\s+@?\w+[^.\n|]*",
-    r"\b(?:visit|open)\s+(?:our\s+)?(?:channel|t\.me/\S+|whatsapp\s+channel)\b[^.\n|]*",
+    rf"\b(?:visit|open)\s+(?:our\s+)?(?:channel|t\.me/\S+|whatsapp\s+channel)\b{CTA_TAIL_PY}",
     # "... from our telegram channel" style attribution glued inside a deal
     # line: the phrase goes, the price next to it stays.
     r"\b(?:from|on|via|in|at)\s+our\s+(?:official\s+)?(?:telegram|whatsapp|t\.me)\s*(?:channel|group|bot|link)?\b",
-    r"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b[^.\n|₹$]*?(?=$|[.\n|])",
+    rf"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b{CTA_TAIL_PY}",
     r"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me/\S+",
-    r"\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b[^.\n|₹$]*$",
+    rf"\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b{CTA_TAIL_PY}",
     r"\bt\.me/\S+", r"\bwhatsapp\.com/(?:channel|invite)/\S+", r"\bwa\.me/\S+",
 )
+
+
+def deal_payload_signature(text: str) -> tuple[set[str], set[str], set[str]]:
+    """(prices, discounts, code-like tokens) a line carries - what cleaning must
+    never take away from a source post."""
+    t = text or ""
+    prices = {re.sub(r"[^\d]", "", p) for p in re.findall(r"₹\s*\d[\d,.]*", t)}
+    percents = {m for m in re.findall(r"(\d{1,3})\s*(?:%|percent)", t, re.I)}
+    codes = {c.upper() for c in re.findall(
+        r"\b(?:[A-Z]{2,}\d[\dA-Z]*|\d+[A-Z]{2,}[\dA-Z]*)\b", t) if len(c) >= 5}
+    return prices, percents, codes
 
 
 def strip_inline_cta(line: str) -> str:
@@ -1235,21 +1372,32 @@ def strip_inline_cta(line: str) -> str:
     for pattern in GLOBAL_CTA_PATTERNS_PY:
         out = re.sub(pattern, " ", out, flags=re.I)
     patterns = (
-        r"\b(?:buy|shop|order|grab|get|check|add\s+to\s+cart)\s+"
-        r"(?:it|now|fast|soon|today|yours?|this|the\s+deal|deal|fast\s+guys?|guys?)\b[^.|\n]*$",
-        r"\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+(?:buy|order|shop))\b[^.|\n]*$",
-        r"\b(?:don'?t|do\s+not|never)\s+miss\b[^.|\n]*$",
-        r"\bmiss\s+(?:it|this|out|the\s+deal)\b[^.|\n]*$",
+        rf"\b(?:buy|shop|order|grab|get|check|add\s+to\s+cart)\s+"
+        rf"(?:it|now|fast|soon|today|yours?|this|the\s+deal|deal|fast\s+guys?|guys?)\b{CTA_TAIL_PY}",
+        rf"\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
+        rf"\b(?:don'?t|do\s+not|never)\s+miss\b{CTA_TAIL_PY}",
+        rf"\bmiss\s+(?:it|this|out|the\s+deal)\b{CTA_TAIL_PY}",
         r"\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|"
         r"deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$",
         # Social/channel CTAs (join/follow/share/notifications/t.me) are handled
         # by the bounded global patterns above so a following price is never eaten.
-        r"\b(?:link\s+in\s+bio|link\s+below|check\s+(?:link|bio|description|comments?|pinned))\b[^.|\n]*$",
+        rf"\b(?:link\s+in\s+bio|link\s+below|check\s+(?:link|bio|description|comments?|pinned))\b{CTA_TAIL_PY}",
     )
     for pattern in patterns:
         out = re.sub(pattern, " ", out, flags=re.I)
     out = re.sub(r"\s{2,}", " ", out)
-    return re.sub(r"[\s|*•:,\-]+$", "", out).strip()
+    # A removed clause must not leave its own punctuation behind: stripping
+    # "More offers" out of "More offers: Apply coupon X" used to publish a line
+    # that OPENED with a colon, which reads exactly like bot damage.
+    out = re.sub(r"^[\s|*•:,;\-]+|[\s|*•:,;\-]+$", "", out).strip()
+    # Fidelity rule (user, round 10): a lost line is as bad as an added one. If a
+    # CTA clause took the price, the discount or the coupon code with it, the
+    # clause removal is undone for that line - the source wrote those words.
+    before = deal_payload_signature(line)
+    after = deal_payload_signature(out)
+    if before != after and (before[0] - after[0] or before[1] - after[1] or before[2] - after[2]):
+        return re.sub(r"\s{2,}", " ", (line or "").replace("*", " ")).strip()
+    return out
 
 
 # Loot channels open with a pure campaign banner ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥",
@@ -1643,12 +1791,25 @@ def fix_unbalanced_parens(line: str) -> str:
         line = stripped
     if line.count("(") == line.count(")"):
         return line
-    while line.count("(") > line.count(")"):
-        line = line.replace("(", "", 1)
-    while line.count(")") > line.count("("):
-        line = line.rstrip()[:-1] if line.endswith(")") else re.sub(r"\)$", "", line, count=1)
-        line = line[: line.rfind(")")] + line[line.rfind(")") + 1:] if ")" in line else line
-    return line.strip()
+    # v17.8: only a bracket that STANDS ALONE is cleanup residue. The old loop
+    # deleted characters until the counts matched, which ate the ")" of a
+    # numbered list ("1) boAt Airdopes …") and the closing bracket of
+    # "(78% off)" - real source text destroyed on every list post. When the
+    # leftovers are not standalone the line is published as the source wrote it.
+    opens, closes = line.count("("), line.count(")")
+    char = "(" if opens > closes else ")"
+    excess = abs(opens - closes)
+    out: list[str] = []
+    removed = 0
+    for index, char_here in enumerate(line):
+        if char_here == char and removed < excess:
+            alone_before = index == 0 or line[index - 1].isspace()
+            alone_after = index == len(line) - 1 or line[index + 1].isspace()
+            if alone_before and alone_after:
+                removed += 1
+                continue
+        out.append(char_here)
+    return re.sub(r"[ \t]{2,}", " ", "".join(out)).strip()
 
 
 def _collapse_markdown_link(match: re.Match) -> str:
@@ -2267,6 +2428,14 @@ class Store:
           posted_at REAL NOT NULL,
           queue_id INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS posted_products (
+          signature TEXT NOT NULL,
+          target TEXT NOT NULL,
+          price INTEGER,
+          discount INTEGER,
+          posted_at REAL NOT NULL,
+          PRIMARY KEY(signature,target)
+        );
         CREATE TABLE IF NOT EXISTS deliveries (
           queue_id INTEGER NOT NULL,
           target TEXT NOT NULL,
@@ -2432,6 +2601,52 @@ class Store:
             row = self.conn.execute("SELECT id FROM queue WHERE chat_key=? AND msg_id=?",
                                     (key, msg_id)).fetchone()
         return int(row[0]) if row else None
+
+    async def product_already_posted(self, target: str, signature: str,
+                                     price: int | None, discount: int | None) -> tuple[bool, str]:
+        """Has THIS channel already carried this product inside the skip window?
+
+        Returns (skip, why). A copy that is strictly better - a lower price, or a
+        deeper discount at the same price - is never skipped, because on a deals
+        channel a cheaper repeat of the same product is a real new post.
+        """
+        if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
+            return False, ""
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT price, discount, posted_at FROM posted_products "
+                "WHERE signature=? AND target=? AND posted_at>=?",
+                (signature, target, time.time() - SAME_PRODUCT_SKIP_SECONDS),
+            ).fetchone()
+        if not row:
+            return False, ""
+        last_price, last_discount, posted_at = row[0], row[1], row[2]
+        # "Better" has to be MEANINGFULLY better. The discount is re-derived from
+        # the post text, and a source that spells out an MRP can read one point
+        # higher than the same deal written without it - a 1-point gap is noise,
+        # and letting it through is exactly the repeat the user complained about.
+        better_price = price is not None and (last_price is None or price < last_price)
+        better_discount = (discount or 0) >= (last_discount or 0) + SAME_PRODUCT_DISCOUNT_MARGIN
+        if better_price or better_discount:
+            return False, (f"better copy (₹{price or 0} / {discount or 0}% off vs "
+                           f"₹{last_price or 0} / {last_discount or 0}% off)")
+        age_hours = max(1, int((time.time() - posted_at) // 3600))
+        return True, f"same product posted to this channel {age_hours}h ago"
+
+    async def mark_product_posted(self, target: str, signature: str,
+                                  price: int | None, discount: int | None) -> None:
+        if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
+            return
+        async with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO posted_products VALUES(?,?,?,?,?)",
+                (signature, target, price, discount, time.time()),
+            )
+            self.conn.execute(
+                "DELETE FROM posted_products WHERE posted_at<?",
+                (time.time() - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
+            )
+            self.conn.commit()
 
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
         """True when this exact source message is already known to the queue."""
@@ -4121,7 +4336,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     for _source_url, resolved in service_pairs:
         if resolved not in rendered:
             rendered = (rendered.rstrip() + "\n" + resolved).strip()
-    if row["source"] in TRICKS_SOURCES or had_social_promo:
+    if row["source"] in TRICKS_SOURCES or (had_social_promo and ADD_OUR_CHANNEL_FOOTER):
         rendered = f"{rendered.rstrip()}\n\n{tricks_footer()}"
     rendered = tidy_post(rendered)
     multi_product_list = len(converted) >= 3
@@ -4139,7 +4354,10 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Card / bank offers: user wants them on EVERY owned channel at once plus
     # the premium channel, with the Loots Family folder link appended. These
     # are the strongest, most time-sensitive deals, so fanning out is correct.
-    if card_offer:
+    if card_offer and ADD_OUR_CHANNEL_FOOTER:
+        # "nothing of ours in the post" - the folder link is our own promo text,
+        # so it only rides along when the operator asks for it. The card offer
+        # itself is published complete either way.
         rendered = append_folder_link(rendered)
 
     # Final provenance guard: every URL must be an exact generated output.
@@ -4381,6 +4599,14 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             price = parse_price(msg.text or "") if msg else None
         else:
             msg, rendered, price = await render_job(client, affiliate, row)
+        # v17.8 ONE PRODUCT, ONE CHANNEL, ONE POST. Two sources can carry the same
+        # product through two different short links, and until a link is resolved
+        # the merchant ids look different - which is how a channel got the same
+        # earphones twice. The product's own words (plus the merchant host and any
+        # size/model token) settle it, and a repeat is skipped per channel. A
+        # strictly better copy still posts, so coverage is never traded away.
+        product_sig = product_signature(rendered)
+        target_discount = parse_discount(rendered, price)
         if msg and getattr(msg, "media", None) and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice)):
             if media_is_too_large(msg):
                 log.info("MEDIA SKIPPED | queue=%s oversized media; posting the deal as text",
@@ -4472,6 +4698,22 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.complete_premium(row["id"], False)
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
+            # v17.8 one product, one channel, one post: the exact merchant id can
+            # differ between two sources that link the same product through
+            # different shorteners, so the product's own words settle it here.
+            target_skip_reason = ""
+            if row["source"] not in TRICKS_SOURCES and product_sig:
+                duplicate, why = await store.product_already_posted(
+                    target, product_sig, price, target_discount)
+                if duplicate:
+                    target_skip_reason = why
+                elif why:
+                    log.info("BETTER COPY | queue=%s target=%s %s", row["id"], target, why)
+            if target_skip_reason:
+                log.info("DUPLICATE PRODUCT (signature) | queue=%s target=%s | %s",
+                         row["id"], target, target_skip_reason)
+                await store.delivery(row["id"], target, True, "duplicate product")
+                continue
             start_chunk = await store.delivery_progress(row["id"], target)
 
             async def checkpoint(count: int, queue_id=row["id"], target_name=target):
@@ -4489,6 +4731,8 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if premium_claimed:
                 await store.complete_premium(row["id"], ok)
             await store.delivery(row["id"], target, ok, error)
+            if ok and product_sig:
+                await store.mark_product_posted(target, product_sig, price, target_discount)
             successes += int(ok)
         await store.finish(row, successes, price, premium_defer_until)
         log.info("JOB %s | source=%s | sent=%s", row["id"], row["source"], successes)
@@ -4533,7 +4777,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.7 starting "
+    log.info("BestGAA Production Bot v17.8 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

@@ -7,6 +7,7 @@
 #   ./ops/deploy_and_verify.sh              # pull, repack, deploy, restart, verify
 #   ./ops/deploy_and_verify.sh --verify-only # deploy nothing, just prove what runs
 #   ./ops/deploy_and_verify.sh --no-pull      # deploy the working tree as-is
+#   ./ops/deploy_and_verify.sh --with-tests    # run the repo suites first, then ship
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -15,12 +16,13 @@ BRIDGE_DIR="${BRIDGE_DIR:-$HOME/tg-wa-bridge}"
 BOT_LOG="${BOT_LOG:-$BESTGAA_DIR/logs/bot.log}"
 SERVICE_BOT="${SERVICE_BOT:-bestgaa}"
 SERVICE_BRIDGE="${SERVICE_BRIDGE:-tg-wa-bridge}"
-DO_PULL=1; DO_DEPLOY=1; DO_RESTART=1
+DO_PULL=1; DO_DEPLOY=1; DO_RESTART=1; DO_TESTS=0
 for arg in "$@"; do
   case "$arg" in
     --verify-only) DO_PULL=0; DO_DEPLOY=0; DO_RESTART=0 ;;
     --no-pull)     DO_PULL=0 ;;
     --no-restart)  DO_RESTART=0 ;;
+    --with-tests)  DO_TESTS=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -36,6 +38,35 @@ echo "==== 0. WHAT SHOULD BE LIVE ===="
 info "repo commit : $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo '?')  ($WANT_VERSION)"
 info "bot dir     : $BESTGAA_DIR"
 info "bridge dir  : $BRIDGE_DIR"
+
+if [[ "$DO_TESTS" == "1" ]]; then
+  echo "==== 0.5 THE REPO PROVES ITSELF (suites must be green before shipping) ===="
+  for suite in test_pipeline_fixes test_render_job test_best_copy test_duplicate_sim \
+               test_line_fidelity test_rescan; do
+    if [[ ! -f "$REPO/$suite.py" ]]; then
+      warn "$suite.py is missing from $REPO"
+      continue
+    fi
+    if (cd "$REPO" && timeout 900 python3 "$suite.py" >"/tmp/$suite.deploy.log" 2>&1); then
+      ok "$suite"
+    else
+      warn "$suite failed - last lines: $(tail -3 "/tmp/$suite.deploy.log" | tr '\n' ' ')"
+    fi
+  done
+  if [[ -f "$REPO/tg-wa-bridge/bridge.js" ]]; then
+    # A checkout without a filled .env still has to prove its formatting/dedup
+    # contract, so the self-test runs against throwaway credentials when no .env
+    # exists (it never connects and never touches a live state file).
+    BRIDGE_TEST_ENV=()
+    [[ -f "$REPO/tg-wa-bridge/.env" ]] || BRIDGE_TEST_ENV=(
+      "TELEGRAM_BOT_TOKEN=1:dummy" "WA_PHONE=910000000000" "WA_CHANNEL=@selftest")
+    if (cd "$REPO/tg-wa-bridge" && env "${BRIDGE_TEST_ENV[@]}" timeout 900 node bridge.js --self-test >/tmp/bridge.repo.log 2>&1); then
+      ok "bridge self-test (repo copy)"
+    else
+      warn "bridge self-test failed - last lines: $(tail -3 /tmp/bridge.repo.log | tr '\n' ' ')"
+    fi
+  fi
+fi
 
 if [[ "$DO_PULL$DO_DEPLOY" == "11" ]]; then
   echo "==== 1. DEPLOY ===="
