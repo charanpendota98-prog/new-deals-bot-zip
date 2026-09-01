@@ -1600,8 +1600,13 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
       if (!written.includes(ours)) out.push(ours)
     }
   }
-  let body = out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
-  if (bodyMax > 0 && body.length > bodyMax) body = `${body.slice(0, bodyMax - 1).trim()}…`
+  const body = out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  // `bodyMax` is accepted and deliberately IGNORED. This function only assembles
+  // the post; the senders decide where a message ends (splitCaptionForMedia for a
+  // caption, buildBucketDigest for a list) and they SPLIT and follow up. Applying a
+  // cap here cut the source's own lines off with an ellipsis, which is the single
+  // complaint "text is being lost" in one line of code - so no path may truncate.
+  void bodyMax
   return body
 }
 
@@ -1812,16 +1817,21 @@ function namePriceKey(text) {
   const name = extractDealName(text)
   const price = detectedPrice(text)
   if (!name || price == null) return null
-  const norm = name
-    .toLowerCase()
-    .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/[^a-z0-9\u0900-\u097F\u0C00-\u0C7F]+/g, ' ')
-    .split(/\s+/).filter(Boolean)
-    .filter(w => !/^(deal|deals|offer|offers|loot|loots|sale|price|mrp|off|discount|only|just|rs|inr|the|a|an|new|best|top|today|day|grab|fast|hurry|link|buy|shop|now)$/.test(w))
-    .slice(0, 8)
-    .join(' ')
-  if (norm.split(' ').length < 2) return null
-  return `${norm}#${price}`
+  // Same product + same price is a repeat, so this layer keys on the SAME
+  // identity the v17.8 layer uses (brand + model + variant + capacity). It used to
+  // take the first eight words of the name in order, which is how two laptops
+  // whose names differ only at word nine - "(i5-1235U/8GB/512GB SSD)" vs
+  // "(i5-12450H/16GB/512GB SSD)" - could be judged one product and one of them
+  // silently dropped.
+  const identity = productNameIdentity(cleanTitle(findDealNameLine(text) || '') || name)
+  if (identity) return `id:${identity}#${price}`
+  // No number to hold on to: then the name must match COMPLETELY, with the price
+  // agreeing too. Two independent details having to coincide is what makes this
+  // safe to act on; a truncated phrase is not.
+  const whole = name.toLowerCase().replace(/https?:\/\/\S+/g, ' ')
+    .replace(/[^a-z0-9\u0900-\u097F\u0C00-\u0C7F]+/g, ' ').split(/\s+/).filter(Boolean).join(' ')
+  if (whole.split(' ').length < 2) return null
+  return `name:${whole}#${price}`
 }
 // v17.8 SAME PRODUCT - not merely the same caption. `namePriceKey` above only
 // catches a repeat that keeps the SAME price, so a source re-posting the same
@@ -1836,7 +1846,81 @@ function namePriceKey(text) {
 // same price at a deeper discount) still goes out.
 const WA_SAME_PRODUCT_HOURS = Number(process.env.WA_SAME_PRODUCT_HOURS || 48)
 const WA_SAME_PRODUCT_MARGIN = Number(process.env.WA_SAME_PRODUCT_MARGIN || 5)
-const NAME_ONLY_STOP = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on at by with your our this that it is are be get got have has men mens women womens unisex pack pcs pair').split(' '))
+const NAME_ONLY_STOP = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on at by with your our this that it is are be get got have has pack pcs pair').split(' '))
+
+// ---------------------------------------------------------------------------
+// Which product is this?  Mirrored, line for line, from main_bot_new's
+// _product_identity(): Telegram and WhatsApp must call two posts "the same
+// product" or "two products" in the SAME way, or one of the two channels repeats
+// a deal the other one already carried.
+//
+// A number in a name is either the thing that MAKES it that product (1.5 Ton,
+// 5 Star, 128GB, 55-inch, 5 Burner) or a spec a channel may not bother typing
+// (42H playtime, 5000mAh, 1080p, 4K, 5G). The first group is identity, the
+// second is dropped. A slice of the first eight words would get both wrong.
+// ---------------------------------------------------------------------------
+const WA_SIG_STOP_WORDS = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on in at by with your our this that it is are be get got have has').split(' '))
+const WA_SIG_VARIANT_UNITS = new Set(('gb tb mb kb l ltr liter liters litre litres ml kg ton tons star stars inch inches in ft hp kva burner burners slice slices tray trays door doors person persons blade blades').split(' '))
+const WA_SIG_SPEC_UNITS = new Set(('h hr hrs hour hours min mins sec secs mah wh w kw a v p k g fps hz px mm cm m db rpm mp nit nits lumen lumens mbps gbps byte bytes watt watts').split(' '))
+const WA_SIG_VARIANTS = new Set(('pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo').split(' '))
+// Words that turn the number after them into a model name: "Pro 4" and "Model
+// 2600" are the product, while "(2023) at the end of a headline is only the
+// launch year and must not split one TV into two identities.
+const WA_SIG_QUALIFIERS = new Set([...WA_SIG_VARIANTS, 'model', 'series', 'gen', 'generation', 'version'])
+const WA_SIG_VARIANT_RE = /\b(\d{1,4}(?:\.\d+)?)[\s_-]*(gb|tb|mb|kb|ltr|liter|liters|litre|litres|ml|kg|ton|tons|stars?|inch|inches|in|ft|hp|kva|burners?|slices?|trays?|doors?|persons?|blades?|l)\b/gi
+
+function waSigTokens(line) {
+  const named = String(line || '')
+    .replace(/[₹$]\s*[\d,.]+(?:\.\d+)?/g, ' ')
+    .replace(/\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b/gi, ' ')
+    .replace(/\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*/gi, ' ')
+    .replace(/\b(?:%|percent|off)\b/gi, ' ')
+  const out = []
+  for (const piece of named.split(/\s+/)) {
+    let token = piece.replace(/^[^\w.]+/, '').replace(/[^\w.]+$/, '').replace(/^\.+|\.+$/g, '')
+    if (token && /[A-Za-z0-9]/.test(token)) out.push(token.toLowerCase())
+  }
+  return out
+}
+
+function productNameIdentity(line) {
+  const raw = waSigTokens(line).map(tok => tok.replace(/[-_]/g, ''))
+  const words = raw.filter(w => !/^\d+$/.test(w) && !WA_SIG_STOP_WORDS.has(w))
+  if (words.length < 2) return null
+  const ids = new Set()
+  for (const match of String(line || '').matchAll(WA_SIG_VARIANT_RE)) {
+    ids.add(`${match[1]}${match[2]}`.toLowerCase().replace(/\s+/g, ''))
+  }
+  const digitCores = new Set([...ids].map(value => value.replace(/\D/g, '')))
+  const models = new Set()
+  raw.forEach((token, index) => {
+    if (WA_SIG_STOP_WORDS.has(token)) return
+    const digits = token.replace(/\D/g, '')
+    if (!digits.length || digits.length > 6) return
+    const glued = /^(\d{1,6})([a-z]{1,6})$/.exec(token)
+    if (glued && (WA_SIG_SPEC_UNITS.has(glued[2]) || WA_SIG_VARIANT_UNITS.has(glued[2]))) return
+    if (/^[a-z]{1,7}\d{1,6}[a-z]{0,3}$/.test(token)) { models.add(token); return }
+    if (/^\d+$/.test(token)) {
+      const following = raw[index + 1] || ''
+      if (WA_SIG_SPEC_UNITS.has(following) || WA_SIG_VARIANT_UNITS.has(following)) return
+      const previous = index > 0 ? raw[index - 1] : ''
+      if (WA_SIG_VARIANTS.has(previous)) { models.add(previous + digits); return }
+      // A launch year is not a model number, however much it looks like one.
+      if (digits.length < 2 || (digits.length === 4 && Number(digits) >= 1900 && Number(digits) <= 2099)) return
+      if (digitCores.has(digits)) return
+      models.add(token)
+    }
+  })
+  const variants = new Set(raw.filter(t => WA_SIG_VARIANTS.has(t)))
+  if (!ids.size && !models.size) {
+    if (words.length < 4) return null          // a category phrase, not an identity
+    const basis = [...new Set(words)].sort().join(' ')
+    return basis.length < 16 ? null : `W|${basis}`
+  }
+  const numbers = [...new Set([...models, ...ids])].sort().join(' ')
+  const tail = variants.size ? `|${[...variants].sort().join(' ')}` : ''
+  return `M|${words[0]}|${numbers}${tail}`
+}
 
 function nameOnlyKey(text, job = null) {
   const body = String(text || '')
@@ -1850,23 +1934,16 @@ function nameOnlyKey(text, job = null) {
   if (!merchantLinks.length || merchantLinks.length >= 3) return null
   const name = extractDealName(body) || ''
   if (!name || isCampaignBannerLine(name)) return null
-  const words = name
-    .replace(/https?:\/\/\S+/g, ' ')
-    .replace(/[₹$]\s*[\d,.]+/g, ' ')
-    .replace(/\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b/gi, ' ')
-    .replace(/\b(?:mrp|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|\n]*/gi, ' ')
-    .toLowerCase()
-    .replace(/[^a-z0-9\u0900-\u097F\u0C00-\u0C7F]+/g, ' ')
-    .split(/\s+/).filter(Boolean)
-    .filter(w => !NAME_ONLY_STOP.has(w))
-  // Specific enough to be an identity? A model number plus two words, or four
-  // product words. Anything shorter is a category ("Cotton Shirt") and two
-  // different shirts would look alike.
-  const hasModel = words.some(w => /\d/.test(w))
-  if (words.length < (hasModel ? 3 : 4)) return null
-  const sizes = [...new Set((body.match(/\b\d{1,4}(?:\.\d+)?\s*(?:gb|tb|mb|mah|kg|gm|ml|ltr|w|ton|hp|inch|pcs|pack|pair|years?)\b/gi) || [])
-    .map(x => x.replace(/\s+/g, '').toLowerCase()))].sort()
-  return `name-only:${words.slice(0, 8).join(' ')}${sizes.length ? `|${sizes.join(',')}` : ''}`
+  // Brand + model number + variant + capacity, as a SET: two captions of one
+  // product read differently ("TWS Earbuds" vs "True Wireless Earbuds, 42H
+  // Playtime"), while "Airdopes 141" and "Airdopes 131" differ by nothing but
+  // the number. An ordered slice of the first eight words gets both wrong.
+  // The identity is read from the WHOLE title line, not the 90-character label a
+  // digest prints: a "(128 GB)" that falls outside the display cap still has to
+  // separate two variants from being skipped as one product.
+  const title = cleanTitle(findDealNameLine(body) || '') || name
+  const identity = productNameIdentity(title)
+  return identity ? `name-only:${identity}` : null
 }
 
 function nameOnlyDupReason(text, job = null) {
@@ -2663,6 +2740,21 @@ function formatDigestItem(job, number) {
   return [`*${number}.* ${first}`, ...rest].join('\n')
 }
 
+function captionCutAt(body, limit) {
+  // Where to break a single over-long line: at a space, and never inside a link.
+  // A caption that ends "https://www.amazon.in/dp/B0AB" with the rest in the next
+  // message is a dead link and an unpaid sale, so the break moves to just before
+  // the URL (or just after it, when the URL alone is longer than the caption).
+  let cut = body.lastIndexOf(' ', limit)
+  if (cut <= 0) cut = limit
+  for (const match of body.matchAll(/https?:\/\/\S+/gi)) {
+    const from = match.index
+    const to = from + match[0].length
+    if (cut > from && cut < to) return from > 0 ? from : to
+  }
+  return cut
+}
+
 function splitCaptionForMedia(text, limit = 1024) {
   // A WhatsApp caption holds ~1024 characters. Truncating there (the old
   // behaviour) deleted the source's own lines, so instead the caption carries as
@@ -2680,8 +2772,8 @@ function splitCaptionForMedia(text, limit = 1024) {
   if (!head) {
     // One line longer than the caption limit: break it at a space, never in the
     // middle of a word, and never with an ellipsis - the tail follows as text.
-    const cut = body.lastIndexOf(' ', limit)
-    head = body.slice(0, cut > 0 ? cut : limit).trimEnd()
+    const cut = captionCutAt(body, limit)
+    head = body.slice(0, cut).trimEnd()
     index = lines.length
     const rest = body.slice(head.length).trimStart()
     return { head, tail: rest }
@@ -2856,21 +2948,19 @@ async function sendSpecialOffer(job) {
   return 'sent'
 }
 
-function compactLargeLine(line, job, max = 0) {
-  // v17.8: `max` used to default to 650 characters and an over-long source line
-  // was cut with an ellipsis. A list line now keeps every word the source wrote;
-  // the chunker below decides where a message ends.
+function compactLargeLine(line, job) {
+  // v17.8: the old `max` cap (650 characters) is gone. A list line keeps every word
+  // the source wrote and the chunker below decides where a message ends, so no
+  // over-long line is ever cut short.
   const urls = urlsIn(line)
-  if (!urls.length) {
-    const clean = stripInlineCta(line)
-    return max > 0 && clean.length > max ? clean : clean
-  }
+  if (!urls.length) return stripInlineCta(line)
   let label = line
   for (const url of urls) label = label.replace(url, '')
   label = stripInlineCta(label).replace(/\s*[:\-–—]+\s*$/, '').trim()
   const links = urls.map(url => displayUrl(job, url)).join('\n')
-  const labelMax = max > 0 ? Math.max(30, max - links.length - 1) : 0
-  if (labelMax && label.length > labelMax) label = `${label.slice(0, labelMax - 1).trim()}…`
+  // No label cap any more: the caption splitter below decides where a message
+  // ends and a follow-up carries the rest. Cutting a label short is how a line the
+  // source wrote disappeared from WhatsApp while nothing was lost on Telegram.
   return `${label ? `${label}\n` : ''}${links}`.trim()
 }
 function buildLargeListChunks(job) {
@@ -3366,6 +3456,19 @@ for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => {
   setTimeout(() => process.exit(0), 1000)
 })
 
+if (process.argv.includes('--identity-probe')) {
+  // Cross-language contract for the dedup identity: pipe product headline lines on
+  // stdin (one per line) and this prints the identity the WhatsApp side would key
+  // on, as JSON per line. test_line_fidelity.py feeds it the same corpus it feeds
+  // the Python rule, so "same product on Telegram, new deal on WhatsApp" cannot
+  // come back without a test going red.
+  const lines = fs.readFileSync(0, 'utf8').split('\n').filter(line => line.trim())
+  for (const line of lines) {
+    process.stdout.write(JSON.stringify({ line, identity: productNameIdentity(line) }) + '\n')
+  }
+  process.exit(0)
+}
+
 if (process.argv.includes('--self-test')) {
   // Some tests persist through saveState(); never leave a state file behind
   // when the self-test created it (a real deployment state must be untouched).
@@ -3664,6 +3767,31 @@ if (process.argv.includes('--self-test')) {
     const banner = `TOP DEAL OF THE DAY\nBest deal of the day only\nhttps://a.test/x`
     if (nameOnlyKey(banner) !== null) throw new Error('a campaign banner is not a product name')
 
+    // A caption break must never split a link in half (v17.8: the old code cut at
+    // the character limit, which produced "https://www.amazon.in/dp/B0AB" plus a
+    // stranded tail, i.e. a dead affiliate link on WhatsApp).
+    {
+      const longLine = 'Prestige PIC-MAD 2600 5 Burner Manual Stainless Steel LPG Gas Auto Ignition '
+        + 'with ' + 'x'.repeat(900) + ' detail https://www.amazon.in/dp/B0ABCDEFGHI?tag=deals0911-21'
+      const split = splitCaptionForMedia(longLine, 1024)
+      const urls = ['https://www.amazon.in/dp/B0ABCDEFGHI?tag=deals0911-21']
+      const halves = [...longLine.matchAll(/https?:\/\/\S+/g)].map(m => m[0])
+      for (const url of halves) {
+        const inHead = split.head.includes(url)
+        const inTail = split.tail.includes(url)
+        if (!(inHead || inTail)) {
+          throw new Error('a caption break must keep every link whole in one message')
+        }
+        if (inHead && inTail) throw new Error('a link must not be printed twice')
+      }
+      const glued = (split.head + split.tail).replace(/\s+/g, '')
+      if (glued !== longLine.replace(/\s+/g, '')) throw new Error('splitCaptionForMedia lost text')
+      if (split.head.length > 1024 && !split.head.includes('https://')) {
+        throw new Error('a caption may only exceed the limit to keep a link whole')
+      }
+      void urls
+    }
+
     const saved = { sentNames: state.sentNames }
     try {
       state.sentNames = {}
@@ -3679,6 +3807,53 @@ if (process.argv.includes('--self-test')) {
         if (nameOnlyDupReason(acB) === null) throw new Error('the same product at the same price must be skipped')
         // a strictly better copy is news, not a repeat
         const cheaper = `LG 1.5 Ton 5 Star Inverter Split AC\nNow ₹33,490 only (54% off)\nhttps://www.croma.com/ac-c3`
+      // The two directions the OLD rule got wrong, and this one must not:
+      // (a) the same product wearing different adjectives must still be skipped;
+      // (b) a neighbouring model number / capacity must NEVER be skipped.
+      const paraphrase = `LG 1.5 Ton 5 Star Inverter Split AC with 4 Way Swing\nMRP ₹74,990  Now ₹36,990\nhttps://www.flipkart.com/lg-ac-5star/slug`
+      if (nameOnlyKey(paraphrase) !== nameOnlyKey(acA)) {
+        throw new Error('the same product written differently must carry the same identity')
+      }
+      const otherModel = `LG 1.5 Ton 3 Star Inverter Split AC\n₹36,990\nhttps://www.croma.com/ac-3star`
+      if (nameOnlyKey(otherModel) === nameOnlyKey(acA)) {
+        throw new Error('a different star rating is a different product, not a duplicate')
+      }
+      const bigModel = `boAt Airdopes 141 TWS Earbuds with ENx\n₹1,099\nhttps://www.croma.com/b1`
+      const nearModel = `boAt Airdopes 131 TWS Earbuds\n₹999\nhttps://www.croma.com/b2`
+      if (nameOnlyKey(bigModel) === nameOnlyKey(nearModel)) {
+        throw new Error('Airdopes 141 and 131 are two products; skipping one loses a deal')
+      }
+      const smallPhone = `Samsung Galaxy S23 FE 5G (128 GB)\n₹49,999\nhttps://www.flipkart.com/s23fe-128`
+      const bigPhone = `Samsung Galaxy S23 FE 5G (256 GB)\n₹55,999\nhttps://www.flipkart.com/s23fe-256`
+      if (nameOnlyKey(smallPhone) === nameOnlyKey(bigPhone)) {
+        throw new Error('128GB and 256GB must never be collapsed into one product')
+      }
+      // The old rule keyed the first eight words, so anything written PAST them was
+      // invisible: these two cookers differ only in the model number on word nine.
+      const longA = `Prestige Manual Stainless Steel LPG Gas Auto Ignition Cooker Top Auto Shut Off Model 2600\n₹4,999\nhttps://www.amazon.in/dp/B0PST1`
+      const longB = `Prestige Manual Stainless Steel LPG Gas Auto Ignition Cooker Top Induction Base Model 3600\n₹5,499\nhttps://www.amazon.in/dp/B0PST2`
+      if (nameOnlyKey(longA) === nameOnlyKey(longB) || !nameOnlyKey(longA)) {
+        throw new Error('two cookers differing by their model number are not one product')
+      }
+      // The name+price layer (the older dedup) had the same eight-word weakness.
+      const lapA = `Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-1235U/8GB/512GB SSD)\n₹38,990\nhttps://www.flipkart.com/ideapad-a`
+      const lapB = `Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-12450H/16GB/512GB SSD)\n₹38,990\nhttps://www.flipkart.com/ideapad-b`
+      if (namePriceKey(lapA) && namePriceKey(lapB) && namePriceKey(lapA) === namePriceKey(lapB)) {
+        throw new Error('two laptops differing past word eight at the same price are two deals')
+      }
+      const lapRepeat = `Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-1235U/8GB/512GB SSD)\n₹38,990 only\nhttps://fktr.in/xyz9`
+      if (!namePriceKey(lapRepeat) || namePriceKey(lapA) !== namePriceKey(lapRepeat)) {
+        throw new Error('the same laptop at the same price must still read as a repeat')
+      }
+      const tvA = `Samsung 55-inch Crystal 4K UHD Smart TV\n₹38,990\nhttps://www.croma.com/tv1`
+      const tvB = `Samsung Crystal 4K UHD 55 inch Smart TV (2023)\n₹38,990 (46% off)\nhttps://www.amazon.in/dp/B0TV55`
+      if (nameOnlyKey(tvA) !== nameOnlyKey(tvB)) {
+        throw new Error('55-inch and 55 inch are one product, spelled two ways')
+      }
+      const tvC = `Samsung 43-inch Crystal 4K UHD Smart TV\n₹28,990\nhttps://www.croma.com/tv2`
+      if (nameOnlyKey(tvA) === nameOnlyKey(tvC)) {
+        throw new Error('a 43 inch and a 55 inch TV are two deals; skipping one loses one')
+      }
         if (nameOnlyDupReason(cheaper) !== null) throw new Error('a cheaper copy of the same product must still post')
         const deeper = `LG 1.5 Ton 5 Star Inverter Split AC\n₹36,990 (60% off)\nhttps://www.croma.com/ac-c4`
         if (WA_SAME_PRODUCT_MARGIN <= 10 && nameOnlyDupReason(deeper) !== null) {

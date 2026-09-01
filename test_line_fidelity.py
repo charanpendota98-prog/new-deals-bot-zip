@@ -14,6 +14,9 @@ The user's three complaints this file pins down:
 Run: python3 test_line_fidelity.py     (from the repo root)
 """
 import asyncio
+import subprocess
+import shutil
+import json
 import os
 import re
 import sys
@@ -258,6 +261,192 @@ def test_signature_rules():
           bot.product_signature("Men Cotton Shirt\n" + f"{R}599\nhttps://www.amazon.in/dp/B0X1Y2Z3AB") is None)
     check("the rule is off-switchable", "SAME_PRODUCT_SKIP_SECONDS" in dir(bot))
 
+    # ---- the hard cases, i.e. the ones that decide whether this rule helps ----
+    # Same product, caption written differently by a different channel.
+    pairs_same = [
+        ("boat earbuds across two sources",
+         f"\U0001f525 boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
+         f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21"),
+        ("iPhone, one copy names the storage twice, the other once",
+         f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/apple-iphone-13-blue/p/x",
+         f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900 (13% off)\nhttps://www.smartprix.com/go/y"),
+        ("Sony headphones, upper case and a price suffix",
+         "Sony WH-CH720N Noise Cancelling Headphones\n\u20b95,990 (40% off)\nhttps://www.croma.com/sony-1",
+         "SONY WH-CH720N Wireless Noise Cancelling Headphones - \u20b95990 only\nhttps://www.buyhatke.com/go/sony"),
+    ]
+    for label, a, b in pairs_same:
+        check(f"same product with a different caption: {label}",
+              bot.product_signature(a) is not None
+              and bot.product_signature(a) == bot.product_signature(b),
+              f"{bot.product_signature(a)} vs {bot.product_signature(b)}")
+
+    pairs_different = [
+        ("model number differs by two digits",
+         f"boAt Airdopes 141 TWS Earbuds\n{R}1,099\nhttps://www.croma.com/b1",
+         f"boAt Airdopes 131 TWS Earbuds\n{R}999\nhttps://www.croma.com/b2"),
+        ("storage variant",
+         f"Samsung Galaxy S23 FE 5G (128 GB)\n{R}49,999\nhttps://www.flipkart.com/s23fe-128/p/x",
+         f"Samsung Galaxy S23 FE 5G (256 GB)\n{R}55,999\nhttps://www.flipkart.com/s23fe-256/p/y"),
+        ("a variant qualifier (FE)",
+         f"Samsung Galaxy S23 5G\n{R}65,999\nhttps://www.flipkart.com/s23/p/x",
+         f"Samsung Galaxy S23 FE 5G\n{R}49,999\nhttps://www.flipkart.com/s23fe/p/y"),
+        ("ram differs",
+         f"LG 8 Kg Fully Automatic Top Load Washing Machine\n{R}31,990\nhttps://www.croma.com/w1",
+         f"LG 7 Kg Fully Automatic Top Load Washing Machine\n{R}26,990\nhttps://www.croma.com/w2"),
+    ]
+    for label, a, b in pairs_different:
+        sa, sb = bot.product_signature(a), bot.product_signature(b)
+        check(f"a different product is never collapsed: {label}",
+              sa is not None and sb is not None and sa != sb, f"{sa} vs {sb}")
+
+    # The eight-word slice was the other half of the bug: two laptops whose names
+    # differ only past word eight used to collapse, so the cheaper-looking one was
+    # skipped as a duplicate and a real deal was lost.
+    lap1 = (f"Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-1235U/8GB/512GB SSD)\n"
+            f"{R}38,990\nhttps://www.flipkart.com/ideapad-a")
+    lap2 = (f"Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-12450H/16GB/512GB SSD)\n"
+            f"{R}38,990\nhttps://www.flipkart.com/ideapad-b")
+    lap3 = (f"Lenovo IdeaPad Slim 3 15.6-inch FHD IPS Laptop (Intel i5-1235U/8GB/512GB SSD)\n"
+            f"{R}38,990 only\nhttps://fktr.in/xyz9")
+    check("two laptops differing past word eight are two deals",
+          bot.product_signature(lap1) != bot.product_signature(lap2),
+          f"{bot.product_signature(lap1)} vs {bot.product_signature(lap2)}")
+    check("and the same laptop at another link is still one product",
+          bot.product_signature(lap1) == bot.product_signature(lap3)
+          and bot.product_signature(lap1) is not None,
+          f"{bot.product_signature(lap1)} vs {bot.product_signature(lap3)}")
+
+    # Nothing with a name but no model number may be keyed from a short phrase.
+    check("a one-word brand plus fluff is not an identity",
+          bot.product_signature(f"Running Shoes\n{R}1,299\nhttps://www.amazon.in/dp/B0SHOES1") is None)
+
+
+def test_auditor_mirrors_the_bot():
+    print("\n== the auditor uses the SAME identity rule as the bot ==")
+    # The auditor hashes nothing and the bot does, so the two are compared on what
+    # actually matters: which posts get an identity at all, and which pairs of
+    # posts are judged to be the same product. A finding list that disagrees with
+    # the bot's behaviour would only accuse the bot of bugs it does not have.
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "ops"))
+    import importlib
+    auditor = importlib.import_module("quality_audit")
+    texts = [
+        f"boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
+        f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21",
+        f"boAt Airdopes 131 TWS Earbuds\n{R}999\nhttps://www.croma.com/b2",
+        f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/x",
+        f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900\nhttps://www.smartprix.com/y",
+        "1) Shirt A \u20b9599 https://a.com/x\n2) Shirt B \u20b9699 https://a.com/y\n3) Shirt C \u20b9799 https://a.com/z",
+        f"Men Cotton Shirt\n{R}599\nhttps://www.amazon.in/dp/B0X1Y2Z3AB",
+        f"Samsung Galaxy S23 FE 5G (256 GB)\n{R}55,999\nhttps://www.flipkart.com/z",
+    ]
+    keyed_bot = [bot.product_signature(t) is not None for t in texts]
+    keyed_audit = [bool(auditor.product_signature(t)) for t in texts]
+    check("both decide the same set of posts have an identity", keyed_bot == keyed_audit,
+          f"{keyed_bot} vs {keyed_audit}")
+    mismatched = []
+    for i in range(len(texts)):
+        for j in range(i + 1, len(texts)):
+            same_bot = bot.product_signature(texts[i]) == bot.product_signature(texts[j])
+            same_audit = (auditor.product_signature(texts[i])
+                          == auditor.product_signature(texts[j]))
+            if keyed_bot[i] and keyed_bot[j] and same_bot != same_audit:
+                mismatched.append((i, j))
+    check("both judge every pair the same way (same product or not)",
+          not mismatched, str(mismatched))
+    # The auditor's rule is GENERATED from the bot's block, so a real drift is only
+    # possible when someone edits one copy and forgets to re-sync. Catch that here,
+    # where the failure message says what to run.
+    import subprocess
+    sync = subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "ops" / "sync_identity.py"),
+                           "--check"], capture_output=True, text=True)
+    check("the auditor's identity block is in sync with the bot's",
+          sync.returncode == 0, (sync.stdout + sync.stderr).strip())
+
+
+def test_chunking_never_cuts_a_link():
+    print("\n== an over-long line is packed, never bisected ==")
+    url = "https://www.amazon.in/dp/B0ABCDEFGHI?tag=deals0911-21"
+    line = "Prestige PIC-MAD 2600 5 Burner Manual Stainless Steel " + "x" * 4200 + " " + url
+    parts = bot.chunks(line, 4096)
+    check("every part fits Telegram", all(len(part) <= 4096 for part in parts),
+          str([len(x) for x in parts]))
+    whole = [part for part in parts if url in part]
+    check("the link stays whole in exactly one part", len(whole) == 1, str(len(whole)))
+    check("no part ends with half a link",
+          not any(re.search(r"https?://\S*$", part) and url not in part for part in parts),
+          "\n".join(part[-60:] for part in parts))
+    squash = lambda t: re.sub(r"\s+", "", t)
+    check("the split loses nothing", squash("".join(parts)) == squash(line))
+    # A single monster token (no spaces at all) still has to come out complete.
+    parts = bot.chunks("q" * 9000, 4096)
+    check("an impossible token is still emitted in full", squash("".join(parts)) == "q" * 9000)
+    # Ordinary posts keep splitting on lines, exactly as before.
+    ordinary = "\n".join(f"Item {i} \u20b9{i * 10} https://a.test/{i}" for i in range(300))
+    parts = bot.chunks(ordinary, 4096)
+    check("a long list keeps every item and every link",
+          squash("".join(parts)) == squash(ordinary)
+          and sum(part.count("https://a.test/") for part in parts) == 300,
+          f"{len(parts)} parts")
+
+
+def test_whatsapp_identity_is_the_same_rule():
+    print("\n== Telegram and WhatsApp key a product identically ==")
+    # A product that counts as "already posted" on Telegram but as "new" on WhatsApp
+    # (or the other way round) is exactly the complaint that started this, and no
+    # test could see it while the two services kept private copies of the rule. The
+    # bridge can print its identity for a headline (--identity-probe), so both are
+    # compared here, on the same corpus, on every run.
+    node = shutil.which("node")
+    bridge = Path(__file__).resolve().parent / "tg-wa-bridge" / "bridge.js"
+    if not node or not bridge.exists():
+        print("  SKIP  node or the bridge is not present on this box")
+        return
+    lines = [
+        "Samsung 55-inch Crystal 4K UHD Smart TV",
+        "Samsung Crystal 4K UHD 55 inch Smart TV (2023)",
+        "boAt Airdopes 141 TWS Earbuds with ENx",
+        "boAt Airdopes 141 True Wireless Earbuds, 42H Playtime",
+        "boAt Airdopes 131 TWS Earbuds",
+        "LG 1.5 Ton 5 Star Inverter Split AC",
+        "LG 1.5 Ton 3 Star Inverter Split AC",
+        "Apple iPhone 13 (Blue, 128 GB)",
+        "Apple iPhone 13 (Blue, 128 GB Storage)",
+        "Noise ColorFit Pro 4 Bluetooth Calling Smartwatch",
+        "Sony WH-CH720N Noise Cancelling Headphones",
+        "Men Cotton Shirt",
+    ]
+    env = dict(os.environ, TELEGRAM_BOT_TOKEN="1:dummy", WA_PHONE="910000000000",
+               WA_CHANNEL="@selftest")
+    proc = subprocess.run([node, str(bridge), "--identity-probe"],
+                          input="\n".join(lines), capture_output=True, text=True,
+                          env=env, cwd=str(bridge.parent))
+    check("the bridge identity probe ran", proc.returncode == 0, proc.stderr[-300:])
+    if proc.returncode != 0:
+        return
+    rows = [json.loads(line) for line in proc.stdout.strip().splitlines() if line.strip()]
+    mismatch = []
+    for row in rows:
+        mine = bot._product_identity(row["line"])
+        mine = "|".join(mine) if mine else None
+        if mine != row["identity"]:
+            mismatch.append(f"{row['line'][:38]!r}: bot={mine} whatsapp={row['identity']}")
+    check("both services key every headline the same way", not mismatch, "; ".join(mismatch))
+    ids = {row["line"]: row["identity"] for row in rows}
+    pairs_same = [("boAt Airdopes 141 TWS Earbuds with ENx",
+                   "boAt Airdopes 141 True Wireless Earbuds, 42H Playtime"),
+                  ("Samsung 55-inch Crystal 4K UHD Smart TV",
+                   "Samsung Crystal 4K UHD 55 inch Smart TV (2023)"),
+                  ("Apple iPhone 13 (Blue, 128 GB)", "Apple iPhone 13 (Blue, 128 GB Storage)")]
+    pairs_diff = [("boAt Airdopes 141 TWS Earbuds with ENx", "boAt Airdopes 131 TWS Earbuds"),
+                  ("LG 1.5 Ton 5 Star Inverter Split AC", "LG 1.5 Ton 3 Star Inverter Split AC")]
+    for a, b in pairs_same:
+        check(f"both call these the same product: {a[:26]}\u2026",
+              ids.get(a) and ids[a] == ids[b], f"{ids.get(a)} vs {ids.get(b)}")
+    for a, b in pairs_diff:
+        check(f"both keep these apart: {a[:26]}\u2026",
+              ids.get(a) and ids.get(b) and ids[a] != ids[b], f"{ids.get(a)} vs {ids.get(b)}")
+
 
 def test_cleaning_never_eats_a_line():
     print("\n== cleaning only removes the clause, never the line ==")
@@ -288,6 +477,9 @@ def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
     test_signature_rules()
+    test_auditor_mirrors_the_bot()
+    test_chunking_never_cuts_a_link()
+    test_whatsapp_identity_is_the_same_rule()
     test_cleaning_never_eats_a_line()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0

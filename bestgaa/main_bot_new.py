@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v17.8
+"""BestGAA Production Bot v17.9
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -847,6 +847,9 @@ def enforce_numeric_fidelity(source_text: str, rendered: str) -> tuple[str, list
 # Words that name the PRODUCT, not the campaign. A signature is only trusted
 # when the headline survives this filter with substance left over, so a shared
 # "TOP DEAL OF THE DAY" can never make two different products look identical.
+# >>> IDENTITY-START (ops/quality_audit.py mirrors this block; run
+#     python3 ops/sync_identity.py after editing it, and test_line_fidelity.py
+#     fails if the two copies ever differ)
 _SIG_STOP_WORDS = frozenset("""
 deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off
 save savings grab hurry now today daily best top hot new buy shop link links here below click
@@ -854,10 +857,124 @@ free shipping delivery cod return warranty genuine flash super mega amazing awes
 in india official telegram whatsapp channel group join follow subscribe share forward for
 the a an and or of to on in at by with your our this that it is are be get got have has
 """.split())
-_SIG_SIZE_RE = re.compile(
-    r"\b(\d{1,4}(?:\.\d+)?\s*(?:gb|tb|mb|mah|kg|gm|g\b|ml|ltr|l\b|w\b|ton|hp|inch|in\b|pcs|pack|pair|years?))",
-    re.I)
+# A number in a product name is either the thing that MAKES it that product
+# (1.5 Ton, 5 Star, 128GB, 55-inch, 5 Burner) or a spec a channel may or may not
+# bother to type (42H playtime, 5000mAh, 1080p, 4K, 5G). The first group is the
+# identity; the second is dropped - demanding that two captions of one product spell
+# their battery life alike is exactly how the same deal gets posted twice.
+_SIG_VARIANT_UNITS = (
+    "gb tb mb kb l ltr liter liters litre litres ml kg ton tons star stars inch "
+    "inches in ft hp kva burner burners slice slices tray trays door doors person "
+    "persons blade blades"
+).split()
+_SIG_SPEC_UNITS = (
+    "h hr hrs hour hours min mins sec secs mah wh w kw a v p k g fps hz px mm cm m "
+    "db rpm mp nit nits lumen lumens mbps gbps byte bytes watt watts"
+).split()
+_SIG_VARIANT_RE = re.compile(
+    r"\b(\d{1,4}(?:\.\d+)?)[\s_-]*("
+    + "|".join(map(re.escape, sorted(_SIG_VARIANT_UNITS, key=len, reverse=True))) + r")\b", re.I)
+# Words that name a real variant of a model line. "Galaxy S23" and "Galaxy S23 FE"
+# share every number and are two different phones, so these belong to the identity.
+# Only words that name a genuinely different product line. "smart"/"air"/"elite" are
+# marketing adjectives here and there, and a copy that drops one must not turn the
+# same watch into a different product - so the list stays short and factual.
+_SIG_VARIANTS = frozenset("""
+pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
+""".split())
+# Words that put a number in front of them into a model name: "Pro 4" and "Model
+# 2600" are the product, "2023" at the end of a headline is the launch year.
+_SIG_QUALIFIERS = _SIG_VARIANTS | frozenset("model series gen generation version".split())
+_SIG_AMOUNT_RE = re.compile(
+    r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+    r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
 
+
+def _sig_tokens(line: str) -> list[str]:
+    """Lower-case tokens with punctuation trimmed off the ENDS only.
+
+    Trimming ends instead of deleting every symbol keeps a model number whole:
+    "WH-CH720N" stays one token and "1.5 Ton" stays one number, instead of
+    splitting into a stray "1" and "5" that read as two different products.
+    """
+    named = _SIG_AMOUNT_RE.sub(" ", line or "")
+    named = re.sub(r"(?i)\b(?:%|percent|off)\b", " ", named)
+    out = []
+    for token in named.split():
+        token = re.sub(r"^[^\w.]+", "", token)
+        token = re.sub(r"[^\w.]+$", "", token).strip(".")
+        if token and re.search(r"[A-Za-z0-9]", token):
+            out.append(token.lower())
+    return out
+
+
+def _product_identity(line: str) -> tuple[str, ...] | None:
+    """The few tokens that decide WHICH product a headline names, as a SET.
+
+    Not a slice of the phrase: "boAt Airdopes 141 TWS Earbuds" and "boAt Airdopes
+    141 True Wireless Earbuds, 42H Playtime" are one product wearing different
+    adjectives, while "Airdopes 141" and "Airdopes 131" are two products differing
+    by nothing but the model number. Hashing the first eight words gets BOTH wrong -
+    the duplicate survives and two long-named products collapse into a lost deal.
+
+    So the identity is: the brand word, the model numbers (with the word in front of
+    them when they are short, "Pro 4" and "Pro4" being one product), the variant
+    qualifiers (pro / fe / max) and the numbers that change the product (capacity,
+    tonnage, star rating, size, burner count). Extra marketing words then cost
+    nothing, and a different model number can never be skipped as "already posted".
+    With no number to hold on to (a shirt, a handbag) every product word has to
+    agree instead - the conservative answer that loses a duplicate rather than a deal.
+    """
+    raw = [re.sub(r"[-_]", "", tok) for tok in _sig_tokens(line)]
+    words = [w for w in raw if not w.isdigit() and w not in _SIG_STOP_WORDS]
+    if len(words) < 2:
+        return None
+    spec_units = frozenset(_SIG_SPEC_UNITS)
+    variant_units = frozenset(_SIG_VARIANT_UNITS)
+    ids = {f"{number}{unit}".lower().replace(" ", "").replace("-", "")
+           for number, unit in _SIG_VARIANT_RE.findall(line or "")}
+    digit_cores = {re.sub(r"\D", "", value) for value in ids}
+    models = set()
+    for index, token in enumerate(raw):
+        if token in _SIG_STOP_WORDS:
+            continue
+        digits = re.sub(r"\D", "", token)
+        if not digits or len(digits) < 1 or len(digits) > 6:
+            continue                       # a phone number or a year is not a model
+        glued = re.match(r"^(\d{1,6})([a-z]{1,6})$", token)
+        if glued:                          # 42h, 1080p, 55inch, 5g
+            unit = glued.group(2)
+            if unit in spec_units or unit in variant_units:
+                continue                   # already handled as a spec or a size id
+        if re.match(r"^[a-z]{1,7}\d{1,6}[a-z]{0,3}$", token):
+            models.add(token)              # s23, ch720n, pro4, m14
+            continue
+        if token.isdigit():
+            following = raw[index + 1] if index + 1 < len(raw) else ""
+            if following in spec_units or following in variant_units:
+                continue                   # "128 GB" and "42 H" are keyed above
+            previous = raw[index - 1] if index > 0 else ""
+            if previous in _SIG_QUALIFIERS:
+                models.add(previous + digits)   # "Pro 4" / "Model 2600" is the model
+                continue
+            if len(digits) < 2 or (len(digits) == 4 and 1900 <= int(digits) <= 2099):
+                continue                   # a quantity, or a launch year - not an id
+            if digits in digit_cores:
+                continue                   # the number is already inside a size id
+            models.add(token)
+    variants = {t for t in raw if t in _SIG_VARIANTS}
+    if not ids and not models:
+        if len(words) < 4:
+            return None                    # a category phrase is not an identity
+        basis = " ".join(sorted(set(words)))
+        return None if len(basis) < 16 else ("W", basis)
+    parts = ["M", words[0], " ".join(sorted(models | ids))]
+    if variants:
+        parts.append(" ".join(sorted(variants)))
+    return tuple(parts)
+
+
+# <<< IDENTITY-END
 
 def product_signature(text: str) -> str | None:
     """A conservative "which product is this?" key, used ONLY to skip a repeat.
@@ -865,15 +982,14 @@ def product_signature(text: str) -> str | None:
     Why not the link: two sources paste the same product through two different
     shorteners, and until each one is resolved the merchant ids simply look
     different - which is how a channel carried the same earphones twice. So the
-    identity here is the product's OWN words, plus any size/capacity token, and
-    nothing else: identical for an /dp/ASIN post and a bitli post of the same
-    item, different for 128GB vs 256GB.
+    identity here is the product's OWN words - brand, model number, variant,
+    capacity - and nothing else: identical for an /dp/ASIN post and a bitli post
+    of the same item, different for 128GB vs 256GB and for 141 vs 131.
 
     Deliberately narrow so a real deal is never lost on a false match:
       * a single-product post only (3+ merchant links is a roundup, and roundups
         legitimately share items with each other);
-      * a headline that keeps at least three product words once the marketing
-        vocabulary is gone, and looks specific (a model number or four words);
+      * a headline naming a brand plus a model number (or four product words);
       * a merchant link must be present at all (a pure text blurb gets no key).
     The key never swaps, reorders or rewrites anything: its whole job is to skip
     a product this channel has already shown - which is what the user asked for.
@@ -897,32 +1013,13 @@ def product_signature(text: str) -> str | None:
             continue                       # a hype banner is not a product name
         if not re.search(r"[A-Za-z]", line):
             continue                       # a bare price / separator line
-        # Price, MRP and discount figures are NOT part of the product's identity:
-        # a re-posted line "boAt Airdopes 141 - MRP ₹4,990" must still match the
-        # same product written "boAt Airdopes 141 TWS Earbuds ₹1,099 (78% off)".
-        # The number inside a model name ("Airdopes 141") survives because only
-        # amounts (a currency figure, a percentage, an MRP clause) are masked.
-        named = re.sub(
-            r"(?i)[₹$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
-            r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*",
-            " ", line)
-        words = [w for w in re.sub(r"[^\w\s]", " ", named, flags=re.U).split()
-                 if re.search(r"[A-Za-z0-9]", w) and not w.isdigit()]
-        keep = [w for w in words if w.lower() not in _SIG_STOP_WORDS]
-        if len(keep) < 3:
-            continue
-        if not any(re.search(r"\d", w) for w in keep) and len(keep) < 4:
-            continue                       # too generic to be an identity
-        headline = " ".join(keep[:8])
-        break
+        identity = _product_identity(line)
+        if identity:
+            headline = identity
+            break
     if not headline:
         return None
-    parts = [headline.lower()]
-    if sizes := _SIG_SIZE_RE.findall(text):
-        parts.append(" ".join(sorted({re.sub(r"\s+", "", x).lower() for x in sizes})))
-    basis = "|".join(parts)
-    if len(basis) < 16:
-        return None
+    basis = "|".join(headline)
     return "SIG:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
 
 
@@ -2317,23 +2414,49 @@ def premium_time_status(now_ts: float | None = None) -> tuple[bool, str, float]:
 
 
 def chunks(text: str, limit: int) -> list[str]:
-    """Split at line boundaries; never silently truncate Telegram content."""
+    """Split at line boundaries; never silently truncate Telegram content.
+
+    A line longer than one message is packed word by word, and a link is NEVER cut
+    in half: a URL split across two messages is a dead link and an unpaid sale,
+    which is a worse post than one with an awkward line break. (Until v17.8 this
+    function bisected over-long lines by character index, so a long list line whose
+    4200th character happened to be inside an affiliate link printed
+    "https://www.amazon.in/dp/B0AB" in one message and "CDEF?tag=..." in the next.)
+    """
     if len(text) <= limit:
         return [text]
-    result, current = [], ""
-    for line in text.splitlines(True):
-        if len(line) > limit:
-            if current:
-                result.append(current.rstrip())
-                current = ""
-            result.extend(line[i:i + limit] for i in range(0, len(line), limit))
-        elif len(current) + len(line) > limit:
+    result: list[str] = []
+    current = ""
+
+    def flush() -> None:
+        nonlocal current
+        if current.strip():
             result.append(current.rstrip())
-            current = line
-        else:
+        current = ""
+
+    for line in text.splitlines(True):
+        if len(line) <= limit:
+            if current and len(current) + len(line) > limit:
+                flush()
             current += line
-    if current.strip():
-        result.append(current.rstrip())
+            continue
+        flush()
+        piece = ""
+        for token in re.split(r"(\s+)", line):     # whitespace kept, so nothing is lost
+            if not token:
+                continue
+            if len(token) > limit:                 # a single monster token: no link is that long
+                if piece.strip():
+                    result.append(piece.rstrip())
+                    piece = ""
+                result.extend(token[i:i + limit] for i in range(0, len(token), limit))
+                continue
+            if piece and len(piece) + len(token) > limit:
+                result.append(piece.rstrip())
+                piece = ""
+            piece += token
+        current = piece
+    flush()
     return result
 
 
@@ -4777,7 +4900,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v17.8 starting "
+    log.info("BestGAA Production Bot v17.9 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

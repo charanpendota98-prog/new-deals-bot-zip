@@ -365,10 +365,13 @@ def test_scenarios():
         store, client, sends, _ = await scenario("s8a", {(-1009020, 1201): FakeMsg(first, 1201)},
                                                  [(-1009020, 1201, first)], 1, affiliate=aff)
         solo = [t for texts in sends.values() for t in texts if word in t]
+        # With the opt-in banner stripper on, the hype line is gone BY DESIGN, so
+        # it must not be demanded here; everything that is a deal still has to be.
+        wanted = [f"{R}74,990", "LGAC1500", "No cost EMI", f"{R}36,990"]
+        if not bot.STRIP_CAMPAIGN_BANNERS:
+            wanted.insert(0, "PRICE DROP")
         check("[S8a] the post carries every source line (banner, MRP, coupon, EMI)",
-              bool(solo) and all(all(x in t for x in ("PRICE DROP", f"{R}74,990", "LGAC1500",
-                                                      "No cost EMI", f"{R}36,990"))
-                                 for t in solo), str(solo[:1]))
+              bool(solo) and all(all(x in t for x in wanted) for t in solo), str(solo[:1]))
         check("[S8a] and it carries our destination link, once",
               bool(solo) and all(t.count("croma.com/ac-detail-a1") == 1 for t in solo), str(solo[:1]))
 
@@ -377,11 +380,19 @@ def test_scenarios():
             "s8b", {(-1009021, 1301): FakeMsg(first, 1301), (-1009022, 1302): FakeMsg(repeat, 1302)},
             [(-1009021, 1301, first), (-1009022, 1302, repeat)], 1, affiliate=aff)
         hits = {t: product_hits(v, word) for t, v in sends.items()}
-        check("[S8b] a channel that has carried the product does not carry it again",
-              bool(sends) and all(count == 1 for count in hits.values()), str(hits))
+        if bot.SAME_PRODUCT_SKIP_SECONDS > 0:
+            check("[S8b] a channel that has carried the product does not carry it again",
+                  bool(sends) and all(count == 1 for count in hits.values()), str(hits))
+            expected_copies = len(sends)
+        else:
+            # The knob is the operator's escape hatch, and it has to be a REAL one:
+            # with SAME_PRODUCT_SKIP_SECONDS=0 the second copy goes out as before.
+            check("[S8b] SAME_PRODUCT_SKIP_SECONDS=0 turns the skipper off for real",
+                  bool(sends) and all(count == 2 for count in hits.values()), str(hits))
+            expected_copies = 2 * len(sends)
         kept = [t for texts in sends.values() for t in texts if word in t]
-        check("[S8b] the one copy that goes out is complete, never a fragment",
-              len(kept) == len(sends) and all(
+        check("[S8b] every copy that goes out is complete, never a fragment",
+              bool(kept) and len(kept) >= expected_copies and all(
                   f"{R}36,990" in t and "croma.com/ac-detail-a" in t and word in t for t in kept),
               str(kept[:1]))
 
@@ -405,9 +416,15 @@ def test_scenarios():
               str({t: len(v) for t, v in sends.items()}))
 
         # e) the identity rule is offline: no network wait was added for it
+        # The key itself must not depend on the skip window: an operator who turns
+        # the rule off must still get a signature (the ledger keeps writing, and the
+        # auditor reads it), it is only the SKIPPING that stops.
         check("[S8] the product signature is pure text (no HTTP, no sleep)",
               bot.product_signature(repeat) == bot.product_signature(first)
-              and bot.SAME_PRODUCT_SKIP_SECONDS > 0,
+              and bot.product_signature(repeat) is not None,
+              f"{bot.product_signature(first)} vs {bot.product_signature(repeat)}")
+        check("[S8] the skip window is a documented number",
+              bot.SAME_PRODUCT_SKIP_SECONDS >= 0,
               f"window={bot.SAME_PRODUCT_SKIP_SECONDS}")
 
         await asyncio.sleep(0)

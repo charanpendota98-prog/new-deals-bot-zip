@@ -53,6 +53,17 @@ if [[ "$DO_TESTS" == "1" ]]; then
       warn "$suite failed - last lines: $(tail -3 "/tmp/$suite.deploy.log" | tr '\n' ' ')"
     fi
   done
+  if [[ -f "$REPO/ops/sync_identity.py" ]]; then
+    # The auditor answers "did we post this product twice?" with the bot's own
+    # identity rule, generated from bestgaa/main_bot_new.py. If somebody edited one
+    # copy and forgot the other, every SAME-PRODUCT finding is fiction - so the
+    # gate refuses to ship on a disagreement.
+    if (cd "$REPO" && python3 ops/sync_identity.py --check >/tmp/sync.identity.log 2>&1); then
+      ok "auditor identity in sync"
+    else
+      warn "auditor identity is OUT OF SYNC - run: python3 ops/sync_identity.py"
+    fi
+  fi
   if [[ -f "$REPO/tg-wa-bridge/bridge.js" ]]; then
     # A checkout without a filled .env still has to prove its formatting/dedup
     # contract, so the self-test runs against throwaway credentials when no .env

@@ -691,3 +691,49 @@ PROOF COMMANDS (repo root):
    python3 test_line_fidelity.py        # nothing lost, nothing added, no double figure
    python3 test_duplicate_sim.py        # S8a-S8d: same product via unidentifiable links
    bash ops/deploy_and_verify.sh --verify-only --with-tests
+
+===========================================================================
+v17.9 (round 11) - the deep audit of round 10, and what it found
+===========================================================================
+  Asked "all mistakes fix chesava? deep gaa audit", the v17.8 dedup rule was
+  probed instead of trusted. It failed in BOTH directions on real captions, so the
+  user's #1 complaint was still live in the soft cases and a NEW bug (lost deals)
+  had been shipped with it:
+
+  1. FALSE SKIP (lost deal). product_signature() dropped digit-only words as "not
+     words", so "boAt Airdopes 141" and "boAt Airdopes 131" hashed to one identity
+     and the second product would have been silently skipped. Same class of bug in
+     the bridge: nameOnlyKey() keyed the first eight words in order, so two long
+     names that only differ past word eight collapsed into one.
+  2. FALSE NON-SKIP (the duplicate survives). Because the key was the literal word
+     sequence, the same product written with any extra adjective ("TWS Earbuds" vs
+     "True Wireless Earbuds, 42H Playtime") got a different key.
+  3. FIX. Identity is a token SET now: brand + model numbers + variant qualifiers
+     + the numbers that change the product (128GB, 1.5 ton, 5 star, 55 inch, 5
+     burner). Specs channels type inconsistently (42H, 5000mAh, 1080p, 4K, 5G) and
+     a launch year ("(2023)") are ignored; punctuation is trimmed from token ENDS
+     only, so "1.5" stays one number and "WH-CH720N" stays one model. With no number
+     in the headline, every product word must agree instead - losing a duplicate is
+     survivable, losing a deal is not.
+  4. NO DRIFT, BY CONSTRUCTION. The auditor's copy of the rule is GENERATED
+     (python3 ops/sync_identity.py) and both ops/deploy_and_verify.sh --with-tests
+     and test_line_fidelity.py fail while it is out of date. The bridge prints its
+     own identity for a headline (`--identity-probe`), and test_line_fidelity.py
+     feeds Python and JavaScript the same corpus, so "same product on Telegram, new
+     deal on WhatsApp" cannot come back quietly.
+  5. TWO MORE LOST-TEXT / LOST-MONEY BUGS FOUND THE SAME WAY. chunks() bisected an
+     over-long line at a character index, so a long list line could print
+     "https://www.amazon.in/dp/B0AB" in one message and the rest in the next;
+     splitCaptionForMedia() did the same at 1024. Both now break at a space outside
+     any URL, and both sides assert it.
+  6. VERSION. The bot banner is v17.9 because this changes which posts are
+     recognised as the same product - the deploy log line is the proof.
+
+PROOF COMMANDS (repo root):
+   python3 ops/sync_identity.py --check
+   python3 test_line_fidelity.py            # corpus incl. 141-vs-131, 128GB-vs-256GB,
+                                            # "(2023)" tolerance, link-safe chunking,
+                                            # bot-vs-auditor and bot-vs-bridge parity
+   cd tg-wa-bridge && node bridge.js --self-test
+   printf 'boAt Airdopes 141 TWS Earbuds\n' | node tg-wa-bridge/bridge.js --identity-probe
+   python3 ops/identity_probe.py "<headline A>" "<headline B>   # same product? both engines

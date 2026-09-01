@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), routing + media-fix notes |
+| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -231,6 +231,32 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v17.9 — the same-product rule was still wrong, and it is fixed at the root:**
+  auditing v17.8 rather than trusting it found that the product signature hashed the
+  **first eight words of the headline in order**, which fails in both directions:
+  `boAt Airdopes 141` and `Airdopes 131` produced the SAME key (digit-only model
+  numbers were dropped as "not words", so a genuinely different product was skipped
+  as a repeat - a lost deal), while one product written by two channels with any
+  extra adjective (`…TWS Earbuds` vs `…True Wireless Earbuds, 42H Playtime`)
+  produced DIFFERENT keys (the duplicate the user complained about, still posted).
+  Identity is now a **set of meaningful tokens**: brand word + model numbers
+  (`141`, `s23`, `wh-ch720n`, `pro4`, `model2600`) + variant qualifiers
+  (`pro/fe/max` - so S23 and S23 FE stay two products) + the numbers that change the
+  product (128GB, 1.5 ton, 5 star, 55 inch, 5 burner); specs that channels type
+  inconsistently (42H, 5000mAh, 1080p, 4K, 5G) and a launch year (`(2023)`) are
+  ignored, punctuation is trimmed off token ENDS only (so `1.5` is one number and
+  `WH-CH720N` is one model), and a headline with no number at all still has to match
+  word for word. Same rule, three services, no drift: `ops/sync_identity.py`
+  GENERATES the auditor's copy of the rule (`--check` runs in `test_line_fidelity.py`),
+  and the bridge answers `--identity-probe` on stdin so the Python and JavaScript
+  rules are compared on the same headlines on every run. Two more places where text
+  or money was being lost the same way are fixed too: `chunks()` cut an over-long
+  line at a character index, so a long list line could print
+  `https://www.amazon.in/dp/B0AB` in one message and the rest in the next - a dead
+  affiliate link, an unpaid sale - and the WhatsApp caption splitter did the same at
+  its 1024-character limit; both now break at a space *outside* any URL, and
+  `test_line_fidelity.py` / the bridge self-test fail if a link is ever bisected.
+
 - **v17.8 — the same product once per channel, and not one source line lost:** the
   user's three remaining complaints were all real. (1) *Duplicates.* Identity used
   to be the link, so the same air conditioner linked through two different
@@ -581,29 +607,32 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v17.8 — **not yet deployed to a server**;
+Current **repo source** on this branch (v17.9 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `948bc1450a01c680f953a58734726b09f626e36ec0ea9bbbf5ef7ff8358aaf7c` |
-| `tg-wa-bridge/bridge.js` | `ec95b5f1907bc229d369f46fc361d89659f5470877a5cf61c635e9b0cb91ee02` |
+| `bestgaa/main_bot_new.py` | `e9fcabf0bbcf27caf2fb4f619d8a14929bb1974ce45cd9655004695fe297acb1` |
+| `tg-wa-bridge/bridge.js` | `f1080aa4a8f3c9d295d05d3c73ea124465f24be7de707464c277046d18e0133d` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `224ac8f7f459bb6a09087b24f10a9a29dd27e1ec5da8b355316045bc38c81c51` |
-| `test_line_fidelity.py` | `d281205591ed15ba06ba7203aa07d05e0566e8f5cf617fef9a9c70ccfef06051` |
+| `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
+| `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
+| `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
+| `test_line_fidelity.py` | `8370eaab0ea7572a4cb972c50f6f233a8798f416cf00d884e29f0602e6780dba` |
 | `test_pipeline_fixes.py` | `42ae61431a0f60987deb6a025efff083fb102db369ff6416b63afb26f8fa57f0` |
-| `test_duplicate_sim.py` | `c13f074d5330991cd4f7466fce9b520311f5269e65934213902e29c14d031c9a` |
+| `test_duplicate_sim.py` | `c76e610233a18fd1f6c577645f14e00b77c35b69194babd62f70fb72ea15d189` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
-| `ops/deploy_and_verify.sh` | `8d16b344674996c4a44828bfdba54fe7786f8bada3fac091da77bb6aba710dae` |
 
 Verified on this tree (every suite also passes with the new knobs flipped off —
 `SAME_PRODUCT_SKIP_SECONDS=0`, `ADD_OUR_CHANNEL_FOOTER=true`,
-`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`):
+`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`), and
+`python3 ops/sync_identity.py --check` keeps the auditor's copy of the identity rule
+from ever disagreeing with the bot's:
 
 | Suite | What it pins |
 |---|---|
-| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links, refuses to key a roundup or a bare category phrase, and a multi-link/list post is never skipped |
+| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's |
 | `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
 | `test_pipeline_fixes.py` | 209/209 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
@@ -611,11 +640,16 @@ Verified on this tree (every suite also passes with the new knobs flipped off �
 | `test_rescan.py` | rescan/re-queue behaviour |
 | `node tg-wa-bridge/bridge.js --self-test` | passes in **12** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps, `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, and combinations |
 
+`python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether
+the bot and the bridge consider two posts the same product — the check to run when a
+channel shows a repeat (or a deal goes missing) and nobody knows why.
+
 The bridge self-test additionally asserts the channel policy matrix (₹89 vs ₹399 vs
 ₹24999, the list-agnostic price rule, card offers everywhere), that a 10-deal burst
 produces exactly one best-of post, that no anti-ban gap can exceed
 `WA_MAX_MESSAGE_GAP_SECONDS`, that a WhatsApp post never repeats a price or drops a
-line, that the name-only product skipper recognises the same AC through two links and
+line, that a caption break never splits a link, that no formatter may print an
+ellipsis at all, that the name-only product skipper recognises the same AC through two links and
 still allows a cheaper copy, and that the user's real post reaches WhatsApp as the
 source text with our 4 links — no asterisks, no badges, no banner of ours,
 `(74% OFF)` brackets and `SAVE_200` intact.

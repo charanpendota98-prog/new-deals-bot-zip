@@ -213,3 +213,30 @@ twice:
     made the deploy gate fail roughly one run in six). The scheduled gap is now
     clamped to WA_MAX_MESSAGE_GAP_SECONDS (default 3600) and the self-test asserts
     that number.
+
+  v17.9 (round 11) - the same-product rule, fixed at the root:
+  * IDENTITY IS A TOKEN SET, NOT A PHRASE. The name-only key used to be the first
+    eight words of the headline in order, which got BOTH directions wrong: it
+    dropped digit-only model numbers (so "Airdopes 141" and "Airdopes 131" were
+    "the same product" and a real deal got skipped), and it treated any extra
+    adjective as a new product (so the same AC written "1.5 Ton 5 Star Inverter Split
+    AC" by one channel and "…with 4 Way Swing" by another was posted twice).
+    productNameIdentity() now keys brand + model numbers (141, s23, wh-ch720n,
+    pro4, model2600) + variant qualifiers (pro/fe/max - S23 and S23 FE stay apart)
+    + the numbers that change the product (128GB, 1.5 ton, 5 star, 55 inch, 5
+    burner), and ignores specs channels type inconsistently (42H, 5000mAh, 1080p,
+    4K, 5G) and a launch year such as "(2023)". No model number at all (a shirt, a
+    handbag) means every product word must agree, which is the conservative answer:
+    lose a duplicate, never a deal.
+  * THE THREE SERVICES MUST AGREE, AND A TEST ENFORCES IT. The rule lives in
+    main_bot_new.py; ops/sync_identity.py GENERATES the auditor's copy
+    (`python3 ops/sync_identity.py`, checked by `--check`); and this bridge answers
+    `--identity-probe` on stdin (one headline per line, identity per line as JSON)
+    so test_line_fidelity.py compares JavaScript against Python on the same corpus.
+    If you change one copy, that test goes red - do not "fix" it by loosening it.
+  * A BROKEN LINK COSTS MONEY. splitCaptionForMedia() used to cut an over-long
+    caption at the 1024th character, which could leave "https://www.amazon.in/dp/B0AB"
+    at the end of the caption and the rest of it in the follow-up text: a dead link,
+    an unpaid sale, and a customer who saw a half a URL. captionCutAt() breaks at a
+    space OUTSIDE any URL instead (or right after the URL when the URL alone is too
+    long), and the self-test fails if a link is ever bisected or printed twice.
