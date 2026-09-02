@@ -221,7 +221,7 @@ def target_map_for(store_targets: set[str]) -> dict[str, Ent]:
 async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
                   enqueue_specs: list[tuple[int, int, str]], expect_posts: int,
                   crash_after_first: bool = False, affiliate: FakeAffiliate | None = None,
-                  mutate=None):
+                  mutate=None, client=None):
     """One isolated run: enqueue, drain (optionally twice), return the client."""
     store = bot.Store(Path(tempfile.mktemp(suffix="-sim.sqlite3")))
     if True:
@@ -240,7 +240,7 @@ async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
                 names.add(targets)
             names.update(bot.MAIN_TARGETS + [bot.UNDER99_TARGET, bot.UNDER499_TARGET, bot.PREMIUM_TARGET])
             aff = affiliate or FakeAffiliate()
-            client = FakeClient(messages)
+            client = client or FakeClient(messages)
             tmap = target_map_for(names)
             if crash_after_first:
                 # first pass delivers ONE channel only, then "crashes"
@@ -650,6 +650,68 @@ def test_scenarios():
               bool(ch_b) and "Multicolor Hair Clips" in body_b and "\u20b985" in body_b, str(ch_b))
         check("[S12b] and it is not re-flowed on a guess (source layout unknown)",
               body_b.count("1) Multicolor Hair Clips") == 1, repr(body_b[:120]))
+
+        # ---- S13: the source deleted its own post before we rendered it -----------
+        # Some channels remove or re-post a deal within seconds. The text reached us, so
+        # losing the post here is the bug; losing the photos is a fact of life.
+        print("\n== S13: the source message vanished after intake ==")
+        gone = ("\U0001f525 Adidas Ultraboost Shoes\n"
+                "MRP \u20b99,999 Deal Price \u20b93,499 Discount: 65%\n"
+                "https://amzn.to/SIMGONE")
+        msgs_missing: dict[tuple[int, int], FakeMsg] = {}     # the source message is not there
+        store, client, sends, _ = await scenario("s13a", msgs_missing, [(-1009099, 9600, gone)], 1)
+        ch = sorted(sends)
+        check("[S13a] the deal is posted even though its source message is gone", bool(ch), str(ch))
+        body = sends[ch[0]][0] if ch else ""
+        check("[S13a] the source's own lines came through",
+              "Adidas Ultraboost Shoes" in body and "\u20b93,499" in body and "65%" in body, body)
+        st13 = store.conn.execute("select status, last_error from queue").fetchone()
+        check("[S13a] the job finished, it did not burn its retries on a ghost",
+              st13[0] == "done", str(tuple(st13)))
+
+        # the same deal on a re-delivery: the post was already rendered and stored, and
+        # the source message fetch now RAISES (a deleted message id). A job holding its
+        # final text must not abort over an optional lookup - before this fix the whole
+        # job died with `JOB FAIL ... Could not find the referenced message`.
+        class VanishedClient(FakeClient):
+            async def get_messages(self, chat_id, ids=None):
+                raise ValueError("Could not find the referenced message 9601 in this channel")
+
+        stored_copy = ("\U0001f525 Adidas Ultraboost Shoes\n"
+                       "MRP \u20b99,999 Deal Price \u20b93,499 Discount: 65%")
+        def as_already_rendered(st):
+            """The state a job is in when an earlier attempt finished rendering: the final
+            text and its planned targets are stored, the source message is not needed."""
+            qid = st.conn.execute("SELECT id FROM queue ORDER BY id DESC LIMIT 1").fetchone()[0]
+            st.conn.execute(
+                "UPDATE queue SET rendered_text=?, source_text=NULL, targets_json=?",
+                (stored_copy, __import__("json").dumps([bot.MAIN_TARGETS[0]])))
+            st.conn.execute("INSERT OR IGNORE INTO deliveries(queue_id,target) VALUES(?,?)",
+                            (qid, bot.MAIN_TARGETS[0]))
+
+        store, client, sends, _ = await scenario(
+            "s13b", msgs_missing, [(-1009099, 9601, gone)], 1, client=VanishedClient({}),
+            mutate=as_already_rendered)
+        ch_b = sorted(sends)
+        check("[S13b] a stored post is delivered even when the message fetch throws",
+              bool(ch_b), str(ch_b))
+        body_b = sends[ch_b[0]][0] if ch_b else ""
+        # the stored bytes are what goes out; the only addition is the our-channel line that
+        # delivery puts on top of every post (never stored in the row, by the v18.1 rule)
+        check("[S13b] exactly as it was stored, line for line",
+              stored_copy in body_b and body_b.count("t.me/addlist") == 1, body_b[:120])
+        st13b = store.conn.execute("select status, last_error from queue").fetchone()
+        check("[S13b] no JOB FAIL, the row is 'done'", st13b[0] == "done", str(tuple(st13b)))
+        # ---- S14: a caption/photo post whose source message is gone stays honest -----
+        # No link and no media left to show means it is not a deal post any more, and the
+        # pinned rule is that a photo post needs BOTH media and deal terms. Nothing is
+        # invented to make it look like one.
+        print("\n== S14: a photo-only post is not rebuilt out of thin air ==")
+        photo_only = "\U0001f4f8 Look at this \U0001f60d"      # no price, no link at all
+        store, client, sends, _ = await scenario("s14", {(-1009100, 9700): FakeMsg(photo_only, 9700)},
+                                                 [(-1009100, 9700, photo_only)], 0)
+        check("[S14] a caption with no deal terms and no link still does not post",
+              not sorted(sends), str(sorted(sends)))
 
         await asyncio.sleep(0)
     asyncio.run(run())

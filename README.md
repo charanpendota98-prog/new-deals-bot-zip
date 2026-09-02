@@ -50,9 +50,9 @@ cd tg-wa-bridge && npm install \
   && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test
 
 # Behaviour tests (no network; expects all green):
-python3 test_render_job.py        # 151 checks: routing, formatting, conversion
+python3 test_render_job.py        # 160 checks: routing, formatting, conversion
 python3 test_rescan.py            # ingest dead-man's switch + idempotency
-python3 test_pipeline_fixes.py    # 218 checks: immediacy, zero duplicates, quality
+python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
@@ -231,6 +231,30 @@ Individual deploys:
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.3 — a post is not its source message, and the bridge's own tests stopped
+  depending on the clock.** Two fixes of the same class as v18.2's, both found by asking
+  "can a post that reached intake still fail to appear?" of paths nobody had probed:
+  1. **A deleted source message used to delete the deal.** `render_job` refused to render
+     without the live Telegram message, so when a channel removed (or re-posted) its own
+     message, the row burned all `JOB_MAX_ATTEMPTS` on it and was dropped - while the queue
+     had held the full text (`source_text`) the whole time. It now renders from that copy and
+     logs `SOURCE MESSAGE GONE`. Media is *not* invented (`.media`/`.photo`/`.entities`/
+     `.reply_to` stay absent, so the photo-only-caption rule still skips what it should skip),
+     a FloodWait/network failure still gets its retries first because the next attempt may
+     bring the photos back, and a row with no stored copy keeps the old retryable error
+     instead of posting something made up.
+  2. **A ready-to-send job died on an optional fetch.** The already-rendered path re-fetched
+     the message only to sharpen residue cleaning and re-attach media; a throwing fetch
+     (`Could not find the referenced message`) killed the whole job. It now degrades to
+     "no message", which the existing branches already treat as "post the stored copy".
+  3. **`bridge.js --self-test` was time-of-day and timezone dependent.** Its trust-policy
+     fixtures were built from `Date.now() - 3h`, so run at 08:00 IST "three hours ago" is
+     05:00 - quiet-born - and a healthy bridge reported `best-tier deal wrongly expired` in
+     the morning, exactly when `ops/deploy_and_verify.sh` runs. The fixtures now pass their
+     own `now`, size the age from `WA_ORDINARY_MAX_AGE_MINUTES`/`MAX_JOB_AGE_HOURS`, and take
+     the quiet/free minute from the live `QUIET_*` window (asserting the 24-hour-pause and
+     no-pause cases too), so the self-test means the same thing at any hour, in any zone,
+     under any window. 22/22 modes verified.
 - **v18.2 — the last structural swallow, and the test suites stopped ignoring their own
   knobs**:
   1. **A photo post with no link is a post.** `PermanentSkip("no URLs")` deleted every source
@@ -731,46 +755,46 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.2 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.3 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `81e523963a0f0917f0ca83e3f34259d07e8402e5e9bb25995863f9737815a899` |
-| `tg-wa-bridge/bridge.js` | `458a1141984d501d79a932ec9361732664e37c8228cda8dc3304f4f44f6a723f` |
+| `bestgaa/main_bot_new.py` | `d1f92cb8be0762147dfef1fcceda80d0a08f2d067b5fa74e2319f70ac59557d4` |
+| `tg-wa-bridge/bridge.js` | `30b1bd2df14efaa355242650e4063cab0dc7d05923bc9b39f7dda100fb5b4715` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
-| `test_pipeline_fixes.py` | `c01e4c708e008dcb90180084cbc1086d48cc246e6b1aae5a661d1edacfb838f4` |
-| `test_duplicate_sim.py` | `5b71f2356f42fa0ca9a09c52cff74d7d9a97accfee37feb117cb89a9b54cacfd` |
+| `test_pipeline_fixes.py` | `0f717dac204cc7b2fcdac711ca37ac913b92b4608d5ee64c5309f6187472ed63` |
+| `test_duplicate_sim.py` | `11ea84e7315af98cc16cc508955a34fdec2154dcc2e79d4d3289efc63c2510f0` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
 Verified on this tree (every suite also passes with the knobs flipped —
 `SAME_PRODUCT_SKIP_SECONDS=0`, `ADD_OUR_CHANNEL_FOOTER=true`,
 `STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`, and the two
 link-health blocks `DROP_DEAD_LINKS=true` / `WA_DROP_DEAD_LINKS=true`; the bridge
-self-test passes in all seven of those modes), and
+self-test passes in all 22 modes listed in the table below), and
 `python3 ops/sync_identity.py --check` keeps the auditor's copy of the identity rule
 from ever disagreeing with the bot's:
 
 | Suite | What it pins |
 |---|---|
 | `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL ; a scrap glued to a price is cut while spaced text survives, an album of photos is posted as one grid (with its fallbacks), several links leave as our Bitly links and a dead shortener never costs the post, and the top line is our own channel link exactly once
-| `test_render_job.py` | 150/150 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel |
+| `test_render_job.py` | 160/160 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel, and a source message deleted after intake still renders (media never invented, transient failures retried first) |
 | *Every suite above passes at the defaults AND with each knob moved*
   | (`SHORTEN_MIN_LEN`, `MAX_ALBUM_PHOTOS`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
   | `PASSTHROUGH_UNMONETIZED=false`, `SAME_PRODUCT_*`, `PRODUCT/PRICE_DEDUP_SECONDS=0`,
   | `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`, `DROP_DEAD_LINKS=true`, the opt-in strippers,
   | and the bridge in 7 modes) — an assertion that ignores a knob it depends on is a false
   | alarm, and false alarms are how real bugs get ignored.
-  | `test_pipeline_fixes.py` | 218/218 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
+  | `test_pipeline_fixes.py` | 225/225 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
 | `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
 | `test_rescan.py` | rescan/re-queue behaviour |
-| `node tg-wa-bridge/bridge.js --self-test` | passes in **12** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps, `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, and combinations |
+| `node tg-wa-bridge/bridge.js --self-test` | passes in **22** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps (`WA_MATURE_GAP_MIN/MAX_SECONDS`), `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, a combination, `TZ_NAME=UTC`/`America/New_York`/`Asia/Dubai`, `QUIET_START/END` at 00:00-23:59, 12:00-12:00 and 22:00-06:00, `WA_ORDINARY_MAX_AGE_MINUTES=1` and `=900`, and everything-off together. **Since v18.3 none of the trust-policy fixtures read the wall clock**, so a morning deploy cannot fail for a healthy bridge |
 
 `python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether
 the bot and the bridge consider two posts the same product — the check to run when a

@@ -3855,37 +3855,80 @@ if (process.argv.includes('--self-test')) {
   // Night-queue trust policy: a job BORN inside 02:00-06:00 IST is detected,
   // ordinary quiet-born deals are expired, best-tier deals survive, and an
   // ordinary deal older than the trust window is expired too.
-  if (!wasBornInQuietWindow(Date.UTC(2026, 7, 22, 21, 30), '02:00', '06:00')) throw new Error('night-window birth detection failed (03:00 IST)')
-  if (wasBornInQuietWindow(Date.UTC(2026, 7, 23, 1, 0), '02:00', '06:00')) throw new Error('night-window birth false positive (06:30 IST)')
+  // These two used to be written as "03:00 IST = 21:30 UTC": true only when the bridge
+  // runs on India time. `TZ_NAME` is an operator knob, so the instants are built from the
+  // clock the process actually reads, and the messages name the tested window, not a zone.
+  const dayStart = Date.UTC(2026, 7, 23, 0, 0)
+  const istShift = minuteOfDay(dayStart)     // how far into the day of TZ a UTC midnight is
+  const minuteInstant = (minute) => dayStart + (((minute - istShift) % 1440 + 1440) % 1440) * 60_000
+  if (!wasBornInQuietWindow(minuteInstant(180), '02:00', '06:00')) throw new Error('night-window birth detection failed (03:00 inside 02:00-06:00)')
+  if (wasBornInQuietWindow(minuteInstant(390), '02:00', '06:00')) throw new Error('night-window birth false positive (06:30, the end minute is exclusive)')
   if (!isBestTierJob({ text: 'Mega list https://a/1 https://b/2 https://c/3 https://d/4', media: [], special: false, largeList: false })) throw new Error('best-tier list detection failed')
   if (isBestTierJob({ text: 'Ordinary ₹49 deal https://a/1', media: [], special: false, largeList: false })) throw new Error('ordinary deal wrongly marked best-tier')
-  if (!ordinaryJobExpiryReason({ text: 'Ordinary ₹49 deal https://a/1', createdAt: Date.now() - 3 * 3600_000 })) throw new Error('stale ordinary deal not expired (trust policy)')
-  if (ordinaryJobExpiryReason({ text: 'Big deal 85% OFF https://a/1', createdAt: Date.now() - 3 * 3600_000 })) throw new Error('best-tier deal wrongly expired (trust policy)')
-  // USER RULE: a deal born inside 02:00-06:00 is DEAD by 06:00 (loot prices
-  // do not survive) — skip it at morning, never post it late. ONLY a mega
-  // LIST earns the morning flush. Even an 85% "special" single deal dies.
-  const quietConfigured = QUIET_START !== '00:00' || QUIET_END !== '00:00'
-  if (quietConfigured) {
-    const born0300 = Date.UTC(2026, 7, 22, 21, 30) // 03:00 IST
-    const at0610 = Date.UTC(2026, 7, 23, 0, 40)    // 06:10 IST
-    const at0300 = Date.UTC(2026, 7, 22, 21, 40)   // still inside the window
-    const nightOrdinary = { text: 'Ordinary ₹49 deal https://a/1', createdAt: born0300, media: [] }
-    const nightSpecial = { text: 'FLASH 90% OFF single deal https://a/1', createdAt: born0300, media: [], special: true }
-    const nightList = { text: 'List https://a/1 https://b/2 https://c/3 https://d/4', createdAt: born0300, media: [], largeList: true }
-    if (ordinaryJobExpiryReason(nightOrdinary, at0610) !== 'night-born deal expired by 06:00 (lists only)') {
-      throw new Error('night-born ordinary deal must be skipped at 06:00, never posted late')
+  // The trust policy must be tested against the WINDOW THAT IS CONFIGURED and never
+  // against the wall clock. These fixtures used Date.now() - so at 08:00 IST "three hours
+  // ago" is 05:00, i.e. quiet-born, and a morning `deploy_and_verify.sh` blamed a perfectly
+  // fine bridge for "best-tier deal wrongly expired" - and they hard-coded 03:00/06:10,
+  // which stop meaning anything the moment QUIET_START/QUIET_END move. Both instants come
+  // from the live window now, and every call gets its own explicit `now`.
+  let quietMinute = -1, freeMinute = -1
+  for (let m = 0; m < 1440; m++) {
+    if (quietMinute < 0 && isQuietMinute(m)) quietMinute = m
+    if (freeMinute < 0 && !isQuietMinute(m)) freeMinute = m
+    if (quietMinute >= 0 && freeMinute >= 0) break
+  }
+  const staleGap = Math.min(ORDINARY_MAX_AGE_MS, MAX_JOB_AGE_MS) + 60_000
+  // Born at a minute the pause does not cover, so ONLY the trust window can speak for it,
+  // and the age gap is derived from the thresholds rather than a fixed three hours.
+  const bornOutside = minuteInstant(freeMinute < 0 ? 0 : freeMinute)
+  if (!ordinaryJobExpiryReason({ text: 'Ordinary ₹49 deal https://a/1', createdAt: bornOutside },
+                              bornOutside + staleGap)) {
+    throw new Error('stale ordinary deal not expired (trust policy)')
+  }
+  if (ordinaryJobExpiryReason({ text: 'Big deal 85% OFF https://a/1', createdAt: bornOutside },
+                             bornOutside + staleGap)) {
+    throw new Error('best-tier deal wrongly expired (trust policy)')
+  }
+  if (ordinaryJobExpiryReason({ text: 'Ordinary ₹49 deal https://a/1', createdAt: bornOutside },
+                             bornOutside)) {
+    throw new Error('a fresh deal is never expired by the trust window')
+  }
+  // USER RULE: a deal born inside 02:00-06:00 is DEAD once the pause is over (loot prices
+  // do not survive four hours) - skip it, never post it late. ONLY a mega LIST earns the
+  // morning flush; even an 85% "special" single deal dies. With a pause covering the whole
+  // day nothing is ever "after the pause", and with no pause at all nothing is "born in"
+  // it, so those configurations are asserted as what they must do instead of skipped.
+  const nightOrdinary = { text: 'Ordinary ₹49 deal https://a/1', createdAt: 0, media: [] }
+  const nightSpecial = { text: 'FLASH 90% OFF single deal https://a/1', createdAt: 0, media: [], special: true }
+  const nightList = { text: 'List https://a/1 https://b/2 https://c/3 https://d/4', createdAt: 0, media: [], largeList: true }
+  if (quietMinute >= 0 && freeMinute >= 0) {
+    const bornInside = minuteInstant(quietMinute)
+    nightOrdinary.createdAt = nightSpecial.createdAt = nightList.createdAt = bornInside
+    const afterThePause = minuteInstant(freeMinute)
+    if (ordinaryJobExpiryReason(nightOrdinary, afterThePause) !== 'night-born deal expired by 06:00 (lists only)') {
+      throw new Error('night-born ordinary deal must be skipped once the pause ends, never posted late')
     }
-    if (ordinaryJobExpiryReason(nightSpecial, at0610) !== 'night-born deal expired by 06:00 (lists only)') {
-      throw new Error('night-born single special must also be skipped at 06:00 (user rule: lists only)')
+    if (ordinaryJobExpiryReason(nightSpecial, afterThePause) !== 'night-born deal expired by 06:00 (lists only)') {
+      throw new Error('night-born single special must also be skipped (user rule: lists only)')
     }
-    if (ordinaryJobExpiryReason(nightList, at0610) !== null) {
-      throw new Error('night-born mega LIST must survive to the 06:00 flush')
+    if (ordinaryJobExpiryReason(nightList, afterThePause) !== null) {
+      throw new Error('night-born mega LIST must survive to the morning flush')
     }
-    if (ordinaryJobExpiryReason(nightOrdinary, at0300) !== null) {
+    if (ordinaryJobExpiryReason(nightOrdinary, bornInside) !== null) {
       throw new Error('inside the window the job just waits (worker is paused), it must not be expired yet')
     }
-  } else if (!ordinaryJobExpiryReason({ text: 'Ordinary ₹49 deal https://a/1', createdAt: Date.UTC(2026, 7, 22, 21, 30), media: [] }, Date.UTC(2026, 7, 23, 0, 40))) {
-    throw new Error('stale ordinary deal not expired with zero-width quiet window')
+  } else if (quietMinute < 0) {
+    nightOrdinary.createdAt = minuteInstant(0)
+    if (ordinaryJobExpiryReason(nightOrdinary, nightOrdinary.createdAt + staleGap)
+        === 'night-born deal expired by 06:00 (lists only)') {
+      throw new Error('a deal was expired by a night window that is not in effect')
+    }
+  } else {
+    nightOrdinary.createdAt = minuteInstant(quietMinute)
+    if (ordinaryJobExpiryReason(nightOrdinary, nightOrdinary.createdAt + staleGap)
+        === 'night-born deal expired by 06:00 (lists only)') {
+      throw new Error('a deal inside a 24-hour pause is held, never expired for being quiet-born')
+    }
   }
   // v17.8 THE SAME PRODUCT, NOT THE SAME CAPTION. Two WhatsApp-side rules the
   // user named: a product already sent must not come again, and a cleaned line

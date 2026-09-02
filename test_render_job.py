@@ -671,6 +671,91 @@ async def main():
         check("short amazon dp not shortened", not wants_short(short_dp, False))
         check("but the same short dp IS shortened inside a list", wants_short(short_dp, True))
 
+        # ---- 11. the source message is gone (channels delete/re-post their own) ----
+        # Intake received the full text and the queue keeps it, so a message Telegram
+        # will not hand back may change the PHOTOS, never whether the deal is posted.
+        print("\n== 11: a vanished source message must not take the post with it ==")
+
+        async def row_of(text, msg_id, with_copy=True, attempts=0):
+            import time as _t
+            cols = ["chat_id", "msg_id", "source", "created_at", "priority", "chat_key",
+                    "attempts"]
+            vals: list = [111, msg_id, "gone_source", _t.time(), 1,
+                          str(bot.raw_chat_id(111)), attempts]
+            if with_copy:
+                cols.append("source_text")
+                vals.append(text)
+            store.conn.execute(
+                f"INSERT INTO queue({','.join(cols)}) "
+                f"VALUES({','.join('?' * len(vals))})", vals)
+            store.conn.commit()
+            return store.conn.execute("SELECT * FROM queue WHERE msg_id=?", (msg_id,)).fetchone()
+
+        class GoneClient:
+            """What the pipeline sees once the source deletes its own post."""
+
+            def __init__(self, error=None):
+                self.error = error
+
+            async def get_messages(self, chat_id, ids=None):
+                if self.error is not None:
+                    raise self.error
+                return None
+
+        def post(slug, name):
+            text = (f"\U0001f525 {name}\n"
+                    f"MRP \u20b95,995  Deal Price: \u20b91,999  Discount: 66%\n"
+                    f"https://amzn.to/{slug}")
+            aff = FakeAffiliate(
+                {f"https://amzn.to/{slug}": f"https://www.amazon.in/dp/B0{slug}"},
+                {f"https://amzn.to/{slug}": bot.LinkResult(
+                    f"https://amzn.to/{slug}", f"https://www.amazon.in/dp/B0{slug}",
+                    f"https://www.amazon.in/dp/B0{slug}?tag=deals0911-21",
+                    f"amazon:B0{slug}")},
+            )
+            return text, aff
+
+        text1, aff1 = post("GONE1", "Nike Men's Running Shoes")
+        try:
+            msg_r, rendered, price = await bot.render_job(
+                GoneClient(), aff1, await row_of(text1, 9101))
+        except Exception as exc:  # reported, not raised: a lost post is a FAIL, not a crash
+            msg_r, rendered, price = None, "", None
+            check(f"the vanished message is survived ({type(exc).__name__}: {exc})", False)
+        check("a deleted message still renders", bool(rendered))
+        check("the product line survives", "Nike Men's Running Shoes" in rendered)
+        check("the price and the discount survive", "\u20b91,999" in rendered and "66%" in rendered)
+        check("our tag is still applied to the link", "tag=deals0911-21" in rendered)
+        check("no media is invented for a message we cannot fetch",
+              getattr(msg_r, "media", "unexpected") is None)
+        check(f"the price is read from our own copy ({price})", price == 1999)
+
+        # Transient trouble is retried FIRST, because the next attempt may still get the
+        # photos back; only the attempt with no retries left settles for the copy.
+        text2, aff2 = post("GONE2", "Adidas Track Pants")
+        try:
+            await bot.render_job(GoneClient(ConnectionError("net down")), aff2,
+                                 await row_of(text2, 9102))
+            check("a flood/connection failure is retried, not settled for text-only", False)
+        except ConnectionError:
+            check("a flood/connection failure is retried, not settled for text-only", True)
+
+        text3, aff3 = post("GONE3", "Puma Lighthouse Sneakers")
+        last = await row_of(text3, 9103, attempts=bot.JOB_MAX_ATTEMPTS - 1)
+        _, rendered_last, _ = await bot.render_job(GoneClient(ConnectionError("net down")),
+                                                   aff3, last)
+        check("the final attempt posts from the copy instead of dropping the deal",
+              "Puma Lighthouse Sneakers" in rendered_last)
+
+        # Nothing stored (a row written by a build before source_text) keeps the old
+        # retryable failure - it is never a silent success with made-up content.
+        try:
+            await bot.render_job(GoneClient(), aff1, await row_of(text1, 9104, with_copy=False))
+            check("a legacy row with no stored copy still reports the fetch failure", False)
+        except RuntimeError as exc:
+            check(f"a legacy row with no stored copy still reports the fetch failure ({exc})",
+                  "no longer available" in str(exc))
+
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
         sys.exit(1)

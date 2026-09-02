@@ -1,3 +1,52 @@
+v18.3 - THE SOURCE DELETED ITS OWN POST, AND WE LOST THE DEAL
+================================================================================
+1. A deal that reached intake died in rendering.
+       JOB FAIL 1: source message no longer available
+   `render_job` opened with `msg = await client.get_messages(...)` and refused to work
+   without the live message. Loot channels delete or re-post part of their own output, and
+   Telethon then answers `None` forever - the job burned all JOB_MAX_ATTEMPTS on a message
+   that was never coming back and the post was dropped, although the intake event had handed
+   us the complete text and the queue has kept it (`queue.source_text`) since v18.2.
+   Fix: a row that holds its own copy renders from that copy
+   (`StoredSourceMessage`), logging `SOURCE MESSAGE GONE ... that message's media cannot be
+   re-attached`. Nothing is invented: `.media`/`.photo`/`.entities`/`.reply_to` are absent,
+   so the pipeline cannot post photos it cannot see and cannot re-flow text it never had.
+   A message that simply is not there is decided immediately; a FloodWait/network failure
+   still retries while the job has attempts left, because the next attempt may get the
+   PHOTOS back. A row with no stored copy (written before v18.2) keeps the old retryable
+   error - it is never a silent success.
+2. The same class, one step later: a job whose post was ALREADY rendered and stored fetched
+   the source message only to sharpen residue cleaning and re-attach media. If that fetch
+   THREW (a deleted message id), the whole ready-to-send job died with
+       JOB FAIL 1: Could not find the referenced message 9601 in this channel
+   The optional lookup now degrades to "no message", which the existing branches already
+   treat as "post the stored copy, without media".
+3. Proof, each one checked red before it was believed:
+   test_render_job section 11 (gone message renders, price/discount/our-tag survive, no
+   media invented, transient failure retried first, last attempt falls back, legacy row
+   unchanged); test_duplicate_sim S13a (full delivery path, status 'done', source lines
+   intact), S13b (already-rendered job with a throwing fetch), S14 (a photo-only caption
+   whose photo is gone is NOT rebuilt out of thin air - the pinned rule needs media AND deal
+   terms); test_pipeline_fixes (`StoredSourceMessage` contract, and the 8000-char storage
+   cap can never truncate a Telegram message, which tops out at 4096 characters).
+
+THE BRIDGE SELF-TEST WAS TIME-OF-DAY AND ZONE DEPENDENT
+--------------------------------------------------------------------------------
+`node bridge.js --self-test` failed at ~08:00 IST with
+       Error: best-tier deal wrongly expired (trust policy)
+because its trust-policy fixtures were built from `Date.now() - 3h`: at 08:00 IST "three
+hours ago" is 05:00, i.e. quiet-born, so the night rule expired the job and the fixture read
+it as a broken bridge - in the morning, which is exactly when `ops/deploy_and_verify.sh` is
+run. The neighbouring night assertions hard-coded "03:00 IST = 21:30 UTC", so they broke for
+`TZ_NAME` and for any move of QUIET_START/QUIET_END (00:00-23:59, 22:00-06:00, 12:00-12:00).
+Both blocks now (a) pass an explicit `now` to every call, (b) derive the age gap from
+ORDINARY_MAX_AGE_MS/MAX_JOB_AGE_MS instead of a fixed 3 hours, and (c) take the quiet/free
+minute from the LIVE window (scanning `isQuietMinute`), so they assert the rule for whatever
+the operator configured - including a 24-hour pause (nothing may be expired for being
+quiet-born) and no pause at all (nothing may be expired by a window that is not in effect).
+Self-test PASS in 9 modes: defaults, TZ_NAME=UTC, TZ_NAME=America/New_York, quiet 00:00-23:59,
+12:00-12:00, 22:00-06:00, WA_ORDINARY_MAX_AGE_MINUTES=1 and =900, and all-off combined.
+
 IMMEDIACY + ZERO-DUPLICATE + POST-QUALITY FIX NOTES — 2026-08-31 (v16)
 
 WHY THIS EXISTS (reported symptoms)

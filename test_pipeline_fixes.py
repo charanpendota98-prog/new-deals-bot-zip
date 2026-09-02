@@ -1479,6 +1479,54 @@ async def test_a_live_database_from_an_older_build_is_upgraded():
         store.conn.close()
 
 
+async def test_the_stored_copy_is_whole():
+    """`enqueue` keeps the source text for the recovery/repair paths and caps it at 8000
+    chars for database hygiene. A Telegram message is at most 4096 characters, so the cap
+    must never bite - if it ever truncated a real post, a repair would be working from half
+    a deal and quietly losing the source's own lines.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        store = bot.Store(Path(td) / "cap.sqlite3")
+        long_text = "\n".join(f"line {i} of a big list deal \u20b9199 https://amzn.to/x{i}"
+                              for i in range(120))[:4096]
+        await store.enqueue(-100777, 8801, "dealsvelocity", long_text, False)
+        row = store.conn.execute("SELECT source_text FROM queue WHERE msg_id=8801").fetchone()
+        check(f"the whole 4096-char post is on the row ({len(row['source_text'])} chars)",
+              row["source_text"] == long_text)
+        # and a longer-than-Telegram string is still kept to a bounded size, not dropped
+        huge = "x" * 20000
+        await store.enqueue(-100777, 8802, "dealsvelocity", huge, False)
+        big = store.conn.execute("SELECT source_text FROM queue WHERE msg_id=8802").fetchone()
+        bounded = len(big["source_text"]) == 8000
+        check(f"an absurd input stays bounded instead of bloating the queue "
+              f"({len(big['source_text'])} chars)", bounded)
+        store.conn.close()
+
+
+def test_the_recovered_source_message_acts_like_one():
+    """StoredSourceMessage is what render_job sees when the source deleted its own post.
+    It must satisfy exactly the attributes the pipeline reads - and nothing more: no media,
+    no entities, no reply. A float `.date` here would blow up the moment a caller does the
+    normal `msg.date.timestamp()`, so the class converts the row's epoch for them.
+    """
+    import datetime as _dt
+    msg = bot.StoredSourceMessage("Deal ₹199 https://amzn.to/x", -100333, 4242, 1700000000.0)
+    check("text and message both carry the intake copy",
+          msg.text == msg.message == "Deal ₹199 https://amzn.to/x")
+    real_date = (isinstance(msg.date, _dt.datetime)
+                 and msg.date.timestamp() == 1700000000.0)
+    check(f"the queue's epoch becomes a real datetime ({msg.date})", real_date)
+    check("nothing is invented about media, entities or replies",
+          msg.media is None and msg.photo is None and msg.document is None
+          and msg.grouped_id is None and msg.entities == [] and msg.reply_to is None
+          and msg.reply_markup is None)
+    check("the ids still line up with the row", msg.id == 4242 and msg.chat_id == -100333)
+    # extract_urls is the pipeline's only way of seeing links: it must work on this object
+    urls = bot.extract_urls(msg)
+    check(f"the links in the stored copy are found ({urls})",
+          urls == ["https://amzn.to/x"])
+
+
 async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
@@ -1486,6 +1534,8 @@ async def main():
         test_text_quality()
         test_row_columns_exist()
         await test_a_live_database_from_an_older_build_is_upgraded()
+        await test_the_stored_copy_is_whole()
+        test_the_recovered_source_message_acts_like_one()
         test_final_text_fidelity()
         await test_collapse_migration(store)
         await test_dedup(store)

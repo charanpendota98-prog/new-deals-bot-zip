@@ -4581,10 +4581,72 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
 # ---------------------------------------------------------------------------
 # Worker pipeline
 # ---------------------------------------------------------------------------
+class StoredSourceMessage:
+    """Stand-in for a source message Telegram will not hand back.
+
+    A loot channel deletes or re-posts some of its own messages within seconds. Until
+    now that killed the deal HERE: render_job refused to render without the live message,
+    the job burned JOB_MAX_ATTEMPTS on a message that was never coming back, and a post
+    intake had already received in full disappeared - the one thing the pipeline is not
+    allowed to do. Intake keeps the text it was given (`queue.source_text`), so the post
+    is now rendered from our own copy of it.
+
+    Nothing is invented for the media: those photos really are gone, so `.media` stays
+    None and every media branch of the pipeline remains exactly as unreachable as the
+    message itself. The deal text, its links and its layout all survive.
+    """
+
+    def __init__(self, text: str, chat_id: int, msg_id: int, date):
+        self.id = msg_id
+        self.chat_id = chat_id
+        self.text = text
+        self.message = text
+        self.entities: list = []
+        self.reply_markup = None
+        self.reply_to = None
+        self.media = None
+        self.photo = None
+        self.document = None
+        self.grouped_id = None
+        # `.date` is a datetime everywhere else in the pipeline (backfill and rescan both
+        # call msg.date.timestamp()), so hand back the intake timestamp as one rather than
+        # a bare float that would only work as long as nobody reads it.
+        self.date = (datetime.fromtimestamp(date, tz=timezone.utc)
+                     if isinstance(date, (int, float)) and date else date)
+
+
 async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
-    msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
+    # v18.3: whether the source message is still fetchable decides media and entities,
+    # never WHETHER the post exists. A row whose own copy of the text is intact renders.
+    stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
+    fetch_error = None
+    try:
+        msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
+    except Exception as exc:  # noqa: BLE001 - judged below, never swallowed here
+        fetch_error, msg = exc, None
     if not msg:
-        raise RuntimeError("source message no longer available")
+        transient = isinstance(fetch_error, (FloodWaitError, ConnectionError, TimeoutError,
+                                             asyncio.TimeoutError, OSError))
+        # A rate limit or a broken connection says nothing about the post, and the photos
+        # may still be there one retry later - so keep trying while the job has attempts
+        # left, and only then fall back to the copy without media. A message that simply
+        # is not there any more (Telegram returned nothing) is never coming back, so that
+        # one renders from our own copy immediately.
+        if transient and int(row["attempts"] or 0) + 1 < JOB_MAX_ATTEMPTS:
+            raise fetch_error
+        if stored_copy.strip():
+            log.warning(
+                "SOURCE MESSAGE GONE | queue=%s chat=%s msg=%s - rendering from the copy "
+                "intake kept (%s chars); that message's media cannot be re-attached%s",
+                row["id"], row["chat_id"], row["msg_id"], len(stored_copy),
+                f" (fetch raised {type(fetch_error).__name__})" if fetch_error is not None else "")
+            msg = StoredSourceMessage(stored_copy, row["chat_id"], row["msg_id"], row["created_at"])
+        elif fetch_error is not None:
+            raise fetch_error          # nothing stored to fall back on: retry like before
+        else:
+            # Nothing fetched AND nothing stored (a row written by an older build):
+            # still a retryable failure, not a silent drop.
+            raise RuntimeError("source message no longer available")
     # IMPORTANT: Telegram entity offsets refer to the ORIGINAL text. Never run
     # footer/branding cleanup before rebuilding entities, otherwise offsets shift
     # and fragments such as `uy` / `tps://` get glued to the affiliate URL.
@@ -5079,7 +5141,17 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     price = None
     try:
         if row["rendered_text"]:
-            msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
+            # The post is already rendered and stored: this fetch only sharpens the
+            # residue cleaning and re-attaches media. A source message that has since
+            # been deleted must not abort a job that is ready to send, so a failed
+            # lookup degrades to "no message" - which the branches below already treat
+            # as "post the stored copy, without media".
+            msg = None
+            try:
+                msg = await client.get_messages(row["chat_id"], ids=row["msg_id"])
+            except Exception as exc:  # noqa: BLE001 - optional enrichment, never a blocker
+                log.info("SOURCE MESSAGE GONE | queue=%s fetch raised %s - posting the stored copy",
+                         row["id"], type(exc).__name__)
             rendered = row["rendered_text"]
             if await store.has_partial_delivery(row["id"]):
                 # At least one chunk is already out. Re-cleaning would shift the
