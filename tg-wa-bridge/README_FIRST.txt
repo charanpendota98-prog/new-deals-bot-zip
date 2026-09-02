@@ -134,3 +134,154 @@ FAILURE ISOLATION
 
 SECURITY
 Never upload/paste .env, BotFather token, pairing code or auth/. Back up .env and auth/ securely.
+
+WhatsApp channel policies (v17.4). Each configured channel is fed by its own rule,
+set in .env:
+  WA_CHANNEL            main channel - every deal that passes the pipeline
+  WA_CHANNEL_UNDER99    deals up to Rs99, card/bank offers, and every product list
+  WA_CHANNEL_UNDER499   same, with a Rs499 band - picks from all sources
+  WA_CHANNEL_BEST_OF    only the single best deal available at that moment; a deal
+                        that is not a best pick is skipped here (never delayed and
+                        dumped). WA_BEST_OF_COOLDOWN_SECONDS spaces the picks out.
+WA_CHANNEL_ALL_POSTS=true overrides all of this and mirrors every post to every
+channel. Channel IDs may be an invite link or a ...@newsletter JID; a channel that
+fails to resolve once is retried every 10 minutes, and the main channel keeps
+posting meanwhile.
+
+v17.5 formatting rule: a WhatsApp post is the SOURCE post. The bridge no longer
+adds anything of its own - no bold headline hoisted out of the text, no "💰 price /
+🔥 discount" badge line, no "LOOT ZONE — India / SPECIAL OFFER / Verified • Enjoy
+(Grab fast)" wrapper on specials, no "MEGA DEAL LIST" banner on big lists, no
+"DEALS OF THE DAY" header on digests, no "➜" bullets and no "Latest deal" filler.
+What is still removed is only junk (another channel's branding, referral /
+app-install farming, CTA filler, markdown debris, glued tokens) and what is changed
+is only the link: every merchant link becomes OUR monetized link, one per line.
+If a source opens with its own "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" line, that line is
+published exactly as the source wrote it; set WA_STRIP_CAMPAIGN_BANNERS=true only if
+you want those hype lines gone.
+
+v17.6 intake rule (same on the Telegram bot): the queue always publishes the BEST
+copy of a product. When a second source posts the same merchant product id while the
+first copy is still waiting to be delivered, the waiting job is re-pointed at the
+stronger deal ("best copy: queued job re-pointed") instead of the newer post being
+dropped as a duplicate - so the price/discount our channels show is the best one
+that existed at that moment, not a race result. Safety rules that never change:
+one job per product (this is a swap, not a second job), the swap only matches EXACT
+product ids (a shortener-only post is never matched by name), a list or a
+photo-special already in the queue is never rewritten, a job that already started
+delivering is left alone, and a list that merely contains an already-queued product
+is still posted in full (dropping it would lose the other items).
+
+v17.8 (round 10) - nothing is cut to make a message fit, and a product is not sent
+twice:
+  * A DIGEST ITEM IS THE SOURCE POST, numbered. It used to print a 90-character
+    name plus a badge WE invented ("₹1,099 • 78% OFF") and then cut the item to
+    220/160/100/60 characters so that ten deals would fit one message - that is
+    where the user's "price appears twice in one WhatsApp post" and "text is
+    missing on WhatsApp" both came from. formatDigestItem now renders the cleaned
+    source body with our links, invents nothing, and buildBucketDigest returns
+    {digest, used}: if the bucket holds more complete posts than fit, the digest
+    carries FEWER of them and the rest stay queued for the next list. Truncating a
+    source line to squeeze more items in is not an option any more.
+  * A PHOTO CAPTION TOO LONG FOR WHATSAPP IS SPLIT, NOT CUT. formatSpecialCaption
+    no longer ends with an ellipsis; splitCaptionForMedia puts whole lines on the
+    photo and the remainder is sent as a message right behind it.
+    compactLargeLine no longer shortens list lines either (max defaults to 0).
+  * CLEANING MAY NOT DELETE A FACT. The CTA clause patterns ended with
+    "[^.\n|]*$", which deleted the rest of the line - a coupon code after "More
+    offers:" went away, and a line like "More deals here: <link>" lost the link,
+    which is how a whole post once disappeared. CTA_TAIL may only swallow plain
+    words: a price, a digit, a percentage, a code-like token or a link ends the
+    clause. If a cleanup did take an amount/percentage/code away, stripInlineCta
+    undoes itself for that line (dealPayloadOf / payloadLacks), exactly like the
+    bot's strip_inline_cta.
+  * SAME PRODUCT, ONE CHANNEL, ONE TIME. nameOnlyKey() identifies a product by its
+    own words plus size/capacity tokens (prices and MRP clauses masked, because
+    those change between copies of one deal) and duplicateProductReason() skips a
+    product the channel already carried inside WA_SAME_PRODUCT_HOURS (default 48) -
+    unless the new copy is strictly better: cheaper, or at least
+    WA_SAME_PRODUCT_MARGIN (default 5) points deeper discounted, because a 1-point
+    difference is measurement noise and must not re-post the same item. A roundup
+    (3+ merchant links), a campaign banner and a bare category phrase never get an
+    identity. state.sentNames is the ledger; markProductSent() writes it.
+    The v17.6 swap rule is unchanged and stays exact-id only: this key may SKIP a
+    repeat, it never re-points or rewrites a queued job.
+  * ONE CEILING ON PACING. scheduleNext() could multiply an already-clamped gap by
+    the morning stretch, the near-cap-hour stretch and the quiet-hours factor and
+    then add the hourly break, so the WhatsApp channels could be parked for more
+    than an hour by accident (and the self-test ceiling was wrong about it, which
+    made the deploy gate fail roughly one run in six). The scheduled gap is now
+    clamped to WA_MAX_MESSAGE_GAP_SECONDS (default 3600) and the self-test asserts
+    that number.
+
+  v17.9 (round 11) - the same-product rule, fixed at the root:
+  * IDENTITY IS A TOKEN SET, NOT A PHRASE. The name-only key used to be the first
+    eight words of the headline in order, which got BOTH directions wrong: it
+    dropped digit-only model numbers (so "Airdopes 141" and "Airdopes 131" were
+    "the same product" and a real deal got skipped), and it treated any extra
+    adjective as a new product (so the same AC written "1.5 Ton 5 Star Inverter Split
+    AC" by one channel and "…with 4 Way Swing" by another was posted twice).
+    productNameIdentity() now keys brand + model numbers (141, s23, wh-ch720n,
+    pro4, model2600) + variant qualifiers (pro/fe/max - S23 and S23 FE stay apart)
+    + the numbers that change the product (128GB, 1.5 ton, 5 star, 55 inch, 5
+    burner), and ignores specs channels type inconsistently (42H, 5000mAh, 1080p,
+    4K, 5G) and a launch year such as "(2023)". No model number at all (a shirt, a
+    handbag) means every product word must agree, which is the conservative answer:
+    lose a duplicate, never a deal.
+  * THE THREE SERVICES MUST AGREE, AND A TEST ENFORCES IT. The rule lives in
+    main_bot_new.py; ops/sync_identity.py GENERATES the auditor's copy
+    (`python3 ops/sync_identity.py`, checked by `--check`); and this bridge answers
+    `--identity-probe` on stdin (one headline per line, identity per line as JSON)
+    so test_line_fidelity.py compares JavaScript against Python on the same corpus.
+    If you change one copy, that test goes red - do not "fix" it by loosening it.
+  * A BROKEN LINK COSTS MONEY. splitCaptionForMedia() used to cut an over-long
+    caption at the 1024th character, which could leave "https://www.amazon.in/dp/B0AB"
+    at the end of the caption and the rest of it in the follow-up text: a dead link,
+    an unpaid sale, and a customer who saw a half a URL. captionCutAt() breaks at a
+    space OUTSIDE any URL instead (or right after the URL when the URL alone is too
+    long), and the self-test fails if a link is ever bisected or printed twice.
+
+  v18.0 (round 12) - the WhatsApp half of "the source posted it, our channel did not":
+  - A share/forward link is not a destination. isShareIntent() (wa.me,
+    api.whatsapp.com, chat/web.whatsapp.com, t.me, tg://, addtoany, sharethis,
+    getpocket, vk.com, m.me, ...) is skipped inside deadDestinations(), so a
+    "share this on WhatsApp" link in the source text can never make a post look
+    broken. On the bot the same idea also keeps it out of the conversion list, which
+    is where the user's Lizol post was dying ("conversion retry required: ... wa.me").
+  - WA_DROP_DEAD_LINKS=false (default): if every destination answers as a merchant
+    404/repair page - normal for a fresh ASIN seen from a datacenter IP - the post
+    goes out and the log says so, instead of throwing `Broken destination:` and having
+    the job dropped as permanently failed. Set it to true for the old hard block.
+  - stripPriceJunk + keepCodeAsIs are the bridge's copy of the bot's rule (v18.1:
+    "Rs 199HFJF" -> "Rs 199" - a token FUSED to a price is unwanted text, so it is cut,
+    and nothing is written in its place; "Rs260tG7oChgiQuTgS25b" -> "Rs260" as before).
+    What the source wrote APART survives untouched ("Use code HFJF for Rs199 off",
+    "Price Rs199 SAVE200", "500ml Rs260 offer"); a spaced token is deleted only when it
+    is machine-shaped (mixed case, 8+ chars, holds a digit). The walk never crosses a
+    newline.
+  - explicitDiscount() reads the "Discount: 26%" colon form like the bot does, so a
+    post written that way is no longer ranked as 0% off by the best-pick logic.
+  - node bridge.js --self-test pins all of the above, and passes with either setting
+    of WA_DROP_DEAD_LINKS.
+
+  v18.2 (round 14):
+  - a link-free post (the source published a photo with the price inside the image) is
+    published on Telegram as written; on WhatsApp the curated gate still skips it, and the
+    reason is in the log ("no link in post (curated: skipped)") rather than being silent.
+  - the self-test is knob-honest: gate promises are judged through the mode that is running
+    (WA_BEST_GATE=false must skip NOTHING), product dedup is judged by duplicateProductReason
+    instead of the gate that wraps it, and every link is compared to WA_SHORTEN_MIN_LEN
+    instead of the default 65. An operator moving a knob should never see a red self-test.
+
+  v18.1 (round 13) - the WhatsApp side keeps pace with the bot:
+  - the glued-price rule flipped to "cut" (above) - the channel owner ruled that
+    "h"/"htt"/"jsjd"-style text next to a price must never be shown, and that nothing of
+    ours may be added in its place either;
+  - explicitDiscount / stripPriceJunk / isShareIntent stay mirrored with the bot's
+    parse_discount / strip_price_junk / is_share_intent, and --self-test pins all of them
+    (a price walk that must not fuse two lines, share links never judged as
+    destinations, cashback never read as a discount);
+  - the bot's new delivery-time top line (our own channel link) is NOT re-implemented
+    here: the bridge reads the SOURCE channels, so WhatsApp copy stays exactly what this
+    file's formatters produce. If the family link is ever wanted on WhatsApp too, that is
+    a one-knob decision, not a rewrite.

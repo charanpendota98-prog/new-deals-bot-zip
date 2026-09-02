@@ -88,9 +88,25 @@ def main() -> None:
         "BOT_DB_PATH": str(APP_DIR / "bestgaa.sqlite3"),
         "PRODUCT_DEDUP_SECONDS": "36000",
         "PRICE_DEDUP_SECONDS": "3600",
-        "QUEUE_WORKERS": "6",
-        "EK_MAX_CONCURRENCY": "6",
+        "PRICE_DEDUP_IGNORES_IDENTITY": "false",
+        "QUEUE_WORKERS": "8",
+        "EK_MAX_CONCURRENCY": "8",
         "POST_RETRIES": "3",
+        # Immediate dispatch (v16) — optional, the bot clamps every value.
+        "QUEUE_ORDER": "newest",
+        "MAX_JOB_AGE_HOURS": "6",
+        "JOB_RETRY_MAX_SECONDS": "20",
+        "HTTP_TOTAL_TIMEOUT_SECONDS": "12",
+        "LINK_HEALTH_CACHE_SECONDS": "900",
+        "PRESEND_CHECK_BUDGET_SECONDS": "25",
+        "SOURCE_RESCAN_SECONDS": "120",
+        "SOURCE_RESCAN_LIMIT": "40",
+        "SOURCE_REFRESH_SECONDS": "180",
+        "MAX_MEDIA_MB": "45",
+        # v17: never lose a post over a store the network cannot monetize.
+        "PASSTHROUGH_UNMONETIZED": "true",
+        "TARGET_FANOUT_GAP_MIN": "0.4",
+        "TARGET_FANOUT_GAP_MAX": "1.2",
     }
     missing = [key for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "EARNKARO_API_KEY", "AMAZON_TAG") if not required[key]]
     if missing:

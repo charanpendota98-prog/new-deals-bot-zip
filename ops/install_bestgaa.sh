@@ -109,9 +109,33 @@ BITLY_TOKENS=$BITLY
 BOT_DB_PATH=$APP/bestgaa.sqlite3
 PRODUCT_DEDUP_SECONDS=36000
 PRICE_DEDUP_SECONDS=3600
-QUEUE_WORKERS=6
-EK_MAX_CONCURRENCY=6
+# Same-price gate is a fallback for posts with no ASIN/PID. Set true to
+# also block a different product sharing an already-posted price.
+PRICE_DEDUP_IGNORES_IDENTITY=false
+QUEUE_WORKERS=8
+EK_MAX_CONCURRENCY=8
 POST_RETRIES=3
+# Immediate dispatch (v16). Everything here is optional and clamped by the bot;
+# delete a line to take the built-in default (they are the same values).
+QUEUE_ORDER=newest
+MAX_JOB_AGE_HOURS=6
+JOB_RETRY_MAX_SECONDS=20
+HTTP_TOTAL_TIMEOUT_SECONDS=12
+LINK_HEALTH_CACHE_SECONDS=900
+PRESEND_CHECK_BUDGET_SECONDS=25
+SOURCE_RESCAN_SECONDS=120
+SOURCE_RESCAN_LIMIT=40
+SOURCE_REFRESH_SECONDS=180
+MAX_MEDIA_MB=45
+TARGET_FANOUT_GAP_MIN=0.4
+TARGET_FANOUT_GAP_MAX=1.2
+# v17: publish a store link EarnKaro cannot monetize as a clean untagged
+# merchant link instead of losing the post. false = old behaviour (retry, then
+# skip - that deal never reaches the channels).
+PASSTHROUGH_UNMONETIZED=true
+# Source fidelity: publish what the source published (its own hype header
+# included). Set true to ALSO drop pure campaign banner lines.
+STRIP_CAMPAIGN_BANNERS=false
 # Night quiet 02:00-06:00 IST: Telegram posting pauses; deals keep queueing
 # and go out at 06:00. Set both equal (00:00/00:00) to disable.
 POST_QUIET_START=02:00

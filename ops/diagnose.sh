@@ -49,6 +49,44 @@ if grep -q "isOurAmazonTagLink" "$BRIDGE_DIR/bridge.js" 2>/dev/null; then
 else
   bad "WhatsApp bridge is running OLD code -> cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh"
 fi
+# v17 markers - these are the fixes for "posts missing" and "random junk next
+# to the price". If they are absent the server is still on an older build, and
+# no amount of waiting will change what the channels print: redeploy.
+for marker in "sanitize_outbound_text:final outbound junk guard (no glued tokens, no [url](url) debris)" \
+              "GENERIC_HEADLINE_RE:campaign fingerprint no longer swallows a source sharing one banner line" \
+              "keep_passthrough:unmonetizable store links post clean instead of being dropped" \
+              "revive_edited_job:an edited source post that never went out is re-queued" \
+              "remember_passthrough:pass-through links carry provenance"; do
+  name="${marker%%:*}"; desc="${marker#*:}"
+  if grep -q "$name" "$BESTGAA_DIR/main_bot.py" 2>/dev/null \
+     || grep -q "$name" "$BESTGAA_DIR/main_bot_new.py" 2>/dev/null; then
+    ok "v17 bot: $desc"
+  else
+    bad "v17 bot fix MISSING: $name -> redeploy (the bug this fixes is still live)"
+  fi
+done
+if grep -q "function sanitizeOutbound" "$BRIDGE_DIR/bridge.js" 2>/dev/null; then
+  ok "v17 bridge: outbound junk guard present"
+else
+  bad "v17 bridge guard MISSING -> redeploy the bridge bundle"
+fi
+if grep -qE "BestGAA Production Bot v1[7-9]" "$BOT_LOG" 2>/dev/null; then
+  ok "bot log shows a v17+ startup banner (the new build actually restarted)"
+else
+  warn "no v17 startup banner in $BOT_LOG -> service was not restarted after the deploy"
+fi
+
+echo ""
+echo "==== 2b. SOURCE COVERAGE: did every source post reach a channel? ===="
+AUDIT="$BESTGAA_DIR/coverage_audit.py"
+[[ -f "$AUDIT" ]] || AUDIT="$BESTGAA_DIR/../new-deals-bot-zip/ops/coverage_audit.py"
+[[ -f "$AUDIT" ]] || AUDIT="$(dirname "$(readlink -f "$0")")/coverage_audit.py"
+if [[ -f "$AUDIT" ]]; then
+  python3 "$AUDIT" --hours 12 2>&1 | sed 's/^/  /'
+  echo "    (repair the recoverable ones with: python3 $AUDIT --hours 12 --heal)"
+else
+  warn "coverage_audit.py not found - run it from the repo: python3 ops/coverage_audit.py --hours 12"
+fi
 
 echo ""
 echo "==== 3. WHATSAPP GROUPS CONFIGURED? ===="
@@ -108,6 +146,23 @@ PY
 else
   warn "bridge-state.json not found (bridge may not have started)"
 fi
+# Both WhatsApp channels fed? The second channel is either an Under-₹99 shelf
+# (tiered) or a full mirror (WA_CHANNEL_ALL_POSTS=true). A channel that fails to
+# resolve is retried every 10 minutes - this prints which mode is live.
+SEC_LINE=$(grep -E '^WA_CHANNEL_UNDER99=' "$BRIDGE_DIR/.env" 2>/dev/null | cut -d= -f2-)
+if [[ -n "${SEC_LINE:-}" ]]; then
+  if grep -qE '^WA_CHANNEL_ALL_POSTS=true' "$BRIDGE_DIR/.env" 2>/dev/null; then
+    ok "2nd WhatsApp channel configured AND mirroring every post (WA_CHANNEL_ALL_POSTS=true)"
+  else
+    ok "2nd WhatsApp channel configured as the Under-₹99 shelf (set WA_CHANNEL_ALL_POSTS=true to mirror everything)"
+  fi
+  sudo journalctl -u tg-wa-bridge -n 400 --no-pager 2>/dev/null | grep -q "could not be resolved" \
+    && warn "a WhatsApp channel failed to resolve at least once (it retries every 10 min; check the invite link/JID)" \
+    || true
+else
+  warn "no 2nd WhatsApp channel (WA_CHANNEL_UNDER99 empty) - only ONE channel is being posted to"
+fi
+
 sudo journalctl -u tg-wa-bridge -n 200 --no-pager 2>/dev/null | grep -q "WhatsApp connected" \
   && ok "bridge connected at least once (see: sudo journalctl -u tg-wa-bridge -n 40 --no-pager)" \
   || warn "no 'WhatsApp connected' in recent logs -> run with sudo: sudo journalctl -u tg-wa-bridge -n 60 --no-pager"
@@ -150,6 +205,23 @@ if [[ -f "$BOT_LOG" ]]; then
 fi
 echo "  -- WhatsApp bridge (skip/err), last 8 --"
 sudo journalctl -u tg-wa-bridge -n 800 --no-pager 2>/dev/null | grep -oE '"(reason|err|msg)":"[^"]{0,110}"' | tail -8 | sed 's/^/    /' || true
+
+echo ""
+echo "==== 10. POST QUALITY AUDIT (read-only proof of the four guarantees) ===="
+# Nothing invented, our links only, no product twice, nothing lost - the auditor
+# checks exactly that on the live queue and prints the offending queue ids.
+AUDIT="$(dirname "$0")/quality_audit.py"
+# the deploy bundle drops it next to main_bot.py, so look there too
+[[ -f "$AUDIT" ]] || AUDIT="$BESTGAA_DIR/quality_audit.py"
+if [[ -f "$AUDIT" && -f "$DB" ]]; then
+  python3 "$AUDIT" --db "$DB" --limit 120 2>&1 | sed 's/^/    /'
+  python3 "$AUDIT" --db "$DB" --limit 120 --strict >/dev/null 2>&1 \
+    && ok "recent posts are clean" || warn "quality audit found posts that broke a guarantee - the list above has the queue ids"
+elif [[ ! -f "$DB" ]]; then
+  echo "    no queue database at $DB yet - nothing to audit"
+else
+  echo "    ops/quality_audit.py not found (checked $(dirname "$0") and $BESTGAA_DIR) - copy it over to get this check"
+fi
 
 echo ""
 echo "==== QUICK FIXES ===="

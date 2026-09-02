@@ -1,0 +1,1046 @@
+v18.3 - THE SOURCE DELETED ITS OWN POST, AND WE LOST THE DEAL
+================================================================================
+1. A deal that reached intake died in rendering.
+       JOB FAIL 1: source message no longer available
+   `render_job` opened with `msg = await client.get_messages(...)` and refused to work
+   without the live message. Loot channels delete or re-post part of their own output, and
+   Telethon then answers `None` forever - the job burned all JOB_MAX_ATTEMPTS on a message
+   that was never coming back and the post was dropped, although the intake event had handed
+   us the complete text and the queue has kept it (`queue.source_text`) since v18.2.
+   Fix: a row that holds its own copy renders from that copy
+   (`StoredSourceMessage`), logging `SOURCE MESSAGE GONE ... that message's media cannot be
+   re-attached`. Nothing is invented: `.media`/`.photo`/`.entities`/`.reply_to` are absent,
+   so the pipeline cannot post photos it cannot see and cannot re-flow text it never had.
+   A message that simply is not there is decided immediately; a FloodWait/network failure
+   still retries while the job has attempts left, because the next attempt may get the
+   PHOTOS back. A row with no stored copy (written before v18.2) keeps the old retryable
+   error - it is never a silent success.
+2. The same class, one step later: a job whose post was ALREADY rendered and stored fetched
+   the source message only to sharpen residue cleaning and re-attach media. If that fetch
+   THREW (a deleted message id), the whole ready-to-send job died with
+       JOB FAIL 1: Could not find the referenced message 9601 in this channel
+   The optional lookup now degrades to "no message", which the existing branches already
+   treat as "post the stored copy, without media".
+3. Proof, each one checked red before it was believed:
+   test_render_job section 11 (gone message renders, price/discount/our-tag survive, no
+   media invented, transient failure retried first, last attempt falls back, legacy row
+   unchanged); test_duplicate_sim S13a (full delivery path, status 'done', source lines
+   intact), S13b (already-rendered job with a throwing fetch), S14 (a photo-only caption
+   whose photo is gone is NOT rebuilt out of thin air - the pinned rule needs media AND deal
+   terms); test_pipeline_fixes (`StoredSourceMessage` contract, and the 8000-char storage
+   cap can never truncate a Telegram message, which tops out at 4096 characters).
+
+PRE-MERGE CHECK CAUGHT ONE LYING ASSERTION (v18.3, same branch)
+--------------------------------------------------------------------------------
+The knob matrix ran every suite against all 18 modes, and `test_duplicate_sim` S13b failed with
+ADD_OUR_CHANNEL_LINK_TOP=false: it asserted our channel top line is present, which is only true
+while that knob is on. A broken assertion, not a broken pipeline - fixed to assert the knob's own
+contract in both directions (as S10 already does). 18 modes x 6 suites = 108 runs green after it,
+plus the bridge's 22.
+
+THE BRIDGE SELF-TEST WAS TIME-OF-DAY AND ZONE DEPENDENT
+--------------------------------------------------------------------------------
+`node bridge.js --self-test` failed at ~08:00 IST with
+       Error: best-tier deal wrongly expired (trust policy)
+because its trust-policy fixtures were built from `Date.now() - 3h`: at 08:00 IST "three
+hours ago" is 05:00, i.e. quiet-born, so the night rule expired the job and the fixture read
+it as a broken bridge - in the morning, which is exactly when `ops/deploy_and_verify.sh` is
+run. The neighbouring night assertions hard-coded "03:00 IST = 21:30 UTC", so they broke for
+`TZ_NAME` and for any move of QUIET_START/QUIET_END (00:00-23:59, 22:00-06:00, 12:00-12:00).
+Both blocks now (a) pass an explicit `now` to every call, (b) derive the age gap from
+ORDINARY_MAX_AGE_MS/MAX_JOB_AGE_MS instead of a fixed 3 hours, and (c) take the quiet/free
+minute from the LIVE window (scanning `isQuietMinute`), so they assert the rule for whatever
+the operator configured - including a 24-hour pause (nothing may be expired for being
+quiet-born) and no pause at all (nothing may be expired by a window that is not in effect).
+Self-test PASS in 9 modes: defaults, TZ_NAME=UTC, TZ_NAME=America/New_York, quiet 00:00-23:59,
+12:00-12:00, 22:00-06:00, WA_ORDINARY_MAX_AGE_MINUTES=1 and =900, and all-off combined.
+
+IMMEDIACY + ZERO-DUPLICATE + POST-QUALITY FIX NOTES — 2026-08-31 (v16)
+
+WHY THIS EXISTS (reported symptoms)
+  1. "Source lo posts vasthunnai, kani mana bot adichu mellaga / eppudido post
+     chesthundi" — source channels publish, our channels receive them late and
+     at random times.
+  2. Duplicate posts in the target channels.
+  3. Unwanted words / junk text next to the deal.
+  4. The link in the source post must be replaced by OUR link and then posted.
+
+ROOT CAUSES FOUND (all in bestgaa/main_bot_new.py unless noted)
+
+A. LATENCY — the pipeline waited on purpose in six places
+  A1. Claim order was `created_at ASC`. A fresh deal therefore queued BEHIND
+      every hours-old row in the backlog (README claimed "newest-first" but the
+      SQL never said so) => posts looked batched and random.
+      Fixed: `QUEUE_ORDER=newest` (default) + `MAX_JOB_AGE_HOURS` sweeper so old
+      inventory is dropped (STALE DROP) instead of blocking or posting stale.
+  A2. Idle workers polled the queue once per second and nothing woke them.
+      Fixed: `notify_queue()` / `QUEUE_WAKE` — enqueue, retry, reclaim and
+      job-completion all wake the workers instantly (safety poll now 0.5s).
+  A3. Every URL of a post was handled SERIALLY, and each step had huge timeouts:
+      short-link resolve up to 5 x 18s, merchant page probe 2 x 18s (+1s sleep),
+      affiliate probe again, pre-send probe a THIRD time, Bitly 12s each.
+      A 4-link list could burn 2-4 minutes before a single send.
+      Fixed: resolve/convert/health-check/shorten all run concurrently
+      (asyncio.gather + bounded semaphores), per-request timeout is now
+      `HTTP_TOTAL_TIMEOUT_SECONDS` (12s), link verdicts are cached
+      (`LINK_HEALTH_CACHE_SECONDS`) so one URL is probed once per job, the
+      pre-send pass is capped by `PRESEND_CHECK_BUDGET_SECONDS` (a hanging
+      merchant site can no longer stall the queue; the already-verified
+      render-path verdict stands), and shortening reuses cached short links.
+      Measured by test: a 4-link post renders in ~0.5s where serial was >=2s
+      with 0.25s fake steps — with real 18s network steps the win is minutes.
+  A4. A failed/partial job backed off `5 * 2**attempts` capped at 300s — up to
+      5 minutes between retries, i.e. "posts whenever it feels like it".
+      Fixed: `job_retry_delay()` = 3s base, `JOB_RETRY_MAX_SECONDS`=20 cap,
+      `JOB_MAX_ATTEMPTS`=10, and every re-queue wakes the workers.
+  A5. A big source video/document was downloaded inline, freezing that worker
+      (and the deals behind it) for minutes. Fixed: `MAX_MEDIA_MB` (45) skip +
+      `MEDIA_DOWNLOAD_TIMEOUT_SECONDS` (120) cap; text still posts.
+  A6. The ingest safety-net cycle was 600s with a 20-message window, so a
+      missed event healed only every 10 minutes; sources were scanned serially.
+      Fixed: `SOURCE_RESCAN_SECONDS`=120, `SOURCE_RESCAN_LIMIT`=40, sources
+      scanned `SOURCE_RESCAN_CONCURRENCY`=4 at a time; `SOURCE_REFRESH_SECONDS`
+      900s -> 180s. Also every id convention is now matched when registering a
+      source (raw entity id, Telethon's `-100…` marked id, legacy `-chat` id) —
+      previously a source whose id form differed was mapped but NEVER ingested,
+      which reads exactly like "the bot is late / ignores that channel".
+  A7. Premium channel pacing (15-35 min gaps, 12/window, IST windows) is a
+      deliberate curation rule and is kept, but it is now a setting
+      (`PREMIUM_GAP_MIN_SECONDS`/`PREMIUM_GAP_MAX_SECONDS`) instead of a
+      hard-coded delay. The 02:00-06:00 IST quiet window is unchanged (user
+      rule); workers now resume within 15s of 06:00 instead of 60s.
+
+B. DUPLICATES
+  B1. The queue's uniqueness key was the raw `(chat_id,msg_id)` pair while
+      ingest / rescan / startup backfill could each write a DIFFERENT chat-id
+      form for the same message. Two rows => the same deal posted twice to every
+      target. Fixed: canonical `chat_key = raw_chat_id(chat_id)` + real unique
+      index `ux_queue_chat_key(chat_key,msg_id)`; pre-existing double rows are
+      folded once at startup (`DEDUP MIGRATION`).
+  B2. `reserve()` deleted every `deal_claims` row older than 20 minutes and
+      `maintenance()` deleted every claim older than 1 hour — including claims
+      held by jobs that were still pending/processing (a Premium-deferred or
+      backlogged job is exactly that). The lock disappeared, so the same product
+      from a second source passed the dedup gate and posted again.
+      Fixed: both only purge claims whose owning job is finished.
+  B3. A partially delivered job re-cleaned the rendered text on retry. Different
+      cleaning => different chunk boundaries => the "resume" re-sent an already
+      sent line. Fixed: `has_partial_delivery()` — once anything is out, the job
+      is finished with the stored bytes verbatim; before anything is sent the
+      cleaned text is frozen back into the DB (`update_rendered`).
+  B4. Copy-pasted campaigns burned a full render cycle before the pre-send gate
+      rejected them. Fixed: intake fingerprint check (`INTAKE DEDUP`), which
+      also closes the window where two sources queued the same campaign at once.
+
+C. UNWANTED WORDS / TEXT QUALITY
+  C1. A promo line that carried a channel link was kept (any URL counted as
+      "deal content") and then half-stripped, publishing residue such as
+      `.com/channel/0029`, `.me/someotherchannel`, bare `https://` or
+      `ps://broken`. Fixed: a line whose ONLY links are social/channel links is
+      dropped whole (promo intent words or an invite/addlist/+ link), and
+      `strip_url_residue()` sweeps any leftover protocol/domain fragment after
+      CTA stripping — both on the source text and on our own output (`tidy_post`).
+  C2. Referral / app-install farming ("Install the app and refer a friend to
+      earn ₹50") survived because a ₹ amount protects a line. Fixed: dropped
+      ahead of the price guard (narrow patterns; coupons, prices, specs, free
+      shipping are untouched).
+  C3. When two source links collapsed to the same product, the surviving link
+      stayed on the first line and the second line was left as a dangling
+      `Link 👉` with nothing after it. Fixed: `remove_dangling_cta_lines()`
+      (whitelisted pure-CTA labels with no link and no price).
+  C4. "…from our telegram channel" style attribution glued inside a deal line
+      left `Price ₹21,999 from our telegram`. Fixed with a bounded CTA pattern
+      that removes the phrase and keeps the price.
+  C5. tg-wa-bridge/bridge.js had the same promo-line short-circuit in
+      `isPromoNoiseLine` and no residue sweep, so the WhatsApp post could carry
+      the same junk. Both mirrored there (`isPromoOnlyUrl`,
+      `CHANNEL_INVITE_URL_RE`, `PROMO_INTENT_RE`, `REFERRAL_SPAM_RE`, residue
+      replaces inside `cleanDealText`) and covered by new `--self-test` cases.
+
+C6. FALSE DEDUP (missed posts): the one-hour same-price gate (`PRICE_DEDUP_SECONDS`,
+      set to 3600 in the deployed .env) was applied to EVERY post, so a genuinely
+      different product that happened to cost the same as something posted in the
+      last hour was silently dropped as a "duplicate" - the opposite of "source
+      lo ragane target lo post avvali". The module docstring always said this gate
+      is a fallback for posts WITHOUT product identity, and it now behaves that
+      way (`PRICE_DEDUP_IGNORES_IDENTITY=false` by default). Same ASIN/PID or the
+      same campaign fingerprint are still hard-blocked, so this does not open a
+      duplicate window. Set `PRICE_DEDUP_IGNORES_IDENTITY=true` to get the old
+      strict behaviour back.
+
+D. LINK REPLACEMENT (source link -> OUR link)
+  D1. `render_job` still skipped an ENTIRE deal when one unverified link
+      survived ("foreign URL survived") — a lost post plus no monetization.
+      Fixed: the leftover link is removed from the post (`LINK REPAIR`) and the
+      deal goes out with our link; it is only skipped when nothing verified
+      remains, so an unmonetized post is still impossible.
+  D2. Guarantees now asserted by tests: our affiliate link appears exactly once,
+      no `amzn.to`/`fkrt` source link survives, every surviving URL is either a
+      link we generated or one of our own channel/folder links.
+
+DEPLOY
+  cd ops && ./repack_bundles.sh          # rebuild the bundles from tracked source
+  ./apply_dual_hotfix.sh                 # on the Oracle server (sudo + systemctl)
+  # bot only:
+  #   upload bestgaa/* to ~/bestgaa-bot/bestgaa-bot/ then ./deploy_bestgaa.sh
+
+VERIFY ON THE SERVER (after restart)
+
+  journalctl -u bestgaa.service -n 200 --no-pager \
+    | grep -E 'QUEUED|RECOVERED|RESCAN|RETRY|DEDUP|LINK REPAIR|STALE DROP|NIGHT SKIP|JOB '
+
+  # 1. a new source post must show QUEUED within ~1s of the source timestamp;
+  # 2. no "queue=N" row should ever reach a second successful send for the same
+  #    deal key (DEDUP / INTAKE DEDUP lines instead);
+  # 3. spot-check the target channel: no leftover t.me/whatsapp promo lines, no
+  #    `ps://`-style fragments, exactly one (our) link per product.
+  # 4. lag check: (target post time - source post time) should now be seconds,
+  #    except for the intentional Premium channel windows and 02:00-06:00 IST.
+
+NOTE ON .env PRECEDENCE
+  A pre-existing .env WINS over these defaults (they are loaded with
+  setdefault). If the server .env still pins e.g. QUEUE_WORKERS=6,
+  SOURCE_RESCAN_SECONDS=600 or MAX_JOB_AGE_HOURS is missing, either remove those
+  lines or set them to the values in the README knob table, then restart the
+  unit. Nothing else has to be changed - the tuned behaviour is the built-in
+  default.
+
+ROLLBACK
+  deploy_bestgaa.sh keeps `main_bot.py.backup.<stamp>` and rolls back
+  automatically if the new unit fails its startup check. The added
+  `chat_key` column and indexes are additive: an older bot binary still runs
+  against the same DB (it simply keeps using the old (chat_id,msg_id) key).
+
+D2. ROUND 2 (v17) - "source lo anni postulu unnayi, mana channels lo manchidi
+    kastunnayi; price line lo edo random tokens vasthunnayi"
+
+  D2.1 MISSING POSTS - the campaign fingerprint was the whole story.
+       content_deal_key() keyed on the FIRST LINE whenever that line was >=18
+       chars and >=3 words. Sources that repeat a banner ("🔥🔥 TOP DEAL OF THE
+       DAY 🔥🔥") above every product therefore produced ONE fingerprint for
+       hundreds of different deals: after the first post, every later product
+       from that source looked "already posted" for PRODUCT_DEDUP_SECONDS (10h)
+       and was refused at intake (INTAKE DEDUP) and at reserve() (DEDUP).
+       Fix: the fingerprint now (a) ignores a purely generic banner line
+       (GENERIC_HEADLINE_RE) and falls back to the body lines, and (b) always
+       includes every price/discount signal in the post, so a different product
+       or a different price is a different campaign. A genuine re-post of the
+       SAME campaign (different shortener) still matches.
+
+  D2.2 MISSING POSTS - "the API has no campaign for this store" is permanent,
+       not transient. AffiliateClient.convert returning None (Myntra/Ajio/Meesho
+       /Shopsy style cases, or an expired Flipkart program) used to be appended
+       to transient_errors, retried the whole job 10 times with backoff, and
+       then marked the job failed: the deal was LOST and the retry storm slowed
+       every other deal down. Now such a link is kept as a PASS-THROUGH merchant
+       link: merchant_url() strips the source's tracking/affiliate params, the
+       pair is registered in link_cache (Store.remember_passthrough) so the
+       provenance gate still vouches for it, and the post goes out (PASSTHROUGH /
+       DEGRADED POST in the log). Only trusted merchant domains
+       (KNOWN_MERCHANT_DOMAINS) qualify - an unknown domain still retries. A
+       mid-budget transient failure still retries (a 503 must not cost the
+       commission on every other link), and dedup still applies: the same product
+       arriving from a second source is refused as DuplicateDeal.
+
+  D2.3 MISSING POSTS - one dead link killed the whole post. process_job's health
+       gate blocked the send when ANY destination probe failed
+       ("broken merchant destination blocked before send" -> PermanentSkip ->
+       the deal never appeared). It now probes each surviving URL concurrently,
+       removes only the dead ones and posts the rest (LINK REPAIR). If every
+       destination is dead, the job retries until the final attempt.
+
+  D2.4 MISSING POSTS - edited source messages were invisible. Sources often
+       publish the text and add/repair the link seconds later; the first render
+       then failed with "no URLs"/"no monetizable URLs" and the row was closed.
+       A MessageEdited handler now calls Store.revive_edited_job: a row that has
+       NOT had a single successful target delivery is reset to pending with a
+       fresh attempt budget and no stale render (EDIT REVIVE). A row that already
+       reached a target is deliberately left alone - reposting an edit would be
+       a duplicate.
+
+  D2.5 UNWANTED TEXT - the price line must be exactly the source's words.
+       "Top Loading Washing Machine Cover @ ₹260tG7oChgiQuTgS25b" is a
+       masked-shortener fragment glued to the price: the strip patterns were
+       capped at 12/14 characters (and tidy_post's at 8 letters), so a 17-char
+       token sailed through. strip_price_junk() now kills a mixed letter+digit
+       tail up to 64 chars while the conservative letters-only rule (so a real
+       word is never eaten) and the unit whitelist (2pcs/500ml/65w/20000mAh)
+       stay. strip_link_fragment_tokens() removes the same fragment when it sits
+       on its own line, skipping any line that mentions a code/coupon/voucher/
+       referral/pin so real coupon text is never touched. All of clean_source_text,
+       tidy_post and the outbound guard share these helpers, so a token cannot
+       survive by dodging one pass.
+
+  D2.6 VISUAL JUNK - "[url](url)" printed literally, empty brackets, mangled
+       parentheses. Telegram posts are sent with no parse_mode, so markdown
+       debris shows as raw characters, and the substitution step can rewrite the
+       label of "[label](src)" to our own link, producing
+       "➜ [https://bitli.in/A](https://bitli.in/A)". sanitize_outbound_text() is
+       now the LAST GATE (deliver(), and idempotently at render/persist time):
+       it collapses a bracket group whose label is a URL/punctuation to the bare
+       link, keeps a label with real words and appends the link, removes empty
+       "()" pairs and stray brackets, and re-runs the junk sweeps. It never
+       touches a line that carries a verified link (so a URL is byte-identical),
+       and never strips "*bold*" (the bridge's own formatting).
+       Related: the emphasis-debris pass deleted every "_" it found - including
+       inside URLs, which silently broke our own folder invite
+       (t.me/addlist/5V7_ViAGDxAwNTI1 -> ...5V7ViAGDxAwNTI1, a dead link); and
+       both sides shaved parentheses off the end of every line, so the very
+       common "Price ₹260 (75% OFF)" line lost its closing bracket. Both are
+       fixed and locked by tests on the bot and in the bridge self-test.
+
+  VERIFY (v17 additions)
+    journalctl -u bestgaa.service -n 300 --no-pager \
+      | grep -E 'PASSTHROUGH|DEGRADED POST|EDIT REVIVE|LINK REPAIR|DEDUP|QUEUED'
+    - a source channel that reuses one banner line must now show a QUEUED line
+      for EVERY product (previously one per banner per 10 hours);
+    - PASSTHROUGH lines are expected for stores EarnKaro cannot monetize - the
+      deal still posts, untagged, and never repeats;
+    - the published line must read "@ ₹260" with nothing appended, and no "["
+      or "](" may appear anywhere in a target post.
+    - node tg-wa-bridge/bridge.js --self-test covers the same rules on the
+      WhatsApp side (stripPriceJunk / stripLinkFragmentTokens / sanitizeOutbound).
+
+  ROLLBACK (v17)
+    Every change is inside the existing passes; deploy_bestgaa.sh keeps
+    main_bot.py.backup.<stamp> and restores it automatically on a failed
+    startup check. To stop pass-through publishing (if you would rather lose an
+    unmonetizable deal than post it untagged), set PASSTHROUGH_UNMONETIZED=false
+    in .env - see the knob below; the fingerprint fix and the outbound guard
+    have no switch and should not need one.
+
+
+  ----------------------------------------------------------------------------
+  v17.1: THE EXACT POST THE USER PASTED, FIXED AT THE ROOT
+  ----------------------------------------------------------------------------
+  The complaint was: source has the list, our channel printed FOUR BARE LINKS
+  (product name + ₹260 gone), and the price line carried a random token.
+  Root cause #1 (lost headline): in format_visible_source_product_pairs() a
+  decorated bullet line ("➜ https://bitli.in/x") was accepted as a product LABEL
+  because the only check was "not empty". Four variants therefore produced four
+  bogus pairs, the list rebuild consumed the real headline as a label and
+  discarded it, and the dangling-bullet cleanup then deleted the bullets - so
+  what remained was a wall of links. _product_label() now decides what may be a
+  label (strip decoration by CLASS, require real words, reject URLs) and a post
+  with fewer than 3 genuine products falls back to rebuild_text, which keeps
+  every source line. Cleaning must never remove content; a product name/price
+  line lost to a cleanup rule is a bug of the same size as junk printed.
+  Root cause #2 (glued text): strip_price_junk() cut "https" off a link glued
+  straight onto a price (₹260https://bitli.in/x), leaving ₹260://bitli.in/x.
+  It masks real URLs before cutting, and tidy_post()/sanitizeOutbound() separate
+  a glued link with one space, so the price reads exactly as published and the
+  link is intact and clickable. Mirrored in tg-wa-bridge/bridge.js
+  (stripPriceJunk + sanitizeOutbound), whose list layout already keeps every
+  source line (new bridge self-test cases pin the same shape).
+  Verification (all on this branch): /tmp/shape_matrix.py renders 4 source shapes
+  (plain bullets, markdown bullets, URL glued to the price, inline [url](url) on
+  the price line) through the real render_job - every shape keeps
+  "Title @ ₹260", shows all 4 of our links, zero glued junk, zero brackets.
+  python3 test_render_job.py -> 137 passed / 0 failed
+  python3 test_pipeline_fixes.py -> 131 passed / 0 failed
+    (+ test_list_post_shapes, + test_coverage_audit)
+  python3 test_rescan.py -> RESCAN TESTS PASS
+  node tg-wa-bridge/bridge.js --self-test -> bridge self-test PASS
+  Coverage tool (the "nothing may stay missing" answer): ops/coverage_audit.py
+  reads the live DB and classifies every source post as posted / in-flight /
+  dedup / policy / LOST; LOST = closed without reaching a target for a reason
+  the current build can handle (conversion retry, no verified link, provenance,
+  unresolved target, silent 'no monetizable URLs').
+    python3 ops/coverage_audit.py --hours 12          # look, exit 1 if gaps
+    python3 ops/coverage_audit.py --hours 12 --heal   # re-queue only the LOST
+  --heal copies the DB first (main_bot.py keeps its own .backup.<stamp>), resets
+  attempts/status/rendered_text, clears only the live deal_claims rows for those
+  jobs and NEVER touches posted_deals - so a healed row whose product already
+  went out from another source is refused again as a duplicate instead of being
+  posted twice. Rows older than --max-age-hours (default 6) are not healed: that
+  loot is dead. ops/diagnose.sh now runs the audit and checks the v17.1 markers
+  in the files that are actually in production - the most common reason for
+  "you fixed it but I still see it" is that the server never restarted on the
+  new build (this repo state must be deployed with ops/repack_bundles.sh +
+  apply_dual_hotfix.sh; nothing in this session was pushed to a live machine).
+
+  v17.1 addendum - source campaign banners (the "unwanted text" that survived)
+  ------------------------------------------------------------------------------
+    The user's paste also carried the channel's own hype lines into our channel
+    ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥", "⚡️ 11 PM FLASH SALE ⚡️"). Those lines are not
+    about the product at all, so strip_promo_lines() now recognises them via
+    is_campaign_banner_line(): every word of the line must be generic hype
+    (BANNER_NOISE_WORDS) and the line must carry no link, no ₹ amount, no %.
+    Two guards keep this from becoming the "lost headline" bug again:
+      * brand/store words (Myntra, Flipkart, Boat, ...) are NOT in the
+        vocabulary on purpose, so a real store header ("Myntra Mega Sale") and a
+        product line are never mistaken for a banner;
+      * if EVERY text line of the post is a banner, the first one is KEPT as the
+        headline (and only the extras are dropped), because a post of nothing but
+        links is worse than a post carrying a hype line.
+    Mirrored in the bridge (isCampaignBannerLine / dropCampaignBanners inside
+    cleanDealText) and locked by test_campaign_banner_lines + new bridge
+    self-test cases (banner gone, product + price + all 4 links kept, store
+    header kept, banner-only post keeps its headline).
+    Final counts on this tree: test_render_job.py 137/137,
+    test_pipeline_fixes.py 159/159, test_rescan.py pass, bridge --self-test PASS.
+    ops/repack_bundles.sh now also ships coverage_audit.py inside the bot bundle,
+    so `python3 /home/ubuntu/bestgaa-bot/bestgaa-bot/coverage_audit.py --hours 12
+    --heal` works on the server without a repo checkout; diagnose.sh runs the
+    audit and greps the v17.1 markers of the DEPLOYED files.
+
+  ----------------------------------------------------------------------------
+  v17.2: BOTH WHATSAPP CHANNELS + THE REFERRAL-FARMING LEAK
+  ----------------------------------------------------------------------------
+  LEAK FOUND BY RENDERING THE USER'S OWN POST THROUGH THE BRIDGE: the last line
+  of the source ("Get Flipkart App - Refer 3 friends and ₹100 referral bonus")
+  reached the WhatsApp post untouched. Cause: isPromoNoiseLine()/is_promo_noise_line()
+  protect any line carrying ₹ (so a price line is never eaten), and the referral
+  patterns only covered "refer a friend" / "earn ₹50 on referral" / "referral code".
+  REFERRAL_SPAM_RE on BOTH sides now also matches refer|invite ... friends,
+  referral|invite|sign-up|joining + bonus|reward|cashback|incentive (install the
+  app was already there). Checked against the lines that must survive: coupon
+  codes, MRP, product+price, specs.
+  TWO CHANNELS: targetsFor() went through a single eligibility helper
+  (secondaryEligible) so the routing rule is one place - tiered by default (the
+  2nd channel is the Under-₹99 shelf; a digest is main-only) and a full mirror
+  when WA_CHANNEL_ALL_POSTS=true. A failed newsletter resolve used to leave
+  under99Jid null until the next reconnect: ensureSecondaryChannel +
+  secondaryChannelRetryLoop retry every 10 min, so one network blip no longer
+  costs the 2nd channel the rest of the day.
+  PACING (the "slow and random" complaint on the WhatsApp side): the broadcast
+  gap between the two channels of ONE post is now interTargetGap()
+  (WA_INTER_TARGET_GAP_SECONDS, default 6, floor 3) instead of the post-to-post
+  anti-flood gap (that is why the 2nd channel used to trail by ~1 min); the
+  mature warmup tier is 30-60s (WA_MATURE_GAP_MIN/MAX_SECONDS, floor 15) instead
+  of 60-120s; the special/large-list settle is 10-18s and the rotation-bucket
+  settle 8-20s (they were 30-90s and 20-90s, which looked like random delay).
+  What is deliberately NOT removed: burst rest, one irregular hourly break,
+  occasional long idle, 02:00-06:00 IST quiet window (the user's own rule), and
+  the day-1/day-2 warmup tiers - a fresh WhatsApp number posting at machine
+  speed gets the number banned. Telegram has no such pacing: source post -> our
+  channels is immediate there.
+  Tests: python3 test_pipeline_fixes.py -> 177 passed / 0 failed (new
+  test_unwanted_text_never_posts; list/banner/audit groups unchanged);
+  node tg-wa-bridge/bridge.js --self-test -> PASS in BOTH modes
+  (tiered and WA_CHANNEL_ALL_POSTS=true), plus warmup-mode and tuned-gap runs.
+  ops/diagnose.sh prints which 2nd-channel mode is live and warns when a
+  channel failed to resolve; install_bridge.sh asks for the 2nd channel + mirror.
+
+  ----------------------------------------------------------------------------
+  v17.2.1: THE USER REVERSED THE BANNER RULE - FIDELITY IS THE LAW
+  ----------------------------------------------------------------------------
+  "source lo ela vundo ala ravali; unwanted text / branding vasthe remove cheyali"
+  So: a channel's OWN hype header is content, not junk. The v17.1 default (drop
+  campaign banners) is now opt-in (STRIP_CAMPAIGN_BANNERS /
+  WA_STRIP_CAMPAIGN_BANNERS, both false), and what is ALWAYS removed is branding
+  from somebody else plus referral farming.
+  is_branding_line() (Python) / isBrandingLine() (bridge) - three signals, all of
+  them requiring that no word of the line describes a product/price/spec:
+    * a promo verb or channel word with only brand/hype vocabulary around it
+      ("Join our telegram channel for more deals");
+    * a bare @handle credit line, or a line that OPENS with a signature marker
+      ("Edited by …", "Powered by …", "sent via …");
+    * a channel-name title: every word is brand/hype vocabulary and at least two
+      are brand nouns (zone/hub/india/official/channel/…) - which catches
+      "Loot Zone India" while keeping "Myntra Mega Sale", "DEALS OF THE DAY",
+      "SAARE MI AMAZING DEALS" and any product line.
+  BANNER_NOISE_WORDS / GENERIC hype vocabulary is reused for this on purpose; brand
+  NAMES (myntra, flipkart, boat …) are excluded from every set, so a store header
+  is never branding. And the same "never leave a wall of bare links" guard applies:
+  if the ONLY text lines of a post are branding, the first one stays as the
+  headline.
+  Two more fidelity bugs found while verifying the exact user post and fixed on
+  BOTH sides:
+    * _product_label() now rejects a pure campaign banner, so a hype header can
+      never be consumed as a "product label" (that was how a headline got eaten);
+    * format_visible_source_product_pairs() rebuilds the whole post in source
+      order instead of emitting only label+link pairs, so a second header line or
+      an MRP/shipping note is no longer dropped; the bridge had the mirror-image
+      bug (text lines buffered before a label were discarded when the link line
+      cleared the buffer) - now flushed in order, and the label pairing keeps
+      each link under its own product.
+  strip_link_fragment_tokens() no longer trims a trailing \ufe0f (emoji
+  presentation selector) - only an ORPHAN one - so "⚡️ 11 PM FLASH SALE ⚡️" leaves
+  exactly as it entered.
+  Verified on the user's real post (banner + ₹260 + glued token + 4 markdown
+  bullets + LOOT ZONE INDIA branding + referral line), rendered through the real
+  render_job + deliver-time sanitize and through the bridge formatter:
+    🔥🔥🔥 TOP DEAL OF THE DAY 🔥🔥🔥        <- source's own header, kept
+    ⚡️⚡️ 11 PM FLASH SALE ⚡️⚡️                <- kept, emoji intact
+    Top Loading Washing Machine Cover @ ₹260 <- name + price, junk token gone
+    ➜ 4 x OUR links (tag=deals0911-21)        <- no bitli.in source link left
+    (branding + referral/app-install lines absent; no [..](..) debris)
+  Counts: python3 test_pipeline_fixes.py 186/186, test_render_job.py 137/137,
+  test_rescan.py PASS, bridge --self-test PASS in default / strip-banners /
+  all-posts / warmup / tuned-gap modes. The duplicate test functions left by the
+  mid-file splice were removed (one definition per name now).
+
+
+v17.4 - WHATSAPP CHANNEL POLICIES (per-channel content, best-of = winner only)
+================================================================================
+The user's rule for round 6: "under 99 channel lo under 99 products mariyu list of
+products undali; under 499 channel lo anni sources nunchi smart ga theskoni post
+cheyali; okkesari 10 deals vachina kuda the best vi smart ga post cheyali; kada ledu
+ante skip; credit card / bank offers mariyu lists anni channels lo undali" - i.e.
+curated per-channel content on WhatsApp (not "blast everything as fast as possible",
+which stays true for Telegram only), and lists/card offers always posted.
+
+What changed in tg-wa-bridge/bridge.js:
+  * WA_CHANNEL_UNDER499 / WA_CHANNEL_BEST_OF join WA_CHANNEL_UNDER99. resolveExtra-
+    Channels() resolves each configured channel, retries only the missing ones every
+    10 minutes, and syncChannelPolicies() records which policy each JID has, so
+    targetsFor() asks every channel instead of assuming "channel #2 = under-99".
+  * eligibleForChannel(job, policy):
+      under99   - price <= 99, card/bank offer, or ANY product list (price-agnostic)
+      under499  - same with the 499 band
+      bestOf    - card/service posts; a list needs an in-band item or 60%+ off;
+                  <=99 needs BEST_MIN_DISCOUNT; in-band needs 60%+ off; no price
+                  needs QUALITY_STRONG_DISCOUNT. Anything else is SKIPPED there.
+    isList / discount / price / cardOffer come from one channelFacts() read of the
+    post, so a price the source printed can never be misread as a different one.
+  * isBestOfMoment(job): the best-of channel only takes the top-ranked READY job
+    (dealQualityScore across the queue, ties to the newest), so a burst of ten deals
+    yields exactly one best-of post and the rest still flow on the paced main feed.
+    noteBestOfPick() records the pick (persisted) and WA_BEST_OF_COOLDOWN_SECONDS
+    (default 0) spaces picks out when the operator wants fewer.
+  * isNewsletterTarget() now covers all four channels, so delivery marks / pacing
+    apply to every one of them; a digest stays main-only unless
+    WA_CHANNEL_ALL_POSTS=true (mirror everything, the previous behaviour).
+  * install_bridge.sh asks for the third and fourth channel and writes the new keys.
+
+bestgaa/main_bot_new.py, same instruction on the Telegram side:
+  * a 3+ product list now fans out to Under99Deals11 AND under499loots whatever the
+    item prices are (it used to require an in-band price); single deals keep their
+    band check, Premium keeps only best-scored picks, card/service offers still fan
+    out to every owned channel. Dedup untouched: exactly one copy per channel, so
+    wider fan-out cannot duplicate a post (test_render_job asserts count == 1).
+
+Verified: test_render_job.py 140/140, test_pipeline_fixes.py 186/186,
+test_rescan.py PASS, bridge --self-test PASS in default / strip-banners / mirror-all
+/ warmup / tuned-gap / WA_BEST_OF_COOLDOWN_SECONDS=3600 modes. The self-test asserts
+the matrix (89 vs 399 vs 24999, list rule, card offers everywhere) and the
+one-winner-per-burst rule for the best-of channel.
+
+v17.5 - NOTHING OF OURS IS ADDED (the user's fidelity line, round 7)
+=====================================================================
+  User: "🔥🔥 TOP DEAL OF THE DAY ilaga ravoddu - anni mana extra add cheyodu
+  [ravoddu], source lo unte [matram] cheyu anthe" = do not print anything we added;
+  print only what the source has. Auditing the send paths found a lot of OUR text on
+  the WhatsApp side (the Telegram pipeline was already source-only apart from two
+  bugs below):
+    formatPostBody      - hoisted a bold title, added "💰 ₹X | 🔥 Y% OFF" badges and
+                          then dropped the source's own price line as a "repeat";
+                          fell back to an invented "Latest deal" caption.
+    formatSpecialCaption- wrapped every special in "🔥 *LOOT ZONE — India*" /
+                          "🚨 *SPECIAL OFFER*" / "✅ Verified • Enjoy (Grab fast)"
+                          (branding boilerplate the cleaner strips from SOURCES).
+    buildLargeListChunks- pasted "🛍️ MEGA DEAL LIST" + the same footer on lists.
+    digests             - opened with a "🔥 DEALS OF THE DAY / 💥 UNDER ₹99" header and
+                          invented "Latest deal" when a label could not be derived.
+    link layout         - added a "➜" in front of links that the source did not use.
+  All of that is removed. What stays: junk removal (branding of other channels,
+  referral/app-install farming, CTA filler, markdown ** debris, glued tokens,
+  orphan fragments) and OUR links, one per line, in source order. The e2e self-test
+  feeds the user's own post (double-flame banner + flash-sale line + product @
+  price (74% OFF) + MRP/shipping + SAVE_200 coupon + LOOT ZONE branding + referral
+  line + 4 bitli links) through formatWhatsAppPost and requires: asterisks absent,
+  banner first and unmodified, product/price/MRP/coupon lines intact, branding and
+  referral lines absent, no badge/header/filler text of ours, 4/4 links ours and on
+  their own lines, source order preserved.
+  Telegram side: the dead format_premium_loot() wrapper (would have printed
+  "👑 PREMIUM LOOT PICK 👑" + "✨ Handpicked • Verified Link • Grab Fast") is
+  deleted, and tidy_post stopped shaving '_' out of the middle of a word - "Use code
+  SAVE_200" was publishing as "SAVE200", i.e. a broken coupon code (a corrupted
+  legitimate character is exactly the class of bug the user banned).
+  Channel matrix per the same message: LootZone = every deal; PowerLoots1 = EVERY
+  deal (its <=499/70%-off filter silently dropped posts, so it was removed);
+  SecretLootIndia1 = only strong picks (eligible_for_secret); Premiumlootsdeals =
+  highest-discount only (a sub-99 item now needs 50%+ off or a lowest-price claim,
+  not just a low price); Under99 = <=99, Under499 = <=499; any 3+ product list goes
+  to every non-Tricks channel; the Tricks pipeline is untouched by request.
+  Self-test quality: three assertions that hard-coded a knob value (WA_MEDIA_FIRST
+  ordering x2, and the queue-acceleration/throughput-cap pair) were made
+  knob-aware, so `node bridge.js --self-test` now passes in 10 env combinations
+  instead of silently failing on any tuned .env. noteBestOfPick() no longer writes
+  the operator's bridge-state.json during a self-test run.
+  Counts: test_pipeline_fixes.py 202/202, test_render_job.py 150/150,
+  test_rescan.py PASS, bridge --self-test PASS x10 modes.
+
+================================================================================
+v17.6 (round 8) - best copy of a product, numeric fidelity gate, quality auditor
+================================================================================
+What changed and why (user: "anni perfect ga chesava, more and more advanced"):
+
+1. BEST COPY (both sides). Same product posted by two sources minutes apart used to
+   be decided by arrival order: the first copy queued won and the better deal was
+   skipped as a "duplicate". Now the pending, not-yet-delivered job/row is re-pointed
+   at the stronger copy (Python Store.swap_in_better_copy, bridge adoptBetterCopy),
+   still as ONE row, so zero-duplicate is untouched. The displaced copy is remembered
+   (superseded_chat_id/superseded_msg_id) and re-queued by restore_superseded() in the
+   worker's PermanentSkip path, so a better copy that cannot render never becomes a
+   missing deal. Log lines: "BEST COPY | queue=N re-pointed ...",
+   "BEST COPY ROLLBACK | ...", bridge "best copy: queued job re-pointed at the
+   stronger deal".
+   Matching is exact-id only (/dp/ASIN, /gp/product/, ?pid=, /ip/); name-fuzzy
+   matching was rejected on purpose (a wrong match would replace a post with a
+   different product). Lists, card/bank offers and Tricks sources never take part.
+2. NUMERIC FIDELITY GATE. enforce_numeric_fidelity(raw+cleaned source, rendered) runs
+   at the end of render_job: any "₹N" or "N%" figure whose digits appear nowhere in
+   the source message is removed and logged ("PRICE FIDELITY | queue=N removed ...").
+   URLs are masked on BOTH sides so our tag (deals0911-21) and ASINs are never
+   mistaken for prices; commas are normalised (₹1,999 == ₹1999). Removing the number
+   - never the post - is deliberate: a mangled figure is a defect, a dropped deal is
+   a loss.
+3. LIST COVERAGE (bridge). Intake layer 3 used to drop any post whose product was
+   already queued - including a 5-item roundup containing it. A list is now judged by
+   its own shape: single-product copies are still skipped/upgraded, roundups enter.
+4. ops/quality_audit.py - read-only auditor over the queue DB: OURS (invented text /
+   markdown debris / surviving join-promo), LINKS (not-our-link, no-link), TEXTLESS
+   (link-only post), MISROUTE (single deal outside a price band), COVERAGE (done or
+   failed with no send and no policy reason), DUPLICATE / NEAR-DUPE (same body, or
+   same product+price, delivered twice within 6h). Hooked into ops/diagnose.sh
+   section 10; --strict for cron. Duplicate detection is done on the rendered bodies
+   because deal_claims/posted_deals are keyed by product and structurally cannot hold
+   two rows, so a ledger-based check would always pass.
+5. Test-suite hygiene: the premium pacing assertions pinned the wall clock (passed
+   only when run at night); they now force the window with a patched
+   premium_time_status and assert both branches. test_pipeline_fixes: 206 checks.
+   New file test_best_copy.py pins swap/skip/restore/list/mid-flight, the fidelity
+   gate and every auditor category.
+6. saveState() now returns early under --self-test: a self-test must never write (or
+   corrupt) bridge-state.json, which is what makes the new intake assertions safe to
+   run against the real enqueuePost path.
+
+
+================================================================================
+v17.7 (round 9) - the last waits are gone, the auditor is honest, deploy is provable
+================================================================================
+1. TELEGRAM FAN-OUT WAITS REMOVED. TARGET_FANOUT_GAP_MIN/MAX defaulted to 0.4/1.2 s,
+   so a 6-channel post slept up to ~6 s on purpose. Both default to 0 now and the
+   loop is `if first_target_sent and TARGET_FANOUT_GAP_MAX > 0` - a gap exists only
+   if someone sets the knob.
+2. PROBE BUDGET. render/deliver verified links with 2 attempts x 12 s and NO budget
+   for the single-link case (the common one) - one slow merchant site delayed a live
+   deal by ~25 s. New: LINK_PROBE_BUDGET_SECONDS=3.5 caps one probe (asyncio.wait_for
+   around _probe_link); PRESEND_CHECK_BUDGET_SECONDS 25 -> 6. A timeout is logged as
+   "LINK CHECK inconclusive ... posting anyway": a slow page is not a dead deal.
+3. NO RETRY CHURN. "every destination unverified; retry later" (RuntimeError -> 3-20s
+   backoff, re-rendering everything) is replaced by one verdict: only an EXPLICIT
+   merchant dead-page signature blocks a post, with the reason
+   "every destination is a confirmed dead merchant page" (the auditor counts that as a
+   policy skip, not a lost deal).
+4. AUDITOR LINK POLICY (was producing false positives, which would have trained
+   everyone to ignore it). Ours = our shortener (bitli.in/TqmFyPp, bitlyskj.*), our
+   EarnKaro/gop.im output, an amazon(.in) page tagged with OUR tag, a clean page for a
+   store we cannot monetize, our folder link / our channels. Never ours = amzn.to
+   (source short link), any third-party shortener (bit.ly, bitly.com, tinyurl, cutt.ly,
+   gpt.sh, ...), a foreign tag= value, a foreign affid/pubid/publisherid/affextparam2 -
+   including our tag glued to somebody else's id. Flipkart's pid= is a product id and
+   is deliberately NOT treated as a publisher id.
+5. MEASURABLE IMMEDIACY. "QUEUED | queue=N ..." now carries the queue id, so
+   ops/deploy_and_verify.sh can pair it with "JOB N | ... sent=k" and print
+   median/p95/max seconds per post; it also hash-compares the deployed files, checks
+   the boot line for the committed version, runs the bridge self-test on the server
+   copy and finishes with the quality audit.
+6. NEW: test_duplicate_sim.py drives the real worker path over planted traffic:
+   S1 same message twice, S2 same product from 3 sources (best copy wins, one post),
+   S3 two copies claimed concurrently, S4 crash mid-delivery + restart, S5 best copy
+   unrenderable -> displaced copy still posts once, S6 identical campaign text from
+   another source, S7 two products in one post (both, once, one post).
+
+================================================================================
+v17.8 (round 10) - same product once per channel, no lost line, no double price
+================================================================================
+
+The user's words: "same product aaite malli malli send cheyoddu ... correct ga
+gurthinchali, okasari mana channel lo vasthe skip cheyali"; "unwanted text assalu
+ravoddu"; "source lo text/headings neat ga unte mana targets lo miss avuthunna -
+WhatsApp lo inka"; "WhatsApp channels lo oka post lo price 2 times".
+
+THE THREE DEFECTS, AS FOUND (not as guessed - each one was reproduced first):
+
+1. SAME PRODUCT, DIFFERENT LINK  ->  posted twice.
+   Identity was the LINK: product_key() = extract_product_id(url) or
+   "URL:"+sha256(merchant url). Two sources pasting the same AC under two short
+   links (or Flipkart as /slug/p/ITMx vs /ITMx) produced two different keys, so
+   both posts went out. Fix, two layers, both OFFLINE (no resolve, no waiting):
+     a. extract_product_id() now parses the id out of every merchant link shape it
+        can: /p/<id>, /product(s)/<slug>, /it/<id>, <slug>-<id>.html, plus the
+        existing ASIN / ?pid= / myntra / ajio forms. Same page, any decoration ->
+        same key.
+     b. product_signature(text): the product's OWN WORDS (first real line after
+        prices, MRP clauses and marketing vocabulary are masked) + size/capacity
+        tokens. Ledgered per channel in posted_products
+        (SAME_PRODUCT_SKIP_SECONDS, default 3 days). A channel that already carried
+        the product does not carry it again; a strictly better copy (lower price, or
+        >= SAME_PRODUCT_DISCOUNT_MARGIN points deeper discount) still posts, so a
+        genuine price drop is never suppressed. Skips are logged as
+        "DUPLICATE PRODUCT (signature) | queue=N | target=..." and the auditor
+        reports the same defect as SAME-PRODUCT.
+   Brakes, on purpose: a roundup (3+ merchant links) has no single-product
+   identity; a headline shorter than 4 product words (or 3 with a model number) is
+   too generic to key; a category phrase ("Men Cotton Shirt") yields nothing; the
+   Tricks path is untouched. Worst case of a false match is one skipped copy, worst
+   case of the old bug was the audience losing trust - the user picked, so this
+   errs toward skipping.
+   Mirrored in the bridge: nameOnlyKey()/state.sentNames with
+   WA_SAME_PRODUCT_HOURS (48) and WA_SAME_PRODUCT_MARGIN (5), consulted by
+   duplicateProductReason() -> the WhatsApp curated channels stop repeating a
+   product too, and a cheaper copy still goes out.
+
+2. TEXT LOST BY CLEANING (Telegram AND WhatsApp, WhatsApp worse).
+   a. The CTA patterns ended with "[^.\n|]*$" = "delete everything to the end of
+      the line". "More offers: Apply coupon PEOPLE200" lost the coupon;
+      "More deals here: <link>" lost the LINK, and a post with no link is a
+      permanent skip - a whole deal vanished because of a regex tail. Both sides
+      now use a CTA_TAIL that may only swallow PLAIN WORDS: a price, a digit, a
+      percentage, a code-like token or a link ENDS the clause, and the rest of the
+      line is published as written.
+   b. fix_unbalanced_parens deleted characters until the bracket counts matched,
+      so every "1) Product ... (78% off)" lost both closing brackets. It now
+      removes only a bracket that STANDS ALONE (whitespace on both sides) - the
+      residue a stripped phrase really leaves - and otherwise leaves the source
+      alone.
+   c. A removed clause must not leave its punctuation: strip_inline_cta trims both
+      ends now, so no line starts with a stray ":".
+   d. Guard on both renderers: if cleaning deleted an amount / percentage /
+      coupon-code token that the source line contained, the deletion is undone for
+      that line (deal_payload_signature / dealPayloadOf + payloadLacks).
+   e. WhatsApp was worse because the DIGEST truncated: an item was a 90-char name
+      plus a badge, cut to 220/160/100/60 chars so ten deals would fit. A digest
+      item is now the source post itself, numbered - nothing invented, nothing cut.
+      If the bucket holds more complete posts than fit, the digest carries FEWER of
+      them and the leftovers stay queued for the next one (buildBucketDigest returns
+      {digest, used}; prepareRotationalDigest only consumes what was used).
+   f. A special offer's caption was cut at 1000 chars with an ellipsis; large-list
+      lines were cut at 650. Both cuts are gone: splitCaptionForMedia puts whole
+      lines on the photo and sends the remainder right behind it, and
+      compactLargeLine no longer shortens (max=0 means "keep the line").
+
+3. TWO PRICES IN ONE WHATSAPP POST.
+   formatDigestItem synthesised "  (₹1,099 - 78% OFF)" next to a label that
+   already contained the source's price line. Nothing is invented any more, and
+   the self-test counts the figures: in a digest of six posts each of
+   "₹899", "₹2,495", "₹1,500" must appear exactly six times - once per post, not
+   twice. test_line_fidelity.py asserts the same invariant per post on the
+   Telegram side, and ops/quality_audit.py reports DOUBLE when a single-product
+   post prints one amount on two lines.
+
+4. TEXT WE ADDED (the user's standing "chudu" rule).
+   tricks_footer() used to be appended to ANY post whose source carried a social
+   link, and append_folder_link() to every card offer. Both are our words in
+   someone else's post; they are now off by default and come back only with
+   ADD_OUR_CHANNEL_FOOTER=true. The Tricks channel keeps its footer, untouched.
+
+5. FLAKY GATE FIXED. The bridge self-test asserted a pacing ceiling of
+   ANTIBAN_LONG_IDLE_MAX*1.4 while scheduleNext() could still multiply the
+   (already clamped) gap by 1.5 x 1.25 x 1.5 and add an hourly break - so the
+   deploy gate failed about one run in six AND the channel could in fact be parked
+   for 70+ minutes. One documented ceiling now bounds the SCHEDULED gap
+   (WA_MAX_MESSAGE_GAP_SECONDS, 3600s) and the assertion tests that number: 8/8
+   consecutive self-test runs pass where the old one failed at 6.
+
+6. KNOB MATRIX. Because a check that ignores a knob either fails an operator's
+   mode or passes for the wrong reason, every suite was re-run with the new
+   knobs flipped: SAME_PRODUCT_SKIP_SECONDS=0, ADD_OUR_CHANNEL_FOOTER=true,
+   STRIP_CAMPAIGN_BANNERS=true, SAME_PRODUCT_DISCOUNT_MARGIN=20 - all pass. The
+   bridge self-test passes in 12 env modes, including the ones that turn the
+   product skipper off (it must then stay off, not half-work) and the ones that
+   change the discount margin.
+
+PROOF COMMANDS (repo root):
+   python3 test_line_fidelity.py        # nothing lost, nothing added, no double figure
+   python3 test_duplicate_sim.py        # S8a-S8d: same product via unidentifiable links
+   bash ops/deploy_and_verify.sh --verify-only --with-tests
+
+===========================================================================
+v17.9 (round 11) - the deep audit of round 10, and what it found
+===========================================================================
+  Asked "all mistakes fix chesava? deep gaa audit", the v17.8 dedup rule was
+  probed instead of trusted. It failed in BOTH directions on real captions, so the
+  user's #1 complaint was still live in the soft cases and a NEW bug (lost deals)
+  had been shipped with it:
+
+  1. FALSE SKIP (lost deal). product_signature() dropped digit-only words as "not
+     words", so "boAt Airdopes 141" and "boAt Airdopes 131" hashed to one identity
+     and the second product would have been silently skipped. Same class of bug in
+     the bridge: nameOnlyKey() keyed the first eight words in order, so two long
+     names that only differ past word eight collapsed into one.
+  2. FALSE NON-SKIP (the duplicate survives). Because the key was the literal word
+     sequence, the same product written with any extra adjective ("TWS Earbuds" vs
+     "True Wireless Earbuds, 42H Playtime") got a different key.
+  3. FIX. Identity is a token SET now: brand + model numbers + variant qualifiers
+     + the numbers that change the product (128GB, 1.5 ton, 5 star, 55 inch, 5
+     burner). Specs channels type inconsistently (42H, 5000mAh, 1080p, 4K, 5G) and
+     a launch year ("(2023)") are ignored; punctuation is trimmed from token ENDS
+     only, so "1.5" stays one number and "WH-CH720N" stays one model. With no number
+     in the headline, every product word must agree instead - losing a duplicate is
+     survivable, losing a deal is not.
+  4. NO DRIFT, BY CONSTRUCTION. The auditor's copy of the rule is GENERATED
+     (python3 ops/sync_identity.py) and both ops/deploy_and_verify.sh --with-tests
+     and test_line_fidelity.py fail while it is out of date. The bridge prints its
+     own identity for a headline (`--identity-probe`), and test_line_fidelity.py
+     feeds Python and JavaScript the same corpus, so "same product on Telegram, new
+     deal on WhatsApp" cannot come back quietly.
+  5. TWO MORE LOST-TEXT / LOST-MONEY BUGS FOUND THE SAME WAY. chunks() bisected an
+     over-long line at a character index, so a long list line could print
+     "https://www.amazon.in/dp/B0AB" in one message and the rest in the next;
+     splitCaptionForMedia() did the same at 1024. Both now break at a space outside
+     any URL, and both sides assert it.
+  6. VERSION. The bot banner is v17.9 because this changes which posts are
+     recognised as the same product - the deploy log line is the proof.
+
+PROOF COMMANDS (repo root):
+   python3 ops/sync_identity.py --check
+   python3 test_line_fidelity.py            # corpus incl. 141-vs-131, 128GB-vs-256GB,
+                                            # "(2023)" tolerance, link-safe chunking,
+                                            # bot-vs-auditor and bot-vs-bridge parity
+   cd tg-wa-bridge && node bridge.js --self-test
+   printf 'boAt Airdopes 141 TWS Earbuds\n' | node tg-wa-bridge/bridge.js --identity-probe
+   python3 ops/identity_probe.py "<headline A>" "<headline B>   # same product? both engines
+
+================================================================================
+v18.0 (round 12) - "source lo post vasthundi, mana target lo raledu": the post
+was being SWALLOWED, and the fix for a glued price is "un-glue", not "delete"
+================================================================================
+
+The user's live example, verbatim:
+
+    Lizol Floor Cleaner Shakti Disinfectant with Jasmine Fragrance 900ml (Pack of 2) ...
+    (Deal Price: Rs 199HFJF)   (MRP: Rs 270)   (Discount: 26%)
+    share button:  [https://t.me/loots/156757](https://wa.me/?text=...)
+    product link:  [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://new.growseek.io/...)
+
+Three defects, each proved on that exact text rather than inferred from the code:
+
+1. SWALLOW (the missing post). wa.me/?text= is the SOURCE's own forward button, but
+   render_job collects destinations from the RAW message, tried to monetize it, got
+   nothing, and raised:
+
+       RuntimeError: conversion retry required: affiliate conversion returned no link: wa.me
+       queue row: ('pending', 1, 'conversion retry required: ... wa.me')
+
+   The job retried until the deal aged out (a loot price is stale in hours) and then
+   died - zero posts, on every channel. Fix: is_share_intent() /
+   SHARE_INTENT_DOMAINS in the bot, isShareIntent() in the bridge. A share/invite/
+   app-scheme link is never converted and never health-checked, because it is not a
+   product page; it can no longer hold up the deal printed next to it.
+2. SWALLOW (second door, same complaint). "Every destination answered 404" used to be
+   PermanentSkip("every destination is a confirmed dead merchant page") in the bot and
+   `throw new Error('Broken destination: ...')` in the bridge - fatal, so the job was
+   dropped instantly. That verdict is not proof: Amazon and Flipkart serve the repair
+   page to a datacenter IP all day, and to any ASIN created minutes ago. Both services
+   now post the deal and log "LINK UNVERIFIED ... posting anyway"; the operator can
+   restore the hard block with DROP_DEAD_LINKS=true / WA_DROP_DEAD_LINKS=true.
+3. GLUE (the junk next to the price). Cleaning deleted the token glued after a rupee
+   amount, so HFJF - a real coupon code, i.e. money for the reader - vanished while
+   "Rs 199" stayed. A coupon code is all caps; a torn shortener fragment is not, so
+   both engines share one token-shape rule (_keep_code_as_is / keepCodeAsIs).
+   Deleting the glued token was the other option and was rejected: it loses source
+   content, which is its own bug class here.
+   Bonus, same root cause (a form the source writes that our parser did not read):
+   "Discount: 26%" with a colon after the label returned None from parse_discount and
+   0 from the bridge's explicitDiscount, and that number drives best-pick ranking and
+   price-tier routing. Both read it now; "Extra 5% cashback" is still NOT a discount.
+
+BEHAVIOUR TABLE - identical on Telegram and WhatsApp
+
+    (Deal Price: Rs 199HFJF)      -> "Deal Price: Rs 199"         SCRAP CUT (v18.1 ruling;
+                                                                       v18.0 kept it un-glued)
+    (Deal Rs1,099PEOPLE200)       -> "Deal Rs1,099"               glued token cut (v18.1)
+    (Rs1,099SAVE_200)            -> "Rs1,099 SAVE_200"           underscore codes too
+    (Price Rs199 SAVE200)        -> unchanged                     already separated: hands off
+    (Rs260tG7oChgiQuTgS25b)      -> "Rs260"                       torn shortener: cut
+    (MRP: Rs 270 / Discount: 26%) -> still TWO lines              the walk never crosses a newline
+    [amazon-URL](foreign-shortener) -> the amazon URL (the LABEL), then rewritten to OUR link
+    post carrying a wa.me share button -> posted to every target, one link, ours
+
+PROOF COMMANDS (six suites + auditor + self-test must stay green; S9 pins its own knob
+state so it tests the DEFAULT regardless of the caller's environment):
+
+  python3 test_duplicate_sim.py            # S9: this exact post, dead-probe links
+  python3 test_line_fidelity.py            # un-glue rule, line-break guard, markdown label
+  python3 test_pipeline_fixes.py
+  python3 test_render_job.py
+  python3 test_best_copy.py
+  python3 test_rescan.py
+  python3 ops/sync_identity.py --check
+  python3 ops/identity_probe.py "boAt Airdopes 141 TWS Earbuds with ENx" "boAt Airdopes 141 True Wireless Earbuds"
+  (cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=1:dummy WA_PHONE=910000000000 \
+     WA_CHANNEL=@selftest node bridge.js --self-test)
+  DROP_DEAD_LINKS=true python3 test_duplicate_sim.py
+  STRIP_CAMPAIGN_BANNERS=true SAME_PRODUCT_SKIP_SECONDS=0 ADD_OUR_CHANNEL_FOOTER=true \
+     DROP_DEAD_LINKS=true python3 test_line_fidelity.py
+
+NOT DEPLOYED (per the user's instruction: fix everything first). This is repo source on
+arena/01a0583b-new-deals-bot-zip. The live host is believed to run a pre-v17.5 build,
+which is itself enough to reproduce every symptom the user reported - check it before
+shipping anything:
+
+  bash ops/deploy_and_verify.sh --verify-only     # what is live right now
+  bash ops/diagnose.sh                            # deployed-fix markers + coverage
+  bash ops/deploy_and_verify.sh --with-tests      # ship this build
+
+================================================================================
+v18.2 (round 14) - the last swallow, and knob-honest tests
+================================================================================
+
+1. LINK-FREE MEDIA POST (the FIFTH swallow). `if not source_urls: raise
+   PermanentSkip("no URLs")` deleted a photo/video post whose caption is the deal - which is
+   how a source channel posts a price burned INTO the image, or writes "link in the first
+   comment". The post reached the queue and produced nothing at all. render_job now computes
+   link_free_post = (no usable link) AND (the message carries media) AND (the caption states
+   deal terms: price, discount, card or service offer) and threads it through the 8 gates that
+   used to require a link. `LINK-FREE POST | queue=N the source posted this with no link at
+   all - publishing it exactly as posted`. Deliberate guards: no media => still skipped (that
+   is the unwanted-text bug in the other direction), no deal terms => still skipped, and the
+   bridge's curated WhatsApp gate keeps skipping a link-free post (with the reason logged).
+
+4. A REPAIR THAT CRASHED THE POST IT WAS SAVING. The v18.1/v18.2 layout rule (keep_source_spacing)
+   was called in the two link-repair paths as keep_source_spacing(rendered, row["text"]) - and the
+   queue table has no `text` column. sqlite3.Row raises IndexError on a missing key, so
+       JOB FAIL 1: No item with that key
+   and the deal stayed 'pending' and never posted. It only fires on the repair paths (a dead or
+   unverified link), which is exactly why no suite noticed: nothing exercised them end to end.
+
+   Fixed in two directions, because the class matters more than the one bug:
+     a) the queue now CARRIES the source text (`source_text TEXT`, added through the same
+        migration list the other columns use, bounded at 8000 chars, kept in step by the
+        "best copy" swap). A delivery-time repair can then compare layout against the source
+        instead of guessing - and keep_source_spacing treats an unknown/NULL source text as
+        HANDS OFF, never as "collapse the blank lines".
+     b) `test_pipeline_fixes.test_row_columns_exist` reads main_bot_new.py with `ast` (async
+        functions included) and checks every row["…"] key against PRAGMA table_info of the table
+        that function actually queries - 109 reads today. It failed the moment the bug was put
+        back, which is the only reason to trust a guard.
+     c) `test_duplicate_sim` S12 runs both repair paths for real: one dead destination next to a
+        live one (link cut, deal posted, no blank line left, job 'done') and the same run against
+        a legacy row with source_text NULL (posted, not re-flowed).
+     d) `test_a_live_database_from_an_older_build_is_upgraded` builds a queue table in the OLD
+        shape, inserts a pending row, opens Store on it and asserts the columns are added, the
+        row survives, and new writes carry the source text - i.e. the deploy on the server's
+        existing DB is safe.
+
+3. ZERO BUDGET MEANT SLOWER. `AffiliateClient.rendered_links_not_broken` fell back to probing
+   every link SERIALLY when PRESEND_CHECK_BUDGET_SECONDS <= 0 - so the value an operator sets
+   to stop a check holding a post made the check take LONGER (4 links x 0.3s instead of one
+   concurrent pass). 0 now means what it says: skip the extra pass, keep the render-path
+   verdict, post the deal. Documented in the README env table.
+
+2. KNOB-HONEST TESTS. A 24-value knob matrix over the six suites (and the bridge self-test in
+   7 modes) produced failures that were the TEST lying, not the code: assertions written
+   against a hard-coded default. Fixed by deriving the expectation from the live value:
+     - test_line_fidelity pins PASSTHROUGH_UNMONETIZED (it renders with an Amazon-only fake
+       affiliate; the knob's own behaviour is tested in pipeline/sim) and builds its Bitly
+       fixtures from SHORTEN_MIN_LEN, asserting "over the threshold => shortened, under it =>
+       direct" in BOTH directions.
+     - test_render_job pins the documented threshold for its render fixtures and states the
+       shortening predicate as the caller states it (list OR long).
+     - test_pipeline_fixes asserts the intake-dedup promise against PRODUCT_DEDUP_SECONDS,
+       sizes its media fixtures from MAX_MEDIA_MB, and uses JOB_MAX_ATTEMPTS /
+       JOB_RETRY_MAX_SECONDS instead of the magic 6 and 30.
+     - test_duplicate_sim derives "is the second copy news?" from the same comparison the
+       store makes (price lower, or discount ahead by SAME_PRODUCT_DISCOUNT_MARGIN), so
+       SAME_PRODUCT_DISCOUNT_MARGIN=0/1/50 are all correct behaviour, and it states S8 in
+     both directions under PASSTHROUGH_UNMONETIZED=false.
+     - bridge --self-test judges the gate through gateAccepts/gateSkips (WA_BEST_GATE=false
+       must skip NOTHING), the dedup rule through duplicateProductReason (not through the
+       gate that wraps it), and every link against SHORTEN_MIN_LEN rather than 65.
+   Why this matters: an operator who sets a knob and then sees a red suite stops trusting the
+   suites, and that is when real bugs ship.
+
+Proof (v18.2):
+  python3 test_pipeline_fixes.py | tail -1        # 218 checks, incl. the schema guard + legacy DB
+  python3 test_duplicate_sim.py | tail -1          # S12a/S12b drive the repair paths
+  for k in "SHORTEN_MIN_LEN=1" "SHORTEN_MIN_LEN=300" "PASSTHROUGH_UNMONETIZED=false"            "SAME_PRODUCT_DISCOUNT_MARGIN=0" "MAX_MEDIA_MB=1" "JOB_MAX_ATTEMPTS=3"            "PRODUCT_DEDUP_SECONDS=0" "ADD_OUR_CHANNEL_LINK_TOP=false" "MAX_ALBUM_PHOTOS=1"; do
+    env $k python3 test_line_fidelity.py | tail -1; env $k python3 test_duplicate_sim.py | tail -1
+  done
+  (cd tg-wa-bridge && for e in "" "WA_BEST_GATE=false" "WA_SHORTEN_MIN_LEN=1"       "WA_PRODUCT_DEDUP_HOURS=0" "WA_DROP_DEAD_LINKS=true"; do env $e ... node bridge.js --self-test; done)
+
+================================================================================
+v18.1 (round 13) - "alantivi unwated vi ravoddu": the same live post, four more fixes
+================================================================================
+
+The user looked at what v18.0 produced and ruled on it directly: "HFJF" is NOT a coupon
+code - "h", "htt", "jsjd" style text gets stuck next to the price and it must not be
+shown at all ("source lenid ravoddu"). So:
+
+1. GLUED SCRAP: CUT, NOT UN-GLUED. Anything FUSED to a rupee amount is deleted, and
+   nothing of ours is written in its place:
+       "Deal Price: Rs 199HFJF"    -> "Deal Price: Rs 199"
+       "Hair Clips at Rs85h"        -> "Hair Clips at Rs85"
+       "Rs1,099PEOPLE200"           -> "Rs1,099"
+       "Rs260tG7oChgiQuTgS25b"      -> "Rs260"          (as before - torn shortener)
+   What the source wrote APART is real text and is never touched:
+       "Use code HFJF for Rs199 off" -> untouched   "Price Rs199 SAVE200" -> untouched
+       "500ml Rs260 offer"           -> untouched
+   A spaced token is deleted only when it is machine-shaped (mixed case + >=8 chars +
+   holds a digit). Same rule in main_bot_new._keep_code_as_is and
+   bridge.keepCodeAsIs - one shape test, no regex pile-up, and the walk NEVER crosses a
+   newline (that variant once joined "MRP: Rs 270" with "Discount: 26%").
+
+2. FOURTH SWALLOW: a dead short link killed the whole post. render_job collects
+   destinations from the source text; "https://bit.ly/xyz" that no longer resolves gives
+   the affiliate nothing to monetize, and the job raised
+       RuntimeError: conversion retry required: affiliate conversion returned no link: bit.ly
+   retried until the deal aged out, then disappeared - nothing posted, log quiet.
+   Now: a host whose only job is redirecting is recognised by SHAPE, not only by a list
+   (is_unresolvable_short_link: not a known merchant or service-store host + one short slug +
+   it never resolved; SHORTENER_HOSTS still names the ones we are sure about). Shape because
+   the live miss was https://bitly.com/74265 while a list of bit.ly/shorturl.at kept missing
+   it - and every miss on that list costs a deal. If such a link did not resolve, the LINK IS CUT (LINK DROPPED | queue=N posting the deal without it) and the
+   deal goes out complete. A post left with no URL at all is still published
+   (LINK-FREE POST) instead of failing the provenance/verified-link gates - and two gates
+   that called a key-less post "duplicate deal"/"all products already posted" were fixed
+   so they cannot eat a link-less post either. Coverage rule intact: the source has it,
+   we post it.
+
+3. PHOTOS: posted the way the source posted them. A loot channel's six images are ONE
+   album (a grid), and the bot used to send only the first photo. download_album() now
+   walks the siblings via grouped_id (keeping each photo's Telegram reference so nothing
+   is re-uploaded - a post must not wait on six uploads) and send_media_group() posts the
+   grid with the deal as the first item's caption. Any photo that cannot be fetched is
+   left out; if the grouped call is refused, the fallback is the old behaviour plus the
+   remaining photos after it. MAX_ALBUM_PHOTOS (default 10) caps it. A single-photo post
+   keeps its exact old code path.
+
+4. OUR OWN CHANNEL LINK ON TOP: "paina neat ga veru channel link pettelaga".
+   prepend_channel_header() writes exactly one first line,
+       (arrow) All Loot Channels: <folder link>
+   and nothing else. It is applied at DELIVERY, not in render_job: the stored post, the
+   auditor's input, numeric fidelity and the chunk-resume logic all keep seeing the
+   source's text; no cleaning pass can eat the line as "join my channel"; Tricks posts
+   (which already have their own footer) are excluded. ADD_OUR_CHANNEL_LINK_TOP=false
+   switches it off and the test for it flips with the knob (S10).
+
+5. LINK-FREE MEDIA POST (the fifth swallow): a source post with media and real deal terms but
+   NO link died at PermanentSkip("no URLs"). render_job now sets link_free_post for exactly
+   that case (media AND a price/discount/card/service signal) and every later gate that used
+   to require a link honours it. Guards kept on purpose: no media or no deal terms => still
+   skipped (that is the "unwanted text" bug in the other direction), and the bridge's curated
+   WhatsApp gate still skips a link-free post - out loud, with the reason in the log.
+
+6. SPACING: keep_source_spacing() (and keepSourceSpacing() in the bridge) collapses a blank
+   line our own deletions created, and leaves a blank line the SOURCE wrote exactly as it is.
+   "exactly like the source" includes the layout: a post with a line punched out of the middle
+   reads like bot text, and a re-stuffed one loses the source's own rhythm.
+Bitly (re-confirmed by the user: "multiple links okka post lo vunte bitly use cheyu"):
+   should_use_bitly = lists (2+ links) + anything over SHORTEN_MIN_LEN (70); a tidy
+   single /dp/?tag= link stays direct so the monthly quota is not spent on ordinary
+   deals, and a Bitly failure posts the tagged links - never a lost post. Pinned by
+   test_lists_are_shortened_with_our_bitly_and_stay_neat().
+
+PROOF COMMANDS (six suites + auditor + bridge self-test; S10 conditions on its own knob,
+so every one of these must pass on its own terms):
+
+  python3 test_duplicate_sim.py          # S9 share link, S10 top line, S11 dead shortener
+  python3 test_line_fidelity.py          # scrap cut + spaced text kept, album grid, bitly
+  python3 test_pipeline_fixes.py ; python3 test_render_job.py
+  python3 test_best_copy.py ; python3 test_rescan.py
+  python3 ops/sync_identity.py --check
+  (cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=1:dummy WA_PHONE=910000000000 \
+     WA_CHANNEL=@selftest node bridge.js --self-test)
+  ADD_OUR_CHANNEL_LINK_TOP=false python3 test_duplicate_sim.py
+  MAX_ALBUM_PHOTOS=2 python3 test_duplicate_sim.py
+  DROP_DEAD_LINKS=true python3 test_duplicate_sim.py
+
+STILL NOT DEPLOYED (the user asked for fixes first). The live host is believed to run a
+pre-v17.5 build, which alone reproduces every symptom reported. On the host:
+  bash ops/deploy_and_verify.sh --verify-only   (what is live now)
+  bash ops/deploy_and_verify.sh --with-tests     (ship v18.2)

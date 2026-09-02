@@ -16,7 +16,8 @@ echo "[1/2] Packing bestgaa_final_bundle.zip ..."
 cd "$REPO_ROOT/bestgaa"
 zip -X -q "$HERE/bestgaa_final_bundle.zip" \
   main_bot_new.py deploy_bestgaa.sh migrate_legacy_env.py \
-  requirements.txt bestgaa.service README_FIRST.txt
+  requirements.txt bestgaa.service README_FIRST.txt \
+  -j "$HERE/coverage_audit.py" -j "$HERE/quality_audit.py"
 
 echo "[2/2] Packing tg_wa_bridge_bundle.zip ..."
 cd "$REPO_ROOT/tg-wa-bridge"

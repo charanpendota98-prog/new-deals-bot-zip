@@ -17,6 +17,14 @@ sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
 
+# This suite checks how a post is RENDERED, and its link fixtures were written for the
+# documented SHORTEN_MIN_LEN. The threshold's own behaviour (over the limit = shortened,
+# under it = left direct, in both directions) is pinned in test_line_fidelity against
+# the live value, so the operator can set SHORTEN_MIN_LEN to anything without this file
+# crying wolf.
+bot.SHORTEN_MIN_LEN = 70
+
+
 class FakeMsg:
     def __init__(self, text):
         self.text = text
@@ -64,7 +72,20 @@ def check(label, cond):
 
 
 async def queue_row(store, text, source="some_source", msg_id=1):
-    await store.enqueue(111, msg_id, source, text, False)
+    """Insert a queue row directly (bypassing the intake fingerprint check).
+
+    These cases must exercise the RENDER-stage gates - routing, conversion,
+    product/content dedup. The intake stage now refuses a duplicate campaign
+    before it is ever queued, and that layer is covered by
+    test_pipeline_fixes.py.
+    """
+    import time as _time
+    priority = bot.classify_priority(text, False)
+    store.conn.execute(
+        "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) VALUES(?,?,?,?,?,?)",
+        (111, msg_id, source, _time.time(), priority, str(bot.raw_chat_id(111))),
+    )
+    store.conn.commit()
     row = store.conn.execute("SELECT * FROM queue ORDER BY id DESC LIMIT 1").fetchone()
     return row
 
@@ -231,6 +252,25 @@ async def main():
         targets99 = await store.pending_targets(row99["id"])
         check("over-99 item withheld from Under99 channel only", "Under99Deals11" not in targets99)
 
+        # 7c-2. "powerloots lo anni cheyali" - PowerLoots1 now mirrors EVERY deal
+        # the pipeline accepts (the old <=499 / 70%-off filter silently dropped
+        # posts). Dedup is untouched, so it is still one copy per channel.
+        await case(store, "weak expensive deal still reaches PowerLoots",
+            "Premium Sofa Set\nDeal Price: ₹24999 5% OFF\nhttps://amzn.to/weak1",
+            {"https://amzn.to/weak1": "https://www.amazon.in/dp/B0WEAKITEM01"},
+            {"https://amzn.to/weak1": bot.LinkResult(
+                source="https://amzn.to/weak1",
+                resolved="https://www.amazon.in/dp/B0WEAKITEM01",
+                affiliate="https://www.amazon.in/dp/B0WEAKITEM01?tag=deals0911-21",
+                deal_key="amazon:B0WEAKITEM01")},
+            expect_render_contains=["Premium Sofa Set", "₹24999 5% OFF"],
+            expect_targets_superset=["PowerLoots1", "LootZoneIndia11"],
+            msg_id=77)
+        row77 = store.conn.execute("SELECT id FROM queue WHERE msg_id=77").fetchone()
+        targets77 = await store.pending_targets(row77["id"])
+        check("a weak/expensive deal is NOT premium material", "Premiumlootsdeals" not in targets77)
+        check("PowerLoots receives it exactly once", targets77.count("PowerLoots1") == 1)
+
         # 7d. Price-aware under-₹99 / under-₹499 LIST routing (user rule
         # "price tho"): a 3+ product list from ANY source reaches the under-99
         # channel only when it features an under-99 item, and under-499 only
@@ -254,25 +294,28 @@ async def main():
                    rU, cU,
                    expect_targets_superset=["Under99Deals11", "under499loots", "LootZoneIndia11"],
                    msg_id=80)
+        # LIST roundups go to BOTH price channels regardless of the item prices
+        # (user rule: "under 99 channel lo ... list of products undali").
         rE, cE, uE = mk_list("EXP")
-        await case(store, "expensive list skips the price channels",
+        await case(store, "expensive list also lands in both price channels",
                    f"Premium Gadgets\nA ₹2999 {uE[0]}\nB ₹3499 {uE[1]}\nC ₹4999 {uE[2]}",
                    rE, cE,
-                   expect_targets_superset=["PowerLoots1", "Premiumlootsdeals", "LootZoneIndia11"],
+                   expect_targets_superset=["PowerLoots1", "Premiumlootsdeals", "LootZoneIndia11",
+                                            "Under99Deals11", "under499loots"],
                    msg_id=81)
         row81 = store.conn.execute("SELECT id FROM queue WHERE msg_id=81").fetchone()
         targets81 = await store.pending_targets(row81["id"])
-        check("expensive list NOT in under99/under499 (stays honest)",
-              "Under99Deals11" not in targets81 and "under499loots" not in targets81)
+        check("expensive list appears exactly once per channel (no duplication)",
+              targets81.count("Under99Deals11") == 1 and targets81.count("under499loots") == 1)
         rM, cM, uM = mk_list("MID")
-        await case(store, "mid (₹399-499) list -> under499 only",
+        await case(store, "mid (₹399-499) list -> under499 + under99",
                    f"Home Loots\nA ₹399 {uM[0]}\nB ₹449 {uM[1]}\nC ₹499 {uM[2]}",
                    rM, cM,
-                   expect_targets_superset=["under499loots", "LootZoneIndia11"],
+                   expect_targets_superset=["under499loots", "LootZoneIndia11", "Under99Deals11"],
                    msg_id=82)
         row82 = store.conn.execute("SELECT id FROM queue WHERE msg_id=82").fetchone()
         targets82 = await store.pending_targets(row82["id"])
-        check("mid list NOT in under99", "Under99Deals11" not in targets82)
+        check("mid list in under99 too, once", targets82.count("Under99Deals11") == 1)
 
         # 7e. First-preference source (pricehistory): its queue jobs get a +1
         # priority boost so the same content tier delivers ahead of others.
@@ -335,6 +378,15 @@ async def main():
               bot.eligible_for_premium("Cotton socks under 99", 89, 60) is True)
         check("40% expensive deal is NOT premium",
               bot.eligible_for_premium("Smart watch 40% off", 2499, 40) is False)
+        # "premium dantlo best ga ... highest discount vunte" - cheap alone is not
+        # enough any more; the sub-99 path needs a real discount with it.
+        check("sub-99 with no stated discount is NOT premium",
+              bot.eligible_for_premium("Cotton socks under 99", 89, None) is False)
+        check("sub-99 with 55% off IS premium",
+              bot.eligible_for_premium("Cotton socks 55% off", 89, 55) is True)
+        # The bot never bolts its own banner onto a post: the dead premium
+        # wrapper (Q PREMIUM LOOT PICK Q / "Handpicked - Verified Link") is gone.
+        check("no invented premium wrapper exists", not hasattr(bot, "format_premium_loot"))
 
         # FINAL shortening pass: any long affiliate link left in the post (e.g.
         # a long Amazon category/search URL with our tag) is shortened; already
@@ -606,11 +658,103 @@ async def main():
         check("standalone+inline CTA removed, content kept",
               "grab now" not in cleaned_mid and "Premium leather" in cleaned_mid)
         # 10. Long links qualify for shortening; a clean short amazon /dp does not.
+        # The fixtures are written against the DOCUMENTED default threshold (this file pins
+        # it at import), so the check below states the rule - over the threshold means
+        # shortened - rather than trusting one number.
         long_link = ("https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031"
                      "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=deals0911-21")
         short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
-        check("long link flagged for shortening", len(long_link) > bot.SHORTEN_MIN_LEN)
-        check("short amazon dp not shortened", not (bot.should_use_bitly(short_dp, False) or len(short_dp) > bot.SHORTEN_MIN_LEN))
+        # the caller's real predicate: shorten when it is a LIST or when the link is long
+        wants_short = lambda u, multi: bot.should_use_bitly(u, multi) or len(u) > bot.SHORTEN_MIN_LEN
+        check(f"long link flagged for shortening (threshold={bot.SHORTEN_MIN_LEN})",
+              wants_short(long_link, False))
+        check("short amazon dp not shortened", not wants_short(short_dp, False))
+        check("but the same short dp IS shortened inside a list", wants_short(short_dp, True))
+
+        # ---- 11. the source message is gone (channels delete/re-post their own) ----
+        # Intake received the full text and the queue keeps it, so a message Telegram
+        # will not hand back may change the PHOTOS, never whether the deal is posted.
+        print("\n== 11: a vanished source message must not take the post with it ==")
+
+        async def row_of(text, msg_id, with_copy=True, attempts=0):
+            import time as _t
+            cols = ["chat_id", "msg_id", "source", "created_at", "priority", "chat_key",
+                    "attempts"]
+            vals: list = [111, msg_id, "gone_source", _t.time(), 1,
+                          str(bot.raw_chat_id(111)), attempts]
+            if with_copy:
+                cols.append("source_text")
+                vals.append(text)
+            store.conn.execute(
+                f"INSERT INTO queue({','.join(cols)}) "
+                f"VALUES({','.join('?' * len(vals))})", vals)
+            store.conn.commit()
+            return store.conn.execute("SELECT * FROM queue WHERE msg_id=?", (msg_id,)).fetchone()
+
+        class GoneClient:
+            """What the pipeline sees once the source deletes its own post."""
+
+            def __init__(self, error=None):
+                self.error = error
+
+            async def get_messages(self, chat_id, ids=None):
+                if self.error is not None:
+                    raise self.error
+                return None
+
+        def post(slug, name):
+            text = (f"\U0001f525 {name}\n"
+                    f"MRP \u20b95,995  Deal Price: \u20b91,999  Discount: 66%\n"
+                    f"https://amzn.to/{slug}")
+            aff = FakeAffiliate(
+                {f"https://amzn.to/{slug}": f"https://www.amazon.in/dp/B0{slug}"},
+                {f"https://amzn.to/{slug}": bot.LinkResult(
+                    f"https://amzn.to/{slug}", f"https://www.amazon.in/dp/B0{slug}",
+                    f"https://www.amazon.in/dp/B0{slug}?tag=deals0911-21",
+                    f"amazon:B0{slug}")},
+            )
+            return text, aff
+
+        text1, aff1 = post("GONE1", "Nike Men's Running Shoes")
+        try:
+            msg_r, rendered, price = await bot.render_job(
+                GoneClient(), aff1, await row_of(text1, 9101))
+        except Exception as exc:  # reported, not raised: a lost post is a FAIL, not a crash
+            msg_r, rendered, price = None, "", None
+            check(f"the vanished message is survived ({type(exc).__name__}: {exc})", False)
+        check("a deleted message still renders", bool(rendered))
+        check("the product line survives", "Nike Men's Running Shoes" in rendered)
+        check("the price and the discount survive", "\u20b91,999" in rendered and "66%" in rendered)
+        check("our tag is still applied to the link", "tag=deals0911-21" in rendered)
+        check("no media is invented for a message we cannot fetch",
+              getattr(msg_r, "media", "unexpected") is None)
+        check(f"the price is read from our own copy ({price})", price == 1999)
+
+        # Transient trouble is retried FIRST, because the next attempt may still get the
+        # photos back; only the attempt with no retries left settles for the copy.
+        text2, aff2 = post("GONE2", "Adidas Track Pants")
+        try:
+            await bot.render_job(GoneClient(ConnectionError("net down")), aff2,
+                                 await row_of(text2, 9102))
+            check("a flood/connection failure is retried, not settled for text-only", False)
+        except ConnectionError:
+            check("a flood/connection failure is retried, not settled for text-only", True)
+
+        text3, aff3 = post("GONE3", "Puma Lighthouse Sneakers")
+        last = await row_of(text3, 9103, attempts=bot.JOB_MAX_ATTEMPTS - 1)
+        _, rendered_last, _ = await bot.render_job(GoneClient(ConnectionError("net down")),
+                                                   aff3, last)
+        check("the final attempt posts from the copy instead of dropping the deal",
+              "Puma Lighthouse Sneakers" in rendered_last)
+
+        # Nothing stored (a row written by a build before source_text) keeps the old
+        # retryable failure - it is never a silent success with made-up content.
+        try:
+            await bot.render_job(GoneClient(), aff1, await row_of(text1, 9104, with_copy=False))
+            check("a legacy row with no stored copy still reports the fetch failure", False)
+        except RuntimeError as exc:
+            check(f"a legacy row with no stored copy still reports the fetch failure ({exc})",
+                  "no longer available" in str(exc))
 
     print(f"\nRESULT: {PASS} passed, {FAIL} failed")
     if FAIL:
