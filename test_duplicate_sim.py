@@ -696,10 +696,16 @@ def test_scenarios():
         check("[S13b] a stored post is delivered even when the message fetch throws",
               bool(ch_b), str(ch_b))
         body_b = sends[ch_b[0]][0] if ch_b else ""
-        # the stored bytes are what goes out; the only addition is the our-channel line that
-        # delivery puts on top of every post (never stored in the row, by the v18.1 rule)
-        check("[S13b] exactly as it was stored, line for line",
-              stored_copy in body_b and body_b.count("t.me/addlist") == 1, body_b[:120])
+        # The stored bytes are what goes out. The ONE thing delivery may add is our channel
+        # line on top (never stored in the row, v18.1) - and that line only exists while
+        # ADD_OUR_CHANNEL_LINK_TOP is on, so the expectation follows the knob in both
+        # directions instead of assuming the default.
+        if bot.ADD_OUR_CHANNEL_LINK_TOP:
+            check("[S13b] as stored, plus the one our-channel top line",
+                  stored_copy in body_b and body_b.count("t.me/addlist") == 1, body_b[:120])
+        else:
+            check("[S13b] with the top line off: stored bytes and nothing added",
+                  body_b.strip() == stored_copy.strip(), body_b[:120])
         st13b = store.conn.execute("select status, last_error from queue").fetchone()
         check("[S13b] no JOB FAIL, the row is 'done'", st13b[0] == "done", str(tuple(st13b)))
         # ---- S14: a caption/photo post whose source message is gone stays honest -----

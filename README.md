@@ -769,16 +769,25 @@ printing exactly what the older build was coded to print):
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
 | `test_pipeline_fixes.py` | `0f717dac204cc7b2fcdac711ca37ac913b92b4608d5ee64c5309f6187472ed63` |
-| `test_duplicate_sim.py` | `11ea84e7315af98cc16cc508955a34fdec2154dcc2e79d4d3289efc63c2510f0` |
+| `test_duplicate_sim.py` | `aef8d0fa7d0234436a7188ef5922cd5a94f687f28ef938a401b3225576a24298` |
 | `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
 
-Verified on this tree (every suite also passes with the knobs flipped —
-`SAME_PRODUCT_SKIP_SECONDS=0`, `ADD_OUR_CHANNEL_FOOTER=true`,
-`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_DISCOUNT_MARGIN=20`, and the two
-link-health blocks `DROP_DEAD_LINKS=true` / `WA_DROP_DEAD_LINKS=true`; the bridge
-self-test passes in all 22 modes listed in the table below), and
+Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
+`SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,
+`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_SKIP_SECONDS=0`,
+`PASSTHROUGH_UNMONETIZED=false`, `ADD_OUR_CHANNEL_LINK_TOP=false`,
+`ADD_OUR_CHANNEL_FOOTER=true`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
+`PRODUCT_DEDUP_SECONDS=0`, `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`,
+`STATE_RETENTION_DAYS=1`, `SAME_PRODUCT_DISCOUNT_MARGIN=1`, both `POST_QUIET_*`
+extremes, and everything-off together) — plus the bridge self-test in all **22**
+modes listed in the table below, and
 `python3 ops/sync_identity.py --check` keeps the auditor's copy of the identity rule
 from ever disagreeing with the bot's:
+
+> That matrix is how the last defect in this branch was caught: S13b assumed our
+> channel top line exists, so it failed with `ADD_OUR_CHANNEL_LINK_TOP=false` — a
+> lying assertion, not a broken pipeline. It now asserts the knob's own contract in
+> both directions, which is the rule every test in this repo follows.
 
 | Suite | What it pins |
 |---|---|

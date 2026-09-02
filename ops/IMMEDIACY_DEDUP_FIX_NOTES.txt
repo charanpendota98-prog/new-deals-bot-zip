@@ -30,6 +30,14 @@ v18.3 - THE SOURCE DELETED ITS OWN POST, AND WE LOST THE DEAL
    terms); test_pipeline_fixes (`StoredSourceMessage` contract, and the 8000-char storage
    cap can never truncate a Telegram message, which tops out at 4096 characters).
 
+PRE-MERGE CHECK CAUGHT ONE LYING ASSERTION (v18.3, same branch)
+--------------------------------------------------------------------------------
+The knob matrix ran every suite against all 18 modes, and `test_duplicate_sim` S13b failed with
+ADD_OUR_CHANNEL_LINK_TOP=false: it asserted our channel top line is present, which is only true
+while that knob is on. A broken assertion, not a broken pipeline - fixed to assert the knob's own
+contract in both directions (as S10 already does). 18 modes x 6 suites = 108 runs green after it,
+plus the bridge's 22.
+
 THE BRIDGE SELF-TEST WAS TIME-OF-DAY AND ZONE DEPENDENT
 --------------------------------------------------------------------------------
 `node bridge.js --self-test` failed at ~08:00 IST with
