@@ -1744,9 +1744,38 @@ ORPHAN_MARKDOWN_LINE_RE = re.compile(
 
 
 ORPHAN_URL_FRAGMENTS = {
-    "h", "ht", "htt", "http", "https", "ttp", "ttps",
+    "h", "hh", "ht", "hht", "htt", "httt", "hhtt", "http", "https", "https",
+    "htps", "ttp", "ttps", "tps",
     "tps://", "tp://", "s://", "://", "uy",
 }
+
+# USER RULE (2026-09-03): "h", "ht", "hht" price pakkana kuda add avvakudadu.
+# A stand-alone half-URL token ANYWHERE on a line ("Deal Price: ₹499 h",
+# "₹1,299 hht", "₹350 👉h") is the residue of a stripped link, never content.
+# The token must be a whole word on its own: "42H playtime", "H&M", "hot" and a
+# real "https://..." link are untouched (the lookarounds refuse letters, digits,
+# ':' '/' '.' '&' on either side).
+_INLINE_ORPHAN_FRAGMENT_RE = re.compile(
+    r"(?<![\w:/.&-])(?:h{1,2}t{1,3}p{0,2}s{0,2}|tt?ps?|h{1,2})(?![\w:/.&-])", re.I)
+
+
+def strip_inline_orphan_fragments(text: str) -> str:
+    """Remove bare half-URL tokens (h/ht/htt/hht/https…) glued near prices or
+    dangling anywhere, while every real URL stays byte-identical."""
+    if not text:
+        return text
+    real = list(dict.fromkeys(URL_RE.findall(text)))
+    masked = text
+    for index, url in enumerate(real):
+        masked = masked.replace(url, f"\x01R{index}\x02")
+    masked = _INLINE_ORPHAN_FRAGMENT_RE.sub(" ", masked)
+    # Emptied wrappers/arrows the token was sitting in: "(h)" -> "()", "👉h" -> "👉".
+    masked = re.sub(r"[(\[{]\s*[)\]}]", " ", masked)
+    masked = re.sub(r"[ \t]{2,}", " ", masked)
+    masked = re.sub(r"[ \t]+$", "", masked, flags=re.M)
+    for index, url in enumerate(real):
+        masked = masked.replace(f"\x01R{index}\x02", url)
+    return masked
 
 
 def remove_orphan_url_fragment_lines(text: str) -> str:
@@ -1756,6 +1785,11 @@ def remove_orphan_url_fragment_lines(text: str) -> str:
         # e.g. `👉h`, `htt`, or `tps://` left by malformed Telegram entities.
         core = re.sub(r"[^A-Za-z:/]", "", line).lower()
         if core in ORPHAN_URL_FRAGMENTS:
+            # A line whose letters are ONLY the fragment but that still carries
+            # a price/number ("₹799 ttp") must keep the price: strip the token,
+            # never the line (dropping the price was worse than the residue).
+            if re.search(r"[\d\u20b9]", line):
+                kept.append(strip_inline_orphan_fragments(line))
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -2085,6 +2119,8 @@ def sanitize_outbound_text(text: str) -> str:
             break
     out = strip_price_junk(out)
     out = strip_link_fragment_tokens(out)
+    # USER RULE: "h"/"ht"/"hht" pieces next to a price must never leave the bot.
+    out = strip_inline_orphan_fragments(out)
     out = re.sub(r"\(\s*\)", " ", out)
     # Any bracket left after the collapse is a fragment of broken entity markup.
     out = re.sub(r"[\[\]]", "", out)
@@ -2106,6 +2142,8 @@ def clean_source_text(text: str) -> str:
     text = CK_FOOTER_RE.sub("\n", text)
     text = SOURCE_NOISE_LINE_RE.sub("", text)
     text = remove_orphan_url_fragment_lines(text)
+    # USER RULE: "h"/"ht"/"hht" residue next to a price is unwanted text.
+    text = strip_inline_orphan_fragments(text)
     # Remove URL-tail garbage glued to a price ("₹122oya", "₹260tG7oChgiQuTgS25b")
     # and any stand-alone shortener fragment. Shared with tidy_post and the
     # outbound guard so the same junk can never be missed by one pass only.

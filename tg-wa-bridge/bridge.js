@@ -748,6 +748,13 @@ function cleanDealText(text) {
     .replace(/[A-Za-z0-9_-]*\.(?:me|com|in|net|org|io|co|html?)\b[\\/]\S*/gi, '')
     .replace(/\b(?:https?|httpsx|ht|htt|ftp|tps|ttp|tp|ps|hs|sp)[:/ ]{0,2}[/\\]{2,}\S*/gi, '')
     .replace(/(?:\s*\b(?:https?|htt|ftp)\b)/gi, '')
+    // USER RULE (2026-09-03): "h"/"ht"/"hht" residue next to a price ("₹499 h",
+    // "₹1,299 hht") is unwanted text. Real URLs are masked above; "42H", "H&M",
+    // "hp", "5H" survive because the lookarounds refuse letters/digits/&/-.
+    .replace(/(?<![\w:/.&-])(?:h{1,2}t{1,3}p{0,2}s{0,2}|tt?ps?|h{1,2})(?![\w:/.&-])/gi, ' ')
+    .replace(/[(\[{]\s*[)\]}]/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+$/gm, '')
     .replace(/\x01U\d+\x02/g, m => realUrls[Number(m.slice(2, -1))])
   // A source post whose duplicate links collapsed to one can leave dangling
   // link-bullet lines (e.g. `🔗` on its own). A bullet with no URL is not a
