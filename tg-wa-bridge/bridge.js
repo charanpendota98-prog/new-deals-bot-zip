@@ -1499,7 +1499,12 @@ const GLOBAL_CTA_PATTERNS = [
   /\bbuy\s+(?:it\s+)?here\b/gi, /\bshop\s+here\b/gi, /\border\s+here\b/gi,
   cta(String.raw`\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b`),
   cta(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b`),
-  /\bhurry\s*up?\b[!^1-9]*/gi,
+  // "Hurry up guys 🏃 limited stock" — the hype words AFTER the CTA are the same
+  // boilerplate and go with it (tail stops at any price/digit/link; the payload
+  // fidelity guard in stripInlineCta restores real deal words). A standalone
+  // "Limited stock" (availability info) is deal CONTENT and stays. Same rule as the bot.
+  cta(String.raw`\bhurry\s*up?\b!*`),
+  cta(String.raw`\bloot\s+(?:it\s+)?fa+s*t+\b!*`),
   cta(String.raw`\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b`, 'gim'),
   /\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me\/\S+/gi,
   cta(String.raw`\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b`, 'gim'),
@@ -1533,7 +1538,7 @@ function stripInlineCta(line) {
     // handled by the STRICT global patterns above (which never eat a following
     // price); no greedy end-of-line social strip here.
     .replace(/\b(?:link\s+in\s+bio|link\s+below|check\s+(?:link|bio|description|comments?|pinned))\b[^.|\n]*$/gi, ' ')
-  out = out.replace(/\s{2,}/g, ' ').replace(/^[\s|*•:,;\-]+|[\s|*•:,;\-]+$/g, '').trim()
+  out = out.replace(/\s{2,}/g, ' ').replace(/^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$/g, '').trim()
   // Fidelity rule (user, round 10): a LOST line is as much a bug as an added one.
   // If a CTA clause took the price, the discount or the coupon code with it, the
   // clause removal is undone for that line - the source wrote those words.

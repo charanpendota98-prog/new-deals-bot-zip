@@ -1518,7 +1518,13 @@ GLOBAL_CTA_PATTERNS_PY = (
     r"\bbuy\s+(?:it\s+)?here\b", r"\bshop\s+here\b", r"\border\s+here\b",
     rf"\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
     rf"\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b{CTA_TAIL_PY}",
-    r"\bhurry\s*up?\b[!^0-9]*",
+    # "Hurry up guys 🏃 limited stock" — the hype words AFTER the CTA are the
+    # same boilerplate and go with it; the tail stops at any price/digit/link,
+    # and the fidelity guard restores the line if real deal payload was taken.
+    # A standalone "Limited stock" (availability info on a coupon/deal line)
+    # is deal CONTENT and stays — only the hurry-up clause takes it along.
+    rf"\bhurry\s*up?\b!*{CTA_TAIL_PY}",
+    rf"\bloot\s+(?:it\s+)?fa+s*t+\b!*{CTA_TAIL_PY}",
     rf"\bturn\s+on\s+notifications?\b{CTA_TAIL_PY}",
     rf"\bstay\s+tuned\b{CTA_TAIL_PY}",
     rf"\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b{CTA_TAIL_PY}",
@@ -1573,7 +1579,7 @@ def strip_inline_cta(line: str) -> str:
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
     # that OPENED with a colon, which reads exactly like bot damage.
-    out = re.sub(r"^[\s|*•:,;\-]+|[\s|*•:,;\-]+$", "", out).strip()
+    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
     # Fidelity rule (user, round 10): a lost line is as bad as an added one. If a
     # CTA clause took the price, the discount or the coupon code with it, the
     # clause removal is undone for that line - the source wrote those words.
