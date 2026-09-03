@@ -513,6 +513,10 @@ FOREIGN_ECHO_DOMAINS = {
     "amzn.to", "amzn.in", "amazn.lt", "link.amazon", "fkrt.co", "fkrt.cc", "fkrt.in",
     "myntr.in", "ajiio.co", "tinyurl.com", "cutt.ly", "rb.gy", "t.ly", "tiny.cc",
     "shorturl.at", "is.gd", "v.gd", "snip.ly", "linkredirect.in", "bilty.co", "bitly.co",
+    # LOOKALIKES of our EarnKaro shortener (bitli.in): "bitl.in" / "bittli.in"
+    # are other channels' short domains. An API result on one of these is a
+    # foreign echo, never our commission link - reject it like fkrt.co.
+    "bitl.in", "bittli.in",
 }
 AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
 KNOWN_MERCHANT_DOMAINS = {
