@@ -14,7 +14,6 @@ Run: python3 test_best_copy.py   (from the repo root)
 import asyncio
 import json
 import os
-import re
 import subprocess
 import sys
 import tempfile
@@ -72,7 +71,6 @@ def test_best_copy_swap():
     async def run():
         with tempfile.TemporaryDirectory() as td:
             store = bot.Store(Path(td) / "t.sqlite3")
-            now = time.time()
             # source A queued the weak copy from chat -100900 msg 11
             check("weak copy is queued", await store.enqueue(-100900, 11, "lootnow", WEAK, False))
             row = store.conn.execute("SELECT * FROM queue").fetchone()
@@ -105,7 +103,6 @@ def test_best_copy_swap():
 
             # a MULTI-product post is never re-pointed, even with the same id
             check("a list post is queued normally", await store.enqueue(-100903, 41, "lootnow", LISTY, False))
-            list_row = store.conn.execute("SELECT * FROM queue WHERE msg_id=41").fetchone()
             better_for_list = await store.swap_in_better_copy(-100905, 61, "lootnow", STRONG, 2)
             still_list = store.conn.execute("SELECT * FROM queue WHERE msg_id=41").fetchone()
             check("a pending LIST row is never hijacked by a single-product copy",
@@ -178,7 +175,7 @@ def test_link_policy():
     spec.loader.exec_module(qa)
     tag = "deals0911-21"
     ours = [
-        f"https://bitli.in/TqmFyPp/AbC1",
+        "https://bitli.in/TqmFyPp/AbC1",
         "https://www.bitlyskj.com/zz",
         "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21",
         "https://www.amazon.in/dp/B0TAGGED002?tag=deals0911-21&linkCode=x",
@@ -244,7 +241,7 @@ def test_quality_auditor():
             f"Sony WH-CH720N Wireless Headphones\nNow {R}5,990 (MRP {R}10,990)\n"
             f"Pay {R}5,990 with code SONY10\nhttps://bitli.in/TqmFyPp/Sony7", ["LootZoneIndia11"])
         put(8, "lootnow", 108,
-            f"Sony WH-CH720N Wireless Headphones with mic and case, battery…",
+            "Sony WH-CH720N Wireless Headphones with mic and case, battery…",
             ["LootZoneIndia11"])
         tv = f"Samsung 43 Inch Crystal 4K Smart Television\nNow {{price}} (MRP {R}74,900)\n"
         put(10, "lootnow", 110, tv.format(price=f"{R}8,990") + "https://bitli.in/TqmFyPp/Tv10",

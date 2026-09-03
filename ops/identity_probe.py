@@ -89,7 +89,7 @@ def main(argv: list[str]) -> int:
     if same:
         price_a, disc_a = bot.parse_price(texts[0]), bot.parse_discount(texts[0])
         price_b, disc_b = bot.parse_price(texts[1]), bot.parse_discount(texts[1])
-        print(f"  the second copy still posts when it is cheaper or clearly deeper:")
+        print("  the second copy still posts when it is cheaper or clearly deeper:")
         print(f"  first  = {price_a} / {disc_a}%   second = {price_b} / {disc_b}%"
               f"   (margin {bot.SAME_PRODUCT_DISCOUNT_MARGIN}, window {bot.SAME_PRODUCT_SKIP_SECONDS}s)")
         better = ((price_b and price_a and price_b < price_a)

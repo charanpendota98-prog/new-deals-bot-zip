@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.2
+"""BestGAA Production Bot v18.3
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -65,7 +65,6 @@ import re
 import signal
 import sqlite3
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -135,14 +134,11 @@ EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/con
 OUR_TAG = env_required("AMAZON_TAG")
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
-# USER RULE: "ekkuva commission edi vunte ade pettu" — direct Amazon
-# Associates pays the full commission (EarnKaro takes a cut in the middle),
-# so Amazon links default to OUR Associates tag directly. Set
-# AMAZON_EARNKARO_RATIO above 0 only to route some share back via EarnKaro.
-try:
-    AMAZON_EARNKARO_RATIO = min(1.0, max(0.0, float(os.getenv("AMAZON_EARNKARO_RATIO", "0.0"))))
-except ValueError:
-    AMAZON_EARNKARO_RATIO = 0.0
+# USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
+# so direct-tagging pays nothing. EVERY Amazon link goes through EarnKaro like
+# every other store — no ratio, no env knob, no direct-Associates branch. A
+# stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
+AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
 
 PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
@@ -303,12 +299,16 @@ TRICKS_TARGET = "LootzoneTricks"
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
-TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals"}
+TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals", "offers_deals_xyz"}
 # Sources the user wants posted FIRST on every non-Tricks channel. Their queue
 # jobs get a +1 priority boost (capped at the top tier) so an equivalent deal
 # from one of these sources renders/delivers ahead of the same tier from any
 # other source. "pricehistory" = user's explicit first-preference source.
 PRIORITY_SOURCES = {"pricehistory"}
+# USER RULE (2026-09-04): t.me/under_99_loot_deals is the FIRST-PREFERENCE
+# source for the price channels - its posts go out ahead of the same tier from
+# any other source; the rest follow when it has nothing new.
+PRIORITY_SOURCES.add("under_99_loot_deals")
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
@@ -382,7 +382,11 @@ SOURCE_TO_TARGETS: dict[str, list[str]] = {
     "indian_online_offer": [],
     "idoffers2": [],
     "DealsUnder99_com": [],
-    "under_99_loot_deals": [],
+    # USER RULE (2026-09-04): under_99_loot_deals feeds LootZone and PowerLoots
+    # too; the Under99/Under499 price channels layer on automatically by price
+    # (a >₹99 item from it must not reach the Under-99 channel - that guard
+    # stays), and dedup still means exactly one copy per channel.
+    "under_99_loot_deals": ["LootZoneIndia11", POWER_FILTER_TARGET],
     "https://t.me/+LP6MYEpCwi0zOGYx": [],
     "Mobile_phone_offers_tv_ac_deals": list(MAIN_TARGETS),
     "Mobile_phone_offers_tv_ac_dealsk": list(LZI_SECRET),
@@ -447,6 +451,9 @@ for _source in (
 
 SOURCE_TO_TARGETS["TrickXpert"] = [TRICKS_TARGET]
 SOURCE_TO_TARGETS["Offerzone_deals"] = [TRICKS_TARGET]
+# USER (2026-09-04): t.me/offers_deals_xyz is a TRICKS source - its content goes
+# ONLY to the Tricks channel, never to the product channels.
+SOURCE_TO_TARGETS["offers_deals_xyz"] = [TRICKS_TARGET]
 # Latest explicit non-Tricks main-source routing.
 SOURCE_TO_TARGETS["idoffers"] = list(NO_TRICKS_TARGETS)
 SOURCE_TO_TARGETS["SB_Loots_And_Deals"] = list(NO_TRICKS_TARGETS)
@@ -496,6 +503,14 @@ SHORT_DOMAINS = {
     "bittli.in", "bilty.co", "tinyurl.com", "cutt.ly", "rb.gy", "t.ly", "tiny.cc",
     "shorturl.at", "is.gd", "v.gd", "snip.ly", "linkredirect.in", "ekaro.in",
     "clnk.in", "clnk.app", "ekaro.app", "l.ead.me",
+    # USER RULE (2026-09-04): WHATEVER shortener the source used, the link is
+    # resolved to its real store page and monetized as OUR link. These are the
+    # rest of the wrappers the loot channels actually paste:
+    "bitly.com", "j.mp", "t.co", "goo.gl", "buff.ly", "ow.ly", "tidd.ly",
+    "geni.us", "spoo.me", "da.gd", "surl.li", "shrtco.de", "9qr.de", "cli.re",
+    "shorte.st", "v.ht", "y2u.be", "dl.flipkart.com", "msho.in", "meesho.app",
+    "extp.in", "wishlink.com", "hypd.store", "bylink.in", "mylink.store",
+    "applink.adjust.com", "app.ajio.com", "ajiio.in", "tatacliq.app",
 }
 OUR_SHORTENER_DOMAINS = {
     "ekaro.in", "clnk.in", "clnk.app", "ekaro.app", "fktr.in", "myntr.it",
@@ -506,6 +521,10 @@ FOREIGN_ECHO_DOMAINS = {
     "amzn.to", "amzn.in", "amazn.lt", "link.amazon", "fkrt.co", "fkrt.cc", "fkrt.in",
     "myntr.in", "ajiio.co", "tinyurl.com", "cutt.ly", "rb.gy", "t.ly", "tiny.cc",
     "shorturl.at", "is.gd", "v.gd", "snip.ly", "linkredirect.in", "bilty.co", "bitly.co",
+    # LOOKALIKES of our EarnKaro shortener (bitli.in): "bitl.in" / "bittli.in"
+    # are other channels' short domains. An API result on one of these is a
+    # foreign echo, never our commission link - reject it like fkrt.co.
+    "bitl.in", "bittli.in",
 }
 AMAZON_DOMAINS = {"amazon.in", "www.amazon.in", "amazon.com", "www.amazon.com"}
 KNOWN_MERCHANT_DOMAINS = {
@@ -973,6 +992,10 @@ pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
 _SIG_QUALIFIERS = _SIG_VARIANTS | frozenset("model series gen generation version".split())
+# "by <word>" names the brand ("Airdopes 141 by boAt") EXCEPT when the word in
+# front says otherwise: "powered by Helio" names a chipset, not the maker.
+_SIG_BY_NON_BRAND = frozenset(
+    "powered brought inspired sponsored posted shared sent curated verified".split())
 _SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
@@ -1056,7 +1079,19 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
         return None if len(basis) < 16 else ("W", basis)
-    parts = ["M", words[0], " ".join(sorted(models | ids))]
+    # The brand is normally the first product word, but "Airdopes 141 by boAt"
+    # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
+    # the brand outright and wins over word order, so the reordered copy can
+    # never slip past dedup as a second post. "powered by Helio" and friends
+    # name a component, not the maker, and are ignored.
+    brand = words[0]
+    for index, token in enumerate(raw[:-1]):
+        if token == "by" and (index == 0 or raw[index - 1] not in _SIG_BY_NON_BRAND):
+            candidate = raw[index + 1]
+            if candidate in words:
+                brand = candidate
+                break
+    parts = ["M", brand, " ".join(sorted(models | ids))]
     if variants:
         parts.append(" ".join(sorted(variants)))
     return tuple(parts)
@@ -1116,19 +1151,45 @@ def product_key(value: str) -> str:
 
 
 def parse_price(text: str) -> int | None:
-    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values."""
+    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values.
+
+    Deep-audit fixes (2026-09-04): "MRP ₹1,999 Deal ₹899" used to return the
+    MRP (routing a ₹899 deal as if it cost ₹1,999); "INR 799", "Price: 349/-"
+    and "349/-" (the Indian price suffix) were not read at all. MRP-labelled
+    amounts are masked before the generic currency scan, so the generic match
+    can only ever see the DEAL price. Bare numbers with no currency marker are
+    still ignored on purpose - a model number is not a price."""
+    value = text or ""
+    # Mask "MRP ₹1,999" style amounts so no later pattern can mistake the MRP
+    # for the deal price. The deal-price labels below never say MRP.
+    masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
+                    " ", value)
     patterns = [
-        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹)?\s*([\d,]+)",
-        r"(?:only|at|@)\s*(?:rs\.?|₹)?\s*([\d,]+)",
-        r"(?:rs\.?|₹)\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
+        r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
+        r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
+        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
+        r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
+        # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
+        # the number is still explicit money.
+        r"([\d,]{2,})\s*(?:rs\.?|inr)\b",
         r"^\s*([\d,]{2,})\s+(?:https?://|$)",
     ]
     for pattern in patterns:
-        match = re.search(pattern, text or "", re.I | re.M)
+        match = re.search(pattern, masked, re.I | re.M)
         if match:
-            value = int(match.group(1).replace(",", ""))
-            if 1 <= value <= 1_000_000:
-                return value
+            price = int(match.group(1).replace(",", ""))
+            if 1 <= price <= 1_000_000:
+                return price
+    # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
+    # money on the post, so it is the best available answer (old behaviour).
+    # The masking above only stops MRP from SHADOWING a real deal price.
+    mrp = re.search(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)", value)
+    if mrp:
+        price = int(mrp.group(1).replace(",", ""))
+        if 1 <= price <= 1_000_000:
+            return price
     return None
 
 
@@ -1138,6 +1199,10 @@ def parse_discount(text: str, price: int | None = None) -> int | None:
     found: list[int] = []
     patterns = (
         r"(?:up\s*to|upto|flat|save|get)?\s*([1-9]\d?|100)\s*%\s*(?:off|discount)",
+        # "save 25 %" / "get 40 %" with a space before the sign and no
+        # off/discount word after it — the label BEFORE the number is what
+        # makes it a discount, so plain "25 %" alone still never matches.
+        r"(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%",
         # "Discount: 26%" is how a loot channel actually writes it - the colon after
         # the label used to lose the whole percentage, which matters because the
         # discount decides which price-tier channel a deal is routed to.
@@ -1341,7 +1406,9 @@ def extract_deal_prices(text: str) -> list[int]:
 
 def extract_urls(msg) -> list[str]:
     values: list[str] = []
-    text = msg.text or msg.message or ""
+    # msg.message is the raw text the entity offsets are measured on; msg.text
+    # may carry parse-mode markdown ("**") that shifts every offset after it.
+    text = msg.message or msg.text or ""
     surrogate_text = add_surrogate(text)
     values.extend(URL_RE.findall(text))
     for intent in INTENT_RE.findall(text):
@@ -1522,7 +1589,15 @@ GLOBAL_CTA_PATTERNS_PY = (
     r"\bbuy\s+(?:it\s+)?here\b", r"\bshop\s+here\b", r"\border\s+here\b",
     rf"\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
     rf"\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b{CTA_TAIL_PY}",
-    r"\bhurry\s*up?\b[!^0-9]*",
+    # "Hurry up guys 🏃 limited stock" — the hype words AFTER the CTA are the
+    # same boilerplate and go with it; the tail stops at any price/digit/link,
+    # and the fidelity guard restores the line if real deal payload was taken.
+    # A standalone "Limited stock" (availability info on a coupon/deal line)
+    # is deal CONTENT and stays — only the hurry-up clause takes it along.
+    # "up" is optional: "Hurry!!", "Hurry limited period deal!!!" and
+    # "Hurry, grab fast" are the same channel hype as "Hurry up guys".
+    rf"\bhurry(?:\s*up)?\b[!,.]*{CTA_TAIL_PY}",
+    rf"\bloot\s+(?:it\s+)?fa+s*t+\b!*{CTA_TAIL_PY}",
     rf"\bturn\s+on\s+notifications?\b{CTA_TAIL_PY}",
     rf"\bstay\s+tuned\b{CTA_TAIL_PY}",
     rf"\blink\s+(?:in\s+(?:bio|comments?|description)|below)\b{CTA_TAIL_PY}",
@@ -1565,7 +1640,7 @@ def strip_inline_cta(line: str) -> str:
         rf"\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
         rf"\b(?:don'?t|do\s+not|never)\s+miss\b{CTA_TAIL_PY}",
         rf"\bmiss\s+(?:it|this|out|the\s+deal)\b{CTA_TAIL_PY}",
-        r"\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|"
+        r"\b(?:hurry(?:\s*up)?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|"
         r"deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$",
         # Social/channel CTAs (join/follow/share/notifications/t.me) are handled
         # by the bounded global patterns above so a following price is never eaten.
@@ -1577,7 +1652,7 @@ def strip_inline_cta(line: str) -> str:
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
     # that OPENED with a colon, which reads exactly like bot damage.
-    out = re.sub(r"^[\s|*•:,;\-]+|[\s|*•:,;\-]+$", "", out).strip()
+    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
     # Fidelity rule (user, round 10): a lost line is as bad as an added one. If a
     # CTA clause took the price, the discount or the coupon code with it, the
     # clause removal is undone for that line - the source wrote those words.
@@ -1742,9 +1817,38 @@ ORPHAN_MARKDOWN_LINE_RE = re.compile(
 
 
 ORPHAN_URL_FRAGMENTS = {
-    "h", "ht", "htt", "http", "https", "ttp", "ttps",
+    "h", "hh", "ht", "hht", "htt", "httt", "hhtt", "http", "https", "https",
+    "htps", "ttp", "ttps", "tps",
     "tps://", "tp://", "s://", "://", "uy",
 }
+
+# USER RULE (2026-09-03): "h", "ht", "hht" price pakkana kuda add avvakudadu.
+# A stand-alone half-URL token ANYWHERE on a line ("Deal Price: ₹499 h",
+# "₹1,299 hht", "₹350 👉h") is the residue of a stripped link, never content.
+# The token must be a whole word on its own: "42H playtime", "H&M", "hot" and a
+# real "https://..." link are untouched (the lookarounds refuse letters, digits,
+# ':' '/' '.' '&' on either side).
+_INLINE_ORPHAN_FRAGMENT_RE = re.compile(
+    r"(?<![\w:/.&-])(?:h{1,2}t{1,3}p{0,2}s{0,2}|tt?ps?|h{1,2})(?![\w:/.&-])", re.I)
+
+
+def strip_inline_orphan_fragments(text: str) -> str:
+    """Remove bare half-URL tokens (h/ht/htt/hht/https…) glued near prices or
+    dangling anywhere, while every real URL stays byte-identical."""
+    if not text:
+        return text
+    real = list(dict.fromkeys(URL_RE.findall(text)))
+    masked = text
+    for index, url in enumerate(real):
+        masked = masked.replace(url, f"\x01R{index}\x02")
+    masked = _INLINE_ORPHAN_FRAGMENT_RE.sub(" ", masked)
+    # Emptied wrappers/arrows the token was sitting in: "(h)" -> "()", "👉h" -> "👉".
+    masked = re.sub(r"[(\[{]\s*[)\]}]", " ", masked)
+    masked = re.sub(r"[ \t]{2,}", " ", masked)
+    masked = re.sub(r"[ \t]+$", "", masked, flags=re.M)
+    for index, url in enumerate(real):
+        masked = masked.replace(f"\x01R{index}\x02", url)
+    return masked
 
 
 def remove_orphan_url_fragment_lines(text: str) -> str:
@@ -1754,6 +1858,11 @@ def remove_orphan_url_fragment_lines(text: str) -> str:
         # e.g. `👉h`, `htt`, or `tps://` left by malformed Telegram entities.
         core = re.sub(r"[^A-Za-z:/]", "", line).lower()
         if core in ORPHAN_URL_FRAGMENTS:
+            # A line whose letters are ONLY the fragment but that still carries
+            # a price/number ("₹799 ttp") must keep the price: strip the token,
+            # never the line (dropping the price was worse than the residue).
+            if re.search(r"[\d\u20b9]", line):
+                kept.append(strip_inline_orphan_fragments(line))
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -1900,7 +2009,10 @@ _COUPON_CODE_RE = re.compile(r"[A-Z][A-Z0-9_-]{2,19}")   # SAVE_200 is as spenda
 # The gap is [ \t]* and never \s*: a token on the NEXT line is not glued to this
 # price, and rewriting the pair must not swallow the newline that keeps the source's
 # layout (an earlier draft joined "MRP: ₹ 270" and "Discount: 26%" into one line).
-_PRICE_WITH_TAIL = re.compile(r"(\u20b9\s*[\d,]+)([ \t]*)(\S+)")
+# "@2764" and "Rs.449" are prices exactly like "\u20b9449" - the live channels
+# write all three - so link debris glued to ANY of them is cut the same way
+# ("LG 24 Inches @2764ldkf" was published with the "ldkf" scrap attached).
+_PRICE_WITH_TAIL = re.compile(r"((?:\u20b9\s*|@\s*|\bRs\.?\s*)[\d,]+)([ \t]*)(\S+)", re.I)
 
 
 def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
@@ -1920,6 +2032,10 @@ def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
     core = tail.rstrip(").,;:!?\u2026")
     trail = tail[len(core):]
     if not core:
+        return f"{price}{gap}{tail}"
+    # "@2pm" / "@11am" is a TIME the source wrote (sale start), not a price with
+    # junk on it - the glued cut below must never turn "Sale @2pm" into "Sale @2".
+    if price.lstrip().startswith("@") and core.lower() in ("am", "pm", "a.m", "p.m", "a.m.", "p.m."):
         return f"{price}{gap}{tail}"
     if not gap:
         # USER RULE (round 13): a token glued straight onto a price is UNWANTED text,
@@ -2083,6 +2199,8 @@ def sanitize_outbound_text(text: str) -> str:
             break
     out = strip_price_junk(out)
     out = strip_link_fragment_tokens(out)
+    # USER RULE: "h"/"ht"/"hht" pieces next to a price must never leave the bot.
+    out = strip_inline_orphan_fragments(out)
     out = re.sub(r"\(\s*\)", " ", out)
     # Any bracket left after the collapse is a fragment of broken entity markup.
     out = re.sub(r"[\[\]]", "", out)
@@ -2104,6 +2222,8 @@ def clean_source_text(text: str) -> str:
     text = CK_FOOTER_RE.sub("\n", text)
     text = SOURCE_NOISE_LINE_RE.sub("", text)
     text = remove_orphan_url_fragment_lines(text)
+    # USER RULE: "h"/"ht"/"hht" residue next to a price is unwanted text.
+    text = strip_inline_orphan_fragments(text)
     # Remove URL-tail garbage glued to a price ("₹122oya", "₹260tG7oChgiQuTgS25b")
     # and any stand-alone shortener fragment. Shared with tidy_post and the
     # outbound guard so the same junk can never be missed by one pass only.
@@ -2158,7 +2278,18 @@ def rebuild_text(text: str, entities, mapping: dict[str, str]) -> str:
             out.append(label)
         pos = end
     out.append(replace_literal(surrogate_text[pos:]))
-    return del_surrogate("".join(out))
+    result = del_surrogate("".join(out))
+    # SELF-HEALING GUARD (user bug, 2026-09-03): when entity offsets do not line
+    # up with this text (a parse-mode copy inserted "**" marks and shifted every
+    # offset), the slice cuts THROUGH a URL and publishes scrap like "BUJYEi"
+    # while the affiliate link is lost. If any monetized link went missing even
+    # though its source URL is literally present in the text, the entity path
+    # cannot be trusted - rebuild by literal replacement, which needs no offsets.
+    for source_url, aff in mapping.items():
+        if aff and aff not in result and source_url in clean_url(text):
+            literal = replace_literal(surrogate_text)
+            return del_surrogate(literal)
+    return result
 
 
 def tidy_post(text: str) -> str:
@@ -2176,6 +2307,10 @@ def tidy_post(text: str) -> str:
     # Remove malformed source-link text glued into labels/prices while genuine
     # generated URLs are safely masked above.
     masked = re.sub(r"(?i)\bhtt[A-Za-z0-9/:._-]*", "", masked)
+    # A protocol-less link stump ("://bitli.in/x" glued to a price after its
+    # scheme was torn off) is dead residue - the working link was already
+    # masked above, so anything still shaped like this cannot be real.
+    masked = re.sub(r":?//[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:/[A-Za-z0-9._~%/-]*)?", " ", masked)
     masked = re.sub(r"\bh(?=[A-Z][a-z])", "", masked)
     masked = strip_price_junk(masked)
     # Markdown emphasis debris only. A '_' BETWEEN word characters is content -
@@ -3730,7 +3865,13 @@ class AffiliateClient:
                         if target.startswith("http"):
                             current = target
                             continue
-                if host not in SHORT_DOMAINS:
+                # USER RULE (2026-09-04): whatever wrapper the source used must
+                # end up as OUR link. Known shorteners are followed by name;
+                # an UNKNOWN host whose link is a single short slug (the shape
+                # every shortener has - "loot.deals/xYz9") is followed too, so
+                # a brand-new wrapper domain still resolves to the real store
+                # page and gets monetized instead of being posted as-is.
+                if host not in SHORT_DOMAINS and not is_unresolvable_short_link(host, current):
                     break
                 async with self.session.get(
                     current, allow_redirects=True,
@@ -3886,25 +4027,12 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # USER RULE: Amazon links mix — appudappudu EarnKaro, otherwise our own
-        # Amazon Associates tag directly (best commission, no middle layer).
-        # The direct branch never depends on the EarnKaro API, so Amazon deals
-        # keep flowing even when EarnKaro is down/rate-limited.
-        if in_domains(host, AMAZON_DOMAINS) and random.random() >= AMAZON_EARNKARO_RATIO:
-            direct = apply_amazon_tag(clean)
-            if self.valid_generated(direct) and await self.link_not_broken(direct):
-                affiliate = direct
-                if should_use_bitly(resolved, multi_link) or len(direct) > SHORTEN_MIN_LEN:
-                    shortened = await self.shorten(direct)
-                    if shortened:
-                        affiliate = shortened
-                    else:
-                        log.warning("BITLY unavailable; using tagged Amazon link directly")
-                key = product_key(resolved)
-                await store.cache_link(source_url, affiliate, resolved, key)
-                log.info("AMAZON direct-associates | %s", (affiliate or "")[:80])
-                return LinkResult(source_url, resolved, affiliate, key)
-            # Direct build failed (broken page etc.) — fall through to EarnKaro.
+        # USER RULE (2026-09-03, FINAL): the Amazon Associates account keeps
+        # getting rejected, so the old direct-Associates branch is GONE. Every
+        # Amazon link is monetized through EarnKaro below, exactly like every
+        # other store. If EarnKaro is briefly down the job retries, and the
+        # final attempt still posts the clean merchant link (passthrough) —
+        # a deal is never lost, it just never carries a dead Associates tag.
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
@@ -4150,7 +4278,7 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
             if not extract_urls(msg) and not getattr(msg, "reply_to", None):
                 continue
             if await store.enqueue(chat_key, msg.id, source,
-                                   (msg.text or msg.message or "")):
+                                   (msg.message or msg.text or "")):
                 queued += 1
         if queued:
             log.info("BACKFILL | source=%s candidates=%s hours=%s", source, queued, source_hours)
@@ -4311,7 +4439,7 @@ async def source_rescan_loop(client: TelegramClient, source_map: dict,
                     # reaches the fingerprint/normalisation work in enqueue.
                     if await store.seen_message(chat_id, msg.id):
                         continue
-                    raw = (msg.text or msg.message or "") if msg is not None else ""
+                    raw = (msg.message or msg.text or "") if msg is not None else ""
                     has_media = bool(
                         msg is not None and msg.media is not None
                         and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice))
@@ -4650,7 +4778,10 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # IMPORTANT: Telegram entity offsets refer to the ORIGINAL text. Never run
     # footer/branding cleanup before rebuilding entities, otherwise offsets shift
     # and fragments such as `uy` / `tps://` get glued to the affiliate URL.
-    raw_text = msg.text or msg.message or ""
+    # msg.message is that original text; msg.text re-renders it through the
+    # client's parse mode and INSERTS markdown marks ("**bold**"), shifting every
+    # offset after them - which is how "BUY - <link>" was published as "BUJYEi".
+    raw_text = msg.message or msg.text or ""
     text = clean_source_text(raw_text)
     source_urls = extract_urls(msg)
     # Reply-only deal support.
@@ -5175,7 +5306,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                         await store.update_rendered(row["id"], rendered)
             if not await store.claim_content_key(row["id"], content_deal_key(rendered)):
                 raise DuplicateDeal("duplicate pending content")
-            price = parse_price(msg.text or "") if msg else None
+            price = parse_price(msg.message or msg.text or "") if msg else None
         else:
             msg, rendered, price = await render_job(client, affiliate, row)
         # v17.8 ONE PRODUCT, ONE CHANNEL, ONE POST. Two sources can carry the same
@@ -5368,7 +5499,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.2 starting "
+    log.info("BestGAA Production Bot v18.3 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
@@ -5398,7 +5529,7 @@ async def main() -> None:
         try:
             source, _ = entry
             msg = event.message
-            raw = (msg.text or msg.message or "") if msg is not None else ""
+            raw = (msg.message or msg.text or "") if msg is not None else ""
             has_media = bool(
                 msg is not None and msg.media is not None and
                 not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice))

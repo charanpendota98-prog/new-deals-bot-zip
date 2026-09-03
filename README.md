@@ -761,16 +761,16 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `d1f92cb8be0762147dfef1fcceda80d0a08f2d067b5fa74e2319f70ac59557d4` |
-| `tg-wa-bridge/bridge.js` | `30b1bd2df14efaa355242650e4063cab0dc7d05923bc9b39f7dda100fb5b4715` |
+| `bestgaa/main_bot_new.py` | `a27bddeb0aa378fedab705c56ba25b54c9a669b00b3dc3825c7fe5bcc6186148` |
+| `tg-wa-bridge/bridge.js` | `f6029a257602e413dfd3e6e7639a84d4bee7686451ddb618308995cd6f97394f` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
+| `ops/quality_audit.py` | `29a38074fb9116c6f974c6c55688e500560a235ed0288ff1c06006bb690d2096` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
-| `test_pipeline_fixes.py` | `0f717dac204cc7b2fcdac711ca37ac913b92b4608d5ee64c5309f6187472ed63` |
+| `test_pipeline_fixes.py` | `f5c274ddf3d444f921c678c176d62a6e96b4c00e8a5725d608a0777e9c520cd0` |
 | `test_duplicate_sim.py` | `aef8d0fa7d0234436a7188ef5922cd5a94f687f28ef938a401b3225576a24298` |
-| `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
+| `test_best_copy.py` | `9b47df6c18148cb59a8c82dff3748195afb39c6da482a985ad360727aa3ee2cc` |
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
 `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,

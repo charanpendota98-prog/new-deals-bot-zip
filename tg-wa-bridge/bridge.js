@@ -148,12 +148,24 @@ const MIN_WA_MESSAGE_GAP_SECONDS = Math.max(15, Number(process.env.MIN_WA_MESSAG
 // photos of the SAME album) a short fixed gap is used - the long gap only
 // applies between separate posts. Tune down only if the number is not new.
 const INTER_TARGET_GAP_SECONDS = Math.max(3, Number(process.env.WA_INTER_TARGET_GAP_SECONDS || 6))
+// USER RULE (2026-09-03): the user runs TWO WhatsApp channels — after the post
+// lands in the first channel, wait 70-80 seconds (random) before the second
+// channel gets it, so both channels never fire at the same instant. The short
+// INTER_TARGET_GAP above still paces the items WITHIN one channel (album
+// photos, caption + long-text tail).
+// USER RULE (2026-09-03): a random 70-90s gap between the two WhatsApp channels
+// for the same post - safe, human-looking pacing. Telegram stays instant.
+const CROSS_CHANNEL_GAP_MIN = Math.max(0, Number(process.env.WA_CROSS_CHANNEL_GAP_MIN_SECONDS || 70))
+const CROSS_CHANNEL_GAP_MAX = Math.max(CROSS_CHANNEL_GAP_MIN, Number(process.env.WA_CROSS_CHANNEL_GAP_MAX_SECONDS || 90))
 // 24/7 throughput: hour/day caps must never park the queue for hours. These
 // are safety ceilings only, and are sized so a hard 60s floor stays reachable.
 const HOUR_CAP_OVERRIDE = Number(process.env.WA_HOUR_CAP || 0)
 const DAY_CAP_OVERRIDE = Number(process.env.WA_DAY_CAP || 0)
 // The primary source the user wants represented first on WhatsApp.
 const PRIMARY_SOURCE = (process.env.WA_PRIMARY_SOURCE || 'under499loots').toLowerCase()
+// USER RULE (2026-09-04): the Under-99 feed is the second lead - its deals are
+// the cheapest, everyone-buys items and go ahead of ordinary posts on WhatsApp.
+const SECONDARY_SOURCE = (process.env.WA_SECONDARY_SOURCE || 'under99deals11').toLowerCase()
 // Media is the user's top display preference; a photo/video job may jump the
 // queue when the previous update was text-only.
 const MEDIA_FIRST = (process.env.WA_MEDIA_FIRST || 'true').toLowerCase() === 'true'
@@ -338,6 +350,10 @@ async function interMessageGap() {
 async function interTargetGap() {
   await sleep(randomMs(INTER_TARGET_GAP_SECONDS, INTER_TARGET_GAP_SECONDS + 5))
 }
+// Between our TWO WhatsApp channels for the SAME post: 70-80 s random.
+async function crossChannelGap() {
+  if (CROSS_CHANNEL_GAP_MAX > 0) await sleep(randomMs(CROSS_CHANNEL_GAP_MIN, CROSS_CHANNEL_GAP_MAX))
+}
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex') }
 // A hung WhatsApp/Telegram promise must never freeze the dispatcher. Every
 // network step is wrapped so the worker can retry instead of stalling for hours.
@@ -367,7 +383,7 @@ const PROMO_PATTERNS = [
   /\b(?:don'?t|do\s+not|never)\s+miss\b|\bmiss\s+(?:it|this|out)\b/i,
   /\bdeal\s*time\s*[:\-]/i,
   /\bgrab\s+(?:it|fast|now|your|this)\b/i,
-  /\bhurry?\s*up\b/i,
+  /\bhurry(?:\s*up)?\b/i,
   /\bstay\s+(?:tuned|connected|updated)\b/i,
   /\b(?:buy|shop|order)\s+now\b/i,
   /\bcash\s*?back\b[^.\n]{0,20}(?:@\S+|bot)\b/i,
@@ -511,6 +527,9 @@ function keepCodeAsIs(price, gap, tail) {
   const core = tail.replace(/[).,;:!?\u2026]+$/, '')
   const trail = tail.slice(core.length)
   if (!core) return price + gap + tail
+  // "@2pm" / "@11am" is a TIME the source wrote (sale start), not a price with
+  // junk glued on - "Sale @2pm" must never become "Sale @2". Same rule as the bot.
+  if (price.trimStart().startsWith('@') && /^[ap]\.?m\.?$/i.test(core)) return price + gap + tail
   if (!gap) {
     // USER RULE (round 13): whatever is glued straight onto a price is unwanted text -
     // the live source writes "₹85h" / "₹ 199HFJF" / "₹85jsjd" and the reader needs the
@@ -537,7 +556,9 @@ function stripPriceJunk(text) {
   const urls = [...new Set(String(text).match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
   let masked = String(text)
   urls.forEach((u, i) => { masked = masked.split(u).join(`\u0002P${i}\u0003`) })
-  let out = masked.replace(/(\u20b9\s*[\d,]+)([ \t]*)(\S+)/g,
+  // "@2764" and "Rs.449" are prices exactly like "\u20b9449" - link debris glued
+  // to ANY of them is cut the same way ("LG 24 Inches @2764ldkf"). Same as the bot.
+  let out = masked.replace(/((?:\u20b9\s*|@\s*|\bRs\.?\s*)[\d,]+)([ \t]*)(\S+)/gi,
     (all, price, gap, tail) => keepCodeAsIs(price, gap, tail))
   urls.forEach((u, i) => { out = out.split(`\u0002P${i}\u0003`).join(u) })
   // Keep a glued link apart from the word/price in front of it.
@@ -588,6 +609,17 @@ function sanitizeOutbound(text) {
   }
   out = stripPriceJunk(out)
   out = stripLinkFragmentTokens(out)
+  // A protocol-less link stump ("://bitli.in/x" left when the scheme was torn
+  // off) is dead residue - real links are untouched because they still carry
+  // their scheme, which this pattern requires to be ABSENT. Same as the bot.
+  {
+    const realLinks = [...new Set(out.match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
+    let stub = out
+    realLinks.forEach((u, i) => { stub = stub.split(u).join('\u0001S' + i + '\u0002') })
+    stub = stub.replace(/:?\/\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:\/[A-Za-z0-9._~%/-]*)?/g, ' ')
+    realLinks.forEach((u, i) => { stub = stub.split('\u0001S' + i + '\u0002').join(u) })
+    out = stub.replace(/[ \t]{2,}/g, ' ')
+  }
   // A link glued to the word/price before it prints as one unreadable token
   // ("₹260https://…"). Query-nested links stay intact: the separator must be a
   // word char, never "=", "&", "?" or "/".
@@ -737,6 +769,13 @@ function cleanDealText(text) {
     .replace(/[A-Za-z0-9_-]*\.(?:me|com|in|net|org|io|co|html?)\b[\\/]\S*/gi, '')
     .replace(/\b(?:https?|httpsx|ht|htt|ftp|tps|ttp|tp|ps|hs|sp)[:/ ]{0,2}[/\\]{2,}\S*/gi, '')
     .replace(/(?:\s*\b(?:https?|htt|ftp)\b)/gi, '')
+    // USER RULE (2026-09-03): "h"/"ht"/"hht" residue next to a price ("₹499 h",
+    // "₹1,299 hht") is unwanted text. Real URLs are masked above; "42H", "H&M",
+    // "hp", "5H" survive because the lookarounds refuse letters/digits/&/-.
+    .replace(/(?<![\w:/.&-])(?:h{1,2}t{1,3}p{0,2}s{0,2}|tt?ps?|h{1,2})(?![\w:/.&-])/gi, ' ')
+    .replace(/[(\[{]\s*[)\]}]/g, ' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+$/gm, '')
     .replace(/\x01U\d+\x02/g, m => realUrls[Number(m.slice(2, -1))])
   // A source post whose duplicate links collapsed to one can leave dangling
   // link-bullet lines (e.g. `🔗` on its own). A bullet with no URL is not a
@@ -1342,6 +1381,9 @@ function explicitDiscount(text) {
     ...[...body.matchAll(/\b([1-9]\d?|100)\s*%\s*(?:off|discount)\b/gi)].map(m => Number(m[1])),
     ...[...body.matchAll(/\b(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)/gi)]
       .map(m => Number(m[1])),
+    // "save 25 %" / "get 40 %" — the label BEFORE the number makes it a
+    // discount (parity with parse_discount in the bot). Bare "25 %" never counts.
+    ...[...body.matchAll(/\b(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%/gi)].map(m => Number(m[1])),
   ]
   return values.length ? Math.max(...values) : null
 }
@@ -1365,6 +1407,13 @@ function detectedPrice(text) {
   if (explicit && valid(num(explicit))) return num(explicit)
   let at = t.match(/(?:only|price|at|from|just)\s*[:\-]?\s*(?:rs\.?|₹)\s*([\d,]+)\s*(?!\s*(?:%|off|discount|cashback))/i)
   if (at && valid(num(at))) return num(at)
+  // Indian "/-" price suffix ("349/-") is explicit money (parity with the bot).
+  const suffixed = t.match(/([\d,]{2,})\s*\/-/)
+  if (suffixed && valid(num(suffixed))) return num(suffixed)
+  // Suffix currency ("749 rs" / "1,299 INR") - money named AFTER the number
+  // is still explicit money (parity with the bot).
+  const suffixRs = t.match(/([\d,]{2,})\s*(?:rs\.?|inr)\b/i)
+  if (suffixRs && valid(num(suffixRs))) return num(suffixRs)
   const prices = []
   for (const m of t.matchAll(/(?:rs\.?|inr|₹)\s*([\d,]+)/gi)) {
     // Skip a price that is an MRP/struck/was value or a discount/cashback.
@@ -1499,7 +1548,14 @@ const GLOBAL_CTA_PATTERNS = [
   /\bbuy\s+(?:it\s+)?here\b/gi, /\bshop\s+here\b/gi, /\border\s+here\b/gi,
   cta(String.raw`\b(?:click|tap)\s+(?:here|the\s+link|on\s+(?:the\s+)?link|below|to\s+(?:buy|order|shop))\b`),
   cta(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\s+(?:it|this|out|the\s+deal|this\s+deal)\b`),
-  /\bhurry\s*up?\b[!^1-9]*/gi,
+  // "Hurry up guys 🏃 limited stock" — the hype words AFTER the CTA are the same
+  // boilerplate and go with it (tail stops at any price/digit/link; the payload
+  // fidelity guard in stripInlineCta restores real deal words). A standalone
+  // "Limited stock" (availability info) is deal CONTENT and stays. Same rule as the bot.
+  // "up" is optional: "Hurry!!" / "Hurry limited period deal!!!" are the same
+  // channel hype as "Hurry up guys". Same rule as the bot.
+  cta(String.raw`\bhurry(?:\s*up)?\b[!,.]*`),
+  cta(String.raw`\bloot\s+(?:it\s+)?fa+s*t+\b!*`),
   cta(String.raw`\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b`, 'gim'),
   /\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me\/\S+/gi,
   cta(String.raw`\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b`, 'gim'),
@@ -1528,12 +1584,12 @@ function stripInlineCta(line) {
     .replace(new RegExp(String.raw`\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+buy|to\s+order|to\s+shop)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
     .replace(new RegExp(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
     .replace(new RegExp(String.raw`\bmiss\s+(?:it|this|out|the\s+deal)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
-    .replace(/\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$/gi, ' ')
+    .replace(/\b(?:hurry(?:\s*up)?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$/gi, ' ')
     // Social/channel CTAs (join/subscribe/follow/share/notifications/t.me) are
     // handled by the STRICT global patterns above (which never eat a following
     // price); no greedy end-of-line social strip here.
     .replace(/\b(?:link\s+in\s+bio|link\s+below|check\s+(?:link|bio|description|comments?|pinned))\b[^.|\n]*$/gi, ' ')
-  out = out.replace(/\s{2,}/g, ' ').replace(/^[\s|*•:,;\-]+|[\s|*•:,;\-]+$/g, '').trim()
+  out = out.replace(/\s{2,}/g, ' ').replace(/^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$/g, '').trim()
   // Fidelity rule (user, round 10): a LOST line is as much a bug as an added one.
   // If a CTA clause took the price, the discount or the coupon code with it, the
   // clause removal is undone for that line - the source wrote those words.
@@ -1923,6 +1979,9 @@ const WA_SIG_VARIANTS = new Set(('pro plus max ultra lite neo fe se mini prime c
 // 2600" are the product, while "(2023) at the end of a headline is only the
 // launch year and must not split one TV into two identities.
 const WA_SIG_QUALIFIERS = new Set([...WA_SIG_VARIANTS, 'model', 'series', 'gen', 'generation', 'version'])
+// "by <word>" names the brand ("Airdopes 141 by boAt") EXCEPT when the word in
+// front says otherwise: "powered by Helio" names a chipset, not the maker.
+const WA_SIG_BY_NON_BRAND = new Set('powered brought inspired sponsored posted shared sent curated verified'.split(' '))
 const WA_SIG_VARIANT_RE = /\b(\d{1,4}(?:\.\d+)?)[\s_-]*(gb|tb|mb|kb|ltr|liter|liters|litre|litres|ml|kg|ton|tons|stars?|inch|inches|in|ft|hp|kva|burners?|slices?|trays?|doors?|persons?|blades?|l)\b/gi
 
 function waSigTokens(line) {
@@ -1973,9 +2032,19 @@ function productNameIdentity(line) {
     const basis = [...new Set(words)].sort().join(' ')
     return basis.length < 16 ? null : `W|${basis}`
   }
+  // The brand is normally the first product word, but "Airdopes 141 by boAt"
+  // and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names the
+  // brand outright and wins over word order. "powered by Helio" names a
+  // component, not the maker, and is ignored. Same rule as the bot.
+  let brand = words[0]
+  for (let index = 0; index < raw.length - 1; index++) {
+    if (raw[index] === 'by' && (index === 0 || !WA_SIG_BY_NON_BRAND.has(raw[index - 1]))) {
+      if (words.includes(raw[index + 1])) { brand = raw[index + 1]; break }
+    }
+  }
   const numbers = [...new Set([...models, ...ids])].sort().join(' ')
   const tail = variants.size ? `|${[...variants].sort().join(' ')}` : ''
-  return `M|${words[0]}|${numbers}${tail}`
+  return `M|${brand}|${numbers}${tail}`
 }
 
 function nameOnlyKey(text, job = null) {
@@ -2166,15 +2235,20 @@ function queuedJobPriorityVector(job) {
   // Older jobs still age out of the queue via MAX_JOB_AGE, so nothing lingers
   // to be posted hours later unless nothing newer is ready.
   const recency = Math.max(0, 130 - Math.floor(Math.max(0, Date.now() - Number(job.createdAt || Date.now())) / 60_000))
-  // t.me/under499loots is the user's main WhatsApp feed. It leads the order,
-  // then photo/video, then price/list/discount ladder, then newest first.
-  const primaryRank = (job.source || '').toLowerCase() === PRIMARY_SOURCE ? 1 : 0
+  // t.me/under499loots is the user's main WhatsApp feed. It leads the order.
+  const src = (job.source || '').toLowerCase()
+  const primaryRank = src === PRIMARY_SOURCE ? 2 : src === SECONDARY_SOURCE ? 1 : 0
+  // USER RULE (2026-09-03): when several deals are ready at the same time,
+  // product LISTS go out first, then the photo/video posts (the best-looking
+  // ones), then everything else. The list lead counts only a true multi-product
+  // list (4+ links / flagged largeList), not a two-link deal.
+  const listLead = listRank >= 2 ? 1 : 0
   const mediaLead = MEDIA_FIRST ? mediaRank : 0
-  // Commission-aware ordering: among the same primary/media tier, high-payout
-  // deals (fashion/beauty, high-commission merchants, healthy order value) go
-  // first so the channel earns the most per slot.
+  // Commission-aware ordering: among the same primary/list/media tier,
+  // high-payout deals (fashion/beauty, high-commission merchants, healthy
+  // order value) go first so the channel earns the most per slot.
   const commissionTier = COMMISSION_RANKING ? dealCommissionInfo(job).tier : 0
-  return [primaryRank, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
+  return [primaryRank, listLead, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
 }
 function compareQueuedJobs(a, b) {
   const left = queuedJobPriorityVector(a)
@@ -2781,7 +2855,8 @@ async function broadcastText(sock, job, tag, text) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interTargetGap()
+    // USER RULE: 70-80 s random breather between our two channels.
+    if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
 // Sends one photo/video to ALL targets. Channel media uses the corrected
@@ -2811,7 +2886,8 @@ async function broadcastMediaItem(sock, job, item, caption) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interTargetGap()
+    // USER RULE: 70-80 s random breather between our two channels.
+    if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
 function formatDigestItem(job, number) {
@@ -3805,12 +3881,16 @@ if (process.argv.includes('--self-test')) {
   ]
   const ordered = [...prioritySamples].sort(compareQueuedJobs)
   const orderKeys = ordered.map(item => item.createdAt - fresh)
-  // Media item first, then by price/list/discount ladder; items 6 and 7 tie on
-  // every rank so the newest (createdAt=fresh+7) wins - latest-first. The media
+  // USER RULE order: the multi-product LIST (item 3) leads, then the photo
+  // item (item 2), then the price/discount ladder; items 6 and 7 tie on every
+  // rank so the newest (createdAt=fresh+7) wins - latest-first. The media
   // lead is a knob (WA_MEDIA_FIRST), so the exact order is only asserted in the
   // mode that uses it; the invariants below must hold either way.
-  if (MEDIA_FIRST && orderKeys.join(',') !== '2,1,3,4,5,7,6') {
-    throw new Error('media-first + newest-first priority order test failed: ' + orderKeys)
+  if (MEDIA_FIRST && orderKeys.join(',') !== '3,2,1,4,5,7,6') {
+    throw new Error('list-first + media + newest-first priority order test failed: ' + orderKeys)
+  }
+  if (orderKeys[0] !== 3) {
+    throw new Error('a ready multi-product list must always lead the queue: ' + orderKeys)
   }
   if (orderKeys.indexOf(7) > orderKeys.indexOf(6)) {
     throw new Error('the newest-first tie-break must survive any knob: ' + orderKeys)
