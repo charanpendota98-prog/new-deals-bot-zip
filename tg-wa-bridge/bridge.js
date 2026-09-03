@@ -378,7 +378,7 @@ const PROMO_PATTERNS = [
   /\b(?:don'?t|do\s+not|never)\s+miss\b|\bmiss\s+(?:it|this|out)\b/i,
   /\bdeal\s*time\s*[:\-]/i,
   /\bgrab\s+(?:it|fast|now|your|this)\b/i,
-  /\bhurry?\s*up\b/i,
+  /\bhurry(?:\s*up)?\b/i,
   /\bstay\s+(?:tuned|connected|updated)\b/i,
   /\b(?:buy|shop|order)\s+now\b/i,
   /\bcash\s*?back\b[^.\n]{0,20}(?:@\S+|bot)\b/i,
@@ -1527,7 +1527,9 @@ const GLOBAL_CTA_PATTERNS = [
   // boilerplate and go with it (tail stops at any price/digit/link; the payload
   // fidelity guard in stripInlineCta restores real deal words). A standalone
   // "Limited stock" (availability info) is deal CONTENT and stays. Same rule as the bot.
-  cta(String.raw`\bhurry\s*up?\b!*`),
+  // "up" is optional: "Hurry!!" / "Hurry limited period deal!!!" are the same
+  // channel hype as "Hurry up guys". Same rule as the bot.
+  cta(String.raw`\bhurry(?:\s*up)?\b[!,.]*`),
   cta(String.raw`\bloot\s+(?:it\s+)?fa+s*t+\b!*`),
   cta(String.raw`\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b`, 'gim'),
   /\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me\/\S+/gi,
@@ -1557,7 +1559,7 @@ function stripInlineCta(line) {
     .replace(new RegExp(String.raw`\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+buy|to\s+order|to\s+shop)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
     .replace(new RegExp(String.raw`\b(?:don'?t|do\s+not|never)\s+miss\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
     .replace(new RegExp(String.raw`\bmiss\s+(?:it|this|out|the\s+deal)\b` + CTA_TAIL + '[.,;:]*$', 'gi'), ' ')
-    .replace(/\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$/gi, ' ')
+    .replace(/\b(?:hurry(?:\s*up)?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$/gi, ' ')
     // Social/channel CTAs (join/subscribe/follow/share/notifications/t.me) are
     // handled by the STRICT global patterns above (which never eat a following
     // price); no greedy end-of-line social strip here.
@@ -1952,6 +1954,9 @@ const WA_SIG_VARIANTS = new Set(('pro plus max ultra lite neo fe se mini prime c
 // 2600" are the product, while "(2023) at the end of a headline is only the
 // launch year and must not split one TV into two identities.
 const WA_SIG_QUALIFIERS = new Set([...WA_SIG_VARIANTS, 'model', 'series', 'gen', 'generation', 'version'])
+// "by <word>" names the brand ("Airdopes 141 by boAt") EXCEPT when the word in
+// front says otherwise: "powered by Helio" names a chipset, not the maker.
+const WA_SIG_BY_NON_BRAND = new Set('powered brought inspired sponsored posted shared sent curated verified'.split(' '))
 const WA_SIG_VARIANT_RE = /\b(\d{1,4}(?:\.\d+)?)[\s_-]*(gb|tb|mb|kb|ltr|liter|liters|litre|litres|ml|kg|ton|tons|stars?|inch|inches|in|ft|hp|kva|burners?|slices?|trays?|doors?|persons?|blades?|l)\b/gi
 
 function waSigTokens(line) {
@@ -2002,9 +2007,19 @@ function productNameIdentity(line) {
     const basis = [...new Set(words)].sort().join(' ')
     return basis.length < 16 ? null : `W|${basis}`
   }
+  // The brand is normally the first product word, but "Airdopes 141 by boAt"
+  // and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names the
+  // brand outright and wins over word order. "powered by Helio" names a
+  // component, not the maker, and is ignored. Same rule as the bot.
+  let brand = words[0]
+  for (let index = 0; index < raw.length - 1; index++) {
+    if (raw[index] === 'by' && (index === 0 || !WA_SIG_BY_NON_BRAND.has(raw[index - 1]))) {
+      if (words.includes(raw[index + 1])) { brand = raw[index + 1]; break }
+    }
+  }
   const numbers = [...new Set([...models, ...ids])].sort().join(' ')
   const tail = variants.size ? `|${[...variants].sort().join(' ')}` : ''
-  return `M|${words[0]}|${numbers}${tail}`
+  return `M|${brand}|${numbers}${tail}`
 }
 
 function nameOnlyKey(text, job = null) {

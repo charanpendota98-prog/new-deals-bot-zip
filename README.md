@@ -761,10 +761,10 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `28c3ab7447864143451342add87ba02414200498f344c9a236a9b8d2d66edaa6` |
-| `tg-wa-bridge/bridge.js` | `29b4bf0e8b7d4d5dcb11e83d29fd7c87d00da798c43b038382ebc60cb5924acc` |
+| `bestgaa/main_bot_new.py` | `b7ec8bee28e0370ea2bd4c631b7073077c28a04d3050ee0ddc324e2bf6405f5d` |
+| `tg-wa-bridge/bridge.js` | `118e59fab23f56f5fa7b54deeafd6bb7502058c3d6e894b3969ff543b3091259` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
+| `ops/quality_audit.py` | `29a38074fb9116c6f974c6c55688e500560a235ed0288ff1c06006bb690d2096` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |

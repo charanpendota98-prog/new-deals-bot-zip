@@ -969,6 +969,10 @@ pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
 _SIG_QUALIFIERS = _SIG_VARIANTS | frozenset("model series gen generation version".split())
+# "by <word>" names the brand ("Airdopes 141 by boAt") EXCEPT when the word in
+# front says otherwise: "powered by Helio" names a chipset, not the maker.
+_SIG_BY_NON_BRAND = frozenset(
+    "powered brought inspired sponsored posted shared sent curated verified".split())
 _SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
@@ -1052,7 +1056,19 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
         return None if len(basis) < 16 else ("W", basis)
-    parts = ["M", words[0], " ".join(sorted(models | ids))]
+    # The brand is normally the first product word, but "Airdopes 141 by boAt"
+    # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
+    # the brand outright and wins over word order, so the reordered copy can
+    # never slip past dedup as a second post. "powered by Helio" and friends
+    # name a component, not the maker, and are ignored.
+    brand = words[0]
+    for index, token in enumerate(raw[:-1]):
+        if token == "by" and (index == 0 or raw[index - 1] not in _SIG_BY_NON_BRAND):
+            candidate = raw[index + 1]
+            if candidate in words:
+                brand = candidate
+                break
+    parts = ["M", brand, " ".join(sorted(models | ids))]
     if variants:
         parts.append(" ".join(sorted(variants)))
     return tuple(parts)
@@ -1550,7 +1566,9 @@ GLOBAL_CTA_PATTERNS_PY = (
     # and the fidelity guard restores the line if real deal payload was taken.
     # A standalone "Limited stock" (availability info on a coupon/deal line)
     # is deal CONTENT and stays — only the hurry-up clause takes it along.
-    rf"\bhurry\s*up?\b!*{CTA_TAIL_PY}",
+    # "up" is optional: "Hurry!!", "Hurry limited period deal!!!" and
+    # "Hurry, grab fast" are the same channel hype as "Hurry up guys".
+    rf"\bhurry(?:\s*up)?\b[!,.]*{CTA_TAIL_PY}",
     rf"\bloot\s+(?:it\s+)?fa+s*t+\b!*{CTA_TAIL_PY}",
     rf"\bturn\s+on\s+notifications?\b{CTA_TAIL_PY}",
     rf"\bstay\s+tuned\b{CTA_TAIL_PY}",
@@ -1594,7 +1612,7 @@ def strip_inline_cta(line: str) -> str:
         rf"\b(?:click|tap)\s+(?:here|link|below|on\s+(?:the\s+)?link|to\s+(?:buy|order|shop))\b{CTA_TAIL_PY}",
         rf"\b(?:don'?t|do\s+not|never)\s+miss\b{CTA_TAIL_PY}",
         rf"\bmiss\s+(?:it|this|out|the\s+deal)\b{CTA_TAIL_PY}",
-        r"\b(?:hurry?\s*up?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|"
+        r"\b(?:hurry(?:\s*up)?|grab\s+(?:it|fast|now|your|this)|loot\s+fast|"
         r"deal\s+time[^\n]*|limited(?:\s*time)?\s+offer)\b[^.|\n]*$",
         # Social/channel CTAs (join/follow/share/notifications/t.me) are handled
         # by the bounded global patterns above so a following price is never eaten.
