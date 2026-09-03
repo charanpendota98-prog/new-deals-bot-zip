@@ -609,6 +609,17 @@ function sanitizeOutbound(text) {
   }
   out = stripPriceJunk(out)
   out = stripLinkFragmentTokens(out)
+  // A protocol-less link stump ("://bitli.in/x" left when the scheme was torn
+  // off) is dead residue - real links are untouched because they still carry
+  // their scheme, which this pattern requires to be ABSENT. Same as the bot.
+  {
+    const realLinks = [...new Set(out.match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
+    let stub = out
+    realLinks.forEach((u, i) => { stub = stub.split(u).join('\u0001S' + i + '\u0002') })
+    stub = stub.replace(/:?\/\/[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:\/[A-Za-z0-9._~%/-]*)?/g, ' ')
+    realLinks.forEach((u, i) => { stub = stub.split('\u0001S' + i + '\u0002').join(u) })
+    out = stub.replace(/[ \t]{2,}/g, ' ')
+  }
   // A link glued to the word/price before it prints as one unreadable token
   // ("₹260https://…"). Query-nested links stay intact: the separator must be a
   // word char, never "=", "&", "?" or "/".
@@ -1399,6 +1410,10 @@ function detectedPrice(text) {
   // Indian "/-" price suffix ("349/-") is explicit money (parity with the bot).
   const suffixed = t.match(/([\d,]{2,})\s*\/-/)
   if (suffixed && valid(num(suffixed))) return num(suffixed)
+  // Suffix currency ("749 rs" / "1,299 INR") - money named AFTER the number
+  // is still explicit money (parity with the bot).
+  const suffixRs = t.match(/([\d,]{2,})\s*(?:rs\.?|inr)\b/i)
+  if (suffixRs && valid(num(suffixRs))) return num(suffixRs)
   const prices = []
   for (const m of t.matchAll(/(?:rs\.?|inr|₹)\s*([\d,]+)/gi)) {
     // Skip a price that is an MRP/struck/was value or a discount/cashback.

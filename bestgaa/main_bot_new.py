@@ -299,7 +299,7 @@ TRICKS_TARGET = "LootzoneTricks"
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
-TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals"}
+TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals", "offers_deals_xyz"}
 # Sources the user wants posted FIRST on every non-Tricks channel. Their queue
 # jobs get a +1 priority boost (capped at the top tier) so an equivalent deal
 # from one of these sources renders/delivers ahead of the same tier from any
@@ -451,6 +451,9 @@ for _source in (
 
 SOURCE_TO_TARGETS["TrickXpert"] = [TRICKS_TARGET]
 SOURCE_TO_TARGETS["Offerzone_deals"] = [TRICKS_TARGET]
+# USER (2026-09-04): t.me/offers_deals_xyz is a TRICKS source - its content goes
+# ONLY to the Tricks channel, never to the product channels.
+SOURCE_TO_TARGETS["offers_deals_xyz"] = [TRICKS_TARGET]
 # Latest explicit non-Tricks main-source routing.
 SOURCE_TO_TARGETS["idoffers"] = list(NO_TRICKS_TARGETS)
 SOURCE_TO_TARGETS["SB_Loots_And_Deals"] = list(NO_TRICKS_TARGETS)
@@ -1156,6 +1159,9 @@ def parse_price(text: str) -> int | None:
         r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
         # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
         r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
+        # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
+        # the number is still explicit money.
+        r"([\d,]{2,})\s*(?:rs\.?|inr)\b",
         r"^\s*([\d,]{2,})\s+(?:https?://|$)",
     ]
     for pattern in patterns:
@@ -2289,6 +2295,10 @@ def tidy_post(text: str) -> str:
     # Remove malformed source-link text glued into labels/prices while genuine
     # generated URLs are safely masked above.
     masked = re.sub(r"(?i)\bhtt[A-Za-z0-9/:._-]*", "", masked)
+    # A protocol-less link stump ("://bitli.in/x" glued to a price after its
+    # scheme was torn off) is dead residue - the working link was already
+    # masked above, so anything still shaped like this cannot be real.
+    masked = re.sub(r":?//[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)+(?:/[A-Za-z0-9._~%/-]*)?", " ", masked)
     masked = re.sub(r"\bh(?=[A-Z][a-z])", "", masked)
     masked = strip_price_junk(masked)
     # Markdown emphasis debris only. A '_' BETWEEN word characters is content -
