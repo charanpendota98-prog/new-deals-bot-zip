@@ -134,15 +134,11 @@ EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/con
 OUR_TAG = env_required("AMAZON_TAG")
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
-# USER RULE: "ekkuva commission edi vunte ade pettu" — direct Amazon
-# USER RULE (2026-09-03): Amazon Associates keeps rejecting the account, so
-# direct-tagging pays nothing. ALL Amazon links now go through EarnKaro like
-# every other store (ratio 1.0 = always EarnKaro). Set AMAZON_EARNKARO_RATIO
-# below 1 only if a working Associates account ever comes back.
-try:
-    AMAZON_EARNKARO_RATIO = min(1.0, max(0.0, float(os.getenv("AMAZON_EARNKARO_RATIO", "1.0"))))
-except ValueError:
-    AMAZON_EARNKARO_RATIO = 1.0
+# USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
+# so direct-tagging pays nothing. EVERY Amazon link goes through EarnKaro like
+# every other store — no ratio, no env knob, no direct-Associates branch. A
+# stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
+AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
 
 PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
@@ -3886,25 +3882,12 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # USER RULE: Amazon links mix — appudappudu EarnKaro, otherwise our own
-        # Amazon Associates tag directly (best commission, no middle layer).
-        # The direct branch never depends on the EarnKaro API, so Amazon deals
-        # keep flowing even when EarnKaro is down/rate-limited.
-        if in_domains(host, AMAZON_DOMAINS) and random.random() >= AMAZON_EARNKARO_RATIO:
-            direct = apply_amazon_tag(clean)
-            if self.valid_generated(direct) and await self.link_not_broken(direct):
-                affiliate = direct
-                if should_use_bitly(resolved, multi_link) or len(direct) > SHORTEN_MIN_LEN:
-                    shortened = await self.shorten(direct)
-                    if shortened:
-                        affiliate = shortened
-                    else:
-                        log.warning("BITLY unavailable; using tagged Amazon link directly")
-                key = product_key(resolved)
-                await store.cache_link(source_url, affiliate, resolved, key)
-                log.info("AMAZON direct-associates | %s", (affiliate or "")[:80])
-                return LinkResult(source_url, resolved, affiliate, key)
-            # Direct build failed (broken page etc.) — fall through to EarnKaro.
+        # USER RULE (2026-09-03, FINAL): the Amazon Associates account keeps
+        # getting rejected, so the old direct-Associates branch is GONE. Every
+        # Amazon link is monetized through EarnKaro below, exactly like every
+        # other store. If EarnKaro is briefly down the job retries, and the
+        # final attempt still posts the clean merchant link (passthrough) —
+        # a deal is never lost, it just never carries a dead Associates tag.
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
