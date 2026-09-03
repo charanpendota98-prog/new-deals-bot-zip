@@ -762,7 +762,7 @@ printing exactly what the older build was coded to print):
 | File | SHA-256 |
 |---|---|
 | `bestgaa/main_bot_new.py` | `020de6a8b65c428477dd13f4d70091013cc1202aea4a6a7fef84a826b9409652` |
-| `tg-wa-bridge/bridge.js` | `35bc9a36d8b93726d11c119b286dd69d0a32b1af03b9b0618903b49fd3f17d23` |
+| `tg-wa-bridge/bridge.js` | `bfd6a9569e96d8131896b8b0d32bbb6b1621489f24e96e045decc7f9ca3b1465` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `9a5ce2d4425d6762fe51e8aec0717529a6a1245604e0e086756949a377408622` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |

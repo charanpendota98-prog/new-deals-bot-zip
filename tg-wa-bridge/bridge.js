@@ -148,6 +148,13 @@ const MIN_WA_MESSAGE_GAP_SECONDS = Math.max(15, Number(process.env.MIN_WA_MESSAG
 // photos of the SAME album) a short fixed gap is used - the long gap only
 // applies between separate posts. Tune down only if the number is not new.
 const INTER_TARGET_GAP_SECONDS = Math.max(3, Number(process.env.WA_INTER_TARGET_GAP_SECONDS || 6))
+// USER RULE (2026-09-03): the user runs TWO WhatsApp channels — after the post
+// lands in the first channel, wait 60-80 seconds (random) before the second
+// channel gets it, so both channels never fire at the same instant. The short
+// INTER_TARGET_GAP above still paces the items WITHIN one channel (album
+// photos, caption + long-text tail).
+const CROSS_CHANNEL_GAP_MIN = Math.max(0, Number(process.env.WA_CROSS_CHANNEL_GAP_MIN_SECONDS || 60))
+const CROSS_CHANNEL_GAP_MAX = Math.max(CROSS_CHANNEL_GAP_MIN, Number(process.env.WA_CROSS_CHANNEL_GAP_MAX_SECONDS || 80))
 // 24/7 throughput: hour/day caps must never park the queue for hours. These
 // are safety ceilings only, and are sized so a hard 60s floor stays reachable.
 const HOUR_CAP_OVERRIDE = Number(process.env.WA_HOUR_CAP || 0)
@@ -337,6 +344,10 @@ async function interMessageGap() {
 // Between the targets of one broadcast / the items of one album.
 async function interTargetGap() {
   await sleep(randomMs(INTER_TARGET_GAP_SECONDS, INTER_TARGET_GAP_SECONDS + 5))
+}
+// Between our TWO WhatsApp channels for the SAME post: 60-80 s random.
+async function crossChannelGap() {
+  if (CROSS_CHANNEL_GAP_MAX > 0) await sleep(randomMs(CROSS_CHANNEL_GAP_MIN, CROSS_CHANNEL_GAP_MAX))
 }
 function sha(value) { return crypto.createHash('sha256').update(value).digest('hex') }
 // A hung WhatsApp/Telegram promise must never freeze the dispatcher. Every
@@ -2171,15 +2182,19 @@ function queuedJobPriorityVector(job) {
   // Older jobs still age out of the queue via MAX_JOB_AGE, so nothing lingers
   // to be posted hours later unless nothing newer is ready.
   const recency = Math.max(0, 130 - Math.floor(Math.max(0, Date.now() - Number(job.createdAt || Date.now())) / 60_000))
-  // t.me/under499loots is the user's main WhatsApp feed. It leads the order,
-  // then photo/video, then price/list/discount ladder, then newest first.
+  // t.me/under499loots is the user's main WhatsApp feed. It leads the order.
   const primaryRank = (job.source || '').toLowerCase() === PRIMARY_SOURCE ? 1 : 0
+  // USER RULE (2026-09-03): when several deals are ready at the same time,
+  // product LISTS go out first, then the photo/video posts (the best-looking
+  // ones), then everything else. The list lead counts only a true multi-product
+  // list (4+ links / flagged largeList), not a two-link deal.
+  const listLead = listRank >= 2 ? 1 : 0
   const mediaLead = MEDIA_FIRST ? mediaRank : 0
-  // Commission-aware ordering: among the same primary/media tier, high-payout
-  // deals (fashion/beauty, high-commission merchants, healthy order value) go
-  // first so the channel earns the most per slot.
+  // Commission-aware ordering: among the same primary/list/media tier,
+  // high-payout deals (fashion/beauty, high-commission merchants, healthy
+  // order value) go first so the channel earns the most per slot.
   const commissionTier = COMMISSION_RANKING ? dealCommissionInfo(job).tier : 0
-  return [primaryRank, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
+  return [primaryRank, listLead, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
 }
 function compareQueuedJobs(a, b) {
   const left = queuedJobPriorityVector(a)
@@ -2786,7 +2801,8 @@ async function broadcastText(sock, job, tag, text) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interTargetGap()
+    // USER RULE: 60-80 s random breather between our two channels.
+    if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
 // Sends one photo/video to ALL targets. Channel media uses the corrected
@@ -2816,7 +2832,8 @@ async function broadcastMediaItem(sock, job, item, caption) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    if (jid !== targets[targets.length - 1]) await interTargetGap()
+    // USER RULE: 60-80 s random breather between our two channels.
+    if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
 function formatDigestItem(job, number) {
@@ -3810,12 +3827,16 @@ if (process.argv.includes('--self-test')) {
   ]
   const ordered = [...prioritySamples].sort(compareQueuedJobs)
   const orderKeys = ordered.map(item => item.createdAt - fresh)
-  // Media item first, then by price/list/discount ladder; items 6 and 7 tie on
-  // every rank so the newest (createdAt=fresh+7) wins - latest-first. The media
+  // USER RULE order: the multi-product LIST (item 3) leads, then the photo
+  // item (item 2), then the price/discount ladder; items 6 and 7 tie on every
+  // rank so the newest (createdAt=fresh+7) wins - latest-first. The media
   // lead is a knob (WA_MEDIA_FIRST), so the exact order is only asserted in the
   // mode that uses it; the invariants below must hold either way.
-  if (MEDIA_FIRST && orderKeys.join(',') !== '2,1,3,4,5,7,6') {
-    throw new Error('media-first + newest-first priority order test failed: ' + orderKeys)
+  if (MEDIA_FIRST && orderKeys.join(',') !== '3,2,1,4,5,7,6') {
+    throw new Error('list-first + media + newest-first priority order test failed: ' + orderKeys)
+  }
+  if (orderKeys[0] !== 3) {
+    throw new Error('a ready multi-product list must always lead the queue: ' + orderKeys)
   }
   if (orderKeys.indexOf(7) > orderKeys.indexOf(6)) {
     throw new Error('the newest-first tie-break must survive any knob: ' + orderKeys)
