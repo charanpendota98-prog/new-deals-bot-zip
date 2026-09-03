@@ -149,11 +149,11 @@ const MIN_WA_MESSAGE_GAP_SECONDS = Math.max(15, Number(process.env.MIN_WA_MESSAG
 // applies between separate posts. Tune down only if the number is not new.
 const INTER_TARGET_GAP_SECONDS = Math.max(3, Number(process.env.WA_INTER_TARGET_GAP_SECONDS || 6))
 // USER RULE (2026-09-03): the user runs TWO WhatsApp channels — after the post
-// lands in the first channel, wait 60-80 seconds (random) before the second
+// lands in the first channel, wait 70-80 seconds (random) before the second
 // channel gets it, so both channels never fire at the same instant. The short
 // INTER_TARGET_GAP above still paces the items WITHIN one channel (album
 // photos, caption + long-text tail).
-const CROSS_CHANNEL_GAP_MIN = Math.max(0, Number(process.env.WA_CROSS_CHANNEL_GAP_MIN_SECONDS || 60))
+const CROSS_CHANNEL_GAP_MIN = Math.max(0, Number(process.env.WA_CROSS_CHANNEL_GAP_MIN_SECONDS || 70))
 const CROSS_CHANNEL_GAP_MAX = Math.max(CROSS_CHANNEL_GAP_MIN, Number(process.env.WA_CROSS_CHANNEL_GAP_MAX_SECONDS || 80))
 // 24/7 throughput: hour/day caps must never park the queue for hours. These
 // are safety ceilings only, and are sized so a hard 60s floor stays reachable.
@@ -345,7 +345,7 @@ async function interMessageGap() {
 async function interTargetGap() {
   await sleep(randomMs(INTER_TARGET_GAP_SECONDS, INTER_TARGET_GAP_SECONDS + 5))
 }
-// Between our TWO WhatsApp channels for the SAME post: 60-80 s random.
+// Between our TWO WhatsApp channels for the SAME post: 70-80 s random.
 async function crossChannelGap() {
   if (CROSS_CHANNEL_GAP_MAX > 0) await sleep(randomMs(CROSS_CHANNEL_GAP_MIN, CROSS_CHANNEL_GAP_MAX))
 }
@@ -2801,7 +2801,7 @@ async function broadcastText(sock, job, tag, text) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    // USER RULE: 60-80 s random breather between our two channels.
+    // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
@@ -2832,7 +2832,7 @@ async function broadcastMediaItem(sock, job, item, caption) {
     marks.push(mark)
     state.sentTimes.push(Date.now())
     saveState()
-    // USER RULE: 60-80 s random breather between our two channels.
+    // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
 }
