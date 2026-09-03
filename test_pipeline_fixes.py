@@ -777,7 +777,7 @@ async def test_no_silent_loss(store):
     check("the pass-through link has our provenance (verify_generated_text accepts it)",
           await store.verify_generated_text(rendered, ()))
     check("price is parsed from the source text, not from a junk token", price == 599)
-    again = store.conn.execute(
+    store.conn.execute(
         "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) "
         "VALUES(?,?,?,?,?,?)",
         (-100779, 7201, "other_src", time.time(), 1, str(bot.raw_chat_id(-100779))))

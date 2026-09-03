@@ -768,9 +768,9 @@ printing exactly what the older build was coded to print):
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
 | `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
-| `test_pipeline_fixes.py` | `0f717dac204cc7b2fcdac711ca37ac913b92b4608d5ee64c5309f6187472ed63` |
+| `test_pipeline_fixes.py` | `f5c274ddf3d444f921c678c176d62a6e96b4c00e8a5725d608a0777e9c520cd0` |
 | `test_duplicate_sim.py` | `aef8d0fa7d0234436a7188ef5922cd5a94f687f28ef938a401b3225576a24298` |
-| `test_best_copy.py` | `2e79ef91db435ecfcf5f8890e4248b1c0986ef5d3210416b8b949e166cd8a351` |
+| `test_best_copy.py` | `9b47df6c18148cb59a8c82dff3748195afb39c6da482a985ad360727aa3ee2cc` |
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
 `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,
