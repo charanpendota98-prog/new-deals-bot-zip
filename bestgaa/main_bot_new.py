@@ -1112,19 +1112,42 @@ def product_key(value: str) -> str:
 
 
 def parse_price(text: str) -> int | None:
-    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values."""
+    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values.
+
+    Deep-audit fixes (2026-09-04): "MRP ₹1,999 Deal ₹899" used to return the
+    MRP (routing a ₹899 deal as if it cost ₹1,999); "INR 799", "Price: 349/-"
+    and "349/-" (the Indian price suffix) were not read at all. MRP-labelled
+    amounts are masked before the generic currency scan, so the generic match
+    can only ever see the DEAL price. Bare numbers with no currency marker are
+    still ignored on purpose - a model number is not a price."""
+    value = text or ""
+    # Mask "MRP ₹1,999" style amounts so no later pattern can mistake the MRP
+    # for the deal price. The deal-price labels below never say MRP.
+    masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
+                    " ", value)
     patterns = [
-        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹)?\s*([\d,]+)",
-        r"(?:only|at|@)\s*(?:rs\.?|₹)?\s*([\d,]+)",
-        r"(?:rs\.?|₹)\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
+        r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
+        r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
+        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
+        r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
         r"^\s*([\d,]{2,})\s+(?:https?://|$)",
     ]
     for pattern in patterns:
-        match = re.search(pattern, text or "", re.I | re.M)
+        match = re.search(pattern, masked, re.I | re.M)
         if match:
-            value = int(match.group(1).replace(",", ""))
-            if 1 <= value <= 1_000_000:
-                return value
+            price = int(match.group(1).replace(",", ""))
+            if 1 <= price <= 1_000_000:
+                return price
+    # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
+    # money on the post, so it is the best available answer (old behaviour).
+    # The masking above only stops MRP from SHADOWING a real deal price.
+    mrp = re.search(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)", value)
+    if mrp:
+        price = int(mrp.group(1).replace(",", ""))
+        if 1 <= price <= 1_000_000:
+            return price
     return None
 
 
@@ -1134,6 +1157,10 @@ def parse_discount(text: str, price: int | None = None) -> int | None:
     found: list[int] = []
     patterns = (
         r"(?:up\s*to|upto|flat|save|get)?\s*([1-9]\d?|100)\s*%\s*(?:off|discount)",
+        # "save 25 %" / "get 40 %" with a space before the sign and no
+        # off/discount word after it — the label BEFORE the number is what
+        # makes it a discount, so plain "25 %" alone still never matches.
+        r"(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%",
         # "Discount: 26%" is how a loot channel actually writes it - the colon after
         # the label used to lose the whole percentage, which matters because the
         # discount decides which price-tier channel a deal is routed to.

@@ -1360,6 +1360,9 @@ function explicitDiscount(text) {
     ...[...body.matchAll(/\b([1-9]\d?|100)\s*%\s*(?:off|discount)\b/gi)].map(m => Number(m[1])),
     ...[...body.matchAll(/\b(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)/gi)]
       .map(m => Number(m[1])),
+    // "save 25 %" / "get 40 %" — the label BEFORE the number makes it a
+    // discount (parity with parse_discount in the bot). Bare "25 %" never counts.
+    ...[...body.matchAll(/\b(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%/gi)].map(m => Number(m[1])),
   ]
   return values.length ? Math.max(...values) : null
 }
@@ -1383,6 +1386,9 @@ function detectedPrice(text) {
   if (explicit && valid(num(explicit))) return num(explicit)
   let at = t.match(/(?:only|price|at|from|just)\s*[:\-]?\s*(?:rs\.?|₹)\s*([\d,]+)\s*(?!\s*(?:%|off|discount|cashback))/i)
   if (at && valid(num(at))) return num(at)
+  // Indian "/-" price suffix ("349/-") is explicit money (parity with the bot).
+  const suffixed = t.match(/([\d,]{2,})\s*\/-/)
+  if (suffixed && valid(num(suffixed))) return num(suffixed)
   const prices = []
   for (const m of t.matchAll(/(?:rs\.?|inr|₹)\s*([\d,]+)/gi)) {
     // Skip a price that is an MRP/struck/was value or a discount/cashback.
