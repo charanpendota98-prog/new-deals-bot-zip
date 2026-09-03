@@ -503,6 +503,14 @@ SHORT_DOMAINS = {
     "bittli.in", "bilty.co", "tinyurl.com", "cutt.ly", "rb.gy", "t.ly", "tiny.cc",
     "shorturl.at", "is.gd", "v.gd", "snip.ly", "linkredirect.in", "ekaro.in",
     "clnk.in", "clnk.app", "ekaro.app", "l.ead.me",
+    # USER RULE (2026-09-04): WHATEVER shortener the source used, the link is
+    # resolved to its real store page and monetized as OUR link. These are the
+    # rest of the wrappers the loot channels actually paste:
+    "bitly.com", "j.mp", "t.co", "goo.gl", "buff.ly", "ow.ly", "tidd.ly",
+    "geni.us", "spoo.me", "da.gd", "surl.li", "shrtco.de", "9qr.de", "cli.re",
+    "shorte.st", "v.ht", "y2u.be", "dl.flipkart.com", "msho.in", "meesho.app",
+    "extp.in", "wishlink.com", "hypd.store", "bylink.in", "mylink.store",
+    "applink.adjust.com", "app.ajio.com", "ajiio.in", "tatacliq.app",
 }
 OUR_SHORTENER_DOMAINS = {
     "ekaro.in", "clnk.in", "clnk.app", "ekaro.app", "fktr.in", "myntr.it",
@@ -3857,7 +3865,13 @@ class AffiliateClient:
                         if target.startswith("http"):
                             current = target
                             continue
-                if host not in SHORT_DOMAINS:
+                # USER RULE (2026-09-04): whatever wrapper the source used must
+                # end up as OUR link. Known shorteners are followed by name;
+                # an UNKNOWN host whose link is a single short slug (the shape
+                # every shortener has - "loot.deals/xYz9") is followed too, so
+                # a brand-new wrapper domain still resolves to the real store
+                # page and gets monetized instead of being posted as-is.
+                if host not in SHORT_DOMAINS and not is_unresolvable_short_link(host, current):
                     break
                 async with self.session.get(
                     current, allow_redirects=True,
