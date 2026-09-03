@@ -135,13 +135,14 @@ OUR_TAG = env_required("AMAZON_TAG")
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
 # USER RULE: "ekkuva commission edi vunte ade pettu" — direct Amazon
-# Associates pays the full commission (EarnKaro takes a cut in the middle),
-# so Amazon links default to OUR Associates tag directly. Set
-# AMAZON_EARNKARO_RATIO above 0 only to route some share back via EarnKaro.
+# USER RULE (2026-09-03): Amazon Associates keeps rejecting the account, so
+# direct-tagging pays nothing. ALL Amazon links now go through EarnKaro like
+# every other store (ratio 1.0 = always EarnKaro). Set AMAZON_EARNKARO_RATIO
+# below 1 only if a working Associates account ever comes back.
 try:
-    AMAZON_EARNKARO_RATIO = min(1.0, max(0.0, float(os.getenv("AMAZON_EARNKARO_RATIO", "0.0"))))
+    AMAZON_EARNKARO_RATIO = min(1.0, max(0.0, float(os.getenv("AMAZON_EARNKARO_RATIO", "1.0"))))
 except ValueError:
-    AMAZON_EARNKARO_RATIO = 0.0
+    AMAZON_EARNKARO_RATIO = 1.0
 
 PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
