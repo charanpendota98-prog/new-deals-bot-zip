@@ -761,8 +761,8 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `b7ec8bee28e0370ea2bd4c631b7073077c28a04d3050ee0ddc324e2bf6405f5d` |
-| `tg-wa-bridge/bridge.js` | `118e59fab23f56f5fa7b54deeafd6bb7502058c3d6e894b3969ff543b3091259` |
+| `bestgaa/main_bot_new.py` | `2d522aeb7d1ddc1f63bbcf985431b35eef5ee9b81492cfddd4202b62aedabbcb` |
+| `tg-wa-bridge/bridge.js` | `33c3a5e698ed4c5ee0f807381c0809f225487de7d62eb2a85bff1a1df42ec1d8` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
 | `ops/quality_audit.py` | `29a38074fb9116c6f974c6c55688e500560a235ed0288ff1c06006bb690d2096` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |

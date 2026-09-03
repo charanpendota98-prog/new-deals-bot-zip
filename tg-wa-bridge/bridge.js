@@ -153,8 +153,10 @@ const INTER_TARGET_GAP_SECONDS = Math.max(3, Number(process.env.WA_INTER_TARGET_
 // channel gets it, so both channels never fire at the same instant. The short
 // INTER_TARGET_GAP above still paces the items WITHIN one channel (album
 // photos, caption + long-text tail).
+// USER RULE (2026-09-03): a random 70-90s gap between the two WhatsApp channels
+// for the same post - safe, human-looking pacing. Telegram stays instant.
 const CROSS_CHANNEL_GAP_MIN = Math.max(0, Number(process.env.WA_CROSS_CHANNEL_GAP_MIN_SECONDS || 70))
-const CROSS_CHANNEL_GAP_MAX = Math.max(CROSS_CHANNEL_GAP_MIN, Number(process.env.WA_CROSS_CHANNEL_GAP_MAX_SECONDS || 80))
+const CROSS_CHANNEL_GAP_MAX = Math.max(CROSS_CHANNEL_GAP_MIN, Number(process.env.WA_CROSS_CHANNEL_GAP_MAX_SECONDS || 90))
 // 24/7 throughput: hour/day caps must never park the queue for hours. These
 // are safety ceilings only, and are sized so a hard 60s floor stays reachable.
 const HOUR_CAP_OVERRIDE = Number(process.env.WA_HOUR_CAP || 0)
@@ -522,6 +524,9 @@ function keepCodeAsIs(price, gap, tail) {
   const core = tail.replace(/[).,;:!?\u2026]+$/, '')
   const trail = tail.slice(core.length)
   if (!core) return price + gap + tail
+  // "@2pm" / "@11am" is a TIME the source wrote (sale start), not a price with
+  // junk glued on - "Sale @2pm" must never become "Sale @2". Same rule as the bot.
+  if (price.trimStart().startsWith('@') && /^[ap]\.?m\.?$/i.test(core)) return price + gap + tail
   if (!gap) {
     // USER RULE (round 13): whatever is glued straight onto a price is unwanted text -
     // the live source writes "₹85h" / "₹ 199HFJF" / "₹85jsjd" and the reader needs the
@@ -548,7 +553,9 @@ function stripPriceJunk(text) {
   const urls = [...new Set(String(text).match(/https?:\/\/[^\s<>\[\](){}"']+/gi) || [])]
   let masked = String(text)
   urls.forEach((u, i) => { masked = masked.split(u).join(`\u0002P${i}\u0003`) })
-  let out = masked.replace(/(\u20b9\s*[\d,]+)([ \t]*)(\S+)/g,
+  // "@2764" and "Rs.449" are prices exactly like "\u20b9449" - link debris glued
+  // to ANY of them is cut the same way ("LG 24 Inches @2764ldkf"). Same as the bot.
+  let out = masked.replace(/((?:\u20b9\s*|@\s*|\bRs\.?\s*)[\d,]+)([ \t]*)(\S+)/gi,
     (all, price, gap, tail) => keepCodeAsIs(price, gap, tail))
   urls.forEach((u, i) => { out = out.split(`\u0002P${i}\u0003`).join(u) })
   // Keep a glued link apart from the word/price in front of it.

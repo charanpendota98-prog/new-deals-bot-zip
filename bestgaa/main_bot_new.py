@@ -1380,7 +1380,9 @@ def extract_deal_prices(text: str) -> list[int]:
 
 def extract_urls(msg) -> list[str]:
     values: list[str] = []
-    text = msg.text or msg.message or ""
+    # msg.message is the raw text the entity offsets are measured on; msg.text
+    # may carry parse-mode markdown ("**") that shifts every offset after it.
+    text = msg.message or msg.text or ""
     surrogate_text = add_surrogate(text)
     values.extend(URL_RE.findall(text))
     for intent in INTENT_RE.findall(text):
@@ -1981,7 +1983,10 @@ _COUPON_CODE_RE = re.compile(r"[A-Z][A-Z0-9_-]{2,19}")   # SAVE_200 is as spenda
 # The gap is [ \t]* and never \s*: a token on the NEXT line is not glued to this
 # price, and rewriting the pair must not swallow the newline that keeps the source's
 # layout (an earlier draft joined "MRP: ₹ 270" and "Discount: 26%" into one line).
-_PRICE_WITH_TAIL = re.compile(r"(\u20b9\s*[\d,]+)([ \t]*)(\S+)")
+# "@2764" and "Rs.449" are prices exactly like "\u20b9449" - the live channels
+# write all three - so link debris glued to ANY of them is cut the same way
+# ("LG 24 Inches @2764ldkf" was published with the "ldkf" scrap attached).
+_PRICE_WITH_TAIL = re.compile(r"((?:\u20b9\s*|@\s*|\bRs\.?\s*)[\d,]+)([ \t]*)(\S+)", re.I)
 
 
 def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
@@ -2001,6 +2006,10 @@ def _keep_code_as_is(price: str, gap: str, tail: str) -> str:
     core = tail.rstrip(").,;:!?\u2026")
     trail = tail[len(core):]
     if not core:
+        return f"{price}{gap}{tail}"
+    # "@2pm" / "@11am" is a TIME the source wrote (sale start), not a price with
+    # junk on it - the glued cut below must never turn "Sale @2pm" into "Sale @2".
+    if price.lstrip().startswith("@") and core.lower() in ("am", "pm", "a.m", "p.m", "a.m.", "p.m."):
         return f"{price}{gap}{tail}"
     if not gap:
         # USER RULE (round 13): a token glued straight onto a price is UNWANTED text,
@@ -2243,7 +2252,18 @@ def rebuild_text(text: str, entities, mapping: dict[str, str]) -> str:
             out.append(label)
         pos = end
     out.append(replace_literal(surrogate_text[pos:]))
-    return del_surrogate("".join(out))
+    result = del_surrogate("".join(out))
+    # SELF-HEALING GUARD (user bug, 2026-09-03): when entity offsets do not line
+    # up with this text (a parse-mode copy inserted "**" marks and shifted every
+    # offset), the slice cuts THROUGH a URL and publishes scrap like "BUJYEi"
+    # while the affiliate link is lost. If any monetized link went missing even
+    # though its source URL is literally present in the text, the entity path
+    # cannot be trusted - rebuild by literal replacement, which needs no offsets.
+    for source_url, aff in mapping.items():
+        if aff and aff not in result and source_url in clean_url(text):
+            literal = replace_literal(surrogate_text)
+            return del_surrogate(literal)
+    return result
 
 
 def tidy_post(text: str) -> str:
@@ -4222,7 +4242,7 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
             if not extract_urls(msg) and not getattr(msg, "reply_to", None):
                 continue
             if await store.enqueue(chat_key, msg.id, source,
-                                   (msg.text or msg.message or "")):
+                                   (msg.message or msg.text or "")):
                 queued += 1
         if queued:
             log.info("BACKFILL | source=%s candidates=%s hours=%s", source, queued, source_hours)
@@ -4383,7 +4403,7 @@ async def source_rescan_loop(client: TelegramClient, source_map: dict,
                     # reaches the fingerprint/normalisation work in enqueue.
                     if await store.seen_message(chat_id, msg.id):
                         continue
-                    raw = (msg.text or msg.message or "") if msg is not None else ""
+                    raw = (msg.message or msg.text or "") if msg is not None else ""
                     has_media = bool(
                         msg is not None and msg.media is not None
                         and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice))
@@ -4722,7 +4742,10 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # IMPORTANT: Telegram entity offsets refer to the ORIGINAL text. Never run
     # footer/branding cleanup before rebuilding entities, otherwise offsets shift
     # and fragments such as `uy` / `tps://` get glued to the affiliate URL.
-    raw_text = msg.text or msg.message or ""
+    # msg.message is that original text; msg.text re-renders it through the
+    # client's parse mode and INSERTS markdown marks ("**bold**"), shifting every
+    # offset after them - which is how "BUY - <link>" was published as "BUJYEi".
+    raw_text = msg.message or msg.text or ""
     text = clean_source_text(raw_text)
     source_urls = extract_urls(msg)
     # Reply-only deal support.
@@ -5247,7 +5270,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                         await store.update_rendered(row["id"], rendered)
             if not await store.claim_content_key(row["id"], content_deal_key(rendered)):
                 raise DuplicateDeal("duplicate pending content")
-            price = parse_price(msg.text or "") if msg else None
+            price = parse_price(msg.message or msg.text or "") if msg else None
         else:
             msg, rendered, price = await render_job(client, affiliate, row)
         # v17.8 ONE PRODUCT, ONE CHANNEL, ONE POST. Two sources can carry the same
@@ -5470,7 +5493,7 @@ async def main() -> None:
         try:
             source, _ = entry
             msg = event.message
-            raw = (msg.text or msg.message or "") if msg is not None else ""
+            raw = (msg.message or msg.text or "") if msg is not None else ""
             has_media = bool(
                 msg is not None and msg.media is not None and
                 not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice))
