@@ -305,6 +305,10 @@ TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals"}
 # from one of these sources renders/delivers ahead of the same tier from any
 # other source. "pricehistory" = user's explicit first-preference source.
 PRIORITY_SOURCES = {"pricehistory"}
+# USER RULE (2026-09-04): t.me/under_99_loot_deals is the FIRST-PREFERENCE
+# source for the price channels - its posts go out ahead of the same tier from
+# any other source; the rest follow when it has nothing new.
+PRIORITY_SOURCES.add("under_99_loot_deals")
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
@@ -378,7 +382,11 @@ SOURCE_TO_TARGETS: dict[str, list[str]] = {
     "indian_online_offer": [],
     "idoffers2": [],
     "DealsUnder99_com": [],
-    "under_99_loot_deals": [],
+    # USER RULE (2026-09-04): under_99_loot_deals feeds LootZone and PowerLoots
+    # too; the Under99/Under499 price channels layer on automatically by price
+    # (a >₹99 item from it must not reach the Under-99 channel - that guard
+    # stays), and dedup still means exactly one copy per channel.
+    "under_99_loot_deals": ["LootZoneIndia11", POWER_FILTER_TARGET],
     "https://t.me/+LP6MYEpCwi0zOGYx": [],
     "Mobile_phone_offers_tv_ac_deals": list(MAIN_TARGETS),
     "Mobile_phone_offers_tv_ac_dealsk": list(LZI_SECRET),

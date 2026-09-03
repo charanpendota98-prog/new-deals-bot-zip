@@ -163,6 +163,9 @@ const HOUR_CAP_OVERRIDE = Number(process.env.WA_HOUR_CAP || 0)
 const DAY_CAP_OVERRIDE = Number(process.env.WA_DAY_CAP || 0)
 // The primary source the user wants represented first on WhatsApp.
 const PRIMARY_SOURCE = (process.env.WA_PRIMARY_SOURCE || 'under499loots').toLowerCase()
+// USER RULE (2026-09-04): the Under-99 feed is the second lead - its deals are
+// the cheapest, everyone-buys items and go ahead of ordinary posts on WhatsApp.
+const SECONDARY_SOURCE = (process.env.WA_SECONDARY_SOURCE || 'under99deals11').toLowerCase()
 // Media is the user's top display preference; a photo/video job may jump the
 // queue when the previous update was text-only.
 const MEDIA_FIRST = (process.env.WA_MEDIA_FIRST || 'true').toLowerCase() === 'true'
@@ -2218,7 +2221,8 @@ function queuedJobPriorityVector(job) {
   // to be posted hours later unless nothing newer is ready.
   const recency = Math.max(0, 130 - Math.floor(Math.max(0, Date.now() - Number(job.createdAt || Date.now())) / 60_000))
   // t.me/under499loots is the user's main WhatsApp feed. It leads the order.
-  const primaryRank = (job.source || '').toLowerCase() === PRIMARY_SOURCE ? 1 : 0
+  const src = (job.source || '').toLowerCase()
+  const primaryRank = src === PRIMARY_SOURCE ? 2 : src === SECONDARY_SOURCE ? 1 : 0
   // USER RULE (2026-09-03): when several deals are ready at the same time,
   // product LISTS go out first, then the photo/video posts (the best-looking
   // ones), then everything else. The list lead counts only a true multi-product
