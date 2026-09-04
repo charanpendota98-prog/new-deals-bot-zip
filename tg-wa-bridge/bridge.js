@@ -232,7 +232,7 @@ const COMMISSION_RANKING = (process.env.WA_COMMISSION_RANKING || 'true').toLower
 // Telegram bot already uses (PRODUCT_DEDUP_SECONDS=36000), so WhatsApp and
 // Telegram stay consistent.
 // ---------------------------------------------------------------------------
-const PRODUCT_DEDUP_HOURS = Number(process.env.WA_PRODUCT_DEDUP_HOURS || 10)
+const PRODUCT_DEDUP_HOURS = 24 // STRICT 24h: asalu ravoddu same product 24h — pinned, env override blocked (user rule 2026-09-04)
 // ---------------------------------------------------------------------------
 // Bitly shortening for WhatsApp display only. After provenance + health
 // checks (always on the ORIGINAL link), any link longer than this is
@@ -1958,8 +1958,8 @@ function namePriceKey(text) {
 // is allowed to skip, with two brakes: the name must be specific (campaign
 // banners and roundups never key), and a STRICTLY better copy (cheaper, or the
 // same price at a deeper discount) still goes out.
-const WA_SAME_PRODUCT_HOURS = Number(process.env.WA_SAME_PRODUCT_HOURS || 48)
-const WA_SAME_PRODUCT_MARGIN = Number(process.env.WA_SAME_PRODUCT_MARGIN || 5)
+const WA_SAME_PRODUCT_HOURS = 24 // STRICT 24h: same product 24h block — pinned (user rule 2026-09-04)
+const WA_SAME_PRODUCT_MARGIN = 15 // STRICT: only 15%+ better discount can override 24h (prevents 5% loophole)
 const NAME_ONLY_STOP = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on at by with your our this that it is are be get got have has pack pcs pair').split(' '))
 
 // ---------------------------------------------------------------------------

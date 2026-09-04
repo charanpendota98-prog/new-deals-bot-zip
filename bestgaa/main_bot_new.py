@@ -140,7 +140,7 @@ BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x
 # stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
 AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
 
-PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
+PRODUCT_DEDUP_SECONDS = 24 * 3600  # STRICT 24h: same product never reposts within 24h — pinned, env override blocked (user rule 2026-09-04)
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
 # product id, which is exact but blind while a short link has not been resolved
 # yet - so the same earphones re-posted by a second source under a different
@@ -148,11 +148,11 @@ PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 # recognises the product from its own words instead, and the channel that has
 # already carried it stays quiet for this window (0 turns the rule off). A
 # strictly better copy of the product (cheaper or deeper discount) still posts.
-SAME_PRODUCT_SKIP_SECONDS = max(0, int(os.getenv("SAME_PRODUCT_SKIP_SECONDS", str(3 * 24 * 3600))))
+SAME_PRODUCT_SKIP_SECONDS = 24 * 3600  # STRICT 24h: asalu ravoddu same product 24h — pinned (user rule 2026-09-04)
 # How much deeper a discount has to be before a repeat of an already-posted
 # product counts as news (percentage points).
 try:
-    SAME_PRODUCT_DISCOUNT_MARGIN = min(50, max(1, int(os.getenv("SAME_PRODUCT_DISCOUNT_MARGIN", "5"))))
+    SAME_PRODUCT_DISCOUNT_MARGIN = 15  # STRICT: only 15%+ better discount can override 24h (prevents 5% loophole spam)
 except ValueError:
     SAME_PRODUCT_DISCOUNT_MARGIN = 5
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
