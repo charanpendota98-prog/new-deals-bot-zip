@@ -11,7 +11,7 @@ from pathlib import Path
 
 os.environ.update(
     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
+    EARNKARO_API_KEY="k", AMAZON_TAG="",
 )
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -116,7 +116,7 @@ async def case(store, name, text, resolve_map, convert_map, expect_exception=Non
         check(f"routed to {target}", target in targets)
 
 
-AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
+AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR"
 
 
 def amazon_result():
@@ -177,11 +177,11 @@ async def main():
                 "https://amzn.to/kurta1": bot.LinkResult(
                     source="https://amzn.to/kurta1",
                     resolved="https://www.amazon.in/dp/B0KURTA001",
-                    affiliate="https://www.amazon.in/dp/B0KURTA001?tag=deals0911-21",
+                    affiliate="https://www.amazon.in/dp/B0KURTA001",
                     deal_key="amazon:B0KURTA001",
                 )
             },
-            expect_render_contains=["https://www.amazon.in/dp/B0KURTA001?tag=deals0911-21"],
+            expect_render_contains=["https://www.amazon.in/dp/B0KURTA001"],
             msg_id=4,
         )
 
@@ -222,10 +222,10 @@ async def main():
             {"https://amzn.to/weak1": bot.LinkResult(
                 source="https://amzn.to/weak1",
                 resolved="https://www.amazon.in/dp/B0WEAKDEAL1",
-                affiliate="https://www.amazon.in/dp/B0WEAKDEAL1?tag=deals0911-21",
+                affiliate="https://www.amazon.in/dp/B0WEAKDEAL1",
                 deal_key="amazon:B0WEAKDEAL1",
             )},
-            expect_render_contains=["https://www.amazon.in/dp/B0WEAKDEAL1?tag=deals0911-21"],
+            expect_render_contains=["https://www.amazon.in/dp/B0WEAKDEAL1"],
             expect_targets_superset=["LootZoneIndia11"],
             msg_id=70,
         )
@@ -240,10 +240,10 @@ async def main():
             {"https://amzn.to/over99": bot.LinkResult(
                 source="https://amzn.to/over99",
                 resolved="https://www.amazon.in/dp/B0OVER99ITM",
-                affiliate="https://www.amazon.in/dp/B0OVER99ITM?tag=deals0911-21",
+                affiliate="https://www.amazon.in/dp/B0OVER99ITM",
                 deal_key="amazon:B0OVER99ITM",
             )},
-            expect_render_contains=["https://www.amazon.in/dp/B0OVER99ITM?tag=deals0911-21"],
+            expect_render_contains=["https://www.amazon.in/dp/B0OVER99ITM"],
             expect_targets_superset=["LootZoneIndia11"],
             msg_id=71,
             source=next(iter(bot.UNDER99_SOURCES)),
@@ -261,7 +261,7 @@ async def main():
             {"https://amzn.to/weak1": bot.LinkResult(
                 source="https://amzn.to/weak1",
                 resolved="https://www.amazon.in/dp/B0WEAKITEM01",
-                affiliate="https://www.amazon.in/dp/B0WEAKITEM01?tag=deals0911-21",
+                affiliate="https://www.amazon.in/dp/B0WEAKITEM01",
                 deal_key="amazon:B0WEAKITEM01")},
             expect_render_contains=["Premium Sofa Set", "₹24999 5% OFF"],
             expect_targets_superset=["PowerLoots1", "LootZoneIndia11"],
@@ -284,7 +284,7 @@ async def main():
                 resolve[u] = f"https://www.amazon.in/dp/{asin}"
                 convert[u] = bot.LinkResult(
                     source=u, resolved=f"https://www.amazon.in/dp/{asin}",
-                    affiliate=f"https://www.amazon.in/dp/{asin}?tag=deals0911-21",
+                    affiliate=f"https://www.amazon.in/dp/{asin}",
                     deal_key=f"amazon:{asin}")
                 urls.append(u)
             return resolve, convert, urls
@@ -329,7 +329,7 @@ async def main():
         # self-proving — it passes the final provenance gate even though the
         # link_cache (empty store here) never saw a conversion-API row for it.
         # A foreign-tag Amazon link must still be rejected.
-        our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=deals0911-21"
+        our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE"
         foreign_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=thief-21"
         check("is_our_amazon_tag_link recognises our tag", bot.Store.is_our_amazon_tag_link(our_tag) is True)
         check("is_our_amazon_tag_link rejects foreign tag", bot.Store.is_our_amazon_tag_link(foreign_tag) is False)
@@ -347,7 +347,7 @@ async def main():
             "Share with your friends", "Turn on notifications",
             "Don't miss this deal!!", "@somechannel", "#deals",
             "Premium cotton fabric slim fit",
-            "https://www.amazon.in/dp/B0PROMO123?tag=deals0911-21",
+            "https://www.amazon.in/dp/B0PROMO123",
         ])
         cleaned = bot.clean_source_text(promo)
         for gone in ["JOIN OUR TELEGRAM", "t.me/somechannel", "Share with",
@@ -394,7 +394,7 @@ async def main():
         # original link.
         long1 = ("https://www.amazon.in/s?i=watches&k=sonata&linkId=abc123&"
                  "rh=n%3A1350387031%2Cn%3A2563504031&rnid=1350387031&"
-                 "s=price-asc-rank&tag=deals0911-21")
+                 "s=price-asc-rank")
         long2 = long1.replace("abc123", "def456")
         class _ShortenAff(bot.AffiliateClient):
             def __init__(self): self.cached = {}
@@ -424,7 +424,7 @@ async def main():
             def __init__(self): pass
             async def shorten(self, long_url):
                 raise AssertionError("must not re-shorten an already-short link")
-        short_post = "Watch ₹407\nhttps://bit.ly/abc\nhttps://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
+        short_post = "Watch ₹407\nhttps://bit.ly/abc\nhttps://www.amazon.in/dp/B0GLY3Q2XR"
         same = await NoDoubleAff().shorten_long_urls_in_text(short_post)
         check("short links not passed to the shortener", same == short_post)
 
@@ -433,13 +433,13 @@ async def main():
         # link is Bitly-shortened. Post becomes neat.
         check("compact dp link drops smid/psc/th, keeps tag",
               bot.compact_amazon_product_link(
-                  "https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21")
-              == "https://www.amazon.in/dp/B0DQPT85TB?tag=deals0911-21")
+                  "https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S")
+              == "https://www.amazon.in/dp/B0DQPT85TB")
         check("compact leaves search links alone",
               "/s?" in bot.compact_amazon_product_link(
-                  "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y&tag=deals0911-21"))
+                  "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y"))
         hidden = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V+%7C+B0F4NDZ2VC"
-                  "&psc=1&th=1&tag=deals0911-21")
+                  "&psc=1&th=1")
         class ListAff(bot.AffiliateClient):
             def __init__(self): self.shortened = {}
             async def shorten(self, u):
@@ -447,13 +447,13 @@ async def main():
             async def cache_link(self, *a, **k): pass
         clumsy = ("More | Apply coupon\n"
                   f"{hidden}\n"
-                  "https://www.amazon.in/dp/B0F4NFCHX8?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21\n"
-                  "https://www.amazon.in/dp/B0G1SVRWG3?psc=1&smid=AJ6SIZC8YQDZX&tag=deals0911-21\n")
+                  "https://www.amazon.in/dp/B0F4NFCHX8?psc=1&smid=A1WYWER0W24N8S\n"
+                  "https://www.amazon.in/dp/B0G1SVRWG3?psc=1&smid=AJ6SIZC8YQDZX\n")
         neat = await ListAff().shorten_long_urls_in_text(clumsy)
         check("hidden-keywords search link bitly-shortened", "https://bit.ly/hiddendeals" in neat)
         check("dp links compacted to short native form",
-              "https://www.amazon.in/dp/B0F4NFCHX8?tag=deals0911-21" in neat
-              and "https://www.amazon.in/dp/B0G1SVRWG3?tag=deals0911-21" in neat)
+              "https://www.amazon.in/dp/B0F4NFCHX8" in neat
+              and "https://www.amazon.in/dp/B0G1SVRWG3" in neat)
         check("smid/psc noise removed from the post",
               "smid=" not in neat and "psc=1" not in neat)
 
@@ -461,12 +461,12 @@ async def main():
         # &amp;amp; escaping -> one clean URL per product, fully decoded.
         nested = (
             "More | Apply coupon\n"
-            "[[https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;amp;psc=1&amp;amp;tag=deals0911-21]"
-            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;psc=1&amp;tag=deals0911-21)]"
-            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&psc=1&tag=deals0911-21)\n"
-            "[[https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;amp;smid=A1WYWER0W24N8S&amp;amp;tag=deals0911-21]"
-            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;smid=A1WYWER0W24N8S&amp;tag=deals0911-21)]"
-            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21)\n")
+            "[[https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;amp;psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]"
+            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)]"
+            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)\n"
+            "[[https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;amp;smid=A1WYWER0W24N8S]"
+            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;smid=A1WYWER0W24N8S)]"
+            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S)\n")
         norm = bot.normalize_nested_link_markup(nested)
         check("nested [[url](url)](url) collapses to one url",
               norm.count("B0DQPT85TB") == 1 and "[[" not in norm)
@@ -480,7 +480,7 @@ async def main():
         neat_nested = await NestedAff().shorten_long_urls_in_text(bot.clean_source_text(nested))
         check("nested post tidies to bit.ly + compact dp (no smid/amp/brackets)",
               "https://bit.ly/hiddendeals" in neat_nested
-              and "https://www.amazon.in/dp/B0DQPT85TB?tag=deals0911-21" in neat_nested
+              and "https://www.amazon.in/dp/B0DQPT85TB" in neat_nested
               and "smid=" not in neat_nested and "&amp" not in neat_nested and "[[" not in neat_nested)
 
         # USER'S EXACT POST: markdown-wrapped Amazon links, the SAME URL
@@ -491,11 +491,11 @@ async def main():
             return f"[{amp}]({amp}]({url}))"
         hidden_full = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V"
                        "+%7C+B0F4NDZ2VC+%7C+B0G1SVRWG3+%7C+B0FMF6X8Z5+%7C+B0FMNXX9QS"
-                       "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1&tag=deals0911-21")
+                       "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1")
         dp_asins = ["B0DQPT85TB", "B0F4NFCHX8", "B0FMF6X8Z5",
                     "B0FMNXX9QS", "B0G1SVRWG3", "B0FJ7D2KBQ"]
         user_post = ("More | Apply coupon\n" + _md_block(hidden_full) + "\n" + "\n".join(
-            _md_block(f"https://www.amazon.in/dp/{a}?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21")
+            _md_block(f"https://www.amazon.in/dp/{a}?psc=1&smid=A1WYWER0W24N8S")
             for a in dp_asins))
         cleaned_user = bot.clean_source_text(user_post)
         user_lines = cleaned_user.splitlines()
@@ -517,7 +517,7 @@ async def main():
         check("user md post final: header + 1 bitly search link + 6 compact dp",
               user_final.splitlines()[0] == "More | Apply coupon"
               and "https://bit.ly/hiddendeals" in user_final
-              and all(f"https://www.amazon.in/dp/{a}?tag=deals0911-21" in user_final
+              and all(f"https://www.amazon.in/dp/{a}" in user_final
                       for a in dp_asins)
               and len(user_final.splitlines()) == 8)
         check("user md post: exactly ONE bitly call (no re-shorten per copy)",
@@ -532,7 +532,7 @@ async def main():
         men_url = ("https://www.amazon.in/s?i=watches&k=sonata"
                    "&linkId=d1ed8305142355ade29af769ae53ffd5"
                    "&rh=n%3A1350387031%2Cn%3A2563504031&s=price-asc-rank"
-                   "&xpid=amZH9R9-GxtvF&tag=deals0911-21")
+                   "&xpid=amZH9R9-GxtvF")
         women_url = men_url.replace("2563504031", "2563505031").replace(
             "d1ed8305142355ade29af769ae53ffd5", "600920435a84f32e3ac84659fd83d23e")
         amp = lambda u: u.replace("&", "&amp;")
@@ -574,9 +574,9 @@ async def main():
         # render as ONE neat short line per product.
         hk_url = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V"
                   "+%7C+B0F4NDZ2VC+%7C+B0G1SVRWG3+%7C+B0FMF6X8Z5+%7C+B0FMNXX9QS"
-                  "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1&tag=deals0911-21")
+                  "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1")
         def _dp(a, smid="A1WYWER0W24N8S"):
-            return f"https://www.amazon.in/dp/{a}?psc=1&smid={smid}&tag=deals0911-21"
+            return f"https://www.amazon.in/dp/{a}?psc=1&smid={smid}"
         e1 = lambda u: u.replace("&", "&amp;")
         e3 = lambda u: u.replace("&", "&amp;amp;")
         def _shallow(u):
@@ -610,7 +610,7 @@ async def main():
             wf = await da.shorten_long_urls_in_text(wc)
             check(f"user {tag} post final: bitly list + 6 compact dp, 1 bitly call",
                   wf == ("More | Apply coupon\nhttps://bit.ly/hkdeals\n" +
-                         "\n".join(f"https://www.amazon.in/dp/{a}?tag=deals0911-21"
+                         "\n".join(f"https://www.amazon.in/dp/{a}"
                                    for a in p_asins))
                   and da.calls == 1)
         # New source channels are registered and fan out to the non-Tricks main
@@ -662,8 +662,8 @@ async def main():
         # it at import), so the check below states the rule - over the threshold means
         # shortened - rather than trusting one number.
         long_link = ("https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031"
-                     "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=deals0911-21")
-        short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
+                     "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank")
+        short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR"
         # the caller's real predicate: shorten when it is a LIST or when the link is long
         wants_short = lambda u, multi: bot.should_use_bitly(u, multi) or len(u) > bot.SHORTEN_MIN_LEN
         check(f"long link flagged for shortening (threshold={bot.SHORTEN_MIN_LEN})",
@@ -710,7 +710,7 @@ async def main():
                 {f"https://amzn.to/{slug}": f"https://www.amazon.in/dp/B0{slug}"},
                 {f"https://amzn.to/{slug}": bot.LinkResult(
                     f"https://amzn.to/{slug}", f"https://www.amazon.in/dp/B0{slug}",
-                    f"https://www.amazon.in/dp/B0{slug}?tag=deals0911-21",
+                    f"https://www.amazon.in/dp/B0{slug}",
                     f"amazon:B0{slug}")},
             )
             return text, aff
@@ -725,7 +725,7 @@ async def main():
         check("a deleted message still renders", bool(rendered))
         check("the product line survives", "Nike Men's Running Shoes" in rendered)
         check("the price and the discount survive", "\u20b91,999" in rendered and "66%" in rendered)
-        check("our tag is still applied to the link", "tag=deals0911-21" in rendered)
+        check("tagless: clean link without tag", "tag=" not in rendered and "https://www.amazon.in/dp/B0GONE1" in rendered)
         check("no media is invented for a message we cannot fetch",
               getattr(msg_r, "media", "unexpected") is None)
         check(f"the price is read from our own copy ({price})", price == 1999)

@@ -90,7 +90,11 @@ def why_not_our_link(url: str, our_tag: str = "") -> str | None:
             key, _, value = chunk.partition("=")
             pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
     tags = [v for v in pairs.get("tag", []) if v]
-    ours = bool(our_tag) and our_tag.lower() in tags
+    if not our_tag:
+        # TAGLESS: clean Amazon link (no tag) is ours, any tag is foreign
+        ours = not tags
+    else:
+        ours = our_tag.lower() in [x.lower() for x in tags]
     foreign_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
     if AMAZON_HOST.match(host):
         if not ours:

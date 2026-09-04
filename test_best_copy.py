@@ -23,7 +23,7 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "x")
 os.environ.setdefault("EARNKARO_API_KEY", "k")
-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
+os.environ.setdefault("AMAZON_TAG", "")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -40,10 +40,10 @@ def check(name: str, condition: bool, extra: str = "") -> None:
 
 ASIN = "B0TESTASIN1"
 WEAK = (f"Cooking Oil 5L jar ({R}214)\n"
-        f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21\n"
+        f"https://www.amazon.in/dp/{ASIN}\n"
         f"MRP {R}599, 45% off, limited period")
 STRONG = (f"Cooking Oil 5L jar ({R}199)\n"
-          f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21\n"
+          f"https://www.amazon.in/dp/{ASIN}\n"
           f"MRP {R}999, 80% off, today alone")
 LISTY = (f"1. Oil jar {R}214 https://www.amazon.in/dp/{ASIN}\n"
          f"2. Soap 500ml {R}49 https://www.amazon.in/dp/OTHERPID12")
@@ -146,7 +146,7 @@ def test_numeric_fidelity_gate():
               f"MRP {R}36,990 | 38% off")
     rendered = (f"IFB 6kg Fully Automatic Washing Machine ({R}22,990tG7o1L5)\n"
                 f"MRP {R}36,990 | 38% off | extra {R}9,999 (99% off) code LOOT500\n"
-                f"https://bitli.in/TqmFyPp/AbC123?tag=deals0911-21")
+                f"https://bitli.in/TqmFyPp/AbC123")
     clean, notes = bot.enforce_numeric_fidelity(source, rendered)
     check("a real price is never deleted because a token was glued to it",
           f"{R}22,990" in clean, clean)
@@ -154,7 +154,7 @@ def test_numeric_fidelity_gate():
           f"{R}36,990" in clean and "38%" in clean.replace(" ", ""), clean)
     check("a price the source never printed is dropped", "9,999" not in clean, clean)
     check("digits inside our link are untouched (masked, not judged)",
-          "tag=deals0911-21" in clean and "AbC123" in clean, clean)
+          "AbC123" in clean and "tag=" not in clean, clean)
     check("the coupon code itself is not damaged by the price removal", "LOOT500" in clean, clean)
     check("removals are logged", len(notes) >= 1, str(notes))
     same, notes_same = bot.enforce_numeric_fidelity(source, source)
@@ -173,24 +173,26 @@ def test_link_policy():
     spec = importlib.util.spec_from_file_location("quality_audit", ROOT / "ops" / "quality_audit.py")
     qa = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(qa)
-    tag = "deals0911-21"
+    tag = ""
     ours = [
         "https://bitli.in/TqmFyPp/AbC1",
         "https://www.bitlyskj.com/zz",
-        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21",
-        "https://www.amazon.in/dp/B0TAGGED002?tag=deals0911-21&linkCode=x",
+        "https://www.amazon.in/dp/B0TAGGED001",
+        "https://www.amazon.in/dp/B0TAGGED002",
         "https://www.myntra.com/x/1/detail",              # unmonetizable store, clean page
         "https://www.flipkart.com/pride/p/itcx?pids=flipkart_karos_offers_sphome.7264141.p1",
         "https://t.me/addlist/abcDEF",                      # our Loots Family folder
         "https://d7zd1k.earnkaro.com/s/click-link/xyz",
+        "https://www.amazon.in/dp/B0NOTAGGED01",            # TAGLESS: clean is ours
     ]
     theirs = [
         "https://amzn.to/sourceShort",                      # the source's own link
-        "https://www.amazon.in/dp/B0NOTAGGED01",            # ours never goes untagged
         "https://www.amazon.in/dp/B0X?tag=competitor",
+        "https://www.amazon.in/dp/B0X?tag=deals0911-21",   # TAGLESS: ex-our tag is foreign
         "https://bitly.com/sponsorOnly",
         "https://www.flipkart.com/buy/p?affid=otherpub",
         "https://www.amazon.in/dp/B0X?tag=deals0911-21&affid=zz",
+        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21", # TAGLESS: any tag is foreign
     ]
     for url in ours:
         check(f"accepted as ours: {url[:44]}", qa.why_not_our_link(url, tag) is None,
@@ -222,14 +224,14 @@ def test_quality_auditor():
 
         clean_post = (f"Prestige 2L Pressure Cooker ({R}899)\n"
                       f"MRP {R}1,999 | 55% off\nhttps://bitli.in/TqmFyPp/Cook99\n"
-                      f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21")
+                      f"https://www.amazon.in/dp/{ASIN}")
         put(1, "lootnow", 101, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(2, "lootnow", 102, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(3, "under499loots", 103,
             f"{R}640\n**Deal**\nhttps://www.amazon.in/dp/B0FOREIGN01\n✅ Verified deals • Enjoy Grab fast",
             ["Under499Deals11"])
         put(4, "lootnow", 104, f"Cool thing {R}1,999\nhttps://bitly.com/sponsorOnly\n"
-                              f"https://www.amazon.in/dp/B0NOTAGGED1\n"
+                              f"https://www.amazon.in/dp/B0NOTAGGED1?tag=deals0911-21\n"
                               f"https://www.ajio.com/p/900123?tag=rivalpub", ["PowerLoots1"])
         put(5, "lootnow", 105, f"{R}1,999 cooker\nhttps://bitli.in/TqmFyPp/x1", ["Under99Deals11"])
         put(6, "lootnow", 106, "", ["LootZoneIndia11"], status="failed",

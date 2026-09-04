@@ -27,7 +27,7 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "x")
 os.environ.setdefault("EARNKARO_API_KEY", "k")
-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
+os.environ.setdefault("AMAZON_TAG", "")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -182,7 +182,7 @@ CORPUS = {
         "\u274cMRP: \u20b9 270\n"
         "Discount: 26%\n"
         "Use code HFJF for Extra Discount\n"
-        "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)\n"),
+        "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3](https://amzn.to/lizol77)\n"),
 }
 
 
@@ -290,7 +290,7 @@ def test_signature_rules():
     pairs_same = [
         ("boat earbuds across two sources",
          f"\U0001f525 boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
-         f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21"),
+         f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ"),
         ("iPhone, one copy names the storage twice, the other once",
          f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/apple-iphone-13-blue/p/x",
          f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900 (13% off)\nhttps://www.smartprix.com/go/y"),
@@ -356,7 +356,7 @@ def test_auditor_mirrors_the_bot():
     auditor = importlib.import_module("quality_audit")
     texts = [
         f"boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
-        f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21",
+        f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ",
         f"boAt Airdopes 131 TWS Earbuds\n{R}999\nhttps://www.croma.com/b2",
         f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/x",
         f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900\nhttps://www.smartprix.com/y",
@@ -390,7 +390,7 @@ def test_auditor_mirrors_the_bot():
 
 def test_chunking_never_cuts_a_link():
     print("\n== an over-long line is packed, never bisected ==")
-    url = "https://www.amazon.in/dp/B0ABCDEFGHI?tag=deals0911-21"
+    url = "https://www.amazon.in/dp/B0ABCDEFGHI"
     line = "Prestige PIC-MAD 2600 5 Burner Manual Stainless Steel " + "x" * 4200 + " " + url
     parts = bot.chunks(line, 4096)
     check("every part fits Telegram", all(len(part) <= 4096 for part in parts),
@@ -593,7 +593,7 @@ def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
     into our affiliate link; the href is a third-party shortener we never publish.
     Deciding this once here stops the two passes from disagreeing later.
     """
-    line = ("\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21]"
+    line = ("\U0001f449 [https://www.amazon.in/dp/B0GH2374K3]"
             "(https://new.growseek.io/45934/abc?shortlink=6328a1d4)")
     cleaned = bot.clean_source_text(line)
     check("a URL label beats a foreign shortener href",
@@ -747,7 +747,7 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
     # that hard-codes 65 would cry wolf the moment an operator moves the knob (and the
     # last round's knob matrix showed exactly that class of false alarm in the bridge).
     min_len = int(bot.SHORTEN_MIN_LEN)
-    base = "https://www.amazon.in/dp/B0TIF1?tag=deals0911-21"
+    base = "https://www.amazon.in/dp/B0TIF1"
     tail = "&ref_=" + "s" * max(0, min_len + 40 - len(base) - len("&ref_="))
     long_one = base + tail
     assert len(long_one) > min_len, (len(long_one), min_len)
@@ -762,7 +762,7 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
           bot.should_use_bitly("https://www.amazon.in/dp/B0X", True) is True
           and bot.should_use_bitly("https://www.amazon.in/dp/B0X", False) is False,
           str(bot.SHORTEN_MIN_LEN))
-    tidy_link = "https://www.amazon.in/dp/B0AIR1?tag=deals0911-21"
+    tidy_link = "https://www.amazon.in/dp/B0AIR1"
     tidy = f"Boat Airdopes \u20b91,099 {tidy_link}"
     if len(tidy_link) > min_len:
         check("a single link OVER the threshold is shortened too",
@@ -777,8 +777,8 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
     aff.bitly = out_of_quota
     # Fresh URLs: a shortener that already answered for a link keeps that answer (that
     # is the cache doing its job), so the "Bitly is down" case needs unseen links.
-    other = (f"1) Pressure Cooker \u20b9899 {'https://www.amazon.in/dp/B0COOK1?tag=deals0911-21' + tail}\n"
-             f"2) Water Bottle \u20b9299 {'https://www.amazon.in/dp/B0BOTT2?tag=deals0911-21' + tail}")
+    other = (f"1) Pressure Cooker \u20b9899 {'https://www.amazon.in/dp/B0COOK1' + tail}\n"
+             f"2) Water Bottle \u20b9299 {'https://www.amazon.in/dp/B0BOTT2' + tail}")
     kept = asyncio.run(aff.shorten_long_urls_in_text(other))
     check("Bitly down: the deal still goes out with the tagged merchant links",
           "amazon.in/dp/B0COOK1" in kept and "bit.ly" not in kept, kept[:140])
