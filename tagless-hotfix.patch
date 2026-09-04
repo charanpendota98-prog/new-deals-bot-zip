@@ -1,0 +1,1046 @@
+diff --git a/README.md b/README.md
+index 91f9327..7760bf8 100644
+--- a/README.md
++++ b/README.md
+@@ -744,7 +744,7 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
+ > unmonetizable-link pass-through, edited-post revive; v17 items unchanged) and
+ > `tg-wa-bridge/bridge.js` (the same junk/markdown guards, with WhatsApp
+ > `*bold*` formatting left intact) changed in
+-> `arena/01a0583b-new-deals-bot-zip`; the hashes below describe the *deployed*
++> `arena/01a06dad-new-deals-bot-zip`; the hashes below describe the *deployed*
+ > build only. Deploy the repo source (`ops/repack_bundles.sh` →
+ > `ops/apply_dual_hotfix.sh`, or `bestgaa/deploy_bestgaa.sh` for the bot alone),
+ > then refresh this table with the new hashes.
+@@ -761,16 +761,16 @@ printing exactly what the older build was coded to print):
+ 
+ | File | SHA-256 |
+ |---|---|
+-| `bestgaa/main_bot_new.py` | `a27bddeb0aa378fedab705c56ba25b54c9a669b00b3dc3825c7fe5bcc6186148` |
+-| `tg-wa-bridge/bridge.js` | `f6029a257602e413dfd3e6e7639a84d4bee7686451ddb618308995cd6f97394f` |
++| `bestgaa/main_bot_new.py` | `ec5ef58eb69329f0394598bdff4d77b12bee6a4ef86bf99927d1918dc924013f` |
++| `tg-wa-bridge/bridge.js` | `f95c4cd224d0fa89c1ec2c0f12a2d07f10f622c22fb2d15e7a80e115f45f3d09` |
+ | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
+-| `ops/quality_audit.py` | `29a38074fb9116c6f974c6c55688e500560a235ed0288ff1c06006bb690d2096` |
++| `ops/quality_audit.py` | `cbba8f1676887b97b27b4701603952639beee4199e7e3565bccfc0107b447acc` |
+ | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
+ | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
+-| `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
+-| `test_pipeline_fixes.py` | `f5c274ddf3d444f921c678c176d62a6e96b4c00e8a5725d608a0777e9c520cd0` |
+-| `test_duplicate_sim.py` | `aef8d0fa7d0234436a7188ef5922cd5a94f687f28ef938a401b3225576a24298` |
+-| `test_best_copy.py` | `9b47df6c18148cb59a8c82dff3748195afb39c6da482a985ad360727aa3ee2cc` |
++| `test_line_fidelity.py` | `730942c20894e9bb80c9c751ff5dd56f1585f0f629a51e9bca9b3181b7b11ed4` |
++| `test_pipeline_fixes.py` | `c80c0bfacd400e9caf9358c84414f3c5a6d6ac8e855d9651e55097c26fd4b96c` |
++| `test_duplicate_sim.py` | `0035da8805d6ed0b5d3e39f44e56914d4894eb149c81ecd00523111eb0d57615` |
++| `test_best_copy.py` | `3b50c60f79e0b51f2949917092be3f880927b8479fc0f1aaab4a14de98833807` |
+ 
+ Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
+ `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,
+diff --git a/bestgaa/main_bot_new.py b/bestgaa/main_bot_new.py
+index 0937a23..075e298 100644
+--- a/bestgaa/main_bot_new.py
++++ b/bestgaa/main_bot_new.py
+@@ -131,7 +131,7 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
+ API_HASH = env_required("TELEGRAM_API_HASH")
+ EK_KEY = env_required("EARNKARO_API_KEY")
+ EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
+-OUR_TAG = env_required("AMAZON_TAG")
++OUR_TAG = ""  # TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
+ OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
+ BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
+ # USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
+@@ -244,7 +244,7 @@ MAX_ALBUM_PHOTOS = int(_num("MAX_ALBUM_PHOTOS", 10, 1, 10))
+ # someone else's. It is the ONLY thing of ours that may sit above the deal text, it never
+ # appears twice, and the Tricks path (its own footer) is left exactly as it was.
+ ADD_OUR_CHANNEL_LINK_TOP = os.getenv(
+-    "ADD_OUR_CHANNEL_LINK_TOP", "true").strip().lower() in ("1", "true", "yes", "on")
++    "ADD_OUR_CHANNEL_LINK_TOP", "false").strip().lower() in ("1", "true", "yes", "on")  # TAGLESS: default false – never auto-add our folder link
+ MEDIA_DOWNLOAD_TIMEOUT_SECONDS = _num("MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 120, 5, 900)
+ SOURCE_REFRESH_SECONDS = _num("SOURCE_REFRESH_SECONDS", 180, 60, 3600)
+ # Dead-man's switch: re-scan every live source's recent messages on a short
+@@ -667,7 +667,9 @@ def apply_amazon_tag(link: str) -> str:
+             return clean_url(link)
+         query = parse_qsl(parsed.query, keep_blank_values=True)
+         query = [(key, value) for key, value in query if key.lower() != "tag"]
+-        query.append(("tag", OUR_TAG))
++        # TAGLESS: only add our tag if configured; pinned empty means strip stranger tags
++        if OUR_TAG:
++            query.append(("tag", OUR_TAG))
+         return parsed._replace(query=urlencode(query, doseq=True)).geturl()
+     except Exception:
+         return clean_url(link)
+@@ -675,13 +677,12 @@ def apply_amazon_tag(link: str) -> str:
+ 
+ def compact_amazon_product_link(link: str) -> str:
+     """Collapse an Amazon PRODUCT (/dp/ASIN or /gp/product/ASIN) URL to its
+-    shortest native form carrying ONLY our Associates tag:
+-      https://www.amazon.in/dp/ASIN?tag=deals0911-21   (~48 chars)
+-    All noise params (psc/smid/th/ref/linkCode/...) are dropped, so product
++    shortest native form. TAGLESS: no tag is kept/added – clean /dp/ASIN only
++      https://www.amazon.in/dp/ASIN   (tagless)
++    All noise params (psc/smid/th/ref/linkCode/tag ...) are dropped, so product
+     links in a list are short WITHOUT spending Bitly quota. Amazon SEARCH /
+     category links (/s?...) have no single ASIN and are returned untouched so
+-    the final shorten pass can Bitly them. Respects any explicit ref= tag the
+-    source set (kept), and preserves the Amazon TLD."""
++    the final shorten pass can Bitly them. Preserves the Amazon TLD."""
+     try:
+         raw = clean_url(link)
+         m = re.search(r"(?:/dp/|/gp/(?:product|aw/d)/)([A-Z0-9]{10})(?:[/?#]|$)", raw, re.I)
+@@ -692,20 +693,17 @@ def compact_amazon_product_link(link: str) -> str:
+         host = (parsed.hostname or "").lower()
+         if not in_domains(host, AMAZON_DOMAINS):
+             return raw
+-        tag = OUR_TAG
+-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+-            if key.lower() == "tag" and value:
+-                tag = value
+-                break
+         netloc = host if host.startswith("www.") else "www." + host
+-        # Keep a ref node if the source explicitly set one (marketing node);
+-        # otherwise drop everything for the shortest clean link.
+-        ref = None
+-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+-            if key.lower() == "ref" and value:
+-                ref = value
+-        query = urlencode([("tag", tag)] + ([("ref", ref)] if ref else []))
+-        return f"https://{netloc}/dp/{asin}?{query}"
++        # TAGLESS: never keep source tag; only our tag if configured
++        if OUR_TAG:
++            ref = None
++            for key, value in parse_qsl(parsed.query, keep_blank_values=True):
++                if key.lower() == "ref" and value:
++                    ref = value
++            query = urlencode([("tag", OUR_TAG)] + ([("ref", ref)] if ref else []))
++            return f"https://{netloc}/dp/{asin}?{query}"
++        # Tagless clean form – no tag, no ref
++        return f"https://{netloc}/dp/{asin}"
+     except Exception:
+         return clean_url(link)
+ 
+@@ -4150,6 +4148,15 @@ class AffiliateClient:
+         Links already on a shortener domain are never re-shortened; if the
+         shortener is unavailable the original link is kept (a deal is never lost)."""
+         out = rendered or ""
++        # TAGLESS: Pass 0 – strip any foreign Amazon tag from ALL Amazon links first
++        for raw in dict.fromkeys(URL_RE.findall(out)):
++            url = clean_url(raw)
++            host = (urlparse(url).hostname or "").lower()
++            if not in_domains(host, AMAZON_DOMAINS):
++                continue
++            stripped = apply_amazon_tag(url)
++            if stripped and stripped != url and stripped != raw:
++                out = out.replace(raw, stripped).replace(raw.replace("&", "&amp;"), stripped)
+         # Pass 1: native compaction of Amazon /dp/ product links (free).
+         compacted = 0
+         for raw in dict.fromkeys(URL_RE.findall(out)):
+diff --git a/ops/quality_audit.py b/ops/quality_audit.py
+index dce7ad5..dbfe935 100755
+--- a/ops/quality_audit.py
++++ b/ops/quality_audit.py
+@@ -90,7 +90,11 @@ def why_not_our_link(url: str, our_tag: str = "") -> str | None:
+             key, _, value = chunk.partition("=")
+             pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
+     tags = [v for v in pairs.get("tag", []) if v]
+-    ours = bool(our_tag) and our_tag.lower() in tags
++    if not our_tag:
++        # TAGLESS: clean Amazon link (no tag) is ours, any tag is foreign
++        ours = not tags
++    else:
++        ours = our_tag.lower() in [x.lower() for x in tags]
+     foreign_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
+     if AMAZON_HOST.match(host):
+         if not ours:
+diff --git a/test_best_copy.py b/test_best_copy.py
+index f3c87b2..48a28d1 100644
+--- a/test_best_copy.py
++++ b/test_best_copy.py
+@@ -23,7 +23,7 @@ from pathlib import Path
+ os.environ.setdefault("TELEGRAM_API_ID", "1")
+ os.environ.setdefault("TELEGRAM_API_HASH", "x")
+ os.environ.setdefault("EARNKARO_API_KEY", "k")
+-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
++os.environ.setdefault("AMAZON_TAG", "")
+ ROOT = Path(__file__).resolve().parent
+ sys.path.insert(0, str(ROOT / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+@@ -40,10 +40,10 @@ def check(name: str, condition: bool, extra: str = "") -> None:
+ 
+ ASIN = "B0TESTASIN1"
+ WEAK = (f"Cooking Oil 5L jar ({R}214)\n"
+-        f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21\n"
++        f"https://www.amazon.in/dp/{ASIN}\n"
+         f"MRP {R}599, 45% off, limited period")
+ STRONG = (f"Cooking Oil 5L jar ({R}199)\n"
+-          f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21\n"
++          f"https://www.amazon.in/dp/{ASIN}\n"
+           f"MRP {R}999, 80% off, today alone")
+ LISTY = (f"1. Oil jar {R}214 https://www.amazon.in/dp/{ASIN}\n"
+          f"2. Soap 500ml {R}49 https://www.amazon.in/dp/OTHERPID12")
+@@ -146,7 +146,7 @@ def test_numeric_fidelity_gate():
+               f"MRP {R}36,990 | 38% off")
+     rendered = (f"IFB 6kg Fully Automatic Washing Machine ({R}22,990tG7o1L5)\n"
+                 f"MRP {R}36,990 | 38% off | extra {R}9,999 (99% off) code LOOT500\n"
+-                f"https://bitli.in/TqmFyPp/AbC123?tag=deals0911-21")
++                f"https://bitli.in/TqmFyPp/AbC123")
+     clean, notes = bot.enforce_numeric_fidelity(source, rendered)
+     check("a real price is never deleted because a token was glued to it",
+           f"{R}22,990" in clean, clean)
+@@ -154,7 +154,7 @@ def test_numeric_fidelity_gate():
+           f"{R}36,990" in clean and "38%" in clean.replace(" ", ""), clean)
+     check("a price the source never printed is dropped", "9,999" not in clean, clean)
+     check("digits inside our link are untouched (masked, not judged)",
+-          "tag=deals0911-21" in clean and "AbC123" in clean, clean)
++          "AbC123" in clean and "tag=" not in clean, clean)
+     check("the coupon code itself is not damaged by the price removal", "LOOT500" in clean, clean)
+     check("removals are logged", len(notes) >= 1, str(notes))
+     same, notes_same = bot.enforce_numeric_fidelity(source, source)
+@@ -173,24 +173,26 @@ def test_link_policy():
+     spec = importlib.util.spec_from_file_location("quality_audit", ROOT / "ops" / "quality_audit.py")
+     qa = importlib.util.module_from_spec(spec)
+     spec.loader.exec_module(qa)
+-    tag = "deals0911-21"
++    tag = ""
+     ours = [
+         "https://bitli.in/TqmFyPp/AbC1",
+         "https://www.bitlyskj.com/zz",
+-        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21",
+-        "https://www.amazon.in/dp/B0TAGGED002?tag=deals0911-21&linkCode=x",
++        "https://www.amazon.in/dp/B0TAGGED001",
++        "https://www.amazon.in/dp/B0TAGGED002",
+         "https://www.myntra.com/x/1/detail",              # unmonetizable store, clean page
+         "https://www.flipkart.com/pride/p/itcx?pids=flipkart_karos_offers_sphome.7264141.p1",
+         "https://t.me/addlist/abcDEF",                      # our Loots Family folder
+         "https://d7zd1k.earnkaro.com/s/click-link/xyz",
++        "https://www.amazon.in/dp/B0NOTAGGED01",            # TAGLESS: clean is ours
+     ]
+     theirs = [
+         "https://amzn.to/sourceShort",                      # the source's own link
+-        "https://www.amazon.in/dp/B0NOTAGGED01",            # ours never goes untagged
+         "https://www.amazon.in/dp/B0X?tag=competitor",
++        "https://www.amazon.in/dp/B0X?tag=deals0911-21",   # TAGLESS: ex-our tag is foreign
+         "https://bitly.com/sponsorOnly",
+         "https://www.flipkart.com/buy/p?affid=otherpub",
+         "https://www.amazon.in/dp/B0X?tag=deals0911-21&affid=zz",
++        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21", # TAGLESS: any tag is foreign
+     ]
+     for url in ours:
+         check(f"accepted as ours: {url[:44]}", qa.why_not_our_link(url, tag) is None,
+@@ -222,14 +224,14 @@ def test_quality_auditor():
+ 
+         clean_post = (f"Prestige 2L Pressure Cooker ({R}899)\n"
+                       f"MRP {R}1,999 | 55% off\nhttps://bitli.in/TqmFyPp/Cook99\n"
+-                      f"https://www.amazon.in/dp/{ASIN}?tag=deals0911-21")
++                      f"https://www.amazon.in/dp/{ASIN}")
+         put(1, "lootnow", 101, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
+         put(2, "lootnow", 102, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
+         put(3, "under499loots", 103,
+             f"{R}640\n**Deal**\nhttps://www.amazon.in/dp/B0FOREIGN01\n✅ Verified deals • Enjoy Grab fast",
+             ["Under499Deals11"])
+         put(4, "lootnow", 104, f"Cool thing {R}1,999\nhttps://bitly.com/sponsorOnly\n"
+-                              f"https://www.amazon.in/dp/B0NOTAGGED1\n"
++                              f"https://www.amazon.in/dp/B0NOTAGGED1?tag=deals0911-21\n"
+                               f"https://www.ajio.com/p/900123?tag=rivalpub", ["PowerLoots1"])
+         put(5, "lootnow", 105, f"{R}1,999 cooker\nhttps://bitli.in/TqmFyPp/x1", ["Under99Deals11"])
+         put(6, "lootnow", 106, "", ["LootZoneIndia11"], status="failed",
+diff --git a/test_duplicate_sim.py b/test_duplicate_sim.py
+index 5672d58..5f67461 100644
+--- a/test_duplicate_sim.py
++++ b/test_duplicate_sim.py
+@@ -32,7 +32,7 @@ from pathlib import Path
+ os.environ.setdefault("TELEGRAM_API_ID", "1")
+ os.environ.setdefault("TELEGRAM_API_HASH", "x")
+ os.environ.setdefault("EARNKARO_API_KEY", "k")
+-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
++os.environ.setdefault("AMAZON_TAG", "")
+ ROOT = Path(__file__).resolve().parent
+ sys.path.insert(0, str(ROOT / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+@@ -40,7 +40,7 @@ import main_bot_new as bot  # noqa: E402
+ R = "\u20b9"
+ FAILS: list[str] = []
+ SOURCE = "dealsvelocity"          # fans out to every non-Tricks channel
+-OUR_LINK = "https://www.amazon.in/dp/B0SIMPRODUCT?tag=deals0911-21"
++OUR_LINK = "https://www.amazon.in/dp/B0SIMPRODUCT"
+ 
+ 
+ def check(name: str, condition: bool, extra: str = "") -> None:
+@@ -525,7 +525,7 @@ def test_scenarios():
+             "(Pack of 2) Surface Cleaning  | Toilet Cleaner, 900 ml (2 x 900 ml)\n"
+             "\u2705Deal Price: \u20b9 199HFJF\n\u274cMRP: \u20b9 270\nDiscount: 26%\n"
+             "\U0001f449 [https://t.me/loots/156757](https://wa.me/?text=https%3A%2F%2Ft.me%2Floots%2F156757)\n"
+-            "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)")
++            "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3](https://amzn.to/lizol77)")
+         old_drop = bot.DROP_DEAD_LINKS
+         try:
+             # The default must be tested as the default: an operator who exports
+diff --git a/test_line_fidelity.py b/test_line_fidelity.py
+index 95981b7..b57f9c7 100644
+--- a/test_line_fidelity.py
++++ b/test_line_fidelity.py
+@@ -27,7 +27,7 @@ from pathlib import Path
+ os.environ.setdefault("TELEGRAM_API_ID", "1")
+ os.environ.setdefault("TELEGRAM_API_HASH", "x")
+ os.environ.setdefault("EARNKARO_API_KEY", "k")
+-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
++os.environ.setdefault("AMAZON_TAG", "")
+ ROOT = Path(__file__).resolve().parent
+ sys.path.insert(0, str(ROOT / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+@@ -182,7 +182,7 @@ CORPUS = {
+         "\u274cMRP: \u20b9 270\n"
+         "Discount: 26%\n"
+         "Use code HFJF for Extra Discount\n"
+-        "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)\n"),
++        "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3](https://amzn.to/lizol77)\n"),
+ }
+ 
+ 
+@@ -290,7 +290,7 @@ def test_signature_rules():
+     pairs_same = [
+         ("boat earbuds across two sources",
+          f"\U0001f525 boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
+-         f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21"),
++         f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ"),
+         ("iPhone, one copy names the storage twice, the other once",
+          f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/apple-iphone-13-blue/p/x",
+          f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900 (13% off)\nhttps://www.smartprix.com/go/y"),
+@@ -356,7 +356,7 @@ def test_auditor_mirrors_the_bot():
+     auditor = importlib.import_module("quality_audit")
+     texts = [
+         f"boAt Airdopes 141 TWS Earbuds with ENx\n{R}1,099 (78% off)\nhttps://www.croma.com/b1",
+-        f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ?tag=deals0911-21",
++        f"boAt Airdopes 141 True Wireless Earbuds, 42H Playtime\nMRP {R}4,990 Now {R}1,099\nhttps://www.amazon.in/dp/B0BS1KJ",
+         f"boAt Airdopes 131 TWS Earbuds\n{R}999\nhttps://www.croma.com/b2",
+         f"Apple iPhone 13 (Blue, 128 GB)\n{R}48,999\nhttps://www.flipkart.com/x",
+         f"Apple iPhone 13 (Blue, 128 GB Storage)\n{R}48,999 | MRP {R}56,900\nhttps://www.smartprix.com/y",
+@@ -390,7 +390,7 @@ def test_auditor_mirrors_the_bot():
+ 
+ def test_chunking_never_cuts_a_link():
+     print("\n== an over-long line is packed, never bisected ==")
+-    url = "https://www.amazon.in/dp/B0ABCDEFGHI?tag=deals0911-21"
++    url = "https://www.amazon.in/dp/B0ABCDEFGHI"
+     line = "Prestige PIC-MAD 2600 5 Burner Manual Stainless Steel " + "x" * 4200 + " " + url
+     parts = bot.chunks(line, 4096)
+     check("every part fits Telegram", all(len(part) <= 4096 for part in parts),
+@@ -593,7 +593,7 @@ def test_markdown_link_with_a_url_label_keeps_the_merchant_url():
+     into our affiliate link; the href is a third-party shortener we never publish.
+     Deciding this once here stops the two passes from disagreeing later.
+     """
+-    line = ("\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21]"
++    line = ("\U0001f449 [https://www.amazon.in/dp/B0GH2374K3]"
+             "(https://new.growseek.io/45934/abc?shortlink=6328a1d4)")
+     cleaned = bot.clean_source_text(line)
+     check("a URL label beats a foreign shortener href",
+@@ -747,7 +747,7 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
+     # that hard-codes 65 would cry wolf the moment an operator moves the knob (and the
+     # last round's knob matrix showed exactly that class of false alarm in the bridge).
+     min_len = int(bot.SHORTEN_MIN_LEN)
+-    base = "https://www.amazon.in/dp/B0TIF1?tag=deals0911-21"
++    base = "https://www.amazon.in/dp/B0TIF1"
+     tail = "&ref_=" + "s" * max(0, min_len + 40 - len(base) - len("&ref_="))
+     long_one = base + tail
+     assert len(long_one) > min_len, (len(long_one), min_len)
+@@ -762,7 +762,7 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
+           bot.should_use_bitly("https://www.amazon.in/dp/B0X", True) is True
+           and bot.should_use_bitly("https://www.amazon.in/dp/B0X", False) is False,
+           str(bot.SHORTEN_MIN_LEN))
+-    tidy_link = "https://www.amazon.in/dp/B0AIR1?tag=deals0911-21"
++    tidy_link = "https://www.amazon.in/dp/B0AIR1"
+     tidy = f"Boat Airdopes \u20b91,099 {tidy_link}"
+     if len(tidy_link) > min_len:
+         check("a single link OVER the threshold is shortened too",
+@@ -777,8 +777,8 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
+     aff.bitly = out_of_quota
+     # Fresh URLs: a shortener that already answered for a link keeps that answer (that
+     # is the cache doing its job), so the "Bitly is down" case needs unseen links.
+-    other = (f"1) Pressure Cooker \u20b9899 {'https://www.amazon.in/dp/B0COOK1?tag=deals0911-21' + tail}\n"
+-             f"2) Water Bottle \u20b9299 {'https://www.amazon.in/dp/B0BOTT2?tag=deals0911-21' + tail}")
++    other = (f"1) Pressure Cooker \u20b9899 {'https://www.amazon.in/dp/B0COOK1' + tail}\n"
++             f"2) Water Bottle \u20b9299 {'https://www.amazon.in/dp/B0BOTT2' + tail}")
+     kept = asyncio.run(aff.shorten_long_urls_in_text(other))
+     check("Bitly down: the deal still goes out with the tagged merchant links",
+           "amazon.in/dp/B0COOK1" in kept and "bit.ly" not in kept, kept[:140])
+diff --git a/test_pipeline_fixes.py b/test_pipeline_fixes.py
+index 04e3e21..4425ff4 100644
+--- a/test_pipeline_fixes.py
++++ b/test_pipeline_fixes.py
+@@ -21,7 +21,7 @@ from pathlib import Path
+ 
+ os.environ.update(
+     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
+-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
++    EARNKARO_API_KEY="k", AMAZON_TAG="",
+ )
+ sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+@@ -393,7 +393,7 @@ async def test_source_ids_and_rescan(store):
+ # ---------------------------------------------------------------------------
+ async def test_link_replacement(store):
+     print("\n== link replacement (source link -> our link, exactly once) ==")
+-    our_link = "https://www.amazon.in/dp/B0LINK0001?tag=deals0911-21"
++    our_link = "https://www.amazon.in/dp/B0LINK0001"
+     src = "https://amzn.to/src999"
+ 
+     text = (
+@@ -583,7 +583,7 @@ async def test_render_latency(store):
+             await asyncio.sleep(0.25)
+             idx = source[-1]
+             return bot.LinkResult(source, f"https://www.amazon.in/dp/B0LAT0000{idx}",
+-                                  f"https://www.amazon.in/dp/B0LAT0000{idx}?tag=deals0911-21",
++                                  f"https://www.amazon.in/dp/B0LAT0000{idx}",
+                                   f"ASIN:B0LAT0000{idx}")
+ 
+         async def cache_link(self, *a, **k):
+@@ -603,7 +603,7 @@ async def test_render_latency(store):
+     check(f"4-link post rendered concurrently ({elapsed:.2f}s; serial would be >=2s)",
+           elapsed < 1.4)
+     check("every product keeps its OWN converted link (no pooled links, no source links)",
+-          all(f"https://www.amazon.in/dp/B0LAT0000{u[-1]}?tag=deals0911-21" in rendered
++          all(f"https://www.amazon.in/dp/B0LAT0000{u[-1]}" in rendered
+               for u in links) and "amzn.to" not in rendered)
+ 
+ 
+@@ -986,7 +986,7 @@ async def test_list_post_shapes(store):
+     for n in range(4):
+         codes = ["%dtG7oChgiQuTgS25b" % n, "%dIKthI4w" % n, "%d6ft5j8a" % n, "%d3FQw8wi" % n]
+         shapes[n] = codes
+-    ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + "?tag=deals0911-21"
++    ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + ""
+             for cs in shapes.values() for c in cs}
+     titles = [names[n] + " \u20b9260" for n in range(4)]
+     # the exact channel banner decoration sources paste above every list
+@@ -1060,9 +1060,9 @@ async def test_list_post_shapes(store):
+              "Women Cotton Kurti\nhttps://bitli.in/m2bb\n"
+              "Kids School Bag\nhttps://bitli.in/m3cc")
+     pairs = {
+-        "https://bitli.in/m1aa": "https://www.amazon.in/dp/B0MEN1?tag=deals0911-21",
+-        "https://bitli.in/m2bb": "https://www.amazon.in/dp/B0WOM2?tag=deals0911-21",
+-        "https://bitli.in/m3cc": "https://www.amazon.in/dp/B0KID3?tag=deals0911-21",
++        "https://bitli.in/m1aa": "https://www.amazon.in/dp/B0MEN1",
++        "https://bitli.in/m2bb": "https://www.amazon.in/dp/B0WOM2",
++        "https://bitli.in/m3cc": "https://www.amazon.in/dp/B0KID3",
+     }
+ 
+     class MultiAff(Aff):
+@@ -1316,7 +1316,7 @@ def test_nothing_added_by_us():
+            f"Use code SAVE_200 for extra {R}200 off\n"
+            "🔥 LOOT ZONE INDIA — Join for more loot\n"
+            f"Get Flipkart App - Refer 3 friends and {R}100 referral bonus\n"
+-           "➜ https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21")
++           "➜ https://www.amazon.in/dp/B0IKTHI4")
+     out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(src)))
+     lines = [ln for ln in out.split("\n") if ln.strip()]
+     check("markdown asterisks never print", "*" not in out)
+@@ -1337,7 +1337,7 @@ def test_nothing_added_by_us():
+     check("referral / app-install farming is gone",
+           "Refer 3 friends" not in out and "referral bonus" not in out)
+     check("our affiliate link survives intact",
+-          "https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21" in out)
++          "https://www.amazon.in/dp/B0IKTHI4" in out)
+     for invented in ("PREMIUM LOOT PICK", "Handpicked", "Latest deal", "DEALS OF THE DAY",
+                      "💰", "👑", "POWER LOOT ALERT", "Price/stock may change"):
+         check(f"no invented text of ours: {invented!r}", invented not in out)
+diff --git a/test_render_job.py b/test_render_job.py
+index 67a3733..949359b 100644
+--- a/test_render_job.py
++++ b/test_render_job.py
+@@ -11,7 +11,7 @@ from pathlib import Path
+ 
+ os.environ.update(
+     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
+-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
++    EARNKARO_API_KEY="k", AMAZON_TAG="",
+ )
+ sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+@@ -116,7 +116,7 @@ async def case(store, name, text, resolve_map, convert_map, expect_exception=Non
+         check(f"routed to {target}", target in targets)
+ 
+ 
+-AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
++AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR"
+ 
+ 
+ def amazon_result():
+@@ -177,11 +177,11 @@ async def main():
+                 "https://amzn.to/kurta1": bot.LinkResult(
+                     source="https://amzn.to/kurta1",
+                     resolved="https://www.amazon.in/dp/B0KURTA001",
+-                    affiliate="https://www.amazon.in/dp/B0KURTA001?tag=deals0911-21",
++                    affiliate="https://www.amazon.in/dp/B0KURTA001",
+                     deal_key="amazon:B0KURTA001",
+                 )
+             },
+-            expect_render_contains=["https://www.amazon.in/dp/B0KURTA001?tag=deals0911-21"],
++            expect_render_contains=["https://www.amazon.in/dp/B0KURTA001"],
+             msg_id=4,
+         )
+ 
+@@ -222,10 +222,10 @@ async def main():
+             {"https://amzn.to/weak1": bot.LinkResult(
+                 source="https://amzn.to/weak1",
+                 resolved="https://www.amazon.in/dp/B0WEAKDEAL1",
+-                affiliate="https://www.amazon.in/dp/B0WEAKDEAL1?tag=deals0911-21",
++                affiliate="https://www.amazon.in/dp/B0WEAKDEAL1",
+                 deal_key="amazon:B0WEAKDEAL1",
+             )},
+-            expect_render_contains=["https://www.amazon.in/dp/B0WEAKDEAL1?tag=deals0911-21"],
++            expect_render_contains=["https://www.amazon.in/dp/B0WEAKDEAL1"],
+             expect_targets_superset=["LootZoneIndia11"],
+             msg_id=70,
+         )
+@@ -240,10 +240,10 @@ async def main():
+             {"https://amzn.to/over99": bot.LinkResult(
+                 source="https://amzn.to/over99",
+                 resolved="https://www.amazon.in/dp/B0OVER99ITM",
+-                affiliate="https://www.amazon.in/dp/B0OVER99ITM?tag=deals0911-21",
++                affiliate="https://www.amazon.in/dp/B0OVER99ITM",
+                 deal_key="amazon:B0OVER99ITM",
+             )},
+-            expect_render_contains=["https://www.amazon.in/dp/B0OVER99ITM?tag=deals0911-21"],
++            expect_render_contains=["https://www.amazon.in/dp/B0OVER99ITM"],
+             expect_targets_superset=["LootZoneIndia11"],
+             msg_id=71,
+             source=next(iter(bot.UNDER99_SOURCES)),
+@@ -261,7 +261,7 @@ async def main():
+             {"https://amzn.to/weak1": bot.LinkResult(
+                 source="https://amzn.to/weak1",
+                 resolved="https://www.amazon.in/dp/B0WEAKITEM01",
+-                affiliate="https://www.amazon.in/dp/B0WEAKITEM01?tag=deals0911-21",
++                affiliate="https://www.amazon.in/dp/B0WEAKITEM01",
+                 deal_key="amazon:B0WEAKITEM01")},
+             expect_render_contains=["Premium Sofa Set", "₹24999 5% OFF"],
+             expect_targets_superset=["PowerLoots1", "LootZoneIndia11"],
+@@ -284,7 +284,7 @@ async def main():
+                 resolve[u] = f"https://www.amazon.in/dp/{asin}"
+                 convert[u] = bot.LinkResult(
+                     source=u, resolved=f"https://www.amazon.in/dp/{asin}",
+-                    affiliate=f"https://www.amazon.in/dp/{asin}?tag=deals0911-21",
++                    affiliate=f"https://www.amazon.in/dp/{asin}",
+                     deal_key=f"amazon:{asin}")
+                 urls.append(u)
+             return resolve, convert, urls
+@@ -329,7 +329,7 @@ async def main():
+         # self-proving — it passes the final provenance gate even though the
+         # link_cache (empty store here) never saw a conversion-API row for it.
+         # A foreign-tag Amazon link must still be rejected.
+-        our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=deals0911-21"
++        our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE"
+         foreign_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=thief-21"
+         check("is_our_amazon_tag_link recognises our tag", bot.Store.is_our_amazon_tag_link(our_tag) is True)
+         check("is_our_amazon_tag_link rejects foreign tag", bot.Store.is_our_amazon_tag_link(foreign_tag) is False)
+@@ -347,7 +347,7 @@ async def main():
+             "Share with your friends", "Turn on notifications",
+             "Don't miss this deal!!", "@somechannel", "#deals",
+             "Premium cotton fabric slim fit",
+-            "https://www.amazon.in/dp/B0PROMO123?tag=deals0911-21",
++            "https://www.amazon.in/dp/B0PROMO123",
+         ])
+         cleaned = bot.clean_source_text(promo)
+         for gone in ["JOIN OUR TELEGRAM", "t.me/somechannel", "Share with",
+@@ -394,7 +394,7 @@ async def main():
+         # original link.
+         long1 = ("https://www.amazon.in/s?i=watches&k=sonata&linkId=abc123&"
+                  "rh=n%3A1350387031%2Cn%3A2563504031&rnid=1350387031&"
+-                 "s=price-asc-rank&tag=deals0911-21")
++                 "s=price-asc-rank")
+         long2 = long1.replace("abc123", "def456")
+         class _ShortenAff(bot.AffiliateClient):
+             def __init__(self): self.cached = {}
+@@ -424,7 +424,7 @@ async def main():
+             def __init__(self): pass
+             async def shorten(self, long_url):
+                 raise AssertionError("must not re-shorten an already-short link")
+-        short_post = "Watch ₹407\nhttps://bit.ly/abc\nhttps://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
++        short_post = "Watch ₹407\nhttps://bit.ly/abc\nhttps://www.amazon.in/dp/B0GLY3Q2XR"
+         same = await NoDoubleAff().shorten_long_urls_in_text(short_post)
+         check("short links not passed to the shortener", same == short_post)
+ 
+@@ -433,13 +433,13 @@ async def main():
+         # link is Bitly-shortened. Post becomes neat.
+         check("compact dp link drops smid/psc/th, keeps tag",
+               bot.compact_amazon_product_link(
+-                  "https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21")
+-              == "https://www.amazon.in/dp/B0DQPT85TB?tag=deals0911-21")
++                  "https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S")
++              == "https://www.amazon.in/dp/B0DQPT85TB")
+         check("compact leaves search links alone",
+               "/s?" in bot.compact_amazon_product_link(
+-                  "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y&tag=deals0911-21"))
++                  "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y"))
+         hidden = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V+%7C+B0F4NDZ2VC"
+-                  "&psc=1&th=1&tag=deals0911-21")
++                  "&psc=1&th=1")
+         class ListAff(bot.AffiliateClient):
+             def __init__(self): self.shortened = {}
+             async def shorten(self, u):
+@@ -447,13 +447,13 @@ async def main():
+             async def cache_link(self, *a, **k): pass
+         clumsy = ("More | Apply coupon\n"
+                   f"{hidden}\n"
+-                  "https://www.amazon.in/dp/B0F4NFCHX8?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21\n"
+-                  "https://www.amazon.in/dp/B0G1SVRWG3?psc=1&smid=AJ6SIZC8YQDZX&tag=deals0911-21\n")
++                  "https://www.amazon.in/dp/B0F4NFCHX8?psc=1&smid=A1WYWER0W24N8S\n"
++                  "https://www.amazon.in/dp/B0G1SVRWG3?psc=1&smid=AJ6SIZC8YQDZX\n")
+         neat = await ListAff().shorten_long_urls_in_text(clumsy)
+         check("hidden-keywords search link bitly-shortened", "https://bit.ly/hiddendeals" in neat)
+         check("dp links compacted to short native form",
+-              "https://www.amazon.in/dp/B0F4NFCHX8?tag=deals0911-21" in neat
+-              and "https://www.amazon.in/dp/B0G1SVRWG3?tag=deals0911-21" in neat)
++              "https://www.amazon.in/dp/B0F4NFCHX8" in neat
++              and "https://www.amazon.in/dp/B0G1SVRWG3" in neat)
+         check("smid/psc noise removed from the post",
+               "smid=" not in neat and "psc=1" not in neat)
+ 
+@@ -461,12 +461,12 @@ async def main():
+         # &amp;amp; escaping -> one clean URL per product, fully decoded.
+         nested = (
+             "More | Apply coupon\n"
+-            "[[https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;amp;psc=1&amp;amp;tag=deals0911-21]"
+-            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;psc=1&amp;tag=deals0911-21)]"
+-            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&psc=1&tag=deals0911-21)\n"
+-            "[[https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;amp;smid=A1WYWER0W24N8S&amp;amp;tag=deals0911-21]"
+-            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;smid=A1WYWER0W24N8S&amp;tag=deals0911-21)]"
+-            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21)\n")
++            "[[https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;amp;psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx]"
++            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&amp;psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)]"
++            "(https://www.amazon.in/s?hidden-keywords=B0H3+%7C+B0H36&psc=1&m=abc123&ascsubtag=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)\n"
++            "[[https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;amp;smid=A1WYWER0W24N8S]"
++            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&amp;smid=A1WYWER0W24N8S)]"
++            "(https://www.amazon.in/dp/B0DQPT85TB?psc=1&smid=A1WYWER0W24N8S)\n")
+         norm = bot.normalize_nested_link_markup(nested)
+         check("nested [[url](url)](url) collapses to one url",
+               norm.count("B0DQPT85TB") == 1 and "[[" not in norm)
+@@ -480,7 +480,7 @@ async def main():
+         neat_nested = await NestedAff().shorten_long_urls_in_text(bot.clean_source_text(nested))
+         check("nested post tidies to bit.ly + compact dp (no smid/amp/brackets)",
+               "https://bit.ly/hiddendeals" in neat_nested
+-              and "https://www.amazon.in/dp/B0DQPT85TB?tag=deals0911-21" in neat_nested
++              and "https://www.amazon.in/dp/B0DQPT85TB" in neat_nested
+               and "smid=" not in neat_nested and "&amp" not in neat_nested and "[[" not in neat_nested)
+ 
+         # USER'S EXACT POST: markdown-wrapped Amazon links, the SAME URL
+@@ -491,11 +491,11 @@ async def main():
+             return f"[{amp}]({amp}]({url}))"
+         hidden_full = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V"
+                        "+%7C+B0F4NDZ2VC+%7C+B0G1SVRWG3+%7C+B0FMF6X8Z5+%7C+B0FMNXX9QS"
+-                       "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1&tag=deals0911-21")
++                       "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1")
+         dp_asins = ["B0DQPT85TB", "B0F4NFCHX8", "B0FMF6X8Z5",
+                     "B0FMNXX9QS", "B0G1SVRWG3", "B0FJ7D2KBQ"]
+         user_post = ("More | Apply coupon\n" + _md_block(hidden_full) + "\n" + "\n".join(
+-            _md_block(f"https://www.amazon.in/dp/{a}?psc=1&smid=A1WYWER0W24N8S&tag=deals0911-21")
++            _md_block(f"https://www.amazon.in/dp/{a}?psc=1&smid=A1WYWER0W24N8S")
+             for a in dp_asins))
+         cleaned_user = bot.clean_source_text(user_post)
+         user_lines = cleaned_user.splitlines()
+@@ -517,7 +517,7 @@ async def main():
+         check("user md post final: header + 1 bitly search link + 6 compact dp",
+               user_final.splitlines()[0] == "More | Apply coupon"
+               and "https://bit.ly/hiddendeals" in user_final
+-              and all(f"https://www.amazon.in/dp/{a}?tag=deals0911-21" in user_final
++              and all(f"https://www.amazon.in/dp/{a}" in user_final
+                       for a in dp_asins)
+               and len(user_final.splitlines()) == 8)
+         check("user md post: exactly ONE bitly call (no re-shorten per copy)",
+@@ -532,7 +532,7 @@ async def main():
+         men_url = ("https://www.amazon.in/s?i=watches&k=sonata"
+                    "&linkId=d1ed8305142355ade29af769ae53ffd5"
+                    "&rh=n%3A1350387031%2Cn%3A2563504031&s=price-asc-rank"
+-                   "&xpid=amZH9R9-GxtvF&tag=deals0911-21")
++                   "&xpid=amZH9R9-GxtvF")
+         women_url = men_url.replace("2563504031", "2563505031").replace(
+             "d1ed8305142355ade29af769ae53ffd5", "600920435a84f32e3ac84659fd83d23e")
+         amp = lambda u: u.replace("&", "&amp;")
+@@ -574,9 +574,9 @@ async def main():
+         # render as ONE neat short line per product.
+         hk_url = ("https://www.amazon.in/s?hidden-keywords=B0H3LPRGX3+%7C+B0H36MXL3V"
+                   "+%7C+B0F4NDZ2VC+%7C+B0G1SVRWG3+%7C+B0FMF6X8Z5+%7C+B0FMNXX9QS"
+-                  "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1&tag=deals0911-21")
++                  "+%7C+B0H3LNDF6S+%7C+B0G1MT24K6&psc=1&th=1")
+         def _dp(a, smid="A1WYWER0W24N8S"):
+-            return f"https://www.amazon.in/dp/{a}?psc=1&smid={smid}&tag=deals0911-21"
++            return f"https://www.amazon.in/dp/{a}?psc=1&smid={smid}"
+         e1 = lambda u: u.replace("&", "&amp;")
+         e3 = lambda u: u.replace("&", "&amp;amp;")
+         def _shallow(u):
+@@ -610,7 +610,7 @@ async def main():
+             wf = await da.shorten_long_urls_in_text(wc)
+             check(f"user {tag} post final: bitly list + 6 compact dp, 1 bitly call",
+                   wf == ("More | Apply coupon\nhttps://bit.ly/hkdeals\n" +
+-                         "\n".join(f"https://www.amazon.in/dp/{a}?tag=deals0911-21"
++                         "\n".join(f"https://www.amazon.in/dp/{a}"
+                                    for a in p_asins))
+                   and da.calls == 1)
+         # New source channels are registered and fan out to the non-Tricks main
+@@ -662,8 +662,8 @@ async def main():
+         # it at import), so the check below states the rule - over the threshold means
+         # shortened - rather than trusting one number.
+         long_link = ("https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031"
+-                     "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=deals0911-21")
+-        short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21"
++                     "%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank")
++        short_dp = "https://www.amazon.in/dp/B0GLY3Q2XR"
+         # the caller's real predicate: shorten when it is a LIST or when the link is long
+         wants_short = lambda u, multi: bot.should_use_bitly(u, multi) or len(u) > bot.SHORTEN_MIN_LEN
+         check(f"long link flagged for shortening (threshold={bot.SHORTEN_MIN_LEN})",
+@@ -710,7 +710,7 @@ async def main():
+                 {f"https://amzn.to/{slug}": f"https://www.amazon.in/dp/B0{slug}"},
+                 {f"https://amzn.to/{slug}": bot.LinkResult(
+                     f"https://amzn.to/{slug}", f"https://www.amazon.in/dp/B0{slug}",
+-                    f"https://www.amazon.in/dp/B0{slug}?tag=deals0911-21",
++                    f"https://www.amazon.in/dp/B0{slug}",
+                     f"amazon:B0{slug}")},
+             )
+             return text, aff
+@@ -725,7 +725,7 @@ async def main():
+         check("a deleted message still renders", bool(rendered))
+         check("the product line survives", "Nike Men's Running Shoes" in rendered)
+         check("the price and the discount survive", "\u20b91,999" in rendered and "66%" in rendered)
+-        check("our tag is still applied to the link", "tag=deals0911-21" in rendered)
++        check("tagless: clean link without tag", "tag=" not in rendered and "https://www.amazon.in/dp/B0GONE1" in rendered)
+         check("no media is invented for a message we cannot fetch",
+               getattr(msg_r, "media", "unexpected") is None)
+         check(f"the price is read from our own copy ({price})", price == 1999)
+diff --git a/test_rescan.py b/test_rescan.py
+index 3e578f3..b89e534 100644
+--- a/test_rescan.py
++++ b/test_rescan.py
+@@ -10,7 +10,7 @@ from pathlib import Path
+ 
+ os.environ.update(
+     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
+-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
++    EARNKARO_API_KEY="k", AMAZON_TAG="",
+ )
+ sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
+ import main_bot_new as bot  # noqa: E402
+diff --git a/tg-wa-bridge/bridge.js b/tg-wa-bridge/bridge.js
+index d5ee358..a732940 100644
+--- a/tg-wa-bridge/bridge.js
++++ b/tg-wa-bridge/bridge.js
+@@ -122,7 +122,7 @@ const QUIET_END = process.env.QUIET_END || '06:00'
+ const HYBRID_QUIET = (process.env.HYBRID_QUIET || 'false').toLowerCase() === 'true'
+ const STRICT_SOURCE_ONLY = (process.env.STRICT_SOURCE_ONLY || 'true').toLowerCase() === 'true'
+ const CURATE_TOP_DEALS = (process.env.CURATE_TOP_DEALS || 'true').toLowerCase() === 'true'
+-const AMAZON_TAG = process.env.AMAZON_TAG || 'deals0911-21'
++const AMAZON_TAG = '' // TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
+ const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
+ const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
+ const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
+@@ -1264,6 +1264,8 @@ function isOurGeneratedLink(url) {
+     const host = u.hostname.toLowerCase()
+     if (OUR_LINK_HOSTS.has(host)) return true
+     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
++      // TAGLESS: clean amazon link = ours, ANY tag = reject (source tag never ours)
++      if (!AMAZON_TAG) return !u.searchParams.get('tag')
+       return u.searchParams.get('tag') === AMAZON_TAG
+     }
+     if (host === 'flipkart.com' || host.endsWith('.flipkart.com')) {
+@@ -1288,6 +1290,8 @@ function isOurAmazonTagLink(url) {
+     const u = new URL(url)
+     const host = u.hostname.toLowerCase()
+     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
++      // TAGLESS: clean amazon link = ours, ANY tag = reject
++      if (!AMAZON_TAG) return !u.searchParams.get('tag')
+       return u.searchParams.get('tag') === AMAZON_TAG
+     }
+     return false
+@@ -1327,7 +1331,7 @@ async function resolveUrl(url, fetchFn = fetch) {
+ // Direct-source jobs carry RAW source links (fkrt.co, amzn.to, linkredirect.in,
+ // bare merchant pages) — not our generated affiliate links. Smart handling:
+ //   * our generated links keep the normal provenance verification
+-//   * raw Amazon product URLs get our tag appended -> still monetized
++//   * TAGLESS: stranger tags are always deleted, never added (source tag is not ours)
+ //   * everything else is resolved (redirect follow) and posted unconverted, so
+ //     the deal reaches WhatsApp even when the bot never posted it to Telegram
+ async function prepareDirectJob(job, fetchFn = fetch) {
+@@ -1342,12 +1346,10 @@ async function prepareDirectJob(job, fetchFn = fetch) {
+       const u = new URL(resolved)
+       const host = u.hostname.toLowerCase()
+       const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
+-      const isProductPage = /\/(?:dp|gp\/product|gp\/aw\/d)\/[A-Z0-9]{10}(?:[/?#]|$)/i.test(u.pathname)
+-      // Search/category pages (/s?k=puma&rh=...) are monetizable too — the
+-      // user's Puma Men/Women/Girls/Boys style lists arrive as /s links.
+-      const isSearchPage = u.pathname === '/s' || u.pathname.startsWith('/s/')
+-      if (isAmazon && !u.searchParams.get('tag') && (isProductPage || isSearchPage)) {
+-        resolved += (resolved.includes('?') ? '&' : '?') + `tag=${AMAZON_TAG}`
++      // TAGLESS: delete any foreign tag – never append ours
++      if (isAmazon && u.searchParams.get('tag')) {
++        u.searchParams.delete('tag')
++        resolved = u.toString()
+       }
+     } catch { /* keep resolved as-is */ }
+     if (resolved !== url) job.resolvedLinks[url] = resolved
+@@ -2210,6 +2212,24 @@ function stripAmazonJunk(url) {
+     return url
+   }
+ }
++function stripStrangerAmazonTags(text) {
++  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip any tag
++  if (!text) return text
++  let out = String(text)
++  for (const url of urlsIn(out)) {
++    try {
++      const u = new URL(url)
++      const host = u.hostname.toLowerCase()
++      const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
++      if (isAmazon && u.searchParams.get('tag')) {
++        u.searchParams.delete('tag')
++        const cleaned = u.toString()
++        out = out.split(url).join(cleaned)
++      }
++    } catch {}
++  }
++  return out
++}
+ // The URL actually shown to subscribers: shortened form first, then the
+ // resolved merchant page (direct-source jobs), then the original.
+ function displayUrl(job, url) {
+@@ -2463,11 +2483,14 @@ function validateAffiliateText(job, text) {
+       throw new Error('Foreign/source shortener blocked')
+     }
+     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
+-      // Raw Amazon pages on direct jobs get OUR tag appended at resolve time;
+-      // a link carrying someone else's tag is still always blocked.
++      // TAGLESS: ANY tag = stranger tag = blocked (clean link is the only valid form)
+       const tag = u.searchParams.get('tag')
+-      if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
+-      if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
++      if (!AMAZON_TAG) {
++        if (tag) throw new Error('Amazon tag mismatch (tagless: stranger tag blocked)')
++      } else {
++        if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
++        if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
++      }
+     }
+     const visiblePublisher = u.searchParams.get('affExtParam2')
+     if (visiblePublisher && visiblePublisher !== PUBLISHER_ID) throw new Error('Publisher ID mismatch')
+@@ -2562,6 +2585,8 @@ async function assertLinksHealthy(job, urls) {
+ }
+ 
+ async function verifyJob(job) {
++  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip it
++  if (job.text) job.text = stripStrangerAmazonTags(job.text)
+   // Direct-source jobs: resolve raw links to the merchant page first, so the
+   // gate/dedup/health checks all run against the real product.
+   if (job.direct) await prepareDirectJob(job)
+@@ -3696,7 +3721,7 @@ if (process.argv.includes('--self-test')) {
+       '#deals',
+       'Premium cotton fabric, slim fit',
+       'Free delivery on this order',
+-      'https://www.amazon.in/dp/B0CLEANUP1?tag=' + AMAZON_TAG,
++      'https://www.amazon.in/dp/B0CLEANUP1',
+     ].join('\n')
+     const out = cleanDealText(raw)
+     for (const keep of ["Men's Cotton Casual Shirt", 'Deal Price: \u20b9699', 'MRP: \u20b91999', '65% OFF',
+@@ -3744,7 +3769,7 @@ if (process.argv.includes('--self-test')) {
+   // Long links must be flagged for shortening while a clean short amazon /dp
+   // link and already-short hosts are left alone (quota protection).
+   {
+-    const searchLink = 'https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=' + AMAZON_TAG
++    const searchLink = 'https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank'
+     if (searchLink.length > SHORTEN_MIN_LEN && !needsShortening(searchLink)) {
+       throw new Error('long amazon search link must be shortened')
+     }
+@@ -3753,7 +3778,7 @@ if (process.argv.includes('--self-test')) {
+   // WA_SHORTEN_MIN_LEN is left alone (no quota burned), one at or over it is shortened.
+   // Hard-coding the default 65 here would cry wolf the moment an operator moves the knob.
+   {
+-    const cleanDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=' + AMAZON_TAG
++    const cleanDp = 'https://www.amazon.in/dp/B0GLY3Q2XR'
+     if (cleanDp.length < SHORTEN_MIN_LEN && needsShortening(cleanDp)) {
+       throw new Error('a link under the shorten threshold must NOT burn quota')
+     }
+@@ -3761,7 +3786,7 @@ if (process.argv.includes('--self-test')) {
+       throw new Error('a link over the shorten threshold must be shortened')
+     }
+   }
+-  const danglingSlots = cleanDealText('Lunchbox @ ₹88\n\n🔗\n🔗\n🔗 https://www.amazon.in/dp/B0DY7V1G9M?th=1&tag=deals0911-21')
++  const danglingSlots = cleanDealText('Lunchbox @ ₹88\n\n🔗\n🔗\n🔗 https://www.amazon.in/dp/B0DY7V1G9M?th=1')
+   if (!danglingSlots.includes('B0DY7V1G9M')) throw new Error('real link missing after empty-slot cleanup')
+   // No line may be a bare 🔗 (or any link bullet) with no URL after it.
+   if (danglingSlots.split(/\r?\n/).some(line => /^[🔗👉➡️🔎🔍•▪\-–—_*\s]+$/.test(line.trim()) && line.trim())) {
+@@ -3786,15 +3811,19 @@ if (process.argv.includes('--self-test')) {
+   if (!tokenAfterPrice.includes('₹185 2pcs') || !tokenAfterPrice.includes('₹299 500ml') || !tokenAfterPrice.includes('₹349 65w')) throw new Error('real unit after price wrongly removed')
+   const strictSpecial = cleanDealText('🔥 LOOT ZONE — India\n🚨 SPECIAL OFFER\nFlipkart | 92% Off - Duck Slide Toy Set at Rs.229\n-\n➜ https://fktr.in/OUR\n✅ Verified • Enjoy (Grab fast)')
+   if (strictSpecial !== 'Flipkart | 92% Off - Duck Slide Toy Set at Rs.229\nhttps://fktr.in/OUR') throw new Error('strict special cleanup test failed')
+-  const trailingToken = cleanDealText('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21 0GLY3Q2X\n₹3000 off')
+-  if (trailingToken.includes(' 0GLY3Q2X') || !trailingToken.includes('tag=deals0911-21')) throw new Error('trailing URL token cleanup test failed')
++  const trailingToken = cleanDealText('https://www.amazon.in/dp/B0GLY3Q2XR 0GLY3Q2X\n₹3000 off')
++  if (trailingToken.includes(' 0GLY3Q2X') || !trailingToken.includes('B0GLY3Q2XR')) throw new Error('trailing URL token cleanup test failed')
++  if (trailingToken.includes('tag=')) throw new Error('tagless: trailingToken must not contain tag')
+   const item = formatDigestItem(sample, 1)
+   if (!item.includes('KILLER Mens Loafers') || !item.includes('\nhttps://fktr.in/OUR123')) throw new Error('digest format test failed:\n' + item)
+   if (item.includes('➜')) throw new Error('digest items must not add bullet characters of ours:\n' + item)
+-  validateAffiliateText(null, 'Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21')
++  validateAffiliateText(null, 'Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT')
+   let foreignBlocked = false
+   try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=foreign-21') } catch { foreignBlocked = true }
+-  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed')
++  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed (tagless)')
++  let ourTagBlocked = false
++  try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21') } catch { ourTagBlocked = true }
++  if (!ourTagBlocked) throw new Error('tagless: ex-our tag must also be blocked')
+   let sourceShortBlocked = false
+   try { validateAffiliateText(null, 'Bad\nhttps://fkrt.cc/source123') } catch { sourceShortBlocked = true }
+   if (!sourceShortBlocked) throw new Error('source shortener test failed')
+@@ -4323,7 +4352,7 @@ https://fktr.in/MANY${i}`,
+   {
+     // Service links AND our-tag Amazon links are both exempt from the link_cache
+     // DB check; a foreign-tag Amazon link still goes through for verification.
+-    const toVerify = urlsForProvenance(null, ['https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21', 'https://zom.to/abc', 'https://www.amazon.in/dp/B0CHECK99?tag=other-21'])
++    const toVerify = urlsForProvenance(null, ['https://www.amazon.in/dp/B0GLY3Q2XR', 'https://zom.to/abc', 'https://www.amazon.in/dp/B0CHECK99?tag=other-21'])
+     if (toVerify.length !== 1 || toVerify[0] !== 'https://www.amazon.in/dp/B0CHECK99?tag=other-21') throw new Error('service + our-tag provenance exemption test failed')
+   }
+   // Group JID resolution (pure parts; invite codes are resolved live on connect).
+@@ -4477,7 +4506,7 @@ https://fktr.in/MANY${i}`,
+   // Bitly shortening policy (quota-smart): long links always; LIST posts
+   // (2+ links) always; a normal short single amazon dp link posts as-is so
+   // the Bitly monthly quota is never wasted on ordinary product deals.
+-  const longAmazon = `https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21&m=abc123&ascsubtag=${'x'.repeat(120)}`
++  const longAmazon = `https://www.amazon.in/dp/B0GLY3Q2XR?m=abc123&ascsubtag=${'x'.repeat(120)}`
+   if (longAmazon.length > SHORTEN_MIN_LEN && !needsShortening(longAmazon)) throw new Error('long amazon link must be shortened')
+   if (needsShortening('https://bit.ly/abc')) throw new Error('already-short link must not be re-shortened')
+   if (needsShortening('https://bit.ly/abc', true)) throw new Error('already-short link must not be re-shortened even in a list')
+@@ -4485,7 +4514,7 @@ https://fktr.in/MANY${i}`,
+   {
+     // Stated against WA_SHORTEN_MIN_LEN rather than its default, so the assertion stays
+     // true when an operator moves the knob (the policy IS the threshold).
+-    const tidyDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21'
++    const tidyDp = 'https://www.amazon.in/dp/B0GLY3Q2XR'
+     if (tidyDp.length < SHORTEN_MIN_LEN && needsShortening(tidyDp)) {
+       throw new Error('a single tidy link under the threshold must NOT burn Bitly quota')
+     }
+@@ -4560,7 +4589,7 @@ https://fktr.in/MANY${i}`,
+   // we add no badge. The source printed its deal price and its MRP, so BOTH
+   // lines print exactly as written, in source order, once each.
+   {
+-    const job = { text: 'Cotton Kurta\nDeal Price: ₹499\nMRP: ₹1999\nFree shipping\nhttps://www.amazon.in/dp/B0PRICETST?tag=' + AMAZON_TAG }
++    const job = { text: 'Cotton Kurta\nDeal Price: ₹499\nMRP: ₹1999\nFree shipping\nhttps://www.amazon.in/dp/B0PRICETST' }
+     const post = formatWhatsAppPost(job)
+     for (const line of ['Cotton Kurta', 'Deal Price: ₹499', 'MRP: ₹1999', 'Free shipping']) {
+       if (!post.includes(line)) throw new Error(`source line lost from the post: ${line}\n${post}`)
+@@ -4570,7 +4599,7 @@ https://fktr.in/MANY${i}`,
+   }
+   {
+     // Price attached to a real product/quantity line is content, not a repeat.
+-    const job = { text: 'Boys Combo T-Shirt Pack\nPack of 2 at ₹599\nBuy now\nhttps://www.amazon.in/dp/B0PRICETWO?tag=' + AMAZON_TAG }
++    const job = { text: 'Boys Combo T-Shirt Pack\nPack of 2 at ₹599\nBuy now\nhttps://www.amazon.in/dp/B0PRICETWO' }
+     const post = formatWhatsAppPost(job)
+     if (!post.includes('Pack of 2 at ₹599')) throw new Error('price+quantity product line must survive')
+   }
+@@ -4608,29 +4637,31 @@ https://fktr.in/MANY${i}`,
+   if (!DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== null) throw new Error('TG_DIRECT_SOURCES= (empty) must disable direct sources')
+   if (classifySource({ chat: { username: 'someRandomChannel' } }) !== null) throw new Error('unknown channel must be ignored')
+   if (!isOurGeneratedLink('https://fktr.in/abc')) throw new Error('fktr.in must count as our generated link')
+-  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR?tag=${AMAZON_TAG}`)) throw new Error('amazon with our tag must be ours')
+-  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('amazon with a foreign tag is not ours')
++  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be ours')
++  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('tagless: tagged amazon link is not ours')
++  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag is also foreign')
+   if (isOurGeneratedLink('https://amzn.to/x')) throw new Error('raw amazon shortener is not ours')
+   // Our-tag Amazon links are self-proving and must NEVER reach the link_cache
+   // DB check (provenance leak fix): the tag only exists on links WE tagged, the
+   // cache stores conversion-API output only, so a DB row may legitimately be
+   // absent (bridge-tagged safety-net pages; fresh/pruned/deploy-cleared cache).
+-  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR?tag=${AMAZON_TAG}`)) throw new Error('our-tag amazon link must be recognised')
+-  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('foreign-tag amazon link must not match our tag')
++  // TAGLESS: clean Amazon links are SELF-PROVING (no tag = ours), any tag = foreign
++  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be recognised')
++  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('tagless: foreign-tag amazon link must not match')
++  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag must not match')
+   if (isOurAmazonTagLink('https://amzn.to/x')) throw new Error('amazon shortener host has no tag param')
+   {
+-    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK?tag=${AMAZON_TAG}`
+-    // Normal (non-direct) job: our-tag link is exempt; a foreign-store link
+-    // and a foreign-tag Amazon link still go to the DB for verification.
++    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK`
++    // TAGLESS: clean amazon link is exempt; any tagged link goes to DB
+     const normal = urlsForProvenance({ direct: false }, [ourTagged, 'https://fktr.in/CHECK', 'https://www.amazon.in/dp/B0FOREIGN?tag=thief-21'])
+-    if (normal.includes(ourTagged)) throw new Error('our-tag amazon link must skip provenance DB on a normal job')
++    if (normal.includes(ourTagged)) throw new Error('tagless: clean amazon link must skip provenance DB')
+     if (!normal.includes('https://fktr.in/CHECK')) throw new Error('our converted short link must still be provenance-checked')
+     if (!normal.includes('https://www.amazon.in/dp/B0FOREIGN?tag=thief-21')) throw new Error('foreign-tag amazon link must still be provenance-checked')
+-    // Direct job whose raw link resolved to an OUR-tagged amazon page: the
++    // Direct job whose raw link resolved to a clean amazon page: the
+     // resolved (display) form is self-proving, so it must be exempt too.
+     const djobProv = { direct: true, resolvedLinks: { 'https://amzn.to/TAGGED': ourTagged } }
+     const afterResolve = urlsForProvenance(djobProv, ['https://amzn.to/TAGGED'])
+-    if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
++    if (afterResolve.length !== 0) throw new Error('tagless: direct job resolving to clean amazon must skip provenance DB')
+   }
+   {
+     // Raw source links resolve to the merchant page; raw amazon gets OUR tag.
+@@ -4642,7 +4673,7 @@ https://fktr.in/MANY${i}`,
+     }
+     const djob = { direct: true, text: 'Direct deal ₹299\nhttps://amzn.to/DEAL1\nAlso https://fkrt.co/DEAL2' }
+     await prepareDirectJob(djob, fakeFetch)
+-    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src&tag=${AMAZON_TAG}`) throw new Error('our tag not appended to raw amazon product page')
++    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src`) throw new Error('tagless: raw amazon product page must resolve without tag')
+     if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== 'https://www.flipkart.com/direct-item/p/itm77?ref=src') throw new Error('raw flipkart shortener not resolved')
+     if (displayUrl(djob, 'https://amzn.to/DEAL1') !== djob.resolvedLinks['https://amzn.to/DEAL1']) throw new Error('displayUrl must prefer the resolved merchant link')
+     // Direct jobs never send raw links to the provenance DB; our links do go.
+@@ -4670,26 +4701,27 @@ https://fktr.in/MANY${i}`,
+     const bigSearch = 'https://www.amazon.in/s?btn_ref=srctok-0a3c6e95f43beb35&btn_type=ss&crid=183FX0PT8V04B&dc=&ds=v1%3AabcXYZ&i=shoes&k=puma&qid=1787941163&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&sprefix=pum%2Cshoes%2C288'
+     const djob = { direct: true, text: 'Puma Men\n' + bigSearch }
+     await prepareDirectJob(djob, noNet)
+-    const tagged = djob.resolvedLinks[cleanUrl(bigSearch)]
+-    if (!tagged || !tagged.includes(`tag=${AMAZON_TAG}`)) throw new Error('our tag not appended to raw amazon SEARCH page')
++    const tagged = djob.resolvedLinks[cleanUrl(bigSearch)] || bigSearch
++    if (tagged.includes('tag=')) throw new Error('tagless: raw amazon SEARCH page must not gain a tag')
+     const cleanedSearch = stripAmazonJunk(tagged)
+     if (/btn_ref|srctok|qid=|sprefix=|crid=|[?&]ds=/.test(cleanedSearch)) throw new Error('amazon search junk params not stripped: ' + cleanedSearch)
+     if (!/k=puma/.test(cleanedSearch) || !/i=shoes/.test(cleanedSearch) || !/rh=/.test(cleanedSearch) || !/s=price-asc-rank/.test(cleanedSearch)) throw new Error('real amazon filters must survive junk strip: ' + cleanedSearch)
+-    if (!cleanedSearch.includes(`tag=${AMAZON_TAG}`)) throw new Error('our tag must survive junk strip')
+-    if (cleanedSearch.length >= tagged.length) throw new Error('junk strip must shorten the search link')
++    if (cleanedSearch.includes('tag=')) throw new Error('tagless: search link must stay clean')
++    if (cleanedSearch.length > tagged.length) throw new Error('junk strip must not lengthen the search link')
++    if (cleanedSearch.length >= bigSearch.length) throw new Error('junk strip must shorten the search link')
+     if (!needsShortening(tagged)) throw new Error('a 200+ char amazon search link must qualify for Bitly')
+     // Non-amazon URLs are untouched by the junk stripper.
+     const fk = 'https://www.flipkart.com/search?q=puma&qid=xyz&ds=1'
+     if (stripAmazonJunk(fk) !== fk) throw new Error('non-amazon URL must not be junk-stripped')
+     // Amazon product pages: th/psc style params survive (not in the junk set).
+-    const dp = 'https://www.amazon.in/dp/B0ABCDEFGH?th=1&tag=' + AMAZON_TAG
+-    if (stripAmazonJunk(dp) !== dp) throw new Error('amazon dp link with th/tag must be unchanged')
++    const dp = 'https://www.amazon.in/dp/B0ABCDEFGH?th=1'
++    if (stripAmazonJunk(dp) !== dp) throw new Error('tagless: amazon dp link with th must be unchanged')
+   }
+   {
+     // A deal already posted via our own channels must never be double-posted
+     // from a raw source: the dedup works on the RESOLVED product identity.
+     state.sentProducts = {}
+-    const ourJob = { text: `Cotton Kurta ₹499\nhttps://www.amazon.in/dp/B0DEDUPTST?tag=${AMAZON_TAG}`, media: [] }
++    const ourJob = { text: `Cotton Kurta ₹499\nhttps://www.amazon.in/dp/B0DEDUPTST`, media: [] }
+     markProductSent(ourJob)
+     const directCopy = {
+       direct: true, media: [], special: false, largeList: false,
+@@ -5241,10 +5273,10 @@ https://fktr.in/MANY${i}`,
+     const job = {
+       text: bannerSrc,
+       shortLinks: {
+-        'https://bitli.in/AAAA': 'https://www.amazon.in/dp/B0IKTHI4?tag=' + AMAZON_TAG,
+-        'https://bitli.in/BBBB': 'https://www.amazon.in/dp/B0IKTHI5?tag=' + AMAZON_TAG,
+-        'https://bitli.in/CCCC': 'https://www.amazon.in/dp/B0IKTHI6?tag=' + AMAZON_TAG,
+-        'https://bitli.in/DDDD': 'https://www.amazon.in/dp/B0IKTHI7?tag=' + AMAZON_TAG,
++        'https://bitli.in/AAAA': 'https://www.amazon.in/dp/B0IKTHI4',
++        'https://bitli.in/BBBB': 'https://www.amazon.in/dp/B0IKTHI5',
++        'https://bitli.in/CCCC': 'https://www.amazon.in/dp/B0IKTHI6',
++        'https://bitli.in/DDDD': 'https://www.amazon.in/dp/B0IKTHI7',
+       },
+     }
+     const post = formatWhatsAppPost(job)
+@@ -5277,9 +5309,10 @@ https://fktr.in/MANY${i}`,
+       throw new Error('the post carries text WE invented, not the source:\n' + post)
+     }
+     if (/bitli\.[iI]n/.test(post)) throw new Error('a source link survived - our link must replace it:\n' + post)
+-    if ((post.match(new RegExp('tag=' + AMAZON_TAG, 'g')) || []).length !== 4) {
+-      throw new Error('all four links must be ours:\n' + post)
++    if ((post.match(/https:\/\/www\.amazon\.in\/dp\//g) || []).length !== 4) {
++      throw new Error('tagless: all four links must be clean amazon dp links:\n' + post)
+     }
++    if (/tag=/.test(post)) throw new Error('tagless: post must not contain any tag')
+     if (post.split('\n').filter(l => /^https:\/\//.test(l.trim())).length !== 4) {
+       throw new Error('every link gets its own bare line:\n' + post)
+     }
