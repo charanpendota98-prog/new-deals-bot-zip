@@ -744,7 +744,7 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 > unmonetizable-link pass-through, edited-post revive; v17 items unchanged) and
 > `tg-wa-bridge/bridge.js` (the same junk/markdown guards, with WhatsApp
 > `*bold*` formatting left intact) changed in
-> `arena/01a0583b-new-deals-bot-zip`; the hashes below describe the *deployed*
+> `arena/01a06dad-new-deals-bot-zip`; the hashes below describe the *deployed*
 > build only. Deploy the repo source (`ops/repack_bundles.sh` →
 > `ops/apply_dual_hotfix.sh`, or `bestgaa/deploy_bestgaa.sh` for the bot alone),
 > then refresh this table with the new hashes.
@@ -761,16 +761,16 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `a27bddeb0aa378fedab705c56ba25b54c9a669b00b3dc3825c7fe5bcc6186148` |
-| `tg-wa-bridge/bridge.js` | `f6029a257602e413dfd3e6e7639a84d4bee7686451ddb618308995cd6f97394f` |
+| `bestgaa/main_bot_new.py` | `c788b7abc51d1dda08ea135992b3ec900d72d2e330c5024238a7cd39fe9eeac9` |
+| `tg-wa-bridge/bridge.js` | `b9631bb68a37ed8dc0c775085820ee88739c07a0b952af2ccd602e5dc0330a1e` |
 | `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `29a38074fb9116c6f974c6c55688e500560a235ed0288ff1c06006bb690d2096` |
+| `ops/quality_audit.py` | `cbba8f1676887b97b27b4701603952639beee4199e7e3565bccfc0107b447acc` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `befcae7378610c8004930c36d84a359281ae004d092c69774d39e7e3bc769346` |
-| `test_pipeline_fixes.py` | `f5c274ddf3d444f921c678c176d62a6e96b4c00e8a5725d608a0777e9c520cd0` |
-| `test_duplicate_sim.py` | `aef8d0fa7d0234436a7188ef5922cd5a94f687f28ef938a401b3225576a24298` |
-| `test_best_copy.py` | `9b47df6c18148cb59a8c82dff3748195afb39c6da482a985ad360727aa3ee2cc` |
+| `test_line_fidelity.py` | `730942c20894e9bb80c9c751ff5dd56f1585f0f629a51e9bca9b3181b7b11ed4` |
+| `test_pipeline_fixes.py` | `c80c0bfacd400e9caf9358c84414f3c5a6d6ac8e855d9651e55097c26fd4b96c` |
+| `test_duplicate_sim.py` | `0035da8805d6ed0b5d3e39f44e56914d4894eb149c81ecd00523111eb0d57615` |
+| `test_best_copy.py` | `3b50c60f79e0b51f2949917092be3f880927b8479fc0f1aaab4a14de98833807` |
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
 `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,

@@ -131,7 +131,7 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
-OUR_TAG = env_required("AMAZON_TAG")
+OUR_TAG = ""  # TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
 # USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
@@ -140,7 +140,7 @@ BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x
 # stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
 AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
 
-PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
+PRODUCT_DEDUP_SECONDS = 24 * 3600  # STRICT 24h: same product never reposts within 24h — pinned, env override blocked (user rule 2026-09-04)
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
 # product id, which is exact but blind while a short link has not been resolved
 # yet - so the same earphones re-posted by a second source under a different
@@ -148,11 +148,11 @@ PRODUCT_DEDUP_SECONDS = int(os.getenv("PRODUCT_DEDUP_SECONDS", str(10 * 3600)))
 # recognises the product from its own words instead, and the channel that has
 # already carried it stays quiet for this window (0 turns the rule off). A
 # strictly better copy of the product (cheaper or deeper discount) still posts.
-SAME_PRODUCT_SKIP_SECONDS = max(0, int(os.getenv("SAME_PRODUCT_SKIP_SECONDS", str(3 * 24 * 3600))))
+SAME_PRODUCT_SKIP_SECONDS = 24 * 3600  # STRICT 24h: asalu ravoddu same product 24h — pinned (user rule 2026-09-04)
 # How much deeper a discount has to be before a repeat of an already-posted
 # product counts as news (percentage points).
 try:
-    SAME_PRODUCT_DISCOUNT_MARGIN = min(50, max(1, int(os.getenv("SAME_PRODUCT_DISCOUNT_MARGIN", "5"))))
+    SAME_PRODUCT_DISCOUNT_MARGIN = 15  # STRICT: only 15%+ better discount can override 24h (prevents 5% loophole spam)
 except ValueError:
     SAME_PRODUCT_DISCOUNT_MARGIN = 5
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
@@ -244,7 +244,7 @@ MAX_ALBUM_PHOTOS = int(_num("MAX_ALBUM_PHOTOS", 10, 1, 10))
 # someone else's. It is the ONLY thing of ours that may sit above the deal text, it never
 # appears twice, and the Tricks path (its own footer) is left exactly as it was.
 ADD_OUR_CHANNEL_LINK_TOP = os.getenv(
-    "ADD_OUR_CHANNEL_LINK_TOP", "true").strip().lower() in ("1", "true", "yes", "on")
+    "ADD_OUR_CHANNEL_LINK_TOP", "false").strip().lower() in ("1", "true", "yes", "on")  # TAGLESS: default false – never auto-add our folder link
 MEDIA_DOWNLOAD_TIMEOUT_SECONDS = _num("MEDIA_DOWNLOAD_TIMEOUT_SECONDS", 120, 5, 900)
 SOURCE_REFRESH_SECONDS = _num("SOURCE_REFRESH_SECONDS", 180, 60, 3600)
 # Dead-man's switch: re-scan every live source's recent messages on a short
@@ -667,7 +667,9 @@ def apply_amazon_tag(link: str) -> str:
             return clean_url(link)
         query = parse_qsl(parsed.query, keep_blank_values=True)
         query = [(key, value) for key, value in query if key.lower() != "tag"]
-        query.append(("tag", OUR_TAG))
+        # TAGLESS: only add our tag if configured; pinned empty means strip stranger tags
+        if OUR_TAG:
+            query.append(("tag", OUR_TAG))
         return parsed._replace(query=urlencode(query, doseq=True)).geturl()
     except Exception:
         return clean_url(link)
@@ -675,13 +677,12 @@ def apply_amazon_tag(link: str) -> str:
 
 def compact_amazon_product_link(link: str) -> str:
     """Collapse an Amazon PRODUCT (/dp/ASIN or /gp/product/ASIN) URL to its
-    shortest native form carrying ONLY our Associates tag:
-      https://www.amazon.in/dp/ASIN?tag=deals0911-21   (~48 chars)
-    All noise params (psc/smid/th/ref/linkCode/...) are dropped, so product
+    shortest native form. TAGLESS: no tag is kept/added – clean /dp/ASIN only
+      https://www.amazon.in/dp/ASIN   (tagless)
+    All noise params (psc/smid/th/ref/linkCode/tag ...) are dropped, so product
     links in a list are short WITHOUT spending Bitly quota. Amazon SEARCH /
     category links (/s?...) have no single ASIN and are returned untouched so
-    the final shorten pass can Bitly them. Respects any explicit ref= tag the
-    source set (kept), and preserves the Amazon TLD."""
+    the final shorten pass can Bitly them. Preserves the Amazon TLD."""
     try:
         raw = clean_url(link)
         m = re.search(r"(?:/dp/|/gp/(?:product|aw/d)/)([A-Z0-9]{10})(?:[/?#]|$)", raw, re.I)
@@ -692,20 +693,17 @@ def compact_amazon_product_link(link: str) -> str:
         host = (parsed.hostname or "").lower()
         if not in_domains(host, AMAZON_DOMAINS):
             return raw
-        tag = OUR_TAG
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-            if key.lower() == "tag" and value:
-                tag = value
-                break
         netloc = host if host.startswith("www.") else "www." + host
-        # Keep a ref node if the source explicitly set one (marketing node);
-        # otherwise drop everything for the shortest clean link.
-        ref = None
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-            if key.lower() == "ref" and value:
-                ref = value
-        query = urlencode([("tag", tag)] + ([("ref", ref)] if ref else []))
-        return f"https://{netloc}/dp/{asin}?{query}"
+        # TAGLESS: never keep source tag; only our tag if configured
+        if OUR_TAG:
+            ref = None
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+                if key.lower() == "ref" and value:
+                    ref = value
+            query = urlencode([("tag", OUR_TAG)] + ([("ref", ref)] if ref else []))
+            return f"https://{netloc}/dp/{asin}?{query}"
+        # Tagless clean form – no tag, no ref
+        return f"https://{netloc}/dp/{asin}"
     except Exception:
         return clean_url(link)
 
@@ -3390,8 +3388,11 @@ class Store:
         return True
 
     async def preview_allowed(self, text: str) -> bool:
-        """Keep Amazon product previews; suppress Flipkart's generic redirect card."""
+        """Keep Amazon product previews; suppress Flipkart/Myntra generic cards and wasteful list previews (user rule 2026-09-04)."""
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+        # Wasteful list preview: 2+ links in one message already makes it tall — extra card is waste (Myntra extend waste)
+        if len(urls) >= 2:
+            return False
         async with self.lock:
             for url in urls:
                 row = self.conn.execute(
@@ -3399,7 +3400,8 @@ class Store:
                 ).fetchone()
                 resolved = row[0] if row and row[0] else url
                 host = (urlparse(resolved).hostname or "").lower()
-                if host_matches(host, "flipkart.com"):
+                # linkredirect.in is source wrapper never final, Myntra/myntr.it generic shop card is waste — photo okay but extend waste
+                if host_matches(host, "flipkart.com") or host_matches(host, "linkredirect.in") or host_matches(host, "myntra.com") or host_matches(host, "myntr.it"):
                     return False
         return True
 
@@ -4150,6 +4152,15 @@ class AffiliateClient:
         Links already on a shortener domain are never re-shortened; if the
         shortener is unavailable the original link is kept (a deal is never lost)."""
         out = rendered or ""
+        # TAGLESS: Pass 0 – strip any foreign Amazon tag from ALL Amazon links first
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            url = clean_url(raw)
+            host = (urlparse(url).hostname or "").lower()
+            if not in_domains(host, AMAZON_DOMAINS):
+                continue
+            stripped = apply_amazon_tag(url)
+            if stripped and stripped != url and stripped != raw:
+                out = out.replace(raw, stripped).replace(raw.replace("&", "&amp;"), stripped)
         # Pass 1: native compaction of Amazon /dp/ product links (free).
         compacted = 0
         for raw in dict.fromkeys(URL_RE.findall(out)):

@@ -21,7 +21,7 @@ from pathlib import Path
 
 os.environ.update(
     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
+    EARNKARO_API_KEY="k", AMAZON_TAG="",
 )
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -393,7 +393,7 @@ async def test_source_ids_and_rescan(store):
 # ---------------------------------------------------------------------------
 async def test_link_replacement(store):
     print("\n== link replacement (source link -> our link, exactly once) ==")
-    our_link = "https://www.amazon.in/dp/B0LINK0001?tag=deals0911-21"
+    our_link = "https://www.amazon.in/dp/B0LINK0001"
     src = "https://amzn.to/src999"
 
     text = (
@@ -583,7 +583,7 @@ async def test_render_latency(store):
             await asyncio.sleep(0.25)
             idx = source[-1]
             return bot.LinkResult(source, f"https://www.amazon.in/dp/B0LAT0000{idx}",
-                                  f"https://www.amazon.in/dp/B0LAT0000{idx}?tag=deals0911-21",
+                                  f"https://www.amazon.in/dp/B0LAT0000{idx}",
                                   f"ASIN:B0LAT0000{idx}")
 
         async def cache_link(self, *a, **k):
@@ -603,7 +603,7 @@ async def test_render_latency(store):
     check(f"4-link post rendered concurrently ({elapsed:.2f}s; serial would be >=2s)",
           elapsed < 1.4)
     check("every product keeps its OWN converted link (no pooled links, no source links)",
-          all(f"https://www.amazon.in/dp/B0LAT0000{u[-1]}?tag=deals0911-21" in rendered
+          all(f"https://www.amazon.in/dp/B0LAT0000{u[-1]}" in rendered
               for u in links) and "amzn.to" not in rendered)
 
 
@@ -986,7 +986,7 @@ async def test_list_post_shapes(store):
     for n in range(4):
         codes = ["%dtG7oChgiQuTgS25b" % n, "%dIKthI4w" % n, "%d6ft5j8a" % n, "%d3FQw8wi" % n]
         shapes[n] = codes
-    ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + "?tag=deals0911-21"
+    ours = {c: "https://www.amazon.in/dp/B0" + c[:6].upper() + ""
             for cs in shapes.values() for c in cs}
     titles = [names[n] + " \u20b9260" for n in range(4)]
     # the exact channel banner decoration sources paste above every list
@@ -1060,9 +1060,9 @@ async def test_list_post_shapes(store):
              "Women Cotton Kurti\nhttps://bitli.in/m2bb\n"
              "Kids School Bag\nhttps://bitli.in/m3cc")
     pairs = {
-        "https://bitli.in/m1aa": "https://www.amazon.in/dp/B0MEN1?tag=deals0911-21",
-        "https://bitli.in/m2bb": "https://www.amazon.in/dp/B0WOM2?tag=deals0911-21",
-        "https://bitli.in/m3cc": "https://www.amazon.in/dp/B0KID3?tag=deals0911-21",
+        "https://bitli.in/m1aa": "https://www.amazon.in/dp/B0MEN1",
+        "https://bitli.in/m2bb": "https://www.amazon.in/dp/B0WOM2",
+        "https://bitli.in/m3cc": "https://www.amazon.in/dp/B0KID3",
     }
 
     class MultiAff(Aff):
@@ -1316,7 +1316,7 @@ def test_nothing_added_by_us():
            f"Use code SAVE_200 for extra {R}200 off\n"
            "🔥 LOOT ZONE INDIA — Join for more loot\n"
            f"Get Flipkart App - Refer 3 friends and {R}100 referral bonus\n"
-           "➜ https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21")
+           "➜ https://www.amazon.in/dp/B0IKTHI4")
     out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(src)))
     lines = [ln for ln in out.split("\n") if ln.strip()]
     check("markdown asterisks never print", "*" not in out)
@@ -1337,7 +1337,7 @@ def test_nothing_added_by_us():
     check("referral / app-install farming is gone",
           "Refer 3 friends" not in out and "referral bonus" not in out)
     check("our affiliate link survives intact",
-          "https://www.amazon.in/dp/B0IKTHI4?tag=deals0911-21" in out)
+          "https://www.amazon.in/dp/B0IKTHI4" in out)
     for invented in ("PREMIUM LOOT PICK", "Handpicked", "Latest deal", "DEALS OF THE DAY",
                      "💰", "👑", "POWER LOOT ALERT", "Price/stock may change"):
         check(f"no invented text of ours: {invented!r}", invented not in out)

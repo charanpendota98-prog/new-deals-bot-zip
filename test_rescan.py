@@ -10,7 +10,7 @@ from pathlib import Path
 
 os.environ.update(
     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
-    EARNKARO_API_KEY="k", AMAZON_TAG="deals0911-21",
+    EARNKARO_API_KEY="k", AMAZON_TAG="",
 )
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402

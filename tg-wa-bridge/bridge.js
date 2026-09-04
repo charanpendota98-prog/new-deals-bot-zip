@@ -122,7 +122,7 @@ const QUIET_END = process.env.QUIET_END || '06:00'
 const HYBRID_QUIET = (process.env.HYBRID_QUIET || 'false').toLowerCase() === 'true'
 const STRICT_SOURCE_ONLY = (process.env.STRICT_SOURCE_ONLY || 'true').toLowerCase() === 'true'
 const CURATE_TOP_DEALS = (process.env.CURATE_TOP_DEALS || 'true').toLowerCase() === 'true'
-const AMAZON_TAG = process.env.AMAZON_TAG || 'deals0911-21'
+const AMAZON_TAG = '' // TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
 const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
 const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
 const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
@@ -232,7 +232,7 @@ const COMMISSION_RANKING = (process.env.WA_COMMISSION_RANKING || 'true').toLower
 // Telegram bot already uses (PRODUCT_DEDUP_SECONDS=36000), so WhatsApp and
 // Telegram stay consistent.
 // ---------------------------------------------------------------------------
-const PRODUCT_DEDUP_HOURS = Number(process.env.WA_PRODUCT_DEDUP_HOURS || 10)
+const PRODUCT_DEDUP_HOURS = 24 // STRICT 24h: asalu ravoddu same product 24h — pinned, env override blocked (user rule 2026-09-04)
 // ---------------------------------------------------------------------------
 // Bitly shortening for WhatsApp display only. After provenance + health
 // checks (always on the ORIGINAL link), any link longer than this is
@@ -1264,6 +1264,8 @@ function isOurGeneratedLink(url) {
     const host = u.hostname.toLowerCase()
     if (OUR_LINK_HOSTS.has(host)) return true
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
+      // TAGLESS: clean amazon link = ours, ANY tag = reject (source tag never ours)
+      if (!AMAZON_TAG) return !u.searchParams.get('tag')
       return u.searchParams.get('tag') === AMAZON_TAG
     }
     if (host === 'flipkart.com' || host.endsWith('.flipkart.com')) {
@@ -1288,6 +1290,8 @@ function isOurAmazonTagLink(url) {
     const u = new URL(url)
     const host = u.hostname.toLowerCase()
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
+      // TAGLESS: clean amazon link = ours, ANY tag = reject
+      if (!AMAZON_TAG) return !u.searchParams.get('tag')
       return u.searchParams.get('tag') === AMAZON_TAG
     }
     return false
@@ -1327,7 +1331,7 @@ async function resolveUrl(url, fetchFn = fetch) {
 // Direct-source jobs carry RAW source links (fkrt.co, amzn.to, linkredirect.in,
 // bare merchant pages) — not our generated affiliate links. Smart handling:
 //   * our generated links keep the normal provenance verification
-//   * raw Amazon product URLs get our tag appended -> still monetized
+//   * TAGLESS: stranger tags are always deleted, never added (source tag is not ours)
 //   * everything else is resolved (redirect follow) and posted unconverted, so
 //     the deal reaches WhatsApp even when the bot never posted it to Telegram
 async function prepareDirectJob(job, fetchFn = fetch) {
@@ -1342,12 +1346,10 @@ async function prepareDirectJob(job, fetchFn = fetch) {
       const u = new URL(resolved)
       const host = u.hostname.toLowerCase()
       const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
-      const isProductPage = /\/(?:dp|gp\/product|gp\/aw\/d)\/[A-Z0-9]{10}(?:[/?#]|$)/i.test(u.pathname)
-      // Search/category pages (/s?k=puma&rh=...) are monetizable too — the
-      // user's Puma Men/Women/Girls/Boys style lists arrive as /s links.
-      const isSearchPage = u.pathname === '/s' || u.pathname.startsWith('/s/')
-      if (isAmazon && !u.searchParams.get('tag') && (isProductPage || isSearchPage)) {
-        resolved += (resolved.includes('?') ? '&' : '?') + `tag=${AMAZON_TAG}`
+      // TAGLESS: delete any foreign tag – never append ours
+      if (isAmazon && u.searchParams.get('tag')) {
+        u.searchParams.delete('tag')
+        resolved = u.toString()
       }
     } catch { /* keep resolved as-is */ }
     if (resolved !== url) job.resolvedLinks[url] = resolved
@@ -1956,8 +1958,8 @@ function namePriceKey(text) {
 // is allowed to skip, with two brakes: the name must be specific (campaign
 // banners and roundups never key), and a STRICTLY better copy (cheaper, or the
 // same price at a deeper discount) still goes out.
-const WA_SAME_PRODUCT_HOURS = Number(process.env.WA_SAME_PRODUCT_HOURS || 48)
-const WA_SAME_PRODUCT_MARGIN = Number(process.env.WA_SAME_PRODUCT_MARGIN || 5)
+const WA_SAME_PRODUCT_HOURS = 24 // STRICT 24h: same product 24h block — pinned (user rule 2026-09-04)
+const WA_SAME_PRODUCT_MARGIN = 15 // STRICT: only 15%+ better discount can override 24h (prevents 5% loophole)
 const NAME_ONLY_STOP = new Set(('deal deals dealz offer offers dhamaka dhamal sale salez loot loots price mrp discount off save savings grab hurry now today daily best top hot new buy shop link links here below click free shipping delivery cod return warranty genuine flash super mega amazing awesome alert in india official telegram whatsapp channel group join follow subscribe share forward for the a an and or of to on at by with your our this that it is are be get got have has pack pcs pair').split(' '))
 
 // ---------------------------------------------------------------------------
@@ -2209,6 +2211,24 @@ function stripAmazonJunk(url) {
   } catch {
     return url
   }
+}
+function stripStrangerAmazonTags(text) {
+  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip any tag
+  if (!text) return text
+  let out = String(text)
+  for (const url of urlsIn(out)) {
+    try {
+      const u = new URL(url)
+      const host = u.hostname.toLowerCase()
+      const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
+      if (isAmazon && u.searchParams.get('tag')) {
+        u.searchParams.delete('tag')
+        const cleaned = u.toString()
+        out = out.split(url).join(cleaned)
+      }
+    } catch {}
+  }
+  return out
 }
 // The URL actually shown to subscribers: shortened form first, then the
 // resolved merchant page (direct-source jobs), then the original.
@@ -2463,11 +2483,14 @@ function validateAffiliateText(job, text) {
       throw new Error('Foreign/source shortener blocked')
     }
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
-      // Raw Amazon pages on direct jobs get OUR tag appended at resolve time;
-      // a link carrying someone else's tag is still always blocked.
+      // TAGLESS: ANY tag = stranger tag = blocked (clean link is the only valid form)
       const tag = u.searchParams.get('tag')
-      if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
-      if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
+      if (!AMAZON_TAG) {
+        if (tag) throw new Error('Amazon tag mismatch (tagless: stranger tag blocked)')
+      } else {
+        if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
+        if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
+      }
     }
     const visiblePublisher = u.searchParams.get('affExtParam2')
     if (visiblePublisher && visiblePublisher !== PUBLISHER_ID) throw new Error('Publisher ID mismatch')
@@ -2562,6 +2585,8 @@ async function assertLinksHealthy(job, urls) {
 }
 
 async function verifyJob(job) {
+  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip it
+  if (job.text) job.text = stripStrangerAmazonTags(job.text)
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
@@ -3696,7 +3721,7 @@ if (process.argv.includes('--self-test')) {
       '#deals',
       'Premium cotton fabric, slim fit',
       'Free delivery on this order',
-      'https://www.amazon.in/dp/B0CLEANUP1?tag=' + AMAZON_TAG,
+      'https://www.amazon.in/dp/B0CLEANUP1',
     ].join('\n')
     const out = cleanDealText(raw)
     for (const keep of ["Men's Cotton Casual Shirt", 'Deal Price: \u20b9699', 'MRP: \u20b91999', '65% OFF',
@@ -3744,7 +3769,7 @@ if (process.argv.includes('--self-test')) {
   // Long links must be flagged for shortening while a clean short amazon /dp
   // link and already-short hosts are left alone (quota protection).
   {
-    const searchLink = 'https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&tag=' + AMAZON_TAG
+    const searchLink = 'https://www.amazon.in/s?k=puma+shoes+men&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank'
     if (searchLink.length > SHORTEN_MIN_LEN && !needsShortening(searchLink)) {
       throw new Error('long amazon search link must be shortened')
     }
@@ -3753,7 +3778,7 @@ if (process.argv.includes('--self-test')) {
   // WA_SHORTEN_MIN_LEN is left alone (no quota burned), one at or over it is shortened.
   // Hard-coding the default 65 here would cry wolf the moment an operator moves the knob.
   {
-    const cleanDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=' + AMAZON_TAG
+    const cleanDp = 'https://www.amazon.in/dp/B0GLY3Q2XR'
     if (cleanDp.length < SHORTEN_MIN_LEN && needsShortening(cleanDp)) {
       throw new Error('a link under the shorten threshold must NOT burn quota')
     }
@@ -3761,7 +3786,7 @@ if (process.argv.includes('--self-test')) {
       throw new Error('a link over the shorten threshold must be shortened')
     }
   }
-  const danglingSlots = cleanDealText('Lunchbox @ ₹88\n\n🔗\n🔗\n🔗 https://www.amazon.in/dp/B0DY7V1G9M?th=1&tag=deals0911-21')
+  const danglingSlots = cleanDealText('Lunchbox @ ₹88\n\n🔗\n🔗\n🔗 https://www.amazon.in/dp/B0DY7V1G9M?th=1')
   if (!danglingSlots.includes('B0DY7V1G9M')) throw new Error('real link missing after empty-slot cleanup')
   // No line may be a bare 🔗 (or any link bullet) with no URL after it.
   if (danglingSlots.split(/\r?\n/).some(line => /^[🔗👉➡️🔎🔍•▪\-–—_*\s]+$/.test(line.trim()) && line.trim())) {
@@ -3786,15 +3811,19 @@ if (process.argv.includes('--self-test')) {
   if (!tokenAfterPrice.includes('₹185 2pcs') || !tokenAfterPrice.includes('₹299 500ml') || !tokenAfterPrice.includes('₹349 65w')) throw new Error('real unit after price wrongly removed')
   const strictSpecial = cleanDealText('🔥 LOOT ZONE — India\n🚨 SPECIAL OFFER\nFlipkart | 92% Off - Duck Slide Toy Set at Rs.229\n-\n➜ https://fktr.in/OUR\n✅ Verified • Enjoy (Grab fast)')
   if (strictSpecial !== 'Flipkart | 92% Off - Duck Slide Toy Set at Rs.229\nhttps://fktr.in/OUR') throw new Error('strict special cleanup test failed')
-  const trailingToken = cleanDealText('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21 0GLY3Q2X\n₹3000 off')
-  if (trailingToken.includes(' 0GLY3Q2X') || !trailingToken.includes('tag=deals0911-21')) throw new Error('trailing URL token cleanup test failed')
+  const trailingToken = cleanDealText('https://www.amazon.in/dp/B0GLY3Q2XR 0GLY3Q2X\n₹3000 off')
+  if (trailingToken.includes(' 0GLY3Q2X') || !trailingToken.includes('B0GLY3Q2XR')) throw new Error('trailing URL token cleanup test failed')
+  if (trailingToken.includes('tag=')) throw new Error('tagless: trailingToken must not contain tag')
   const item = formatDigestItem(sample, 1)
   if (!item.includes('KILLER Mens Loafers') || !item.includes('\nhttps://fktr.in/OUR123')) throw new Error('digest format test failed:\n' + item)
   if (item.includes('➜')) throw new Error('digest items must not add bullet characters of ours:\n' + item)
-  validateAffiliateText(null, 'Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21')
+  validateAffiliateText(null, 'Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT')
   let foreignBlocked = false
   try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=foreign-21') } catch { foreignBlocked = true }
-  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed')
+  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed (tagless)')
+  let ourTagBlocked = false
+  try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21') } catch { ourTagBlocked = true }
+  if (!ourTagBlocked) throw new Error('tagless: ex-our tag must also be blocked')
   let sourceShortBlocked = false
   try { validateAffiliateText(null, 'Bad\nhttps://fkrt.cc/source123') } catch { sourceShortBlocked = true }
   if (!sourceShortBlocked) throw new Error('source shortener test failed')
@@ -4323,7 +4352,7 @@ https://fktr.in/MANY${i}`,
   {
     // Service links AND our-tag Amazon links are both exempt from the link_cache
     // DB check; a foreign-tag Amazon link still goes through for verification.
-    const toVerify = urlsForProvenance(null, ['https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21', 'https://zom.to/abc', 'https://www.amazon.in/dp/B0CHECK99?tag=other-21'])
+    const toVerify = urlsForProvenance(null, ['https://www.amazon.in/dp/B0GLY3Q2XR', 'https://zom.to/abc', 'https://www.amazon.in/dp/B0CHECK99?tag=other-21'])
     if (toVerify.length !== 1 || toVerify[0] !== 'https://www.amazon.in/dp/B0CHECK99?tag=other-21') throw new Error('service + our-tag provenance exemption test failed')
   }
   // Group JID resolution (pure parts; invite codes are resolved live on connect).
@@ -4477,7 +4506,7 @@ https://fktr.in/MANY${i}`,
   // Bitly shortening policy (quota-smart): long links always; LIST posts
   // (2+ links) always; a normal short single amazon dp link posts as-is so
   // the Bitly monthly quota is never wasted on ordinary product deals.
-  const longAmazon = `https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21&m=abc123&ascsubtag=${'x'.repeat(120)}`
+  const longAmazon = `https://www.amazon.in/dp/B0GLY3Q2XR?m=abc123&ascsubtag=${'x'.repeat(120)}`
   if (longAmazon.length > SHORTEN_MIN_LEN && !needsShortening(longAmazon)) throw new Error('long amazon link must be shortened')
   if (needsShortening('https://bit.ly/abc')) throw new Error('already-short link must not be re-shortened')
   if (needsShortening('https://bit.ly/abc', true)) throw new Error('already-short link must not be re-shortened even in a list')
@@ -4485,7 +4514,7 @@ https://fktr.in/MANY${i}`,
   {
     // Stated against WA_SHORTEN_MIN_LEN rather than its default, so the assertion stays
     // true when an operator moves the knob (the policy IS the threshold).
-    const tidyDp = 'https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21'
+    const tidyDp = 'https://www.amazon.in/dp/B0GLY3Q2XR'
     if (tidyDp.length < SHORTEN_MIN_LEN && needsShortening(tidyDp)) {
       throw new Error('a single tidy link under the threshold must NOT burn Bitly quota')
     }
@@ -4560,7 +4589,7 @@ https://fktr.in/MANY${i}`,
   // we add no badge. The source printed its deal price and its MRP, so BOTH
   // lines print exactly as written, in source order, once each.
   {
-    const job = { text: 'Cotton Kurta\nDeal Price: ₹499\nMRP: ₹1999\nFree shipping\nhttps://www.amazon.in/dp/B0PRICETST?tag=' + AMAZON_TAG }
+    const job = { text: 'Cotton Kurta\nDeal Price: ₹499\nMRP: ₹1999\nFree shipping\nhttps://www.amazon.in/dp/B0PRICETST' }
     const post = formatWhatsAppPost(job)
     for (const line of ['Cotton Kurta', 'Deal Price: ₹499', 'MRP: ₹1999', 'Free shipping']) {
       if (!post.includes(line)) throw new Error(`source line lost from the post: ${line}\n${post}`)
@@ -4570,7 +4599,7 @@ https://fktr.in/MANY${i}`,
   }
   {
     // Price attached to a real product/quantity line is content, not a repeat.
-    const job = { text: 'Boys Combo T-Shirt Pack\nPack of 2 at ₹599\nBuy now\nhttps://www.amazon.in/dp/B0PRICETWO?tag=' + AMAZON_TAG }
+    const job = { text: 'Boys Combo T-Shirt Pack\nPack of 2 at ₹599\nBuy now\nhttps://www.amazon.in/dp/B0PRICETWO' }
     const post = formatWhatsAppPost(job)
     if (!post.includes('Pack of 2 at ₹599')) throw new Error('price+quantity product line must survive')
   }
@@ -4608,29 +4637,31 @@ https://fktr.in/MANY${i}`,
   if (!DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== null) throw new Error('TG_DIRECT_SOURCES= (empty) must disable direct sources')
   if (classifySource({ chat: { username: 'someRandomChannel' } }) !== null) throw new Error('unknown channel must be ignored')
   if (!isOurGeneratedLink('https://fktr.in/abc')) throw new Error('fktr.in must count as our generated link')
-  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR?tag=${AMAZON_TAG}`)) throw new Error('amazon with our tag must be ours')
-  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('amazon with a foreign tag is not ours')
+  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be ours')
+  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('tagless: tagged amazon link is not ours')
+  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag is also foreign')
   if (isOurGeneratedLink('https://amzn.to/x')) throw new Error('raw amazon shortener is not ours')
   // Our-tag Amazon links are self-proving and must NEVER reach the link_cache
   // DB check (provenance leak fix): the tag only exists on links WE tagged, the
   // cache stores conversion-API output only, so a DB row may legitimately be
   // absent (bridge-tagged safety-net pages; fresh/pruned/deploy-cleared cache).
-  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR?tag=${AMAZON_TAG}`)) throw new Error('our-tag amazon link must be recognised')
-  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('foreign-tag amazon link must not match our tag')
+  // TAGLESS: clean Amazon links are SELF-PROVING (no tag = ours), any tag = foreign
+  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be recognised')
+  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('tagless: foreign-tag amazon link must not match')
+  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag must not match')
   if (isOurAmazonTagLink('https://amzn.to/x')) throw new Error('amazon shortener host has no tag param')
   {
-    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK?tag=${AMAZON_TAG}`
-    // Normal (non-direct) job: our-tag link is exempt; a foreign-store link
-    // and a foreign-tag Amazon link still go to the DB for verification.
+    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK`
+    // TAGLESS: clean amazon link is exempt; any tagged link goes to DB
     const normal = urlsForProvenance({ direct: false }, [ourTagged, 'https://fktr.in/CHECK', 'https://www.amazon.in/dp/B0FOREIGN?tag=thief-21'])
-    if (normal.includes(ourTagged)) throw new Error('our-tag amazon link must skip provenance DB on a normal job')
+    if (normal.includes(ourTagged)) throw new Error('tagless: clean amazon link must skip provenance DB')
     if (!normal.includes('https://fktr.in/CHECK')) throw new Error('our converted short link must still be provenance-checked')
     if (!normal.includes('https://www.amazon.in/dp/B0FOREIGN?tag=thief-21')) throw new Error('foreign-tag amazon link must still be provenance-checked')
-    // Direct job whose raw link resolved to an OUR-tagged amazon page: the
+    // Direct job whose raw link resolved to a clean amazon page: the
     // resolved (display) form is self-proving, so it must be exempt too.
     const djobProv = { direct: true, resolvedLinks: { 'https://amzn.to/TAGGED': ourTagged } }
     const afterResolve = urlsForProvenance(djobProv, ['https://amzn.to/TAGGED'])
-    if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
+    if (afterResolve.length !== 0) throw new Error('tagless: direct job resolving to clean amazon must skip provenance DB')
   }
   {
     // Raw source links resolve to the merchant page; raw amazon gets OUR tag.
@@ -4642,7 +4673,7 @@ https://fktr.in/MANY${i}`,
     }
     const djob = { direct: true, text: 'Direct deal ₹299\nhttps://amzn.to/DEAL1\nAlso https://fkrt.co/DEAL2' }
     await prepareDirectJob(djob, fakeFetch)
-    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src&tag=${AMAZON_TAG}`) throw new Error('our tag not appended to raw amazon product page')
+    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src`) throw new Error('tagless: raw amazon product page must resolve without tag')
     if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== 'https://www.flipkart.com/direct-item/p/itm77?ref=src') throw new Error('raw flipkart shortener not resolved')
     if (displayUrl(djob, 'https://amzn.to/DEAL1') !== djob.resolvedLinks['https://amzn.to/DEAL1']) throw new Error('displayUrl must prefer the resolved merchant link')
     // Direct jobs never send raw links to the provenance DB; our links do go.
@@ -4670,26 +4701,27 @@ https://fktr.in/MANY${i}`,
     const bigSearch = 'https://www.amazon.in/s?btn_ref=srctok-0a3c6e95f43beb35&btn_type=ss&crid=183FX0PT8V04B&dc=&ds=v1%3AabcXYZ&i=shoes&k=puma&qid=1787941163&rh=n%3A1571283031%2Cn%3A1983396031&rnid=1983396031&s=price-asc-rank&sprefix=pum%2Cshoes%2C288'
     const djob = { direct: true, text: 'Puma Men\n' + bigSearch }
     await prepareDirectJob(djob, noNet)
-    const tagged = djob.resolvedLinks[cleanUrl(bigSearch)]
-    if (!tagged || !tagged.includes(`tag=${AMAZON_TAG}`)) throw new Error('our tag not appended to raw amazon SEARCH page')
+    const tagged = djob.resolvedLinks[cleanUrl(bigSearch)] || bigSearch
+    if (tagged.includes('tag=')) throw new Error('tagless: raw amazon SEARCH page must not gain a tag')
     const cleanedSearch = stripAmazonJunk(tagged)
     if (/btn_ref|srctok|qid=|sprefix=|crid=|[?&]ds=/.test(cleanedSearch)) throw new Error('amazon search junk params not stripped: ' + cleanedSearch)
     if (!/k=puma/.test(cleanedSearch) || !/i=shoes/.test(cleanedSearch) || !/rh=/.test(cleanedSearch) || !/s=price-asc-rank/.test(cleanedSearch)) throw new Error('real amazon filters must survive junk strip: ' + cleanedSearch)
-    if (!cleanedSearch.includes(`tag=${AMAZON_TAG}`)) throw new Error('our tag must survive junk strip')
-    if (cleanedSearch.length >= tagged.length) throw new Error('junk strip must shorten the search link')
+    if (cleanedSearch.includes('tag=')) throw new Error('tagless: search link must stay clean')
+    if (cleanedSearch.length > tagged.length) throw new Error('junk strip must not lengthen the search link')
+    if (cleanedSearch.length >= bigSearch.length) throw new Error('junk strip must shorten the search link')
     if (!needsShortening(tagged)) throw new Error('a 200+ char amazon search link must qualify for Bitly')
     // Non-amazon URLs are untouched by the junk stripper.
     const fk = 'https://www.flipkart.com/search?q=puma&qid=xyz&ds=1'
     if (stripAmazonJunk(fk) !== fk) throw new Error('non-amazon URL must not be junk-stripped')
     // Amazon product pages: th/psc style params survive (not in the junk set).
-    const dp = 'https://www.amazon.in/dp/B0ABCDEFGH?th=1&tag=' + AMAZON_TAG
-    if (stripAmazonJunk(dp) !== dp) throw new Error('amazon dp link with th/tag must be unchanged')
+    const dp = 'https://www.amazon.in/dp/B0ABCDEFGH?th=1'
+    if (stripAmazonJunk(dp) !== dp) throw new Error('tagless: amazon dp link with th must be unchanged')
   }
   {
     // A deal already posted via our own channels must never be double-posted
     // from a raw source: the dedup works on the RESOLVED product identity.
     state.sentProducts = {}
-    const ourJob = { text: `Cotton Kurta ₹499\nhttps://www.amazon.in/dp/B0DEDUPTST?tag=${AMAZON_TAG}`, media: [] }
+    const ourJob = { text: `Cotton Kurta ₹499\nhttps://www.amazon.in/dp/B0DEDUPTST`, media: [] }
     markProductSent(ourJob)
     const directCopy = {
       direct: true, media: [], special: false, largeList: false,
@@ -5241,10 +5273,10 @@ https://fktr.in/MANY${i}`,
     const job = {
       text: bannerSrc,
       shortLinks: {
-        'https://bitli.in/AAAA': 'https://www.amazon.in/dp/B0IKTHI4?tag=' + AMAZON_TAG,
-        'https://bitli.in/BBBB': 'https://www.amazon.in/dp/B0IKTHI5?tag=' + AMAZON_TAG,
-        'https://bitli.in/CCCC': 'https://www.amazon.in/dp/B0IKTHI6?tag=' + AMAZON_TAG,
-        'https://bitli.in/DDDD': 'https://www.amazon.in/dp/B0IKTHI7?tag=' + AMAZON_TAG,
+        'https://bitli.in/AAAA': 'https://www.amazon.in/dp/B0IKTHI4',
+        'https://bitli.in/BBBB': 'https://www.amazon.in/dp/B0IKTHI5',
+        'https://bitli.in/CCCC': 'https://www.amazon.in/dp/B0IKTHI6',
+        'https://bitli.in/DDDD': 'https://www.amazon.in/dp/B0IKTHI7',
       },
     }
     const post = formatWhatsAppPost(job)
@@ -5277,9 +5309,10 @@ https://fktr.in/MANY${i}`,
       throw new Error('the post carries text WE invented, not the source:\n' + post)
     }
     if (/bitli\.[iI]n/.test(post)) throw new Error('a source link survived - our link must replace it:\n' + post)
-    if ((post.match(new RegExp('tag=' + AMAZON_TAG, 'g')) || []).length !== 4) {
-      throw new Error('all four links must be ours:\n' + post)
+    if ((post.match(/https:\/\/www\.amazon\.in\/dp\//g) || []).length !== 4) {
+      throw new Error('tagless: all four links must be clean amazon dp links:\n' + post)
     }
+    if (/tag=/.test(post)) throw new Error('tagless: post must not contain any tag')
     if (post.split('\n').filter(l => /^https:\/\//.test(l.trim())).length !== 4) {
       throw new Error('every link gets its own bare line:\n' + post)
     }

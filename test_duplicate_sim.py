@@ -32,7 +32,7 @@ from pathlib import Path
 os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "x")
 os.environ.setdefault("EARNKARO_API_KEY", "k")
-os.environ.setdefault("AMAZON_TAG", "deals0911-21")
+os.environ.setdefault("AMAZON_TAG", "")
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -40,7 +40,7 @@ import main_bot_new as bot  # noqa: E402
 R = "\u20b9"
 FAILS: list[str] = []
 SOURCE = "dealsvelocity"          # fans out to every non-Tricks channel
-OUR_LINK = "https://www.amazon.in/dp/B0SIMPRODUCT?tag=deals0911-21"
+OUR_LINK = "https://www.amazon.in/dp/B0SIMPRODUCT"
 
 
 def check(name: str, condition: bool, extra: str = "") -> None:
@@ -525,7 +525,7 @@ def test_scenarios():
             "(Pack of 2) Surface Cleaning  | Toilet Cleaner, 900 ml (2 x 900 ml)\n"
             "\u2705Deal Price: \u20b9 199HFJF\n\u274cMRP: \u20b9 270\nDiscount: 26%\n"
             "\U0001f449 [https://t.me/loots/156757](https://wa.me/?text=https%3A%2F%2Ft.me%2Floots%2F156757)\n"
-            "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3?tag=deals0911-21](https://amzn.to/lizol77)")
+            "\U0001f449 [https://www.amazon.in/dp/B0GH2374K3](https://amzn.to/lizol77)")
         old_drop = bot.DROP_DEAD_LINKS
         try:
             # The default must be tested as the default: an operator who exports
