@@ -3388,8 +3388,11 @@ class Store:
         return True
 
     async def preview_allowed(self, text: str) -> bool:
-        """Keep Amazon product previews; suppress Flipkart's generic redirect card."""
+        """Keep Amazon product previews; suppress Flipkart/Myntra generic cards and wasteful list previews (user rule 2026-09-04)."""
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+        # Wasteful list preview: 2+ links in one message already makes it tall — extra card is waste (Myntra extend waste)
+        if len(urls) >= 2:
+            return False
         async with self.lock:
             for url in urls:
                 row = self.conn.execute(
@@ -3397,7 +3400,8 @@ class Store:
                 ).fetchone()
                 resolved = row[0] if row and row[0] else url
                 host = (urlparse(resolved).hostname or "").lower()
-                if host_matches(host, "flipkart.com"):
+                # linkredirect.in is source wrapper never final, Myntra/myntr.it generic shop card is waste — photo okay but extend waste
+                if host_matches(host, "flipkart.com") or host_matches(host, "linkredirect.in") or host_matches(host, "myntra.com") or host_matches(host, "myntr.it"):
                     return False
         return True
 
