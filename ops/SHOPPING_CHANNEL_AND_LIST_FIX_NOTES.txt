@@ -425,3 +425,55 @@ STILL YOURS TO DO (cannot be done from code)
   * set AMAZON_TAG only after approval (AMAZON_TAG_TARGETS already limits it
     to this channel)
   * 3 qualifying sales in 180 days
+
+
+=================================================================
+Round 7 — the real rejection, and what changed because of it
+=================================================================
+
+The application (deals0911-21) was REJECTED on 2026-09-06:
+
+  "unapproved use of Amazon trademarked words, images (screenshots/
+   screen recordings), or reviews (which may include variations or
+   misspellings) ... An example can be found here:
+   https://t.me/LootZoneIndia11"
+
+The example URL is the whole story. The reviewer did not fail
+smartbuyhub11 on its own posts - they walked from the application to
+LootZoneIndia11 and judged everything on that. Round 6 had assumed the
+review channel would be read in isolation. It is not.
+
+Four changes:
+
+1. NO MARKETPLACE NAME IN THE COPY
+   has_amazon_trademark() covers the mark, its brands and its
+   misspellings/variants: amazon/amazn/amzn/amz, Prime Day|Deals|Sale|
+   Video|Music, Great Indian Festival, AmazonBasics, Alexa, Kindle,
+   Echo/Echo Dot/Show, Fire TV/Stick, Audible, Mini TV, Pantry,
+   Subscribe & Save. Matched on the copy with URLs masked out, so
+   LINKING to amazon.in stays fine while NAMING it does not.
+   Enforced twice: the line is dropped inside _strict_review_copy(),
+   and a post that still names the mark is withheld at delivery.
+   "amazing quality shirt" is not a false positive.
+
+2. NO IMAGES ON THE REVIEW CHANNEL
+   SHOPPING_TEXT_ONLY=true (default). A forwarded deal photo is nearly
+   always a product-page screenshot - the exact thing cited. media_path
+   is blanked for this target only; every other channel keeps its album.
+
+3. NO POINTERS TO THE LOOT CHANNELS
+   has_telegram_pointer() kills any t.me/telegram.me URL or @handle in
+   the review copy, so the route the reviewer actually used is closed.
+
+4. DAILY CAP 30 -> 50
+   USER RULE (2026-09-06): "daily oka 40-50 cheyali e okka channelo lo,
+   remaining anni as usual ga run avvali". SHOPPING_DAILY_CAP defaults
+   to 50; set 40 for the lower end. No other channel is capped.
+
+What did NOT change: every other channel still gets the source copy,
+its photos, its hype and its links exactly as before.
+
+The remaining risk is not code. The reviewer can still find the loot
+channels if smartbuyhub11 shares a folder/addlist, a discussion group,
+a pin or a forward with them. That cleanup is in
+ops/AMAZON_APPLICATION_CHECKLIST.txt, STEP 0.

@@ -362,7 +362,41 @@ AMAZON_TAG_TARGETS = {
 SHOPPING_DISCLOSURE = os.getenv("SHOPPING_DISCLOSURE", "#ad (paid link)").strip()
 SHOPPING_AMAZON_ONLY = os.getenv(
     "SHOPPING_AMAZON_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
-SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "30")))
+SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "50")))
+# 4. NO IMAGES. The 2026-09-06 rejection cited "images (screenshots/screen
+#    recordings)" of Amazon. A forwarded deal photo is almost always an Amazon
+#    product-page screenshot, which is exactly the trademarked use that gets an
+#    application killed. The review channel therefore posts TEXT ONLY; every
+#    other channel keeps its media untouched.
+SHOPPING_TEXT_ONLY = os.getenv(
+    "SHOPPING_TEXT_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
+# 5. NO AMAZON TRADEMARKS IN THE COPY. Verbatim rejection reason (2026-09-06):
+#    "unapproved use of Amazon trademarked words, images ... or reviews (which
+#    may include variations or misspellings)". Writing "Amazon", "Prime",
+#    "Great Indian Festival" etc. in the post body is an unlicensed use of the
+#    mark. LINKING to amazon.in is fine and stays; naming it in the text does
+#    not. A post that needs the word is simply not shown to the reviewer - it
+#    still goes to every other channel unchanged.
+_AMAZON_MARK_RE = re.compile(
+    r"(?i)(?:\bam[ae]z[o0]?n\w*|\bamzn?\b|\bamz\b|\bprime\s*(?:day|deals?|sale|member\w*|video|music)\b"
+    r"|\bgreat\s+indian\s+festival\b|\bgif\s+sale\b|\balexa\b|\bkindle\b|\becho\s*(?:dot|show)?\b"
+    r"|\bfire\s*(?:tv|stick)\b|\baudible\b|\bamazon\s*basics\b|\bamazonbasics\b"
+    r"|\bab\s*deals?\b|\bmini\s*tv\b|\bpantry\b|\bsubscribe\s*&?\s*save\b)")
+# 6. NO POINTERS TO THE LOOT CHANNELS. The rejection email named
+#    "https://t.me/LootZoneIndia11" as its worked example, so a reviewer who
+#    finds any route from this channel to a loot channel fails the whole
+#    application. Nothing on t.me may survive into the review copy.
+_TELEGRAM_POINTER_RE = re.compile(r"(?i)(?:https?://)?(?:t\.me|telegram\.(?:me|dog))/\S+|@[A-Za-z]\w{3,}")
+
+
+def has_amazon_trademark(text: str) -> bool:
+    """True when the COPY names an Amazon mark (links are exempt and fine)."""
+    return bool(_AMAZON_MARK_RE.search(URL_RE.sub(" ", text or "")))
+
+
+def has_telegram_pointer(text: str) -> bool:
+    """True when the copy points at another Telegram channel (our loot ones)."""
+    return bool(_TELEGRAM_POINTER_RE.search(text or ""))
 
 
 def add_link_disclosure(text: str) -> str:
@@ -3040,6 +3074,10 @@ def _strict_review_copy(body: str) -> str:
             kept.append(line)
             continue
         if _STRICT_BANNED_RE.search(line):
+            continue
+        # Amazon marks and Telegram pointers are the two things the 2026-09-06
+        # rejection actually named. Drop the line rather than try to reword it.
+        if has_amazon_trademark(line) or has_telegram_pointer(line):
             continue
         # A product line has to read like a product: real words, and not a bare
         # number or a lone symbol. Two letter-words is the floor ("Methi Dana").
@@ -5971,6 +6009,23 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                              row["id"], SHOPPING_DAILY_CAP)
                     await store.delivery(row["id"], target, True, "daily cap reached")
                     continue
+                # REJECTION 2026-09-06: "unapproved use of Amazon trademarked
+                # words, images ... or reviews". Naming the marketplace in the
+                # copy is an unlicensed use of the mark; linking to it is not.
+                # A post that cannot say what it means without the word is
+                # simply withheld from this ONE channel.
+                if has_amazon_trademark(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s copy names an Amazon trademark",
+                             row["id"])
+                    await store.delivery(row["id"], target, True, "amazon trademark in copy")
+                    continue
+                # The same email named t.me/LootZoneIndia11 as its example, so a
+                # reviewer must find NO route from here to a loot channel.
+                if has_telegram_pointer(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s copy points at another channel",
+                             row["id"])
+                    await store.delivery(row["id"], target, True, "telegram pointer in copy")
+                    continue
                 # Link-level disclosure is an Amazon/FTC requirement on EVERY post
                 # (the channel bio alone is not enough) and a common rejection
                 # reason. Added last so it can never be cleaned off again.
@@ -5986,8 +6041,15 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # loot-channel folder, which is precisely what a marketplace
                 # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
+            # A forwarded deal photo is nearly always a marketplace screenshot -
+            # the "images (screenshots/screen recordings)" the rejection cited.
+            # The review channel goes text-only; every other channel keeps its
+            # media, so no picture is lost anywhere else.
+            target_media = media_path
+            if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:
+                target_media = []
             ok, error = await deliver(
-                client, entity, target_text, media_path,
+                client, entity, target_text, target_media,
                 start_chunk=start_chunk, progress_callback=checkpoint,
                 link_preview=allow_preview, media_refs=media_refs,
             )

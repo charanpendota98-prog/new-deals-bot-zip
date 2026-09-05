@@ -1114,10 +1114,62 @@ def test_review_channel_posts_are_disclosed_amazon_only_and_capped():
     check("the cap stops further posts once it is reached", after == 0, str(after))
     check("and the count survives a restart (no reset-to-zero loophole)",
           restarted == 0, str(restarted))
-    check("the shipped default is a sane 30/day", bot.SHOPPING_DAILY_CAP == 30,
+    check("the shipped default matches the user's 40-50/day", bot.SHOPPING_DAILY_CAP == 50,
           str(bot.SHOPPING_DAILY_CAP))
     check("the cap is enforced on the delivery path",
           "shopping_quota_left()" in deliver, "cap not wired")
+
+
+def test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers():
+    """REJECTION 2026-09-06 (deals0911-21), verbatim: "unapproved use of Amazon
+    trademarked words, images (screenshots/screen recordings), or reviews (which
+    may include variations or misspellings)", with t.me/LootZoneIndia11 given as
+    the worked example. Each of those three is now closed off in code."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+
+    # 1. The MARK must not appear in the copy. Linking to the store is fine.
+    for named in ("Amazon Loot Deal\nBoat Airdopes 141 at 899",
+                  "Amzn Prime Day sale\nSamsung M14 at 9999",
+                  "Great Indian Festival\nSony headphones at 1999",
+                  "AmazonBasics cable at 199",
+                  "Alexa Echo Dot at 3499"):
+        body = named + "\nhttps://www.amazon.in/dp/B0X"
+        safe = bot.affiliate_safe_text(body)
+        check("the mark is gone from the review copy of %r" % named.splitlines()[0],
+              not bot.has_amazon_trademark(safe), repr(safe))
+    check("a bare amazon.in LINK is not treated as a trademark use",
+          bot.has_amazon_trademark("Boat 141 at 899\nhttps://www.amazon.in/dp/B0X") is False)
+    check("misspellings and variations are caught too",
+          all(bot.has_amazon_trademark(w) for w in ("amazn deal", "AMAZON sale", "amzn offer")))
+    check("an ordinary product name is not a false positive",
+          bot.has_amazon_trademark("Boat Airdopes 141 at 899") is False)
+    check("the trademark gate runs on the delivery path",
+          "has_amazon_trademark(safe_text)" in deliver, "gate not wired")
+
+    # 2. No route from the review channel to a loot channel - the email's example.
+    body = "Nutriburst Collagen powder 299\nJoin @LootZoneIndia11\nhttps://www.amazon.in/dp/B0Y"
+    safe = bot.affiliate_safe_text(body)
+    check("the loot-channel pointer is stripped",
+          not bot.has_telegram_pointer(safe), repr(safe))
+    check("but the product and price survive",
+          "Nutriburst Collagen powder 299" in safe, repr(safe))
+    check("a t.me url counts as a pointer",
+          bot.has_telegram_pointer("see https://t.me/LootZoneIndia11") is True)
+    check("the pointer gate runs on the delivery path",
+          "has_telegram_pointer(safe_text)" in deliver, "gate not wired")
+
+    # 3. No images: a forwarded deal photo is nearly always a store screenshot.
+    check("the review channel is text-only by default", bot.SHOPPING_TEXT_ONLY is True)
+    check("media is dropped for the review channel only",
+          "target_media = []" in deliver and "target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY" in deliver,
+          "text-only not wired")
+    check("every other channel still gets its media",
+          "target_media = media_path" in deliver, "media dropped globally")
+
+    # USER RULE (2026-09-06): "daily oka 40-50 cheyali e okka channelo lo".
+    check("the daily cap now allows 40-50 posts", bot.SHOPPING_DAILY_CAP == 50,
+          str(bot.SHOPPING_DAILY_CAP))
 
 
 def main() -> int:
@@ -1142,6 +1194,7 @@ def main() -> int:
     test_our_amazon_tag_only_rides_on_declared_channels()
     test_the_review_channel_copy_is_built_from_an_allowlist()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
+    test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
