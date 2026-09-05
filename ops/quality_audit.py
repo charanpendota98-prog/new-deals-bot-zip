@@ -66,6 +66,9 @@ POLICY_SKIPS = (
     "already posted", "duplicate deal", "duplicate product", "night window",
     "STALE DROP", "already covered", "no monetizable", "no eligible targets",
     "not a deal", "skip list", "superseded", "not worth", "confirmed dead merchant",
+    # USER RULE (2026-09-05): a deal whose every link is a dead shortener is skipped on
+    # purpose ("asalu link yeh ledu") - it is policy, not a lost post.
+    "nothing buyable to post", "not programme-safe", "shopping target unresolved",
 )
 
 

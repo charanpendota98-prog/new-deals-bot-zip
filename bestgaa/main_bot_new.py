@@ -231,6 +231,13 @@ LINK_PROBE_BUDGET_SECONDS = _num("LINK_PROBE_BUDGET_SECONDS", 3.5, 0.5, 60)
 # is therefore false by default (post with an unverified link) and only an operator who
 # would rather lose the deal than risk a dead page turns it on.
 DROP_DEAD_LINKS = os.getenv("DROP_DEAD_LINKS", "false").strip().lower() in ("1", "true", "yes", "on")
+# USER RULE (2026-09-05): "asalu link yeh ledu" - a deal published with no link at
+# all is useless to the reader and earns nothing, so a post whose every link died
+# is skipped rather than sent as a linkless teaser. A source post that never had a
+# link but DOES carry the product photo is unaffected (round 13's rule). Set
+# REQUIRE_LINK_IN_POST=false to restore the old "post it anyway" behaviour.
+REQUIRE_LINK_IN_POST = os.getenv(
+    "REQUIRE_LINK_IN_POST", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # A huge source video must never freeze a worker; oversized/slow media is
 # posted as text so the deal itself goes out on time.
@@ -296,6 +303,11 @@ POWER_FILTER_TARGET = "PowerLoots1"
 PREMIUM_TARGET = "Premiumlootsdeals"
 SECRET_TARGET = "SecretLootIndia1"
 TRICKS_TARGET = "LootzoneTricks"
+# USER RULE (2026-09-05): the channel submitted for Amazon Associates review.
+# It carries the same deals in a programme-safe form (product name, price,
+# link - no loot/urgency wording, no "buy max quantity", no unverifiable claim).
+# Defined here so routing and the safe-copy renderer share one name.
+SHOPPING_TARGET = "smartbuyhub11"
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
@@ -316,6 +328,11 @@ ALL_OWNED_TARGETS = list(dict.fromkeys(
     [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET, PREMIUM_TARGET,
      UNDER99_TARGET, UNDER499_TARGET, TRICKS_TARGET]
 ))
+# The shopping channel takes PRODUCT deals only: a trick/recharge/app-promo post
+# is not a shoppable product and must never be shown to a marketplace reviewer.
+# Set SHOPPING_TARGET_ENABLED=false to hold the channel back entirely.
+SHOPPING_TARGET_ENABLED = os.getenv(
+    "SHOPPING_TARGET_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 OUR_MAIN_CHANNEL_LINKS = ("https://t.me/SecretLootIndia1", "https://t.me/LootZoneIndia11")
 PREMIUM_MAX_PER_NIGHT = max(1, int(os.getenv("PREMIUM_MAX_PER_NIGHT", "12")))
 # The Premium channel is curated, not a firehose — but the gap between its
@@ -2631,8 +2648,29 @@ def format_visible_source_product_pairs(raw_text: str,
     return "\n".join(output).strip()
 
 
+# A price the way these sources actually type it. "₹258" is only one of the
+# spellings: "at 258", "@167", "Rs 180", "220/-" are the same money, and the old
+# ₹-only test is why a four-product list ("Methi Dana 500 gms at 180") was
+# published as four naked labels followed by four naked links - the "neatga
+# ravali" complaint.
+PRICE_LABEL_RE = re.compile(
+    r"(?:₹|\brs\.?|\binr)\s*[\d,]{2,}"
+    r"|(?:\bat|@)\s*[\d,]{2,}"
+    r"|\b[\d,]{2,}\s*/-",
+    re.I,
+)
+
+
 def format_clustered_product_list(text: str) -> str:
-    """Pair 3+ product/price labels with a trailing block of generated URLs."""
+    """Pair 3+ product/price labels with a trailing block of generated URLs.
+
+    The source writes the list as "name + price" blocks (often with a note line
+    such as "Buy Max Quantity") and then dumps every link at the bottom. Read
+    that way it is unreadable: the reader cannot tell which link is which deal.
+    Here each block keeps its own note lines and gets its own link directly
+    under it, in the source's own order. Nothing is invented, nothing is
+    dropped, nothing is reordered.
+    """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     url_positions = [i for i, line in enumerate(lines) if URL_RE.fullmatch(line)]
     if len(url_positions) < 3:
@@ -2641,19 +2679,114 @@ def format_clustered_product_list(text: str) -> str:
     # Only fix posts whose generated URLs are all grouped at the bottom.
     if any(not URL_RE.fullmatch(line) for line in lines[first_url:]):
         return text
-    labels = [line for line in lines[:first_url] if re.search(r"₹\s*[\d,]+", line)]
-    if len(labels) < 3:
+    head = lines[:first_url]
+    # Split the head into blocks: a new block starts on every price-bearing
+    # label; anything after it (a note, an MRP line) belongs to that block.
+    preamble: list[str] = []
+    blocks: list[list[str]] = []
+    for line in head:
+        if PRICE_LABEL_RE.search(line):
+            blocks.append([line])
+        elif blocks:
+            blocks[-1].append(line)
+        else:
+            preamble.append(line)
+    if len(blocks) < 3:
         return text
     urls = [lines[i] for i in url_positions]
-    pair_count = min(len(labels), len(urls))
-    first_label_index = min(lines.index(label) for label in labels)
-    preamble = [line for line in lines[:first_label_index] if line not in labels]
+    pair_count = min(len(blocks), len(urls))
     output = list(preamble)
     for index in range(pair_count):
         if output:
             output.append("")
-        output.extend([labels[index], urls[index]])
+        output.extend(blocks[index])
+        output.append(urls[index])
+    # A list with more links than labels (variant links) keeps the extras rather
+    # than losing them: a dropped link is a dropped deal.
+    for extra in urls[pair_count:]:
+        output.append(extra)
+    for leftover in blocks[pair_count:]:
+        output.append("")
+        output.extend(leftover)
     return "\n".join(output).strip()
+
+
+# ---------------------------------------------------------------------------
+# Affiliate-programme safe copy (the shopping channel)
+# ---------------------------------------------------------------------------
+# USER RULE (2026-09-05): t.me/smartbuyhub11 is the channel submitted for Amazon
+# Associates approval. Amazon's review rejects "loot", urgency, buy-max-quantity
+# instructions and discount claims it cannot verify, so that channel receives the
+# SAME deal with a plain body: product name, price, link. Nothing is invented -
+# every word and every number still comes from the source post.
+_SAFE_DROP_LINE_RE = re.compile(
+    r"(?i)^\s*(?:\**\s*)?(?:"
+    r"buy\s+max(?:imum)?\s+quantity|max\s+quantity|buy\s+max|order\s+fast|"
+    r"loot\s*(?:zone|deal|alert|offer)?s?|super\s+loot|mega\s+loot|"
+    r"hurry(?:\s*up)?|limited\s+stock|stock\s+limited|fast\s+selling|"
+    r"grab\s+(?:it\s+)?(?:now|fast)|buy\s+(?:it\s+)?now|shop\s+now|"
+    r"deal\s+of\s+the\s+day|price\s+may\s+change|#\w+"
+    r")\s*[!.:]*\s*$"
+)
+_SAFE_PREFIX_RE = re.compile(
+    r"(?i)^\s*(?:🔥|⚡|🚨|💥|🏃|👑|💰|🔔|✅|❗|‼️|👉|➡️|•|\*|-|~)*\s*"
+    r"(?:loot|super\s*loot|mega\s*loot|grab|deal|steal|offer|price\s*drop|"
+    r"lowest\s*price|big\s*deal|hot\s*deal|best\s*deal|alert)\s*[:\-–]\s*"
+)
+_SAFE_CLAIM_RE = re.compile(
+    r"(?i)\b(?:#?\s*(?:uk|india|world)?\s*no\.?\s*1\s+brand|cheapest\s+ever|"
+    r"lowest\s+ever|all\s+time\s+low|biggest\s+sale|loot\s+price|"
+    r"steal\s+deal|must\s+buy)\b"
+)
+_EMOJI_RE = re.compile(
+    "[" "\U0001f300-\U0001faff" "\U00002190-\U000021ff" "\U00002600-\U000027bf"
+    "\U00002b00-\U00002bff" "\U0000fe0f" "\U00002122" "\U000024c2" "]+"
+)
+
+
+def affiliate_safe_text(text: str) -> str:
+    """The compliance-safe copy of a rendered deal: name, price, our link.
+
+    Used ONLY for the channel that is under Amazon Associates review. It removes
+    the promotional scaffolding a marketplace programme objects to (loot/hurry
+    banners, "buy max quantity", unverifiable superlatives, emoji shouting) and
+    keeps the product line, the price the source printed and the link.
+    """
+    out_lines: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            if out_lines and out_lines[-1] != "":
+                out_lines.append("")
+            continue
+        if URL_RE.fullmatch(line):
+            out_lines.append(line)
+            continue
+        if _SAFE_DROP_LINE_RE.match(line):
+            continue
+        line = _SAFE_PREFIX_RE.sub("", line)
+        line = _SAFE_CLAIM_RE.sub(" ", line)
+        line = _EMOJI_RE.sub(" ", line)
+        line = re.sub(r"(?i)\b(?:buy\s+max(?:imum)?\s+quantity|hurry(?:\s*up)?|"
+                      r"limited\s+stock|grab\s+fast|buy\s+now|shop\s+now)\b[!.,]*", " ", line)
+        # USER RULE: "just name petti price pettu anthe". A discount percentage
+        # and a struck-through MRP are exactly the claims a marketplace reviewer
+        # asks us to prove, and the source's own price is enough on its own.
+        line = re.sub(r"(?i)\(?\s*(?:flat\s*|upto\s*|up\s*to\s*|save\s*)?\d{1,3}\s*%\s*"
+                      r"(?:off|discount)?\s*\)?", " ", line)
+        line = re.sub(r"(?i)^\s*(?:reg(?:ular)?|mrp|m\.r\.p\.?|list\s*price|was)\b\s*"
+                      r"[:.\-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+\s*/?-?\s*$", " ", line)
+        line = re.sub(r"[ \t]{2,}", " ", line).strip(" \t|-–—:•*~")
+        if not line:
+            continue
+        # A line with no product words left (a lone "!!!" or a bare hash tag) is
+        # scaffolding, not content.
+        if not re.search(r"[A-Za-z0-9₹]", line):
+            continue
+        out_lines.append(line)
+    body = "\n".join(out_lines)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body
 
 
 def _premium_windows(around: datetime) -> list[tuple[datetime, datetime, str]]:
@@ -4322,7 +4455,8 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
 async def build_maps(client: TelegramClient):
     source_map: dict[int, tuple[str, list[str]]] = {}
     target_map: dict[str, Any] = {}
-    all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET])
+    all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET,
+                                      SHOPPING_TARGET])
     for targets in SOURCE_TO_TARGETS.values():
         all_targets.update(targets)
     for target in sorted(all_targets):
@@ -5175,6 +5309,17 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             base_targets = [target for target in base_targets if target != UNDER99_TARGET]
     if guaranteed not in base_targets:
         base_targets.append(guaranteed)
+    # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
+    # same PRODUCT deals every other channel takes, in the programme-safe form
+    # rendered at delivery time (name + price + link). A trick/recharge/app promo
+    # is not a shoppable product, and a post with no buyable link cannot be
+    # reviewed as one, so neither reaches it.
+    if (SHOPPING_TARGET_ENABLED
+            and row["source"] not in TRICKS_SOURCES
+            and not service_pairs
+            and URL_RE.search(rendered)
+            and SHOPPING_TARGET not in base_targets):
+        base_targets.append(SHOPPING_TARGET)
     if not base_targets:
         raise PermanentSkip("no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
@@ -5197,11 +5342,21 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         log.warning("PRICE FIDELITY check skipped (post kept as rendered): %s", exc)
     if not URL_RE.search(rendered):
         if link_free_post:
+            # The SOURCE never wrote a link and the post carries the product's own
+            # photo, so the reader can still see and search the deal. That post is
+            # published exactly as posted (round 13's rule) - nothing was lost here.
             log.warning("LINK-FREE POST | queue=%s the source posted this with no link at all "
                         "- publishing it exactly as posted", row["id"])
-        elif unresolvable:
+        elif unresolvable and not REQUIRE_LINK_IN_POST:
             log.warning("LINK-FREE POST | queue=%s every link the source wrote was a dead "
                         "short link - posting the deal complete, without a link", row["id"])
+        elif unresolvable:
+            # USER RULE (2026-09-05): "asalu link yeh ledu" - a text deal with no
+            # link at all is not a post our readers can use, and it earns nothing.
+            # The source DID write links here; every one of them was a dead
+            # shortener, so there is nothing to publish. It is skipped instead of
+            # going out as a linkless teaser.
+            raise PermanentSkip("every link the source wrote is dead - nothing buyable to post")
         else:
             raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
     rendered = keep_source_spacing(rendered, raw_text)
@@ -5419,6 +5574,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if not entity:
                 if premium_claimed:
                     await store.complete_premium(row["id"], False)
+                if target == SHOPPING_TARGET:
+                    # The review channel is an EXTRA destination. If the account
+                    # cannot see it yet (not created, not joined, renamed), that
+                    # is never a reason to hold a live deal back from the
+                    # channels that DO exist - the job would otherwise sit in
+                    # retry until the price went stale.
+                    log.warning("SHOPPING TARGET UNRESOLVED | @%s not reachable; the deal "
+                                "still goes to every other channel", target)
+                    await store.delivery(row["id"], target, True, "shopping target unresolved")
+                    continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
             # v17.8 one product, one channel, one post: the exact merchant id can
@@ -5453,6 +5618,20 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # (Toggling the knob between two chunks of ONE long post would shift the
             # boundaries, so it is an operator switch, not a per-post experiment.)
             target_text = rendered
+            if target == SHOPPING_TARGET:
+                # Amazon Associates review copy: product name, the source's own
+                # price, our link. The loot/urgency scaffolding is dropped here,
+                # at delivery, so the stored copy every other channel gets stays
+                # exactly the source's. A post that has nothing left but a link
+                # is not reviewable, so it is skipped for THIS channel only.
+                safe_text = affiliate_safe_text(target_text)
+                if (not safe_text or not URL_RE.search(safe_text)
+                        or not re.search(r"[A-Za-z]{3}", URL_RE.sub(" ", safe_text))):
+                    log.info("SHOPPING SKIP | queue=%s nothing reviewable left after the "
+                             "programme-safe rewrite", row["id"])
+                    await store.delivery(row["id"], target, True, "not programme-safe")
+                    continue
+                target_text = safe_text
             allow_preview = await store.preview_allowed(target_text)
             if ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES:
                 target_text = prepend_channel_header(target_text)

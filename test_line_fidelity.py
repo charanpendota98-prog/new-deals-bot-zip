@@ -801,6 +801,79 @@ def test_our_channel_link_sits_on_the_top_line_once():
           "prepend_channel_header" not in gate[:gate.index("async def process_job")], "header in render path")
 
 
+def test_a_product_list_pairs_every_deal_with_its_own_link():
+    """USER RULE (2026-09-05, "neatga ravali"): the source writes four deals and then
+    dumps four links at the bottom. Read that way nobody can tell which link is which
+    deal. Each block must carry its own link, in the source's order, with nothing
+    added, dropped or reordered - and the price spelling is the SOURCE's ("at 258",
+    "@167", "Rs 180"), not just the rupee sign the old ₹-only test demanded."""
+    raw = ("Premium Afghani Anjeer 500 gms at 258\nBuy Max Quantity\n"
+           "Premium Mix Dry Fruits 500 gms at 258\nBuy Max Quantity\n"
+           "Methi Dana 500 gms at 180\nBuy Max Quantity\n"
+           "Yellow mustard seeds 500gms at 220\nBuy Max Quantity\n"
+           "https://fkrt.co/sYKjVp\nhttps://fkrt.co/41Tz5Y\n"
+           "https://fkrt.co/4JArbD\nhttps://fkrt.co/Nv2fnb")
+    out = bot.format_clustered_product_list(raw)
+    blocks = [b.splitlines() for b in out.split("\n\n") if b.strip()]
+    check("every deal became its own block", len(blocks) == 4, repr(out))
+    check("each block ends with its OWN link, in source order",
+          [b[-1] for b in blocks] == ["https://fkrt.co/sYKjVp", "https://fkrt.co/41Tz5Y",
+                                      "https://fkrt.co/4JArbD", "https://fkrt.co/Nv2fnb"], repr(out))
+    check("each block keeps its product name and price",
+          all(any(x in b[0] for x in ("Anjeer", "Mix Dry Fruits", "Methi", "mustard")) for b in blocks),
+          repr(out))
+    check("the source's own note line travels with its deal",
+          all("Buy Max Quantity" in b for b in blocks), repr(out))
+    check("no link and no line was lost",
+          all(u in out for u in ("sYKjVp", "41Tz5Y", "4JArbD", "Nv2fnb"))
+          and out.count("Buy Max Quantity") == 4, repr(out))
+    check("a post that is not a bottom-dumped list is left alone",
+          bot.format_clustered_product_list("One deal \u20b9199\nhttps://a.in/x")
+          == "One deal \u20b9199\nhttps://a.in/x")
+
+
+def test_the_shopping_channel_copy_is_programme_safe():
+    """USER RULE (2026-09-05): t.me/smartbuyhub11 is under Amazon Associates review, so
+    it gets the SAME deal with only the product name, the price the source printed and
+    our link - no loot/grab banner, no "Buy Max Quantity", no unverifiable claim, no
+    discount percentage. Nothing is invented: every word left is the source's own."""
+    loot = ("Loot : Nutriburst Collagen powder 299 (70% off)\nReg 599\n#Uk no 1 brand\n"
+            "Buy Max Quantity\nHurry up!\nhttps://www.amazon.in/dp/B0X")
+    safe = bot.affiliate_safe_text(loot)
+    check("the product name and its price survive",
+          "Nutriburst Collagen powder" in safe and "299" in safe, repr(safe))
+    check("our link survives", "https://www.amazon.in/dp/B0X" in safe, repr(safe))
+    for banned in ("Loot", "Buy Max Quantity", "Hurry", "70%", "no 1 brand", "Reg 599"):
+        check(f"the reviewer never sees {banned!r}", banned.lower() not in safe.lower(), repr(safe))
+    check("no number the source never printed appears",
+          all(n in loot for n in re.findall(r"\d+", safe)), repr(safe))
+    grab = "GRAB : Gym / Motivational Bottle, 2000ml @167.\nhttps://fkrt.co/x"
+    safe2 = bot.affiliate_safe_text(grab)
+    check("a GRAB banner becomes a plain product line",
+          safe2.splitlines()[0].startswith("Gym / Motivational Bottle") and "167" in safe2, repr(safe2))
+    check("the safe rewrite is idempotent", bot.affiliate_safe_text(safe2) == safe2, repr(safe2))
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the safe copy is a DELIVERY-time rewrite, never the stored post",
+          "affiliate_safe_text" not in src[src.index("def render_job"):src.index("async def process_job")],
+          "safe rewrite leaked into render_job")
+    check("the shopping channel is not in the card-offer fan-out list",
+          bot.SHOPPING_TARGET not in bot.ALL_OWNED_TARGETS, str(bot.ALL_OWNED_TARGETS))
+
+
+def test_a_deal_with_no_working_link_is_not_posted():
+    """USER RULE (2026-09-05, "asalu link yeh ledu"): a deal a reader cannot click is
+    useless and earns nothing, so when every link the source wrote is dead the post is
+    skipped. The photo-post rule above is untouched: a source post that never HAD a
+    link but shows the product still goes out."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the default is 'a post needs a link'", bot.REQUIRE_LINK_IN_POST is True)
+    gate = src[src.index("if not URL_RE.search(rendered):", src.index("def render_job")):]
+    check("a dead-link-only post raises a skip",
+          "nothing buyable to post" in gate[:2600], gate[:400])
+    check("a link-free PHOTO post is still published",
+          "publishing it exactly as posted" in gate[:2600], gate[:400])
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -815,6 +888,9 @@ def main() -> int:
     test_lists_are_shortened_with_our_bitly_and_stay_neat()
     test_photos_arrive_as_the_source_posted_them()
     test_our_channel_link_sits_on_the_top_line_once()
+    test_a_product_list_pairs_every_deal_with_its_own_link()
+    test_the_shopping_channel_copy_is_programme_safe()
+    test_a_deal_with_no_working_link_is_not_posted()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

@@ -1,0 +1,94 @@
+2026-09-05 — "anni fix cheyu, motham" round
+=================================================================
+
+Four complaints, four fixes. All in bestgaa/main_bot_new.py, all covered by
+tests (test_line_fidelity.py, test_duplicate_sim.py).
+
+
+1. "neatga ravali" — a product list must not dump its links at the bottom
+-------------------------------------------------------------------------
+The source posts
+
+    Premium Afghani Anjeer 500 gms at 258
+    Buy Max Quantity
+    Premium Mix Dry Fruits 500 gms at 258
+    Buy Max Quantity
+    ...
+    <link1> <link2> <link3> <link4>
+
+and the reader cannot tell which link belongs to which deal.
+
+format_clustered_product_list() now splits the head into BLOCKS (a new block
+starts on every price-bearing line; the note lines under it, "Buy Max
+Quantity", an MRP line, travel with it) and puts each block's own link directly
+under it, in the source's order.
+
+The price test used to be ₹-only, which is why this exact post was never
+re-laid out: the sources write "at 258", "@167", "Rs 180", "220/-". PRICE_LABEL_RE
+now reads all of those. Extra links (variant links) and extra blocks are
+appended rather than dropped — a lost link is a lost deal.
+
+
+2. "asalu link yeh ledu" — never publish a deal with no link
+-------------------------------------------------------------
+Earlier rounds published a post as complete text when every link the source
+wrote turned out to be a dead shortener. The user has reversed that: a post a
+reader cannot click is useless to them and earns nothing.
+
+  REQUIRE_LINK_IN_POST (default true)
+    every link dead  ->  PermanentSkip("every link the source wrote is dead")
+    set to false     ->  old behaviour (post it as text)
+
+UNCHANGED: a source post that never had a link but carries the product PHOTO is
+still published exactly as posted (round 13's rule). The two cases are
+different — one shows the reader the product, the other shows them nothing.
+
+The new skip reason is registered as a POLICY skip in ops/quality_audit.py and
+ops/coverage_audit.py, so the auditors do not report it as a lost post.
+
+
+3. Duplicates across differently-worded copies
+----------------------------------------------
+    "Loot : Nutriburst Collagen powder 299 (70% off)"
+    "Grab : Nutriburst Collagen powder @ 299 70% off"
+
+product_signature() already resolves both to the same key (verified), so the
+per-channel dedup catches it. Nothing to change here — the two posts were
+reaching the channel because the FIRST one was a linkless teaser (fix 2) and
+therefore never registered a delivery. Fix 2 closes this hole too.
+
+
+4. t.me/smartbuyhub11 — the Amazon Associates review channel
+-------------------------------------------------------------
+    SHOPPING_TARGET = "smartbuyhub11"
+    SHOPPING_TARGET_ENABLED (default true)
+
+It receives the SAME product deals as every other channel, in a
+programme-safe form rendered by affiliate_safe_text() AT DELIVERY TIME (so the
+stored copy every other channel gets stays exactly the source's):
+
+  kept     product name, the price the source printed, our link
+  removed  "Loot :" / "GRAB :" banners, "Buy Max Quantity", hurry/limited-stock
+           urgency, "#UK no 1 brand" and other unverifiable superlatives,
+           discount percentages and struck-through MRP lines, emoji shouting
+
+Nothing is invented: every word and every number left is the source's own.
+
+Routing rules for that channel:
+  * product deals only — trick / recharge / app-promo posts never reach it
+  * a post with no buyable link never reaches it
+  * a post left with nothing but a link after the rewrite is skipped for THAT
+    channel only (logged "SHOPPING SKIP"), the other channels are unaffected
+  * if the account cannot resolve @smartbuyhub11 yet, the delivery is closed as
+    done for that target instead of putting the whole job into retry — a live
+    deal is never held back from the channels that DO exist
+
+It is deliberately NOT in ALL_OWNED_TARGETS, so the bank/card-offer fan-out
+does not push those posts (which are not shoppable products) at the reviewer.
+
+
+Before you run it
+-----------------
+The bot account must be an admin of @smartbuyhub11 with post rights. Until it
+is, every other channel keeps working normally and the log says
+"SHOPPING TARGET UNRESOLVED".
