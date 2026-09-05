@@ -514,3 +514,41 @@ price drop is never swallowed.
 
 Verified: A and a reordered A from another source now collide; A plus a
 fourth product does not; single-product posts keep their SIG: scheme.
+
+
+=================================================================
+Round 9 — our own tag (mama086-21) and the self-source loop
+=================================================================
+
+USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade so dinni
+approve cheyali mana new channel lo post cheyu vere channels lo as usual
+... nenu source ga ana kotha channel link ichanu ... 30-50 post veyu".
+
+1. THE TAG IS OURS NOW
+   OUR_TAG had been pinned to "" because the only tag ever seen in the
+   wild (deals0911-21) belonged to a SOURCE - putting it on our posts
+   would have paid THEM. We now own mama086-21, so the tag is read from
+   AMAZON_TAG again, but it is validated against OUR_AMAZON_TAGS first:
+   a value that is not ours is refused with a warning and the bot posts
+   tagless rather than credit a stranger. A stale .env can no longer do
+   damage in either direction.
+
+   Set on the server:   AMAZON_TAG=mama086-21
+
+   AMAZON_TAG_TARGETS still defaults to the review channel alone, so the
+   tag rides ONLY on the channel declared to Amazon. Every other channel
+   posts the same deal through EarnKaro, untagged - which is both the
+   user's "vere channels lo as usual" and the Operating Agreement's
+   requirement that links only appear on declared properties.
+
+2. THE NEW CHANNEL WAS ADDED AS A SOURCE - THAT IS A LOOP
+   The user added the new channel's own link to the source list. A
+   channel that is both source and target feeds its own output back into
+   the queue: the bot re-reads what it just published, re-shortens the
+   link and posts it again. is_own_channel_source() now refuses any of
+   our own channels as a deal source, checked at the very top of
+   process_job before any work is done. Real sources are unaffected.
+
+3. 30-50 A DAY
+   SHOPPING_DAILY_CAP stays at 50 (set 30 or 40 for a lower pace); the
+   cap applies to the review channel only.

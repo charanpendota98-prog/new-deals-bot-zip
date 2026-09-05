@@ -131,7 +131,22 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
-OUR_TAG = ""  # TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
+# USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The
+# previously seen tag (deals0911-21) belonged to a SOURCE, so it was pinned
+# empty to stop a stale .env re-enabling somebody else's tag. We now own
+# mama086-21, so the tag is read from the environment again - but a tag that
+# is not ours must still never come back, so any value is checked against the
+# tags we actually own before it is used.
+OUR_AMAZON_TAGS = {"mama086-21"}
+_configured_tag = os.getenv("AMAZON_TAG", "").strip()
+if _configured_tag and _configured_tag.lower() not in {t.lower() for t in OUR_AMAZON_TAGS}:
+    # A source's tag in our .env would credit THEM for our sales and, worse,
+    # put an undeclared tag on our channels. Refuse it loudly rather than post.
+    logging.getLogger("bestgaa").warning(
+        "AMAZON_TAG %r is not one of ours %s - ignoring it and posting tagless",
+        _configured_tag, sorted(OUR_AMAZON_TAGS))
+    _configured_tag = ""
+OUR_TAG = _configured_tag
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
 # USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
@@ -324,6 +339,21 @@ PRIORITY_SOURCES.add("under_99_loot_deals")
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
+# USER RULE (2026-09-06): the user added the new channel's own link as a
+# SOURCE. A channel that is both a source and a target feeds its own posts back
+# into the queue: the bot would re-read what it just published, re-shorten the
+# link, and post it again - the exact "multiple times" the user wants gone. Any
+# channel we OWN is therefore never accepted as a source of deals.
+def is_own_channel_source(source: str) -> bool:
+    """True when a queue job came from a channel we publish to ourselves."""
+    name = (source or "").strip().lstrip("@").lower()
+    if not name:
+        return False
+    owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
+             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET}
+    return name in {t.lower() for t in owned}
+
+
 ALL_OWNED_TARGETS = list(dict.fromkeys(
     [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET, PREMIUM_TARGET,
      UNDER99_TARGET, UNDER499_TARGET, TRICKS_TARGET]
@@ -5843,6 +5873,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     successes = 0
     price = None
     try:
+        # A channel we publish to is never a source. The user added the new
+        # channel's own link as a source; without this the bot re-reads its own
+        # post and publishes it again, forever.
+        if is_own_channel_source(row["source"]):
+            raise PermanentSkip(
+                f"@{row['source']} is our own channel - not a deal source")
         if row["rendered_text"]:
             # The post is already rendered and stored: this fetch only sharpens the
             # residue cleaning and re-attaches media. A source message that has since

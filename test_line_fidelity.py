@@ -1221,6 +1221,48 @@ def test_a_roundup_list_cannot_be_posted_twice_from_two_sources():
     check("and a cheaper repeat is still allowed through", cheaper is False)
 
 
+def test_our_new_associates_tag_and_the_self_source_loop():
+    """USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade" and
+    "nenu source ga ana kotha channel link ichanu"."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+
+    # 1. The tag we now own is usable again - it had been pinned empty because
+    # the only tag ever seen (deals0911-21) belonged to a SOURCE, not to us.
+    check("mama086-21 is registered as a tag we own",
+          "mama086-21" in bot.OUR_AMAZON_TAGS, str(bot.OUR_AMAZON_TAGS))
+    check("the tag is read from the environment, not pinned empty",
+          'os.getenv("AMAZON_TAG"' in src, "AMAZON_TAG no longer read")
+    check("a tag that is NOT ours can never be used",
+          "deals0911-21" not in {t.lower() for t in bot.OUR_AMAZON_TAGS})
+
+    # 2. It may ride ONLY on the channel declared to Amazon.
+    check("the declared-channel allowlist is still just the review channel",
+          bot.AMAZON_TAG_TARGETS == {bot.SHOPPING_TARGET}, str(bot.AMAZON_TAG_TARGETS))
+    if bot.OUR_TAG:
+        tagged = "Boat 141 at 899\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+        check("the tag survives on the declared channel",
+              bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared(tagged, bot.SHOPPING_TARGET))
+        check("the tag is stripped everywhere else",
+              bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared(tagged, "LootZoneIndia11"))
+
+    # 3. A channel we publish to must never be read back as a source, or the bot
+    # republishes its own posts forever.
+    for own in ("smartbuyhub11", "@smartbuyhub11", "LootZoneIndia11",
+                "Under99Deals11", "Premiumlootsdeals"):
+        check("our own channel %r is refused as a source" % own,
+              bot.is_own_channel_source(own) is True)
+    for real in ("pricehistory", "under_99_loot_deals", "TrickXpert", ""):
+        check("a real source %r is still accepted" % real,
+              bot.is_own_channel_source(real) is False)
+    deliver = src[src.index("async def process_job"):]
+    check("the self-source loop is broken before anything is posted",
+          "is_own_channel_source(row[\"source\"])" in deliver, "guard not wired")
+
+    # 4. The user asked for 30-50 posts a day on the new channel.
+    check("the daily cap covers the 30-50 the user asked for",
+          30 <= bot.SHOPPING_DAILY_CAP <= 50, str(bot.SHOPPING_DAILY_CAP))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1245,6 +1287,7 @@ def main() -> int:
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
+    test_our_new_associates_tag_and_the_self_source_loop()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
