@@ -2957,7 +2957,61 @@ def affiliate_safe_text(text: str) -> str:
         out_lines.append(line)
     body = "\n".join(out_lines)
     body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if SAFE_STRICT_REBUILD:
+        body = _strict_review_copy(body)
     return body
+
+
+# ---------------------------------------------------------------------------
+# STRICT review copy (EarnKaro / Amazon channel under review)
+# ---------------------------------------------------------------------------
+# USER RULE (2026-09-05): the new channel is submitted for review, so it must
+# follow the programme rules 100% - the other channels stay exactly as they are.
+# A blocklist ("remove the words we thought of") is the wrong tool for that: the
+# ONE hype word nobody listed is the one the reviewer sees. So the review copy is
+# REBUILT from an allowlist instead - only two kinds of line survive:
+#     1. a product line   -> the product's own words + the price the source printed
+#     2. the link
+# Anything else is dropped. Nothing is ever invented: every word and every digit
+# still comes from the source post.
+SAFE_STRICT_REBUILD = os.getenv(
+    "SAFE_STRICT_REBUILD", "true").strip().lower() not in ("0", "false", "no", "off")
+# Words that must never survive into the review copy, whatever shape the line has.
+# This is the LAST net, not the first: the allowlist above has already run.
+_STRICT_BANNED_RE = re.compile(
+    r"(?i)\b(?:loot|steal|jackpot|bumper|dhamaka|blast|crazy|insane|cheapest|"
+    r"lowest|biggest|hurry|fast|urgent|limited|stock|grab|max\s*quantity|"
+    r"free\s*money|guaranteed|must\s*buy|don'?t\s*miss|last\s*chance|"
+    r"hot|mega|super\s*deal|price\s*error|glitch|trick|cashback\s*trick)\b")
+
+
+def _strict_review_copy(body: str) -> str:
+    """Rebuild a post from an allowlist: product line(s) + link. Nothing else.
+
+    The price is kept EXACTLY as the source printed it (₹298 / at 258 / @167),
+    because a price we re-format is a price we could get wrong, and a wrong price
+    is the one thing a marketplace programme will not forgive.
+    """
+    kept: list[str] = []
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if URL_RE.fullmatch(line):
+            kept.append(line)
+            continue
+        if _STRICT_BANNED_RE.search(line):
+            continue
+        # A product line has to read like a product: real words, and not a bare
+        # number or a lone symbol. Two letter-words is the floor ("Methi Dana").
+        words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", line)
+        if len(words) < 2:
+            continue
+        # Trailing junk the earlier passes may have left on an otherwise good line.
+        line = re.sub(r"\s{2,}", " ", line).strip(" \t|-–—:•*~,")
+        if line:
+            kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _premium_windows(around: datetime) -> list[tuple[datetime, datetime, str]]:

@@ -280,3 +280,66 @@ NOTE ON TELEGRAM ITSELF: Amazon's approved-social list names Facebook,
 Instagram, X, YouTube, TikTok and Twitch. Telegram is not on that list - it is
 a grey area. People do run approved Telegram channels, but understand you are
 not standing on the same firm ground as a website, and keep the channel clean.
+
+
+=================================================================
+Round 5 — EarnKaro review channel: 100% rules, allowlist rebuild
+=================================================================
+
+"andulo chala conditions unnai, aa channel anni rules follow avvali;
+ approve ayyaka migatha channels lo enaina post cheyyochu"
+
+That is exactly how it is built now, and ONLY that channel changes.
+
+WHY THE APPROACH CHANGED
+------------------------
+Until now the review copy was a BLOCKLIST: remove "loot", remove "hurry",
+remove "buy max quantity"... The flaw is structural - the one hype word nobody
+thought of is the one the reviewer reads. Real source posts carry "PRICE ERROR",
+"Dhamaka", "Jackpot", "cashback trick", "free money glitch".
+
+So the review copy is now REBUILT FROM AN ALLOWLIST (_strict_review_copy):
+
+    a line survives ONLY if it is
+      1. the link, or
+      2. a product line - 2+ real words, no banned word
+
+    everything else is dropped.
+
+Nothing is invented: every word and every digit still comes from the source,
+and the price is kept EXACTLY as the source printed it (₹298 / at 258 / @167).
+A price we re-format is a price we could get wrong, and a wrong price is the one
+thing a marketplace programme does not forgive.
+
+    SAFE_STRICT_REBUILD=true   (default; set false to fall back to the blocklist)
+
+WORKED EXAMPLES (real shapes from your sources)
+-----------------------------------------------
+  "PRICE ERROR LOOT / Boat Airdopes 141 at 899 / Order fast before it ends!!"
+      -> Boat Airdopes 141 at 899
+         <link>
+
+  "Dhamaka offer!! Jackpot deal / Prestige Cooker 5L at 1499 / Buy Max Quantity"
+      -> Prestige Cooker 5L at 1499
+         <link>
+
+  "Samsung Galaxy M14 5G at 9999 / MRP 16999 / Save 41%"
+      -> Samsung Galaxy M14 5G at 9999
+         <link>
+
+  "Cashback trick: pay via CRED get 200 off"   -> NOT POSTED to this channel
+  "Free money glitch"                          -> NOT POSTED to this channel
+
+The last two are the important ones: after the rebuild there is no product left,
+only a link, and the delivery guard refuses to post that to the review channel
+(logged "SHOPPING SKIP"). Those posts still reach every OTHER channel exactly as
+the source wrote them - nothing is lost anywhere else.
+
+SCOPE - the other channels are untouched
+----------------------------------------
+The rewrite runs at DELIVERY time, per target. The stored copy, the ledger, the
+auditor and every other channel keep seeing the source-derived post exactly as
+before. Enforced by a test that fails if affiliate_safe_text/_strict_review_copy
+ever appears in the shared render path.
+
+So: this channel plays by the rules; the others behave exactly as they do today.

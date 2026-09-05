@@ -1008,6 +1008,58 @@ def test_our_amazon_tag_only_rides_on_declared_channels():
           "strip_amazon_tag_for_undeclared(target_text, target)" in deliver, "not wired in")
 
 
+def test_the_review_channel_copy_is_built_from_an_allowlist():
+    """USER RULE (2026-09-05): the new channel is under EarnKaro/Amazon review, so it
+    must follow the programme rules 100% - the other channels are untouched. A
+    blocklist is the wrong tool (the one hype word nobody listed is the one the
+    reviewer sees), so the review copy is REBUILT from an allowlist: product line +
+    price the source printed + link. Nothing else survives, nothing is invented."""
+    cases = [
+        ("\U0001f525\U0001f525 PRICE ERROR LOOT \U0001f525\U0001f525\nBoat Airdopes 141 at 899\n"
+         "Order fast before it ends!!\nhttps://fkrt.co/a",
+         ["Boat Airdopes 141 at 899", "https://fkrt.co/a"]),
+        ("Dhamaka offer!! Jackpot deal\nPrestige Cooker 5L at 1499\nBuy Max Quantity\n"
+         "https://fkrt.co/c", ["Prestige Cooker 5L at 1499", "https://fkrt.co/c"]),
+        ("Samsung Galaxy M14 5G at 9999\nMRP 16999\nSave 41%\nhttps://www.amazon.in/dp/B0M14",
+         ["Samsung Galaxy M14 5G at 9999", "https://www.amazon.in/dp/B0M14"]),
+    ]
+    for raw, expected in cases:
+        out = bot.affiliate_safe_text(raw)
+        check(f"only product+link survive: {expected[0][:30]!r}",
+              out.splitlines() == expected, repr(out))
+    banned = ("loot", "price error", "dhamaka", "jackpot", "order fast",
+              "buy max quantity", "mrp", "41%", "\U0001f525")
+    joined = " ".join(bot.affiliate_safe_text(raw) for raw, _ in cases).lower()
+    for word in banned:
+        check(f"the reviewer never sees {word!r}", word not in joined, joined[:120])
+    check("the price stays EXACTLY as the source printed it",
+          "at 899" in bot.affiliate_safe_text(cases[0][0]), "price reformatted")
+
+    # A post that is only a trick/glitch/cashback line has NO product to review.
+    # After the rebuild nothing but a link is left, and the delivery guard must
+    # refuse it for this channel (the other channels still get it as written).
+    def would_post(text: str) -> bool:
+        safe = bot.affiliate_safe_text(text)
+        return bool(safe and bot.URL_RE.search(safe)
+                    and re.search(r"[A-Za-z]{3}", bot.URL_RE.sub(" ", safe)))
+
+    check("a cashback TRICK post never reaches the review channel",
+          not would_post("Cashback trick: pay via CRED get 200 off\nhttps://fkrt.co/b"))
+    check("a 'free money glitch' post never reaches it either",
+          not would_post("Free money glitch\nhttps://fkrt.co/d"))
+    check("but a real product deal does",
+          would_post("Boat Airdopes 141 at 899\nhttps://fkrt.co/a"))
+    check("the strict rebuild is idempotent",
+          bot.affiliate_safe_text(bot.affiliate_safe_text(cases[0][0]))
+          == bot.affiliate_safe_text(cases[0][0]))
+    check("and it is ON by default", bot.SAFE_STRICT_REBUILD is True)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("def render_job"):src.index("async def process_job")]
+    check("the strict copy is delivery-only: other channels keep the source's post",
+          "affiliate_safe_text" not in render and "_strict_review_copy" not in render,
+          "review rewrite leaked into the shared render path")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1028,6 +1080,7 @@ def main() -> int:
     test_the_same_deal_under_two_banner_words_is_one_post()
     test_a_flipkart_product_link_goes_out_short()
     test_our_amazon_tag_only_rides_on_declared_channels()
+    test_the_review_channel_copy_is_built_from_an_allowlist()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
