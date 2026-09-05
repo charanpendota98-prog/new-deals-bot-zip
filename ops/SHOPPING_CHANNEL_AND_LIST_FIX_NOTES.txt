@@ -92,3 +92,76 @@ Before you run it
 The bot account must be an admin of @smartbuyhub11 with post rights. Until it
 is, every other channel keeps working normally and the log says
 "SHOPPING TARGET UNRESOLVED".
+
+
+=================================================================
+Round 2 (same day) — "migilina channels lo anni fix chesava?"
+=================================================================
+
+5. "shortga ravali ga earnkaro tho" — long Flipkart links
+---------------------------------------------------------
+A dl.flipkart.com product link arrives ~177 characters because of lid /
+marketplace / srno session noise, and it was posted at full length whenever the
+shortener was rate-limited or out of quota (the shorten pass had no fallback).
+
+compact_flipkart_product_link() now collapses it natively to
+    https://www.flipkart.com/<slug>/p/<item id>?pid=<pid>
+(~127 chars, no quota spent), in two places:
+  * the final shorten pass (pass 1b, next to the Amazon /dp compaction)
+  * convert(), before the link is handed to the shortener at all
+
+`pid` is the product identity and is ALWAYS kept, so the link still opens the
+exact item the source linked. Search/category URLs have no item id and are left
+untouched for the shortener.
+
+
+6. "idi manvena?" — is that link actually ours?
+------------------------------------------------
+Investigated. The bot runs TAGLESS (OUR_TAG = "", pinned at line 134 because
+the Associates account kept getting rejected), so an Amazon link genuinely
+carries no proof of ownership.
+
+I tried tightening the provenance gate to reject bare Amazon links, and REVERTED
+it: that check is what lets a legitimately-tagged link post when the link cache
+is cold (right after deploy, after a prune), and tightening it dropped real
+deals in the suite. Losing a deal to prove a point is the wrong trade.
+
+Instead, an unmonetized link is now LOUD instead of silent:
+    log.warning("UNMONETIZED LINK | queue=%s this deal posts a plain merchant
+                 link (the affiliate network had no campaign for it): %s")
+Grep the log for "UNMONETIZED LINK" to see exactly which posts earn nothing.
+
+TO ACTUALLY EARN on Amazon you must set AMAZON_TAG (OUR_TAG) once the
+Associates account is approved — that is a credentials issue, not a code one.
+
+
+7. Duplicates — the real root cause
+------------------------------------
+    "Loot : Nutriburst Collagen powder 299 (70% off)"
+    "Grab : Nutriburst Collagen powder @ 299 70% off"
+    "Grab ₹298 (10KG Detergent Powder)"  /  "Loot : 10KG Detergent Powder @298"
+
+Three separate bugs in the product signature made these sign differently:
+  a) the banner word ("Loot :", "Grab ") was read as the BRAND. It is stripped
+     now, colon or no colon, using the same _SAFE_PREFIX_RE the safe rewrite
+     uses (so the two can never drift apart).
+  b) a price written without "₹" ("@298", "at 167", "299 (70% off)") was read
+     as a MODEL NUMBER. _SIG_AMOUNT_RE now reads every spelling, and a bare
+     number equal to the line's own price is never a model.
+  c) a product with no model number at all needed FOUR agreeing words, so
+     "Nutriburst Collagen powder" was un-dedupable. Three long words is enough.
+
+Guarded in the other direction (a signature that matches too eagerly SKIPS a
+real deal), with a regression test covering:
+  Airdopes 141 vs 131, S23 128GB vs 256GB, 5 Burner vs 3 Burner,
+  Collagen vs Biotin, and Nivea MEN vs WOMEN — the last one was a PRE-EXISTING
+  collision (gender words are now variant words, like "pro"/"fe").
+
+ops/quality_audit.py mirrors this block; it was re-synced with
+`python3 ops/sync_identity.py` and the suite enforces that they match.
+
+
+Still NOT auto-fixable from here
+--------------------------------
+* AMAZON_TAG must be set for Amazon links to earn (see 6).
+* The bot account must be admin of @smartbuyhub11 (see 4).

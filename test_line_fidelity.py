@@ -874,6 +874,79 @@ def test_a_deal_with_no_working_link_is_not_posted():
           "publishing it exactly as posted" in gate[:2600], gate[:400])
 
 
+def test_the_same_deal_under_two_banner_words_is_one_post():
+    """USER RULE (2026-09-05): the sources publish one product twice under two
+    different banner words - "Loot : X 299 (70% off)" and "Grab : X @ 299 70% off",
+    "Grab \u20b9298 (10KG Detergent Powder)" and "Loot : 10KG Detergent Powder @298".
+    The banner used to be read as the BRAND and the price as a MODEL NUMBER, so the
+    two copies signed differently and both went out. They are one product now."""
+    link = "\nhttps://fkrt.co/z"
+    same = [
+        ("Loot : Nutriburst Collagen powder 299 (70% off)",
+         "Grab : Nutriburst Collagen powder @ 299 70% off"),
+        ("Grab \u20b9298 (10KG Detergent Powder)", "Loot : 10KG Detergent Powder @298"),
+        ("Deal : Prestige Pressure Cooker 5L at 1499", "Prestige Pressure Cooker 5L Rs 1499"),
+    ]
+    for first, second in same:
+        sig_a = bot.product_signature(first + link)
+        sig_b = bot.product_signature(second + link)
+        check(f"one product, one signature: {first[:34]!r}",
+              bool(sig_a) and sig_a == sig_b, f"{sig_a} vs {sig_b}")
+    # The other direction matters more: a signature that matches too eagerly SKIPS a
+    # real deal. Two genuinely different products must never collapse together.
+    differ = [
+        ("boAt Airdopes 141 at 999", "boAt Airdopes 131 at 999"),
+        ("Samsung Galaxy S23 128GB at 45999", "Samsung Galaxy S23 256GB at 45999"),
+        ("Prestige 5 Burner Gas Stove at 4999", "Prestige 3 Burner Gas Stove at 4999"),
+        ("Nutriburst Collagen powder at 299", "Nutriburst Biotin powder at 299"),
+        ("Nivea Men Face Wash 100ml at 199", "Nivea Women Face Wash 100ml at 199"),
+    ]
+    for first, second in differ:
+        sig_a = bot.product_signature(first + link)
+        sig_b = bot.product_signature(second + link)
+        check(f"two products stay two: {first[:32]!r}", sig_a != sig_b, f"{sig_a} vs {sig_b}")
+    check("a bare category phrase still gets no signature at all",
+          bot.product_signature("Nice offer today" + link) is None)
+
+
+def test_a_flipkart_product_link_goes_out_short():
+    """USER RULE (2026-09-05, "shortga ravali ga"): a dl.flipkart.com product link
+    arrives ~177 characters (lid / marketplace / srno session noise). It is compacted
+    natively to slug + item id + pid - free, no shortener quota - so the post is neat
+    even when Bitly is rate-limited. pid is the product identity and is always kept."""
+    long_fk = ("https://dl.flipkart.com/dl/bellerbird-motivational-bottle-2000ml-black-"
+               "2000-ml-plastic/p/itm0613a6a4f24de?lid=LSTBOTHEXH9ZG8XAJTNABEVPU"
+               "&marketplace=FLIPKART&pid=BOTHEXH9ZG8XAJTN")
+    compact = bot.compact_flipkart_product_link(long_fk)
+    check("the link got materially shorter", len(compact) < len(long_fk) - 40,
+          f"{len(long_fk)} -> {len(compact)}")
+    check("it still points at the same item and product",
+          "itm0613a6a4f24de" in compact and "pid=BOTHEXH9ZG8XAJTN" in compact, compact)
+    check("the session/tracking noise is gone",
+          "lid=" not in compact and "marketplace=" not in compact, compact)
+    check("the app-redirect wrapper became the real product page",
+          compact.startswith("https://www.flipkart.com/") and "/dl/" not in compact, compact)
+
+    class NoSession:
+        pass
+
+    aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
+
+    async def no_shortener(url):
+        return None
+
+    aff.bitly = no_shortener
+    aff.shorten = no_shortener
+    out = asyncio.run(aff.shorten_long_urls_in_text("GRAB : Bottle @167\n" + long_fk))
+    check("even with the shortener DOWN the posted link is short",
+          max(len(u) for u in bot.URL_RE.findall(out)) < 140, out)
+    check("and the deal text is untouched", "GRAB : Bottle @167" in out, out)
+    search = "https://www.flipkart.com/search?q=bottle&sid=abc&otracker=xyz"
+    check("a search/category link is left for the shortener, not mangled",
+          bot.compact_flipkart_product_link(search) == bot.clean_url(search),
+          bot.compact_flipkart_product_link(search))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -891,6 +964,8 @@ def main() -> int:
     test_a_product_list_pairs_every_deal_with_its_own_link()
     test_the_shopping_channel_copy_is_programme_safe()
     test_a_deal_with_no_working_link_is_not_posted()
+    test_the_same_deal_under_two_banner_words_is_one_post()
+    test_a_flipkart_product_link_goes_out_short()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

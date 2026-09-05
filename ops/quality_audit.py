@@ -187,8 +187,14 @@ _AUDIT_SIG_VARIANT_RE = re.compile(
 # Only words that name a genuinely different product line. "smart"/"air"/"elite" are
 # marketing adjectives here and there, and a copy that drops one must not turn the
 # same watch into a different product - so the list stays short and factual.
+# The gender/audience words are here for the same reason as "pro"/"fe": a
+# "Nivea MEN Face Wash" and a "Nivea WOMEN Face Wash" are two different products
+# at the same price, and with no model number to separate them they used to sign
+# identically - so the second one was skipped as a duplicate and that deal never
+# reached the channel.
 _AUDIT_SIG_VARIANTS = frozenset("""
 pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
+men mens women womens kids boys girls unisex
 """.split())
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
@@ -199,7 +205,42 @@ _AUDIT_SIG_BY_NON_BRAND = frozenset(
     "powered brought inspired sponsored posted shared sent curated verified".split())
 _AUDIT_SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+    # "70%" followed by a space failed the trailing \b (a percent sign is not a
+    # word char), so the discount stayed in the identity and two copies of one
+    # deal signed differently whenever the channels typed the discount apart.
+    r"\b\d{1,3}\s*%|"
+    # A bare number sitting immediately in front of the discount IS the price
+    # ("Collagen powder 299 (70% off)"), whatever marker the channel omitted.
+    r"\b[\d,]{2,}(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))|"
+    # A price written WITHOUT the rupee sign is still a price, not a model
+    # number: "@298", "at 167", "Rs 180", "220/-". Leaving these in made the
+    # SAME product signed differently depending on how the channel typed its
+    # price, so the duplicate slipped through. (A number that is genuinely part
+    # of the product - "10KG", "2000ml" - carries a unit and is keyed elsewhere.)
+    r"(?:@|\bat\b|\brs\.?|\binr)\s*[\d,]{2,}(?:\.\d+)?\b|\b[\d,]{2,}\s*/-|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
+
+
+# The price this LINE quotes, however the channel typed it. Deliberately a small
+# self-contained reader rather than a call to parse_price(): this block is mirrored
+# verbatim into ops/quality_audit.py by ops/sync_identity.py, so it must not depend
+# on anything outside itself or the auditor stops importing.
+_AUDIT_SIG_PRICE_RE = re.compile(
+    r"(?i)(?:[\u20b9$]|\brs\.?|\binr|@|\bat\b)\s*([\d,]{2,})(?:\.\d+)?\b"
+    r"|\b([\d,]{2,})\s*/-"
+    r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
+
+
+def _sig_line_price(line: str) -> int | None:
+    match = _AUDIT_SIG_PRICE_RE.search(line or "")
+    if not match:
+        return None
+    raw = next((g for g in match.groups() if g), "")
+    try:
+        value = int(str(raw).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 1 <= value <= 1_000_000 else None
 
 
 def _audit_sig_tokens(line: str) -> list[str]:
@@ -237,6 +278,11 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
     With no number to hold on to (a shirt, a handbag) every product word has to
     agree instead - the conservative answer that loses a duplicate rather than a deal.
     """
+    # A bare number that is simply the line's PRICE is not a model number.
+    # "Nutriburst Collagen powder 299" and "Nutriburst Collagen powder @ 299"
+    # are one product; only the second spelling was recognised as money, so the
+    # first signed "299" as a model and the duplicate got published twice.
+    line_price = _sig_line_price(line or "")
     raw = [re.sub(r"[-_]", "", tok) for tok in _audit_sig_tokens(line)]
     words = [w for w in raw if not w.isdigit() and w not in _AUDIT_SIG_STOP_WORDS]
     if len(words) < 2:
@@ -271,15 +317,23 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
                 continue
             if len(digits) < 2 or (len(digits) == 4 and 1900 <= int(digits) <= 2099):
                 continue                   # a quantity, or a launch year - not an id
+            if line_price is not None and int(digits) == line_price:
+                continue                   # that is the price, however it was typed
             if digits in digit_cores:
                 continue                   # the number is already inside a size id
             models.add(token)
     variants = {t for t in raw if t in _AUDIT_SIG_VARIANTS}
     if not ids and not models:
-        if len(words) < 4:
+        # No number to hold on to, so every product word has to agree. THREE
+        # words is enough when they are long enough to be a real product name
+        # ("Nutriburst Collagen powder"): demanding four made a named product
+        # with no model number un-dedupable, which is how the same collagen
+        # powder went out twice under two different banner words. A short
+        # category phrase ("hair oil set") still fails the length test below.
+        if len(words) < 3:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 16 else ("W", basis)
+        return None if len(basis) < 18 else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can

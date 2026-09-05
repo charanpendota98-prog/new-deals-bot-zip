@@ -725,6 +725,49 @@ def compact_amazon_product_link(link: str) -> str:
         return clean_url(link)
 
 
+# A Flipkart product URL is "slug + /p/ + item id + pid": lid, marketplace, srno,
+# ssid, otracker and the rest are session/tracking noise that triples the length.
+# USER RULE (2026-09-05, "shortga ravali"): a link of ours must never go out 177
+# characters long just because the shortener was busy, so a product link is first
+# compacted natively (free, no quota) and only then handed to the shortener.
+# The leading "/dl" of a dl.flipkart.com app link is part of the wrapper, not of
+# the product path: www.flipkart.com/<slug>/p/<item id> is the canonical page.
+FLIPKART_ITEM_RE = re.compile(r"(?i)^(?:/dl)?(?P<path>/.*?/p/itm[a-z0-9]+)")
+FLIPKART_HOSTS = {"flipkart.com", "www.flipkart.com", "dl.flipkart.com", "m.flipkart.com"}
+
+
+def compact_flipkart_product_link(link: str) -> str:
+    """Collapse a Flipkart product URL to slug + item id + pid.
+
+    Only a PRODUCT page (/p/itm...) is touched, and only tracking parameters are
+    dropped - `pid` is the product identity and is always kept, so the link still
+    opens exactly the item the source linked. A search/category/offer URL has no
+    item id and is returned untouched for the shortener to handle.
+    """
+    try:
+        raw = clean_url(link)
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        if host not in FLIPKART_HOSTS:
+            return raw
+        match = FLIPKART_ITEM_RE.match(parsed.path or "")
+        if not match:
+            return raw
+        pid = ""
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key.lower() == "pid" and value:
+                pid = value
+                break
+        # A dl.* link is Flipkart's own app-redirect wrapper for the same page.
+        netloc = "www.flipkart.com"
+        return parsed._replace(
+            scheme="https", netloc=netloc, path=match.group("path"),
+            query=urlencode([("pid", pid)]) if pid else "", fragment="", params="",
+        ).geturl()
+    except Exception:
+        return clean_url(link)
+
+
 def clean_url(value: str) -> str:
     # Telegram/Markdown copies can contain HTML-escaped query separators (`&amp;`).
     # Decode before parsing so foreign affiliate wrappers are always unwrapped.
@@ -1001,8 +1044,14 @@ _SIG_VARIANT_RE = re.compile(
 # Only words that name a genuinely different product line. "smart"/"air"/"elite" are
 # marketing adjectives here and there, and a copy that drops one must not turn the
 # same watch into a different product - so the list stays short and factual.
+# The gender/audience words are here for the same reason as "pro"/"fe": a
+# "Nivea MEN Face Wash" and a "Nivea WOMEN Face Wash" are two different products
+# at the same price, and with no model number to separate them they used to sign
+# identically - so the second one was skipped as a duplicate and that deal never
+# reached the channel.
 _SIG_VARIANTS = frozenset("""
 pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
+men mens women womens kids boys girls unisex
 """.split())
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
@@ -1013,7 +1062,42 @@ _SIG_BY_NON_BRAND = frozenset(
     "powered brought inspired sponsored posted shared sent curated verified".split())
 _SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+    # "70%" followed by a space failed the trailing \b (a percent sign is not a
+    # word char), so the discount stayed in the identity and two copies of one
+    # deal signed differently whenever the channels typed the discount apart.
+    r"\b\d{1,3}\s*%|"
+    # A bare number sitting immediately in front of the discount IS the price
+    # ("Collagen powder 299 (70% off)"), whatever marker the channel omitted.
+    r"\b[\d,]{2,}(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))|"
+    # A price written WITHOUT the rupee sign is still a price, not a model
+    # number: "@298", "at 167", "Rs 180", "220/-". Leaving these in made the
+    # SAME product signed differently depending on how the channel typed its
+    # price, so the duplicate slipped through. (A number that is genuinely part
+    # of the product - "10KG", "2000ml" - carries a unit and is keyed elsewhere.)
+    r"(?:@|\bat\b|\brs\.?|\binr)\s*[\d,]{2,}(?:\.\d+)?\b|\b[\d,]{2,}\s*/-|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
+
+
+# The price this LINE quotes, however the channel typed it. Deliberately a small
+# self-contained reader rather than a call to parse_price(): this block is mirrored
+# verbatim into ops/quality_audit.py by ops/sync_identity.py, so it must not depend
+# on anything outside itself or the auditor stops importing.
+_SIG_PRICE_RE = re.compile(
+    r"(?i)(?:[\u20b9$]|\brs\.?|\binr|@|\bat\b)\s*([\d,]{2,})(?:\.\d+)?\b"
+    r"|\b([\d,]{2,})\s*/-"
+    r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
+
+
+def _sig_line_price(line: str) -> int | None:
+    match = _SIG_PRICE_RE.search(line or "")
+    if not match:
+        return None
+    raw = next((g for g in match.groups() if g), "")
+    try:
+        value = int(str(raw).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 1 <= value <= 1_000_000 else None
 
 
 def _sig_tokens(line: str) -> list[str]:
@@ -1051,6 +1135,11 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
     With no number to hold on to (a shirt, a handbag) every product word has to
     agree instead - the conservative answer that loses a duplicate rather than a deal.
     """
+    # A bare number that is simply the line's PRICE is not a model number.
+    # "Nutriburst Collagen powder 299" and "Nutriburst Collagen powder @ 299"
+    # are one product; only the second spelling was recognised as money, so the
+    # first signed "299" as a model and the duplicate got published twice.
+    line_price = _sig_line_price(line or "")
     raw = [re.sub(r"[-_]", "", tok) for tok in _sig_tokens(line)]
     words = [w for w in raw if not w.isdigit() and w not in _SIG_STOP_WORDS]
     if len(words) < 2:
@@ -1085,15 +1174,23 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
                 continue
             if len(digits) < 2 or (len(digits) == 4 and 1900 <= int(digits) <= 2099):
                 continue                   # a quantity, or a launch year - not an id
+            if line_price is not None and int(digits) == line_price:
+                continue                   # that is the price, however it was typed
             if digits in digit_cores:
                 continue                   # the number is already inside a size id
             models.add(token)
     variants = {t for t in raw if t in _SIG_VARIANTS}
     if not ids and not models:
-        if len(words) < 4:
+        # No number to hold on to, so every product word has to agree. THREE
+        # words is enough when they are long enough to be a real product name
+        # ("Nutriburst Collagen powder"): demanding four made a named product
+        # with no model number un-dedupable, which is how the same collagen
+        # powder went out twice under two different banner words. A short
+        # category phrase ("hair oil set") still fails the length test below.
+        if len(words) < 3:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 16 else ("W", basis)
+        return None if len(basis) < 18 else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can
@@ -1151,6 +1248,13 @@ def product_signature(text: str) -> str | None:
             continue                       # a hype banner is not a product name
         if not re.search(r"[A-Za-z]", line):
             continue                       # a bare price / separator line
+        # USER RULE (2026-09-05): "Loot : X" and "Grab : X" are the SAME product
+        # wearing two different banner words, and the banner used to be read as
+        # the brand - so the identity differed and the same deal was published
+        # twice. The banner prefix is source decoration; strip it before the
+        # product's own words are read. (_SAFE_PREFIX_RE is the same list the
+        # programme-safe rewrite uses, so the two can never drift apart.)
+        line = _SAFE_PREFIX_RE.sub("", line).strip() or line
         identity = _product_identity(line)
         if identity:
             headline = identity
@@ -2728,10 +2832,16 @@ _SAFE_DROP_LINE_RE = re.compile(
     r"deal\s+of\s+the\s+day|price\s+may\s+change|#\w+"
     r")\s*[!.:]*\s*$"
 )
+# A banner word in front of the product name ("Loot : X", "GRAB : X", and just
+# as often "Grab ₹298 (X)" with no colon at all). It is source decoration in
+# both the programme-safe rewrite and the duplicate signature, so the separator
+# is optional - otherwise the SAME deal signs differently depending on whether
+# that channel typed a colon.
 _SAFE_PREFIX_RE = re.compile(
     r"(?i)^\s*(?:🔥|⚡|🚨|💥|🏃|👑|💰|🔔|✅|❗|‼️|👉|➡️|•|\*|-|~)*\s*"
-    r"(?:loot|super\s*loot|mega\s*loot|grab|deal|steal|offer|price\s*drop|"
-    r"lowest\s*price|big\s*deal|hot\s*deal|best\s*deal|alert)\s*[:\-–]\s*"
+    r"(?:super\s*loot|mega\s*loot|price\s*drop|lowest\s*price|big\s*deal|"
+    r"hot\s*deal|best\s*deal|loot|grab|deal|steal|offer|alert)"
+    r"(?:\s*[:\-–]\s*|\s+(?=[₹@]|\d))"
 )
 _SAFE_CLAIM_RE = re.compile(
     r"(?i)\b(?:#?\s*(?:uk|india|world)?\s*no\.?\s*1\s+brand|cheapest\s+ever|"
@@ -4204,6 +4314,14 @@ class AffiliateClient:
                         # Single non-Amazon deal: preserve EarnKaro's own short link.
                         # Amazon always uses our Bitly; every 2+ link post uses Bitly
                         # for all generated links so the final post stays neat.
+                        # A Flipkart product URL that came back long is compacted
+                        # natively first (slug + item id + pid): free, no quota,
+                        # and it is what keeps "shortga ravali" true even when the
+                        # shortener is rate-limited.
+                        if len(affiliate) > SHORTEN_MIN_LEN:
+                            compact = compact_flipkart_product_link(affiliate)
+                            if compact != affiliate and len(compact) < len(affiliate):
+                                affiliate = result = compact
                         if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
                             shortened = await self.shorten(result)
                             if shortened:
@@ -4302,6 +4420,21 @@ class AffiliateClient:
             if not in_domains(host, AMAZON_DOMAINS):
                 continue
             compact = compact_amazon_product_link(url)
+            if compact and compact != url and compact != raw:
+                out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
+                compacted += 1
+        # Pass 1b: native compaction of Flipkart product links (also free).
+        # A dl.flipkart.com product URL arrives ~177 chars because of lid /
+        # marketplace / srno session noise; slug + item id + pid is the same page
+        # at about a third of the length, and it costs no shortener quota. This
+        # runs BEFORE pass 2 so the shortener is only ever asked for the links
+        # that genuinely cannot be compacted.
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            url = clean_url(raw)
+            host = (urlparse(url).hostname or "").lower()
+            if host not in FLIPKART_HOSTS:
+                continue
+            compact = compact_flipkart_product_link(url)
             if compact and compact != url and compact != raw:
                 out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
                 compacted += 1
@@ -5039,6 +5172,15 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         if not clean_resolved or clean_resolved in {clean_url(r) for _, r in passthrough}:
             return
         passthrough.append((source_url, clean_resolved))
+        # USER RULE (2026-09-05, "idi manvena?" / "mana links matharem"): a
+        # passthrough link is a CLEAN merchant link, not a monetized link of
+        # ours - the deal still goes out (that is the point), but it must be
+        # obvious in the log which posts earn nothing, instead of quietly
+        # looking like every other post. WARNING, not INFO, so an operator
+        # grepping the log can actually find them.
+        log.warning("UNMONETIZED LINK | queue=%s this deal posts a plain merchant "
+                    "link (the affiliate network had no campaign for it): %s",
+                    row["id"], clean_resolved[:70])
         log.info("PASSTHROUGH | queue=%s unmonetizable link kept clean: %s",
                  row["id"], clean_resolved[:70])
 
