@@ -3128,6 +3128,50 @@ _STRICT_BANNED_RE = re.compile(
     r"hot|mega|super\s*deal|price\s*error|glitch|trick|cashback\s*trick)\b")
 
 
+# Lines that must never survive into the review copy, whatever else they say.
+# The 2026-09-06 rejection named "reviews" explicitly alongside trademarked
+# words and screenshots, and RATINGS/REVIEW COUNTS are Amazon-owned content we
+# are not licensed to republish. Everything else here is either an unverifiable
+# claim, a condition the reviewer reads as a catch, or pure decoration.
+_STRICT_DROP_LINE_RE = re.compile(
+    r"(?i)("
+    r"\b\d(?:\.\d)?\s*(?:\u2b50|stars?|/\s*5)\b"          # 4.2 stars, 4.2/5
+    r"|\brating[s]?\b|\breview[s]?\b|\bratings?\s*&\s*reviews?\b"
+    r"|\b\d[\d,]*\s*(?:reviews?|ratings?)\b"                 # 12,453 reviews
+    r"|\bbest\s*sell(?:er|ing)\b|\b#\d+\s*in\b"            # bestseller badges
+    r"|\bm\.?r\.?p\.?\b|\blist\s*price\b"                  # MRP anchor pricing
+    r"|\b\d{1,3}\s*%\s*(?:off|discount)?\b"                  # 70% OFF
+    r"|\bsave\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]+\b"
+    r"|\bcoupon\b|\bapply\b|\bclip\b|\bpromo\s*code\b|\bcode\s*[:\-]"
+    r"|\bcashback\b|\bbank\s*offer\b|\bemi\b|\bexchange\b"
+    r"|\bbuy\s*now\b|\bshop\s*now\b|\border\s*now\b|\bclick\b|\btap\b"
+    r"|\bjoin\b|\bshare\b|\bsubscribe\b|\bfollow\b"
+    r"|\bsold\s*out\b|\bout\s*of\s*stock\b|\bstock\s*(?:left|over)\b"
+    r"|\bqty\b|\bquantity\b|\bpieces?\s*left\b"
+    r"|\bstore\b\s*$"                                          # "Under 99 Store"
+    r")")
+
+
+def _salvage_price_only(line: str) -> str:
+    """Return "Price: <amount>" when a dropped line still carried the DEAL price.
+
+    The amount is copied verbatim from the source - never recomputed - and any
+    MRP/list-price anchor is masked out first so the higher number can never be
+    mistaken for the price we publish.
+    """
+    masked = re.sub(
+        r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*"
+        r"(?:rs\.?|\u20b9|inr)?\s*[\d,]+", " ", line or "")
+    # Only an explicitly-marked amount counts; a bare number is a model code.
+    match = re.search(r"(?:rs\.?|\u20b9|inr)\s*\.?\s*([\d,]+)|([\d,]+)\s*/-", masked, re.I)
+    if not match:
+        return ""
+    amount = (match.group(1) or match.group(2) or "").strip()
+    if not amount or not amount.replace(",", "").isdigit():
+        return ""
+    return f"Price: \u20b9{amount}"
+
+
 def _strict_review_copy(body: str) -> str:
     """Rebuild a post from an allowlist: product line(s) + link. Nothing else.
 
@@ -3149,16 +3193,51 @@ def _strict_review_copy(body: str) -> str:
         # rejection actually named. Drop the line rather than try to reword it.
         if has_amazon_trademark(line) or has_telegram_pointer(line):
             continue
+        # Ratings/review counts are Amazon-owned content ("or reviews" in the
+        # rejection); MRP/percent-off/coupons are conditions and anchor claims a
+        # reviewer reads as a catch. None of it is needed to sell the product.
+        if _STRICT_DROP_LINE_RE.search(line):
+            # "Price - Rs.899 (MRP Rs.2990)" is dropped for the MRP anchor, but
+            # the DEAL price on it is the one fact the post cannot lose. Keep the
+            # price alone, exactly as the source printed it, and drop the rest.
+            salvaged = _salvage_price_only(line)
+            if salvaged:
+                kept.append(salvaged)
+            continue
         # A product line has to read like a product: real words, and not a bare
         # number or a lone symbol. Two letter-words is the floor ("Methi Dana").
         words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", line)
         if len(words) < 2:
+            # Not a product line - but a lone "@ 299/-" or "₹899" IS the price,
+            # written on its own line by many sources. Keep it as the price.
+            salvaged = _salvage_price_only(line)
+            if salvaged:
+                kept.append(salvaged)
             continue
         # Trailing junk the earlier passes may have left on an otherwise good line.
         line = re.sub(r"\s{2,}", " ", line).strip(" \t|-–—:•*~,")
         if line:
             kept.append(line)
-    return "\n".join(kept).strip()
+    # A shopper needs the price. If none of the surviving lines carries one, take
+    # it from the ORIGINAL post rather than publish a product with no price.
+    body_text = URL_RE.sub(" ", "\n".join(kept))
+    # "Pigeon Kettle 1.5L at 549" already states the price; adding "Price: 549"
+    # under it is the duplicate the user keeps reporting. So the check accepts
+    # ANY amount already visible - with a currency mark, the Indian "/-" suffix,
+    # or an "at/only/@" price phrase - not just a currency-marked one.
+    has_price = re.search(
+        r"(?i)(?:rs\.?|\u20b9|inr)\s*\.?\s*[\d,]+"
+        r"|[\d,]+\s*/-"
+        r"|\b(?:at|only|for|@)\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]{2,}\b",
+        body_text)
+    if kept and not has_price:
+        price = parse_price(body or "")
+        if price:
+            link_at = next((i for i, ln in enumerate(kept) if URL_RE.fullmatch(ln)), len(kept))
+            kept.insert(link_at, f"Price: \u20b9{price:,}")
+    # Never repeat the same line twice (two sources, one merged post).
+    deduped = list(dict.fromkeys(kept))
+    return "\n".join(deduped).strip()
 
 
 def _premium_windows(around: datetime) -> list[tuple[datetime, datetime, str]]:

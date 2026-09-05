@@ -1263,6 +1263,66 @@ def test_our_new_associates_tag_and_the_self_source_loop():
           30 <= bot.SHOPPING_DAILY_CAP <= 50, str(bot.SHOPPING_DAILY_CAP))
 
 
+def test_the_review_copy_is_clean_on_real_source_shapes():
+    """USER RULE (2026-09-06): "anni advanced gaa ... approve vachelanga post
+    cheyu". Run the REAL shapes our sources actually send and require the
+    finished post to be exactly: product, price, link, disclosure."""
+    import re as _re
+
+    def finished(raw):
+        safe = bot.affiliate_safe_text(raw)
+        if (not safe or not bot.URL_RE.search(safe)
+                or not _re.search(r"[A-Za-z]{3}", bot.URL_RE.sub(" ", safe))
+                or bot.has_amazon_trademark(safe) or bot.has_telegram_pointer(safe)):
+            return None                      # withheld from the review channel
+        return bot.add_link_disclosure(safe)
+
+    hype = ("\U0001f525 LOOT \U0001f525\nboAt Rockerz 255 Pro+ Neckband\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705\n"
+            "https://amzn.to/aaa\n@LootZoneIndia11")
+    out = finished(hype)
+    check("the product line survives", "boAt Rockerz 255 Pro+ Neckband" in out, repr(out))
+    check("the DEAL price is salvaged off the MRP line", "899" in out, repr(out))
+    check("the MRP anchor never ships", "2990" not in out, repr(out))
+    check("the percent-off claim never ships", "70%" not in out, repr(out))
+    check("the loot pointer never ships", "LootZone" not in out, repr(out))
+
+    # "or reviews" is named in the rejection - ratings are Amazon-owned content.
+    rated = ("SAMSUNG Galaxy M14 5G (128 GB)\nDeal Price: Rs.9999\n"
+             "Rating 4.2 \u2b50 | 12,453 reviews\nhttps://amzn.to/ddd")
+    out = finished(rated)
+    check("the star rating never ships", "4.2" not in out, repr(out))
+    check("the review count never ships",
+          "review" not in out.lower() and "12,453" not in out, repr(out))
+    check("the price still ships", "9999" in out, repr(out))
+
+    # A price written on its own line, and a coupon condition.
+    out = finished("*Nutriburst Collagen Powder 200g*\n@ 299/-\nBuy now \U0001f449 https://amzn.to/bbb")
+    check("a lone '@ 299/-' line is kept as the price", "299" in out, repr(out))
+    check("the call-to-action never ships", "Buy now" not in out, repr(out))
+
+    out = finished("\u26a1 Apply 10% coupon \u26a1\nPigeon Kettle 1.5L at 549\nhttps://amzn.to/eee")
+    check("the coupon condition never ships", "coupon" not in out.lower(), repr(out))
+    check("a price already in the product line is NOT repeated",
+          out.count("549") == 1, repr(out))
+
+    # Every finished post has the four required parts and nothing else.
+    for raw in (hype, rated, "Milton Bottle 1L - 89\nhttps://amzn.to/c1"):
+        out = finished(raw)
+        check("the post ends with the disclosure", out.rstrip().endswith("#ad (paid link)"), repr(out))
+        check("the post has exactly one link", len(bot.URL_RE.findall(out)) == 1, repr(out))
+        check("no line is repeated in the post",
+              len(out.splitlines()) == len(dict.fromkeys(out.splitlines())), repr(out))
+
+    # Naming the marketplace withholds the post from THIS channel only.
+    check("a post naming the marketplace is withheld",
+          finished("Amazon Great Indian Festival deal\nhttps://amzn.to/f") is None)
+    check("a trick post is withheld", finished("Cashback trick\nhttps://amzn.to/x") is None)
+    check("but the product under a marketplace banner still ships",
+          "Sony WH-1000XM4" in (finished(
+              "Amazon Great Indian Festival\nSony WH-1000XM4\n\u20b919990\nhttps://amzn.to/fff") or ""))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1288,6 +1348,7 @@ def main() -> int:
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
     test_our_new_associates_tag_and_the_self_source_loop()
+    test_the_review_copy_is_clean_on_real_source_shapes()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

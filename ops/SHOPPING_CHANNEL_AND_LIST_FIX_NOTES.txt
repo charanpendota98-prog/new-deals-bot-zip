@@ -552,3 +552,62 @@ approve cheyali mana new channel lo post cheyu vere channels lo as usual
 3. 30-50 A DAY
    SHOPPING_DAILY_CAP stays at 50 (set 30 or 40 for a lower pace); the
    cap applies to the review channel only.
+
+
+=================================================================
+Round 10 — the review copy, tested against REAL source shapes
+=================================================================
+
+USER RULE (2026-09-06): "anni advanced gaa ... new channel lo perfectga
+approve vachelanga post cheyu, remaining mana channels lo as usual".
+
+Rounds 5-9 were tested on invented examples. This round ran the shapes
+our sources ACTUALLY send, and three defects fell out immediately.
+
+DEFECT 1 - RATINGS AND REVIEW COUNTS WERE SHIPPING
+  "Rating 4.2 * | 12,453 reviews" went out untouched. The rejection
+  email says "trademarked words, images ... OR REVIEWS". Star ratings
+  and review counts are marketplace-owned content we are not licensed
+  to republish - this alone could have failed the re-application.
+
+DEFECT 2 - MRP, PERCENT-OFF AND COUPON CONDITIONS WERE SHIPPING
+  "Price - Rs.899 (MRP Rs.2990)", "70% OFF", "Apply 10% coupon". An MRP
+  is an anchor claim the reviewer must be able to verify; a coupon is a
+  condition. Neither is needed to sell the product.
+
+DEFECT 3 - THE PRICE WAS BEING LOST
+  Once the MRP line was dropped, the DEAL price went with it, and posts
+  reduced to "product + link" with no price at all.
+
+_STRICT_DROP_LINE_RE now removes: ratings, review counts, star scores,
+bestseller badges, MRP/list price, percent-off, "save Rs.X", coupons,
+promo codes, cashback, bank offer, EMI, exchange, buy/shop/order now,
+click/tap, join/share/subscribe/follow, stock and quantity lines.
+
+_salvage_price_only() rescues the DEAL price off any line it drops, with
+the MRP masked out first so the higher number can never be published as
+the price. A lone "@ 299/-" line is kept as the price too. If no
+surviving line carries a price, one is taken from the original post via
+parse_price() rather than publish a product without a price - and the
+"already has a price" test accepts "at 549" / "only 549" / "@ 549", so
+"Pigeon Kettle 1.5L at 549" never gains a duplicate "Price: 549" under
+it. Finally the line list is de-duplicated.
+
+VERIFIED OUTPUT (real shapes in, finished post out):
+
+  boAt Rockerz 255 Pro+ Neckband      SAMSUNG Galaxy M14 5G (128 GB)
+  Price: Rs.899                       Deal Price: Rs.9999
+  https://amzn.to/aaa                 https://amzn.to/ddd
+
+  #ad (paid link)                     #ad (paid link)
+
+Withheld from this channel (still posted to every other channel):
+  "Amazon Great Indian Festival deal"  -> names the mark
+  "Cashback trick"                     -> not a shoppable product
+
+EVERY OTHER CHANNEL IS UNCHANGED. Verified mechanically: none of
+affiliate_safe_text, _strict_review_copy, add_link_disclosure,
+_STRICT_DROP_LINE_RE, _salvage_price_only or has_amazon_trademark
+appears anywhere in the shared render_job path. They run at delivery,
+for SHOPPING_TARGET only. The loot channels keep their hype, their
+photos, their MRP and their ratings exactly as before.
