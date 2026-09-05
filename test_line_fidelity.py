@@ -1172,6 +1172,55 @@ def test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
           str(bot.SHOPPING_DAILY_CAP))
 
 
+def test_a_roundup_list_cannot_be_posted_twice_from_two_sources():
+    """USER RULE (2026-09-06): "anni vere channels lo anni multiple times
+    rakudna and duplicates lekunda".
+
+    A single-product post has always had a repeat guard. A ROUNDUP (3+ merchant
+    links) had NO identity at all, so the same list arriving again from a second
+    source - different shortener, different banner, items in a different order -
+    was invisible to the guard and the channel carried it twice.
+    """
+    first = ("Deal of the day\nBoat Airdopes 141 at 899\nhttps://amzn.to/a\n"
+             "Samsung M14 5G at 9999\nhttps://amzn.to/b\n"
+             "Noise Buds VS104 at 799\nhttps://amzn.to/c")
+    # Same three products: other source, other shortener, other banner, shuffled.
+    repeat = ("LOOT!!\nSamsung M14 5G at 9999\nhttps://fkrt.co/y\n"
+              "Noise Buds VS104 at 799\nhttps://fkrt.co/z\n"
+              "Boat Airdopes 141 at 899\nhttps://fkrt.co/x")
+    bigger = first + "\nRedmi Note 13 at 14999\nhttps://amzn.to/d"
+
+    sig_first = bot.product_signature(first)
+    check("a roundup now HAS an identity (it used to be None)", bool(sig_first), repr(sig_first))
+    check("the same list from another source matches it",
+          sig_first == bot.product_signature(repeat),
+          "%r vs %r" % (sig_first, bot.product_signature(repeat)))
+    check("a list with an extra product is NOT the same post (coverage kept)",
+          sig_first != bot.product_signature(bigger))
+    check("single-product posts keep their own identity scheme",
+          str(bot.product_signature("Boat Airdopes 141 at 899\nhttps://amzn.to/a")).startswith("SIG:"))
+    check("a one-item 'list' is too thin to key on",
+          bot._roundup_signature("Boat Airdopes 141 at 899\nhttps://amzn.to/a") is None)
+    check("a post with no products at all gets no list key",
+          bot._roundup_signature("Deal of the day\nhttps://amzn.to/a") is None)
+
+    # The guard the signature feeds is per channel and still lets a cheaper
+    # repeat through, so a genuine price drop is never swallowed.
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "dup.sqlite3")
+            await store.mark_product_posted("LootZoneIndia11", sig_first, 899, 40)
+            same, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 899, 40)
+            other, _ = await store.product_already_posted("Under99Deals11", sig_first, 899, 40)
+            cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 799, 40)
+            return same, other, cheaper
+
+    same, other, cheaper = asyncio.run(run())
+    check("the repeat is skipped on the channel that already carried it", same is True)
+    check("but a channel that has NOT carried it still gets it", other is False)
+    check("and a cheaper repeat is still allowed through", cheaper is False)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1195,6 +1244,7 @@ def main() -> int:
     test_the_review_channel_copy_is_built_from_an_allowlist()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
+    test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

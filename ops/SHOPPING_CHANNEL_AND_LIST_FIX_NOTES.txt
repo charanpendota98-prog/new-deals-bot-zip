@@ -477,3 +477,40 @@ The remaining risk is not code. The reviewer can still find the loot
 channels if smartbuyhub11 shares a folder/addlist, a discussion group,
 a pin or a forward with them. That cleanup is in
 ops/AMAZON_APPLICATION_CHECKLIST.txt, STEP 0.
+
+
+=================================================================
+Round 8 — the duplicate hole in ROUNDUP posts
+=================================================================
+
+USER RULE (2026-09-06): "anni vere channels lo anni multiple times
+rakudna and duplicates lekunda".
+
+Audit of the four dedup layers found three of them sound and one with a
+real hole:
+
+  1. seen_message()          - same source message twice          OK
+  2. content_deal_key()      - same text from any source, 24h     OK
+  3. deal_claims/posted_deals- two live jobs racing               OK
+  4. product_signature()     - same PRODUCT per channel, 24h      HOLE
+
+product_signature() returned None for any post with 3+ merchant links,
+i.e. every roundup/list post. No key means the per-channel repeat guard
+never ran on them, so the same list arriving again from a second source
+- different shortener, different banner, items shuffled - was published
+a second time. That is the "multiple times" the user reported.
+
+_roundup_signature() now keys a roundup on the SET of products it names,
+using the same _product_identity() the single-product path uses:
+
+  * order-independent  (sources shuffle the items)
+  * link-independent   (two shorteners, one product)
+  * banner-independent (_SAFE_PREFIX_RE strips "Loot :" / "Grab :")
+  * 2-item floor       (one match is too thin to drop a live deal on)
+
+A list that ADDS or DROPS an item is a different post and still goes
+out, and the existing "better copy" rule is untouched, so a genuine
+price drop is never swallowed.
+
+Verified: A and a reordered A from another source now collide; A plus a
+fourth product does not; single-product posts keep their SIG: scheme.

@@ -1346,8 +1346,19 @@ def product_signature(text: str) -> str | None:
         host = (urlparse(url).hostname or "").lower()
         if host and not in_domains(host, NON_STORE_DOMAINS):
             merchant_links += 1
-    if merchant_links == 0 or merchant_links >= 3:
+    if merchant_links == 0:
         return None
+    if merchant_links >= 3:
+        # A ROUNDUP. Until now these got no key at all, so the same list
+        # arriving again from a second source - different shortener, different
+        # banner - was invisible to the per-channel repeat guard and the channel
+        # carried it twice. That is the "multiple times" the user reported.
+        # A roundup's identity is the SET of products it lists: order-independent
+        # (sources shuffle the order), link-independent (shorteners differ),
+        # banner-independent. Two roundups that list the same items ARE the same
+        # post; a roundup that adds or drops an item is a different one and still
+        # goes out.
+        return _roundup_signature(text)
     headline = None
     for line in clean_source_text(text).splitlines():
         line = line.strip()
@@ -1372,6 +1383,35 @@ def product_signature(text: str) -> str | None:
         return None
     basis = "|".join(headline)
     return "SIG:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
+
+
+def _roundup_signature(text: str) -> str | None:
+    """Identity of a multi-product list: the set of products it names.
+
+    Built from the same _product_identity() the single-product path uses, so a
+    roundup and its repeat agree even when the two sources write different
+    banners, different prices formats and different short links.
+    """
+    items: set[str] = set()
+    for line in clean_source_text(text or "").splitlines():
+        line = line.strip()
+        if not line or URL_RE.fullmatch(line):
+            continue
+        line = URL_RE.sub(" ", line).strip()
+        if not line or TIME_OF_DAY_RE.search(line) or GENERIC_HEADLINE_RE.fullmatch(line.lower()):
+            continue
+        if not re.search(r"[A-Za-z]", line):
+            continue
+        line = _SAFE_PREFIX_RE.sub("", line).strip() or line
+        identity = _product_identity(line)
+        if identity:
+            items.add("|".join(identity))
+    # Two items is the floor: below that this is not a list, and a one-item
+    # match is too thin to justify dropping a live deal.
+    if len(items) < 2:
+        return None
+    basis = "\n".join(sorted(items))
+    return "LIST:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
 
 
 def product_key(value: str) -> str:
