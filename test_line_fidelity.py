@@ -972,6 +972,42 @@ def test_a_flipkart_product_link_goes_out_short():
           bot.compact_flipkart_product_link(search))
 
 
+def test_our_amazon_tag_only_rides_on_declared_channels():
+    """Amazon's Operating Agreement: every channel carrying your Associates links must
+    be DECLARED in Associates Central, and links on undeclared channels can close the
+    account. So the tag is restricted to AMAZON_TAG_TARGETS (the review channel by
+    default). Every other channel still posts the SAME deal - just untagged, so a
+    working deal is never lost and the account is never exposed."""
+    old_tag = bot.OUR_TAG
+    bot.OUR_TAG = "mytag-21"
+    try:
+        text = "Socks at 99\nhttps://www.amazon.in/dp/B0X?tag=mytag-21"
+        kept = bot.strip_amazon_tag_for_undeclared(text, bot.SHOPPING_TARGET)
+        check("the declared review channel keeps our tag (that is where we earn)",
+              "tag=mytag-21" in kept, kept)
+        for undeclared in ("LootZoneIndia11", "SecretLootIndia1", "Under99Deals11"):
+            out = bot.strip_amazon_tag_for_undeclared(text, undeclared)
+            check(f"@{undeclared} posts the deal WITHOUT our tag",
+                  "tag=" not in out and "amazon.in/dp/B0X" in out, out)
+            check(f"@{undeclared} still gets the product and the price",
+                  "Socks at 99" in out, out)
+        foreign = "Deal\nhttps://www.amazon.in/dp/B0Y?tag=thief-21"
+        check("a FOREIGN tag is not ours to protect and is left to the normal gates",
+              bot.strip_amazon_tag_for_undeclared(foreign, bot.SHOPPING_TARGET) == foreign)
+        nonamazon = "Deal\nhttps://fkrt.co/x"
+        check("non-Amazon links are never touched",
+              bot.strip_amazon_tag_for_undeclared(nonamazon, "LootZoneIndia11") == nonamazon)
+    finally:
+        bot.OUR_TAG = old_tag
+    check("with no tag configured the text is returned untouched",
+          bot.strip_amazon_tag_for_undeclared("x https://www.amazon.in/dp/B0Z", "LootZoneIndia11")
+          == "x https://www.amazon.in/dp/B0Z")
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the strip runs on the delivery path, per target",
+          "strip_amazon_tag_for_undeclared(target_text, target)" in deliver, "not wired in")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -991,6 +1027,7 @@ def main() -> int:
     test_a_deal_with_no_working_link_is_not_posted()
     test_the_same_deal_under_two_banner_words_is_one_post()
     test_a_flipkart_product_link_goes_out_short()
+    test_our_amazon_tag_only_rides_on_declared_channels()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

@@ -333,6 +333,42 @@ ALL_OWNED_TARGETS = list(dict.fromkeys(
 # Set SHOPPING_TARGET_ENABLED=false to hold the channel back entirely.
 SHOPPING_TARGET_ENABLED = os.getenv(
     "SHOPPING_TARGET_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+# AMAZON ASSOCIATES COMPLIANCE (2026-09-05).
+# Amazon's Operating Agreement requires that EVERY site/channel carrying your
+# Associates links is declared in Associates Central, and explicitly warns that
+# links appearing on undeclared channels can close the account. So the tag must
+# NOT simply appear everywhere the moment AMAZON_TAG is set: it is restricted to
+# the channels actually declared to Amazon. Every other channel keeps posting the
+# same deal with an untagged (or EarnKaro) link - no deal is lost, the account is
+# not exposed. Comma-separated usernames; defaults to the review channel only.
+AMAZON_TAG_TARGETS = {
+    t.strip().lstrip("@") for t in os.getenv("AMAZON_TAG_TARGETS", SHOPPING_TARGET).split(",")
+    if t.strip()
+}
+
+
+def strip_amazon_tag_for_undeclared(text: str, target: str) -> str:
+    """Remove OUR Associates tag from Amazon links bound for an undeclared channel.
+
+    Only our own tag is touched, and only the `tag` parameter: the product, the
+    price and the link itself are untouched, so the reader of that channel still
+    gets the same working deal.
+    """
+    if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
+        return text
+    out = text
+    for raw in dict.fromkeys(URL_RE.findall(text)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        parsed = urlparse(url)
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                 if k.lower() != "tag"]
+        untagged = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+        if untagged != raw:
+            out = out.replace(raw, untagged)
+    return out
 OUR_MAIN_CHANNEL_LINKS = ("https://t.me/SecretLootIndia1", "https://t.me/LootZoneIndia11")
 PREMIUM_MAX_PER_NIGHT = max(1, int(os.getenv("PREMIUM_MAX_PER_NIGHT", "12")))
 # The Premium channel is curated, not a firehose — but the gap between its
@@ -5799,6 +5835,10 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.delivery(row["id"], target, True, "not programme-safe")
                     continue
                 target_text = safe_text
+            # Associates compliance: our tag may only ride on the channels that
+            # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
+            # SAME deal posts with an untagged link.
+            target_text = strip_amazon_tag_for_undeclared(target_text, target)
             allow_preview = await store.preview_allowed(target_text)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):

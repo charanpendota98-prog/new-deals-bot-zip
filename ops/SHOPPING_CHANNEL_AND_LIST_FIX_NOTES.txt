@@ -207,3 +207,76 @@ REMINDER — still on you, not fixable in code:
   * make the bot an admin of @smartbuyhub11 with post rights
   * the channel's own Telegram DESCRIPTION / pinned message is not written by
     this bot — make sure they carry no "loot/deal" wording either.
+
+
+=================================================================
+Round 4 — "review ayyaka okka sari approve vasthe chalu kada?"
+=================================================================
+
+Half right, and the other half is the dangerous half. Read this one.
+
+TRUE: Amazon reviews the channel you SUBMIT. They do not go hunting through
+your other Telegram channels at application time, and the review copy this bot
+now renders (name + price + link, no loot/urgency/claims, no t.me promo) is
+built for exactly that review.
+
+NOT TRUE: "approve vachaka chalu, migatha channels lo em avvadu."
+
+Amazon's Operating Agreement (affiliate-program.amazon.in, "top do's and
+don'ts", section "Sites and social channels"):
+
+  "Do keep your websites, social media channels, and mobile applications ...
+   that you use to drive traffic to Amazon updated in your account on
+   Associates Central."
+
+and Amazon states plainly that listing a channel wrongly / not listing a
+channel that carries your links "can lead to closure of your account".
+
+So the rule is not "one channel gets reviewed once". The rule is:
+    wherever your TAGGED link appears, that channel must be declared.
+Approval is not a one-time gate - compliance is ongoing, and Amazon audits link
+placement against your declared properties.
+
+THE CONCRETE RISK HERE
+----------------------
+The moment you set AMAZON_TAG (which you must, to earn anything), the SAME
+tagged Amazon link was going to be published to ALL owned channels -
+LootZoneIndia11, SecretLootIndia1, PowerLoots1, Under99Deals11, ... - because
+the tag is applied in the render path, before fan-out. Those channels are
+undeclared AND full of "Loot"/urgency wording. That is the account-closure
+scenario, and it would have happened silently on the first tagged post.
+
+THE FIX (this round)
+--------------------
+    AMAZON_TAG_TARGETS   (default: smartbuyhub11)
+
+Our Associates tag now rides ONLY on the channels named there. On every other
+channel, strip_amazon_tag_for_undeclared() removes our `tag` parameter at
+delivery time - per target, after the stored copy is final.
+
+  * the deal still posts everywhere, with a working link (nothing is lost)
+  * only OUR tag is removed, and only the `tag` parameter
+  * non-Amazon links are untouched; EarnKaro links are unaffected
+  * a foreign tag is not ours to protect and is left to the existing gates
+
+If/when you declare more channels in Associates Central, add them:
+    AMAZON_TAG_TARGETS=smartbuyhub11,LootZoneIndia11
+
+WHAT YOU STILL HAVE TO DO YOURSELF
+----------------------------------
+1. Declare @smartbuyhub11 in Associates Central as the FULL URL
+   (https://t.me/smartbuyhub11 — not "t.me", not "telegram.org").
+2. Put the affiliate disclosure in the channel bio/description, e.g.
+   "As an Amazon Associate I earn from qualifying purchases."
+   Amazon requires it at channel level; the bot cannot write your bio.
+3. Keep the channel PUBLIC (no private/invite-only), posts visible to
+   non-subscribers.
+4. Do not put "Amazon" in the channel name/handle (trademark rule).
+5. Make 3 qualifying sales in 180 days or the account is closed anyway.
+6. Set AMAZON_TAG only after approval, and leave AMAZON_TAG_TARGETS at the
+   declared channel(s).
+
+NOTE ON TELEGRAM ITSELF: Amazon's approved-social list names Facebook,
+Instagram, X, YouTube, TikTok and Twitch. Telegram is not on that list - it is
+a grey area. People do run approved Telegram channels, but understand you are
+not standing on the same firm ground as a website, and keep the channel clean.
