@@ -165,3 +165,45 @@ Still NOT auto-fixable from here
 --------------------------------
 * AMAZON_TAG must be set for Amazon links to earn (see 6).
 * The bot account must be admin of @smartbuyhub11 (see 4).
+
+
+=================================================================
+Round 3 — "e channel source ga pettam ga, idi matrame review chesthada?"
+=================================================================
+
+ANSWER: yes — @smartbuyhub11 is a TARGET only, never a source.
+
+Verified in code:
+  * SHOPPING_TARGET appears only in the routing/delivery path
+  * it is NOT in SOURCE_TO_TARGETS, TRICKS_SOURCES, UNDER99_SOURCES or
+    PRIORITY_SOURCES, and not in the bridge's TG_SOURCE_USERNAMES
+So nothing is ever read FROM it, and it never feeds the other channels.
+
+BUT the honest answer to "does Amazon only look at this one channel?" is:
+they review the channel you submit — and they follow the links inside it.
+That is where two real leaks were found and fixed this round:
+
+  a) CARD/BANK OFFERS carry our folder link. render_job appends
+     OUR_FOLDER_LINK into the stored copy for card offers, so the safe copy
+     inherited it. A reviewer tapping it lands in the "Loot Zone" folder.
+  b) ADD_OUR_CHANNEL_LINK_TOP prepends "👉 All Loot Channels: <folder link>"
+     to every outgoing post at delivery time — including this one.
+
+Both are now blocked:
+  * affiliate_safe_text() drops any line containing our folder link, our main
+    channel links, any t.me link, or our own promo wording ("All Loot
+    Channels", "Loot Zone", "Secret Loot", "join ... channel", "One Tap")
+  * the family header is explicitly NOT prepended when target == SHOPPING_TARGET
+
+Also fixed: a pure-hype banner line ("🔥 MEGA LOOT 🔥") survived because the
+drop test ran BEFORE the emoji were stripped. Emoji now come off first, so the
+decorated and undecorated versions are treated the same.
+
+What the reviewer sees now, for every post: product name, the price the source
+printed, and the merchant link. Nothing else.
+
+REMINDER — still on you, not fixable in code:
+  * set AMAZON_TAG once Associates is approved (otherwise Amazon links earn 0)
+  * make the bot an admin of @smartbuyhub11 with post rights
+  * the channel's own Telegram DESCRIPTION / pinned message is not written by
+    this bot — make sure they carry no "loot/deal" wording either.

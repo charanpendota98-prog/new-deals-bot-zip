@@ -859,6 +859,31 @@ def test_the_shopping_channel_copy_is_programme_safe():
     check("the shopping channel is not in the card-offer fan-out list",
           bot.SHOPPING_TARGET not in bot.ALL_OWNED_TARGETS, str(bot.ALL_OWNED_TARGETS))
 
+    # The review channel must never carry OUR OWN promo. A card offer has the
+    # folder link appended into the stored copy, and ADD_OUR_CHANNEL_LINK_TOP
+    # prepends a "All Loot Channels" header on the way out - a reviewer who taps
+    # either one lands in a channel called "Loot Zone", which is exactly what
+    # this channel exists to avoid.
+    carded = bot.append_folder_link("HDFC Bank Card Offer 10% off\nhttps://www.amazon.in/dp/B0Y")
+    safe_card = bot.affiliate_safe_text(carded)
+    check("our folder link never reaches the reviewer",
+          bot.OUR_FOLDER_LINK not in safe_card and "t.me" not in safe_card, repr(safe_card))
+    check("but the card deal itself still arrives",
+          "HDFC" in safe_card and "https://www.amazon.in/dp/B0Y" in safe_card, repr(safe_card))
+    banner = "\U0001f525 MEGA LOOT \U0001f525\nJoin our channel https://t.me/LootZoneIndia11\nSocks at 99\nhttps://fkrt.co/s"
+    safe_banner = bot.affiliate_safe_text(banner)
+    check("a decorated pure-hype banner line is dropped whole",
+          "loot" not in safe_banner.lower() and "mega" not in safe_banner.lower(), repr(safe_banner))
+    check("and a foreign channel invite never survives",
+          "t.me" not in safe_banner, repr(safe_banner))
+    check("the actual product still goes out",
+          "Socks at 99" in safe_banner and "https://fkrt.co/s" in safe_banner, repr(safe_banner))
+    src_top = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver_block = src_top[src_top.index("async def process_job"):]
+    check("the family header is explicitly skipped for the review channel",
+          "and target != SHOPPING_TARGET" in deliver_block, "header not gated")
+
+
 
 def test_a_deal_with_no_working_link_is_not_posted():
     """USER RULE (2026-09-05, "asalu link yeh ledu"): a deal a reader cannot click is

@@ -2826,7 +2826,11 @@ def format_clustered_product_list(text: str) -> str:
 _SAFE_DROP_LINE_RE = re.compile(
     r"(?i)^\s*(?:\**\s*)?(?:"
     r"buy\s+max(?:imum)?\s+quantity|max\s+quantity|buy\s+max|order\s+fast|"
-    r"loot\s*(?:zone|deal|alert|offer)?s?|super\s+loot|mega\s+loot|"
+    # A banner line that is nothing BUT hype words ("MEGA LOOT", "🔥 SUPER LOOT 🔥",
+    # "DEAL OF THE DAY"). It carries no product and no price, so dropping the whole
+    # line loses nothing - and leaving it in is the single word most likely to fail
+    # the review. Emoji/punctuation around it are stripped by the caller.
+    r"(?:mega|super|big|huge|best|top|hot)?\s*loot\s*(?:zone|deal|alert|offer)?s?|"
     r"hurry(?:\s*up)?|limited\s+stock|stock\s+limited|fast\s+selling|"
     r"grab\s+(?:it\s+)?(?:now|fast)|buy\s+(?:it\s+)?now|shop\s+now|"
     r"deal\s+of\s+the\s+day|price\s+may\s+change|#\w+"
@@ -2848,6 +2852,12 @@ _SAFE_CLAIM_RE = re.compile(
     r"lowest\s+ever|all\s+time\s+low|biggest\s+sale|loot\s+price|"
     r"steal\s+deal|must\s+buy)\b"
 )
+# Our own promo, in every shape it can reach a rendered post: the folder link,
+# the main-channel links, and the "All Loot Channels" caption that sits with them.
+_SAFE_OWN_PROMO_LINKS = (OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS, "t.me/")
+_SAFE_OWN_PROMO_TEXT_RE = re.compile(
+    r"(?i)\ball\s+loot\s+channels\b|\bloot\s+zone\b|\bsecret\s+loot\b|"
+    r"\bjoin\b.*\bchannel\b|\bone\s+tap\b")
 _EMOJI_RE = re.compile(
     "[" "\U0001f300-\U0001faff" "\U00002190-\U000021ff" "\U00002600-\U000027bf"
     "\U00002b00-\U00002bff" "\U0000fe0f" "\U00002122" "\U000024c2" "]+"
@@ -2869,8 +2879,23 @@ def affiliate_safe_text(text: str) -> str:
             if out_lines and out_lines[-1] != "":
                 out_lines.append("")
             continue
+        # Our own family/channel promo must never reach the reviewer: a card
+        # offer has the folder link appended into the stored copy, and a
+        # reviewer who taps it lands in "Loot Zone"/"Secret Loot" - exactly the
+        # wording this channel exists to avoid. It is OUR line, not the
+        # source's, so removing it loses no deal content.
+        if any(promo in line for promo in _SAFE_OWN_PROMO_LINKS):
+            continue
+        if _SAFE_OWN_PROMO_TEXT_RE.search(line):
+            continue
         if URL_RE.fullmatch(line):
             out_lines.append(line)
+            continue
+        # Emoji come off BEFORE the banner test: "🔥 MEGA LOOT 🔥" is the same
+        # pure-hype line as "MEGA LOOT", and testing the raw line let the
+        # decorated version straight through.
+        line = _EMOJI_RE.sub(" ", line).strip()
+        if not line:
             continue
         if _SAFE_DROP_LINE_RE.match(line):
             continue
@@ -5775,7 +5800,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     continue
                 target_text = safe_text
             allow_preview = await store.preview_allowed(target_text)
-            if ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES:
+            if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
+                    and target != SHOPPING_TARGET):
+                # Never on the review channel: that header is a link into the
+                # loot-channel folder, which is precisely what a marketplace
+                # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
             ok, error = await deliver(
                 client, entity, target_text, media_path,
