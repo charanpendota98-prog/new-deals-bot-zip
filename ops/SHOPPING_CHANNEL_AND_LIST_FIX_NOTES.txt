@@ -611,3 +611,53 @@ _STRICT_DROP_LINE_RE, _salvage_price_only or has_amazon_trademark
 appears anywhere in the shared render_job path. They run at delivery,
 for SHOPPING_TARGET only. The loot channels keep their hype, their
 photos, their MRP and their ratings exactly as before.
+
+
+=================================================================
+Round 11 — native links on the review channel, and the tag switch
+=================================================================
+
+USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+cheyaku" + "tag ni anni channels lo use cheyu okavela approve vasthadi".
+
+1. NO SHORTENER ON THE REVIEWED CHANNEL
+   A bit.ly/is.gd hop hides where the link goes. A reviewer who cannot
+   see the store domain in the post cannot verify it, and a redirect
+   chain is exactly what a compliance check treats as cloaking.
+
+   Every short link this process mints is now recorded in a reverse map
+   (_short_to_long), and expand_our_short_links() puts the NATIVE store
+   URL back at delivery time, for the review channel only:
+
+       review channel : https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21
+       every other one: https://bit.ly/3xYz          (unchanged)
+
+   Only links WE created are swapped - a source's own short link is left
+   exactly as it arrived, because we cannot know its destination.
+
+   This costs nothing in neatness: the native product URL is already
+   collapsed to ~50 characters, and it is self-proving (the reviewer can
+   read the ASIN and our tag straight off the post).
+
+   Knob: SHOPPING_NATIVE_LINKS=false restores shortening if ever needed.
+
+2. THE TAG SWITCH - SAFE NOW, EVERYWHERE AFTER APPROVAL
+   The user wants to earn on all channels once approved. Amazon requires
+   that any channel carrying the tag is DECLARED in Associates Central.
+   Both are satisfied by one switch:
+
+       AMAZON_TAG_TARGETS unset  -> review channel only   (DEFAULT, use
+                                    this while the application is
+                                    pending - it is what keeps the other
+                                    channels off Amazon's radar)
+       AMAZON_TAG_TARGETS=all    -> every owned channel   (ONLY after
+                                    approval AND after listing each one
+                                    in Associates Central)
+       AMAZON_TAG_TARGETS=a,b    -> exactly those
+
+   Do NOT set "all" before approval. An undeclared channel carrying the
+   tag is grounds for closing the account - and the account is the thing
+   we are trying to win.
+
+   Until then nothing is lost: every other channel keeps monetising the
+   same deal through EarnKaro exactly as it does today.

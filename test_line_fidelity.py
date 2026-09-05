@@ -1323,6 +1323,60 @@ def test_the_review_copy_is_clean_on_real_source_shapes():
               "Amazon Great Indian Festival\nSony WH-1000XM4\n\u20b919990\nhttps://amzn.to/fff") or ""))
 
 
+def test_native_links_on_review_channel_and_the_tag_switch():
+    """USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+    cheyaku" and "tag ni anni channels lo use cheyu okavela approve vasthadi"."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+
+    # 1. NO SHORTENER on the reviewed channel. A bit.ly hop hides the
+    # destination; the reviewer must see the store domain in the post itself.
+    class FakeAffiliate:
+        def __init__(self):
+            self._short_to_long = {}
+        expand_our_short_links = bot.AffiliateClient.expand_our_short_links
+
+    affiliate = FakeAffiliate()
+    native = "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21"
+    affiliate._short_to_long["https://bit.ly/3xYz"] = native
+    post = "boAt Rockerz 255\nPrice: \u20b9899\nhttps://bit.ly/3xYz"
+    expanded = affiliate.expand_our_short_links(post)
+    check("our short link is swapped back to the native store URL",
+          native in expanded and "bit.ly" not in expanded, repr(expanded))
+    check("the store domain is visible to the reviewer",
+          "amazon.in" in expanded, repr(expanded))
+    check("our tag survives the swap", "tag=mama086-21" in expanded, repr(expanded))
+    check("a SOURCE's own short link is never rewritten (we cannot know it)",
+          affiliate.expand_our_short_links("Deal\nhttps://fkrt.co/x") == "Deal\nhttps://fkrt.co/x")
+    check("the native link is still short and neat", len(native) < 60, str(len(native)))
+    check("native links are on by default", bot.SHOPPING_NATIVE_LINKS is True)
+    check("the swap runs on the review path only",
+          "affiliate.expand_our_short_links(target_text)" in deliver, "not wired")
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+    check("every other channel keeps its shortened link",
+          "expand_our_short_links" not in render, "shared path was changed")
+
+    # 2. The tag switch: safe while pending, everywhere once approved.
+    def tag_targets_for(value):
+        owned = {bot.SHOPPING_TARGET, *bot.ALL_OWNED_TARGETS}
+        if value.lower() in ("all", "*"):
+            return owned
+        if value:
+            return {t.strip().lstrip("@") for t in value.split(",") if t.strip()}
+        return {bot.SHOPPING_TARGET}
+
+    check("unset = the review channel only (safe while the application is pending)",
+          tag_targets_for("") == {bot.SHOPPING_TARGET})
+    every = tag_targets_for("all")
+    check("'all' puts the tag on every owned channel once approved",
+          bot.SHOPPING_TARGET in every and "LootZoneIndia11" in every and len(every) >= 8,
+          str(sorted(every)))
+    check("an explicit list is honoured exactly",
+          tag_targets_for("smartbuyhub11,LootZoneIndia11") == {"smartbuyhub11", "LootZoneIndia11"})
+    check("the 'all' switch is documented as approval-only",
+          "AMAZON_TAG_TARGETS=all" in src and "AFTER" in src, "not documented")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1349,6 +1403,7 @@ def main() -> int:
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
     test_our_new_associates_tag_and_the_self_source_loop()
     test_the_review_copy_is_clean_on_real_source_shapes()
+    test_native_links_on_review_channel_and_the_tag_switch()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

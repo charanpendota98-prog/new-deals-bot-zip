@@ -371,10 +371,25 @@ SHOPPING_TARGET_ENABLED = os.getenv(
 # the channels actually declared to Amazon. Every other channel keeps posting the
 # same deal with an untagged (or EarnKaro) link - no deal is lost, the account is
 # not exposed. Comma-separated usernames; defaults to the review channel only.
-AMAZON_TAG_TARGETS = {
-    t.strip().lstrip("@") for t in os.getenv("AMAZON_TAG_TARGETS", SHOPPING_TARGET).split(",")
-    if t.strip()
-}
+# USER RULE (2026-09-06): "tag ni anni channels lo use cheyu okavela approve
+# vasthadi" - once the account is approved, earn on every channel, not just one.
+# Amazon's own rule is that a channel carrying the tag must be DECLARED in
+# Associates Central. Both can be true at once, so this is one switch:
+#
+#   AMAZON_TAG_TARGETS=all   -> tag on every owned channel. Use this only AFTER
+#                               the account is approved AND every channel below
+#                               is listed in Associates Central. Undeclared
+#                               channels carrying the tag can close the account.
+#   (unset)                  -> tag on the review channel only (safe default,
+#                               correct while the application is pending).
+#   a,b,c                    -> exactly those channels.
+_tag_targets_env = os.getenv("AMAZON_TAG_TARGETS", "").strip()
+if _tag_targets_env.lower() in ("all", "*"):
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS}
+elif _tag_targets_env:
+    AMAZON_TAG_TARGETS = {t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()}
+else:
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET}
 # --- Review-channel posting policy (t.me/smartbuyhub11) ---------------------
 # USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
 # Three programme rules decide what this channel may publish:
@@ -393,6 +408,14 @@ SHOPPING_DISCLOSURE = os.getenv("SHOPPING_DISCLOSURE", "#ad (paid link)").strip(
 SHOPPING_AMAZON_ONLY = os.getenv(
     "SHOPPING_AMAZON_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
 SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "50")))
+# 7. NO SHORTENER ON THE REVIEWED CHANNEL. USER RULE (2026-09-06): "review
+#    channelo shorten ga marchatam bitly use cheyaku". A bit.ly/is.gd hop hides
+#    where the link goes; the reviewer must see the store domain in the post.
+#    Amazon product links are already collapsed natively to
+#    https://www.amazon.in/dp/ASIN?tag=... (~48 chars), so this costs no
+#    neatness. Every other channel keeps using the shortener as before.
+SHOPPING_NATIVE_LINKS = os.getenv(
+    "SHOPPING_NATIVE_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
 # 4. NO IMAGES. The 2026-09-06 rejection cited "images (screenshots/screen
 #    recordings)" of Amazon. A forwarded deal photo is almost always an Amazon
 #    product-page screenshot, which is exactly the trademarked use that gets an
@@ -4464,6 +4487,12 @@ class AffiliateClient:
         self._health: dict[str, tuple[float, bool]] = {}
         # long_url -> short link, so a retry never re-calls the shortener.
         self._short_cache: dict[str, str] = {}
+        # USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+        # cheyaku". A bit.ly/is.gd hop hides the destination, and a reviewer who
+        # cannot see amazon.in in the link cannot verify the post. So the review
+        # channel publishes the NATIVE store URL. Every short link we mint is
+        # recorded here so the delivery step can put the real URL back.
+        self._short_to_long: dict[str, str] = {}
 
     async def cache_link(self, source_url: str, affiliate: str, resolved: str, key: str) -> None:
         """Proxy to the global store's link cache so subclasses/tests can override."""
@@ -4723,6 +4752,7 @@ class AffiliateClient:
         shortened = await self.bitly(long_url)
         if shortened:
             self._short_cache[long_url] = shortened
+            self._short_to_long[shortened] = long_url
             return shortened
         if shortened:
             return shortened
@@ -4739,6 +4769,7 @@ class AffiliateClient:
                     if link.startswith("https://is.gd/"):
                         log.info("SHORTENER fallback=is.gd")
                         self._short_cache[long_url] = link
+                        self._short_to_long[link] = long_url
                         return link
         except Exception as exc:
             log.warning("is.gd failed: %s", exc)
@@ -4763,6 +4794,20 @@ class AffiliateClient:
             except Exception as exc:
                 log.warning("BITLY failed: %s", exc)
         return None
+
+    def expand_our_short_links(self, text: str) -> str:
+        """Put the NATIVE store URL back wherever we minted a short link.
+
+        Only links this process shortened are touched, so nothing is guessed and
+        a source's own short link is left exactly as it arrived. Used for the
+        Amazon-review channel, where a bit.ly hop hides the destination the
+        reviewer has to be able to see.
+        """
+        out = text or ""
+        for short, long_url in self._short_to_long.items():
+            if short in out:
+                out = out.replace(short, long_url)
+        return out
 
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
         """FINAL guarantee that no link leaves the post clumsy/long:
@@ -6145,6 +6190,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # at delivery, so the stored copy every other channel gets stays
                 # exactly the source's. A post that has nothing left but a link
                 # is not reviewable, so it is skipped for THIS channel only.
+                # No shortener hop on the reviewed channel: a bit.ly link hides
+                # the destination, and a reviewer who cannot see the store domain
+                # cannot verify the post. Our own short links are swapped back to
+                # the native store URL (a source's own short link is untouched).
+                if SHOPPING_NATIVE_LINKS:
+                    target_text = affiliate.expand_our_short_links(target_text)
                 safe_text = affiliate_safe_text(target_text)
                 if (not safe_text or not URL_RE.search(safe_text)
                         or not re.search(r"[A-Za-z]{3}", URL_RE.sub(" ", safe_text))):
