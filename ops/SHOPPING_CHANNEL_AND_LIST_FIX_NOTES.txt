@@ -343,3 +343,85 @@ before. Enforced by a test that fails if affiliate_safe_text/_strict_review_copy
 ever appears in the shared render path.
 
 So: this channel plays by the rules; the others behave exactly as they do today.
+
+
+=================================================================
+Round 6 — daily 20-30 Amazon posts on the review channel
+=================================================================
+
+"daily 20-30 post cheyali, Amazon vi veyu, reject cheyakunda"
+
+Three rejection risks were still open. All three are now enforced in code, so
+they cannot be forgotten on a busy day.
+
+1. LINK-LEVEL DISCLOSURE  (the biggest one)
+-------------------------------------------
+Amazon/FTC require a clear disclosure NEXT TO the link on EVERY post. The
+channel bio alone is NOT enough - Amazon's own help page says the link-level
+disclosure must be "clear" and "conspicuous", and names "(paid link)", "#ad",
+"#CommissionsEarned" as acceptable. Missing it is one of the most common
+rejection/warning reasons.
+
+    SHOPPING_DISCLOSURE="#ad (paid link)"    (default)
+
+add_link_disclosure() appends it to every review-channel post, at delivery,
+AFTER every cleaning pass - so no later pass can strip it - and never twice.
+
+    Boat Airdopes 141 at 899
+    https://www.amazon.in/dp/B0X
+
+    #ad (paid link)
+
+2. AMAZON ONLY
+--------------
+The channel is submitted for the AMAZON programme, so a Flipkart/Myntra link on
+it is off-programme noise to a reviewer.
+
+    SHOPPING_AMAZON_ONLY=true   (default)
+
+Only a post whose links are ALL Amazon reaches this channel. A mixed post
+(Amazon + Flipkart) is excluded too - otherwise the off-programme link rides
+along. Everything else keeps going to the other channels exactly as today.
+Enforced twice: at routing AND at delivery.
+
+3. A DAILY CAP
+--------------
+20-30 curated posts/day reads like a shop. 200 reads like spam and is itself a
+rejection risk.
+
+    SHOPPING_DAILY_CAP=30       (default; 0 = unlimited)
+
+Counted per IST day in a `shopping_quota` table, so the pace SURVIVES RESTARTS
+(an in-memory counter would reset to zero every deploy and quietly blow the
+cap). Old rows are pruned after 3 days.
+
+Over the cap, the post is closed for this channel only ("daily cap reached") -
+every other channel still receives it.
+
+TUNING FOR YOUR 20-30 TARGET
+----------------------------
+Default is 30/day. For a tighter 20:
+    SHOPPING_DAILY_CAP=20
+The channel takes the deals as they come; if your Amazon flow exceeds the cap,
+the surplus simply goes to the other channels.
+
+WHAT A REVIEWER NOW SEES, EVERY POST
+------------------------------------
+    <product name> <price exactly as the source printed it>
+    <Amazon link>
+
+    #ad (paid link)
+
+No loot/urgency wording, no "buy max quantity", no unverifiable claims, no
+discount percentages, no MRP, no emoji shouting, no t.me promo, no trick/glitch
+posts, no non-Amazon links, no duplicates, and never more than the daily cap.
+
+STILL YOURS TO DO (cannot be done from code)
+--------------------------------------------
+  * channel bio: "As an Amazon Associate I earn from qualifying purchases."
+  * channel PUBLIC, posts visible to non-subscribers
+  * no "Amazon"/"Loot"/"Deal" in the channel name or handle
+  * declare the FULL URL https://t.me/smartbuyhub11 in Associates Central
+  * set AMAZON_TAG only after approval (AMAZON_TAG_TARGETS already limits it
+    to this channel)
+  * 3 qualifying sales in 180 days

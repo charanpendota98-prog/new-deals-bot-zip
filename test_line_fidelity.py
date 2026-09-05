@@ -1060,6 +1060,66 @@ def test_the_review_channel_copy_is_built_from_an_allowlist():
           "review rewrite leaked into the shared render path")
 
 
+def test_review_channel_posts_are_disclosed_amazon_only_and_capped():
+    """USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
+    Three programme rules the review channel must satisfy on EVERY post."""
+    deal = "Boat Airdopes 141 at 899\nhttps://www.amazon.in/dp/B0X"
+
+    # 1. Link-level disclosure. Amazon/FTC require it NEXT TO the link on every
+    # post - the channel bio alone is not enough, and missing it is one of the
+    # most common rejection reasons.
+    disclosed = bot.add_link_disclosure(bot.affiliate_safe_text(deal))
+    check("every post carries a link-level disclosure",
+          "#ad" in disclosed or "paid link" in disclosed.lower(), repr(disclosed))
+    check("the product and price are still there",
+          "Boat Airdopes 141 at 899" in disclosed, repr(disclosed))
+    check("the disclosure is never doubled",
+          bot.add_link_disclosure(disclosed) == disclosed, repr(disclosed))
+    check("a post that already discloses is left alone",
+          bot.add_link_disclosure("X at 99 #ad\nhttps://www.amazon.in/dp/B0Y").count("#ad") == 1)
+
+    # 2. Amazon only - the channel is submitted for the AMAZON programme.
+    check("an Amazon-only deal qualifies", bot.is_amazon_only_post(deal) is True)
+    check("a Flipkart deal does not",
+          bot.is_amazon_only_post("X at 99\nhttps://fkrt.co/a") is False)
+    check("a MIXED post does not either (an off-programme link would ride along)",
+          bot.is_amazon_only_post(deal + "\nhttps://fkrt.co/a") is False)
+    check("a post with no link at all does not qualify",
+          bot.is_amazon_only_post("Just a note") is False)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the Amazon-only gate is enforced at delivery, not just at routing",
+          "not is_amazon_only_post(safe_text)" in deliver, "gate missing")
+    check("the disclosure is added at delivery, after every cleaning pass",
+          "add_link_disclosure(safe_text)" in deliver, "disclosure not wired")
+
+    # 3. A daily cap, so the channel reads as a curated shop and not a firehose.
+    async def run_quota():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "quota.sqlite3")
+            old_cap, bot.SHOPPING_DAILY_CAP = bot.SHOPPING_DAILY_CAP, 3
+            try:
+                first = await store.shopping_quota_left()
+                for _ in range(3):
+                    await store.note_shopping_sent()
+                after = await store.shopping_quota_left()
+                # survives a restart: a fresh Store on the same file keeps the count
+                reopened = bot.Store(Path(td) / "quota.sqlite3")
+                return first, after, await reopened.shopping_quota_left()
+            finally:
+                bot.SHOPPING_DAILY_CAP = old_cap
+
+    start, after, restarted = asyncio.run(run_quota())
+    check("the day starts with the full allowance", start == 3, str(start))
+    check("the cap stops further posts once it is reached", after == 0, str(after))
+    check("and the count survives a restart (no reset-to-zero loophole)",
+          restarted == 0, str(restarted))
+    check("the shipped default is a sane 30/day", bot.SHOPPING_DAILY_CAP == 30,
+          str(bot.SHOPPING_DAILY_CAP))
+    check("the cap is enforced on the delivery path",
+          "shopping_quota_left()" in deliver, "cap not wired")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1081,6 +1141,7 @@ def main() -> int:
     test_a_flipkart_product_link_goes_out_short()
     test_our_amazon_tag_only_rides_on_declared_channels()
     test_the_review_channel_copy_is_built_from_an_allowlist()
+    test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

@@ -345,6 +345,45 @@ AMAZON_TAG_TARGETS = {
     t.strip().lstrip("@") for t in os.getenv("AMAZON_TAG_TARGETS", SHOPPING_TARGET).split(",")
     if t.strip()
 }
+# --- Review-channel posting policy (t.me/smartbuyhub11) ---------------------
+# USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
+# Three programme rules decide what this channel may publish:
+#
+#  1. LINK-LEVEL DISCLOSURE. Amazon/FTC require a clear disclosure NEXT TO the
+#     link on every post - the channel bio alone is not enough. Amazon names
+#     "(paid link)", "#ad" and "#CommissionsEarned" as acceptable. Missing this
+#     is one of the most common rejection reasons, so it is appended to every
+#     post automatically and can never be forgotten.
+#  2. AMAZON ONLY. The channel is submitted for the AMAZON programme, so it
+#     carries Amazon deals only; a Flipkart/Myntra link on the reviewed channel
+#     is off-programme noise. Other stores keep going to the other channels.
+#  3. A DAILY CAP. 20-30 quality posts a day reads like a curated shop; a
+#     200-post firehose reads like spam and is a rejection risk.
+SHOPPING_DISCLOSURE = os.getenv("SHOPPING_DISCLOSURE", "#ad (paid link)").strip()
+SHOPPING_AMAZON_ONLY = os.getenv(
+    "SHOPPING_AMAZON_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
+SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "30")))
+
+
+def add_link_disclosure(text: str) -> str:
+    """Append the link-level affiliate disclosure exactly once."""
+    body = (text or "").strip()
+    if not body or not SHOPPING_DISCLOSURE:
+        return body
+    # Already disclosed (any of the accepted forms)? Never say it twice.
+    if re.search(r"(?i)#ad\b|\bpaid link\b|#commissionsearned\b|"
+                 r"amazon associate i earn", body):
+        return body
+    return f"{body}\n\n{SHOPPING_DISCLOSURE}"
+
+
+def is_amazon_only_post(text: str) -> bool:
+    """True when every link in the post is an Amazon link (and there is one)."""
+    urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text or ""))]
+    if not urls:
+        return False
+    return all(in_domains((urlparse(u).hostname or "").lower(), AMAZON_DOMAINS)
+               for u in urls)
 
 
 def strip_amazon_tag_for_undeclared(text: str, target: str) -> str:
@@ -3215,6 +3254,12 @@ class Store:
           claim_at REAL NOT NULL DEFAULT 0
         );
         INSERT OR IGNORE INTO premium_state(id) VALUES(1);
+        -- Daily send counter for the review channel (IST day key), so the
+        -- 20-30/day pace survives restarts instead of resetting to zero.
+        CREATE TABLE IF NOT EXISTS shopping_quota (
+          day_key TEXT PRIMARY KEY,
+          sent_count INTEGER NOT NULL DEFAULT 0
+        );
         """)
         # Backward-compatible migrations.
         delivery_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(deliveries)")}
@@ -3973,6 +4018,31 @@ class Store:
                 "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
                 ("sent" if ok else "pending", error[:500], queue_id, target),
             )
+            self.conn.commit()
+
+    async def shopping_quota_left(self) -> int:
+        """How many more posts the review channel may take today (IST)."""
+        if SHOPPING_DAILY_CAP <= 0:
+            return 1_000_000
+        day_key = datetime.now(IST).strftime("%Y-%m-%d")
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT sent_count FROM shopping_quota WHERE day_key=?", (day_key,)
+            ).fetchone()
+        used = int(row["sent_count"]) if row else 0
+        return max(0, SHOPPING_DAILY_CAP - used)
+
+    async def note_shopping_sent(self) -> None:
+        day_key = datetime.now(IST).strftime("%Y-%m-%d")
+        async with self.lock:
+            self.conn.execute(
+                "INSERT INTO shopping_quota(day_key,sent_count) VALUES(?,1) "
+                "ON CONFLICT(day_key) DO UPDATE SET sent_count=sent_count+1",
+                (day_key,),
+            )
+            # Keep the table tiny: yesterday's counters are of no further use.
+            self.conn.execute("DELETE FROM shopping_quota WHERE day_key < ?",
+                              ((datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"),))
             self.conn.commit()
 
     async def claim_premium(self, queue_id: int) -> tuple[bool, float]:
@@ -5575,6 +5645,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             and row["source"] not in TRICKS_SOURCES
             and not service_pairs
             and URL_RE.search(rendered)
+            and (not SHOPPING_AMAZON_ONLY or is_amazon_only_post(rendered))
             and SHOPPING_TARGET not in base_targets):
         base_targets.append(SHOPPING_TARGET)
     if not base_targets:
@@ -5888,7 +5959,22 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                              "programme-safe rewrite", row["id"])
                     await store.delivery(row["id"], target, True, "not programme-safe")
                     continue
-                target_text = safe_text
+                # Off-programme store on the channel submitted for the AMAZON
+                # programme: it belongs on the other channels, not here.
+                if SHOPPING_AMAZON_ONLY and not is_amazon_only_post(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s not an Amazon-only deal", row["id"])
+                    await store.delivery(row["id"], target, True, "not an amazon deal")
+                    continue
+                # A curated shop posts 20-30 times a day; a firehose reads as spam.
+                if await store.shopping_quota_left() <= 0:
+                    log.info("SHOPPING SKIP | queue=%s daily cap of %s reached",
+                             row["id"], SHOPPING_DAILY_CAP)
+                    await store.delivery(row["id"], target, True, "daily cap reached")
+                    continue
+                # Link-level disclosure is an Amazon/FTC requirement on EVERY post
+                # (the channel bio alone is not enough) and a common rejection
+                # reason. Added last so it can never be cleaned off again.
+                target_text = add_link_disclosure(safe_text)
             # Associates compliance: our tag may only ride on the channels that
             # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
             # SAME deal posts with an untagged link.
@@ -5908,6 +5994,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if premium_claimed:
                 await store.complete_premium(row["id"], ok)
             await store.delivery(row["id"], target, ok, error)
+            if ok and target == SHOPPING_TARGET:
+                with contextlib.suppress(Exception):
+                    await store.note_shopping_sent()
             if ok and product_sig:
                 await store.mark_product_posted(target, product_sig, price, target_discount)
             successes += int(ok)
