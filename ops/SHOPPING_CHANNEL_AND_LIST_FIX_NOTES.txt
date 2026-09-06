@@ -797,3 +797,57 @@ THE PHOTOS, THE OTHER HALF OF THE FINDING
 
 Full suite green: 311 checks in test_line_fidelity, 225 and 160 in the
 others, sync_identity ok.
+
+
+=================================================================
+Round 15 — four defects the user photographed on the LOOT channels
+=================================================================
+
+All four are on the ORDINARY channels, which the user wants running as
+usual - no programme restrictions, just correct. None of these fixes
+touches the review channel's copy rules.
+
+1. THE SAME PRODUCT POSTED TWICE IN ONE CHANNEL
+   "Ergonomic Dustpan @ 55" went out twice, identically, minutes apart.
+   Cause: _product_identity() required THREE product words when the post
+   had no model number. A two-word product name therefore had NO
+   identity, product_signature() returned None, and the per-channel
+   repeat guard never ran on it. Every short-named product in the feed
+   was un-dedupable.
+   Fix: two words are accepted when the joined basis is >= 15 characters
+   ("Ergonomic Dustpan" yes; "hair oil", "phone case", "Milton Bottle"
+   still refused as category phrases, so a real deal is never lost).
+   ops/quality_audit.py re-synced via ops/sync_identity.py.
+
+2. PRODUCT NAMES WITH NO LINK AT ALL
+   "Cello Feast Deluxe Kids Lunch Box @264 / Apply 31% Off Coupon /
+    2 Containers Lunch Box, 1024 ml @517 / Apply 30% Off Coupon"
+   published with nothing to tap. Cause: the link_free_post allowance,
+   written for a PHOTO deal whose picture is the product, also accepted
+   multi-product lists. A list with no link is a broken post - the
+   reader cannot buy any of it.
+   Fix: the allowance is limited to a SINGLE priced product. A link-free
+   list is skipped and retried instead of published half-dead.
+
+3. FLIPKART LINK NOT SHORTENED (112 CHARACTERS)
+   https://www.flipkart.com/flipkart/p/item?lid=...&marketplace=...&pid=...
+   FLIPKART_ITEM_RE expected "/p/itm<id>"; this path says the literal
+   word "item", so nothing matched and the raw link went out.
+   Fix: the regex accepts both spellings. 112 chars -> 61, pid kept, lid
+   and marketplace dropped. /p/itm<id> and search URLs unchanged.
+
+4. A "SHOPSY STORE" CARD UNDER A PEN-STAND DEAL
+   Telegram unfurled "linkredirect.in / Shopsy Store / A trusted network
+   that gives sellers an opportunity to grow their business!" beneath
+   "Decorative Boat Pen Stand at 261".
+   Cause: preview_allowed() looked the link up in link_cache to find its
+   destination. A freshly minted bitli.in link is not cached yet, so
+   `resolved` fell back to the bitli.in URL itself, whose host passed
+   every block below - and Telegram previewed whatever the redirect
+   landed on.
+   Fix: an affiliate shortener hides its destination by design, so it
+   can never be judged safe. No preview unless the real destination is
+   known. Amazon product links keep their preview.
+
+Suite: 327 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

@@ -330,10 +330,17 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
         # with no model number un-dedupable, which is how the same collagen
         # powder went out twice under two different banner words. A short
         # category phrase ("hair oil set") still fails the length test below.
-        if len(words) < 3:
+        # USER REPORT (2026-09-06): "Ergonomic Dustpan @ 55" went out TWICE in
+        # the same channel. Two long, specific words ARE a product name; the
+        # three-word floor left every such post with no identity at all, so the
+        # per-channel repeat guard never ran on them. Two words are accepted
+        # when they are long and specific enough not to be a category phrase
+        # ("hair oil", "phone case" stay un-keyed via the length test below).
+        if len(words) < 2:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 18 else ("W", basis)
+        floor = 18 if len(words) >= 3 else 15
+        return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can

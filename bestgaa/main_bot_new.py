@@ -928,7 +928,13 @@ def compact_amazon_product_link(link: str) -> str:
 # compacted natively (free, no quota) and only then handed to the shortener.
 # The leading "/dl" of a dl.flipkart.com app link is part of the wrapper, not of
 # the product path: www.flipkart.com/<slug>/p/<item id> is the canonical page.
-FLIPKART_ITEM_RE = re.compile(r"(?i)^(?:/dl)?(?P<path>/.*?/p/itm[a-z0-9]+)")
+# USER REPORT (2026-09-06): a Flipkart link went out at 130 characters,
+# unshortened - "flipkart earnkaro tho change cheyatledu shortenga". Its path was
+#   /flipkart/p/item?lid=...&pid=...
+# i.e. the literal word "item", not the usual "itm<id>" slug, so this regex did
+# not match and the link was handed back untouched. Both spellings are real
+# Flipkart product pages; the identity lives in the pid either way.
+FLIPKART_ITEM_RE = re.compile(r"(?i)^(?:/dl)?(?P<path>/.*?/p/(?:itm[a-z0-9]+|item))")
 FLIPKART_HOSTS = {"flipkart.com", "www.flipkart.com", "dl.flipkart.com", "m.flipkart.com"}
 
 
@@ -1383,10 +1389,17 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
         # with no model number un-dedupable, which is how the same collagen
         # powder went out twice under two different banner words. A short
         # category phrase ("hair oil set") still fails the length test below.
-        if len(words) < 3:
+        # USER REPORT (2026-09-06): "Ergonomic Dustpan @ 55" went out TWICE in
+        # the same channel. Two long, specific words ARE a product name; the
+        # three-word floor left every such post with no identity at all, so the
+        # per-channel repeat guard never ran on them. Two words are accepted
+        # when they are long and specific enough not to be a category phrase
+        # ("hair oil", "phone case" stay un-keyed via the length test below).
+        if len(words) < 2:
             return None                    # a category phrase is not an identity
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 18 else ("W", basis)
+        floor = 18 if len(words) >= 3 else 15
+        return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can
@@ -4054,6 +4067,16 @@ class Store:
                 # linkredirect.in is source wrapper never final, Myntra/myntr.it generic shop card is waste — photo okay but extend waste
                 if host_matches(host, "flipkart.com") or host_matches(host, "linkredirect.in") or host_matches(host, "myntra.com") or host_matches(host, "myntr.it"):
                     return False
+                # USER REPORT (2026-09-06): "shopsy ani kuda exted avuthundi
+                # alaga avoddu". A bitli.in link that is not in the cache yet
+                # resolved to nothing here, so the host read "bitli.in", passed
+                # every test above, and Telegram unfurled whatever the redirect
+                # landed on - the generic "Shopsy Store / A trusted network..."
+                # card under a pen-stand deal. An affiliate shortener hides its
+                # destination BY DESIGN, so it can never be judged safe: no
+                # preview unless we can see where it actually goes.
+                if resolved == url and in_domains(host, OUR_SHORTENER_DOMAINS | SHORTENER_HOSTS):
+                    return False
         return True
 
     async def reserve(self, queue_id: int, keys: list[str], price: int | None,
@@ -5573,9 +5596,19 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # qualifies. A caption with no price, no discount and no card/service offer is a
     # screenshot, not a deal - publishing that is exactly the "unwanted text" the user
     # forbids, so it keeps the skip it always had.
+    # USER REPORT (2026-09-06): "ilaga link pamplkudnaa just names vasthunndi" -
+    # posts like "Cello Feast Deluxe Kids Lunch Box @264 / Apply 31% Off Coupon"
+    # went out as a NAME AND A PRICE WITH NOTHING TO TAP. The link-free path was
+    # built for a photo whose picture IS the product; it was never meant to carry
+    # a shopping LIST. A post that names two or more priced products but offers
+    # no link is a broken post, not a deal - the reader cannot buy any of it. So
+    # the allowance is now limited to a SINGLE product; a multi-product list with
+    # no link is skipped and retried instead of published half-dead.
+    _priced_lines = [ln for ln in (text or "").splitlines()
+                     if parse_price(ln) is not None and re.search(r"[A-Za-z]{3}", ln)]
     link_free_candidate = (not source_urls or not has_merchant_candidate) and has_media_now and (
         parse_price(text) is not None or parse_discount(text) is not None
-        or has_card_offer(text) or has_service_offer(text))
+        or has_card_offer(text) or has_service_offer(text)) and len(_priced_lines) < 2
     had_social_promo = bool(TRICK_PROMO_LINK_RE.search(raw_text)) or any(
         in_domains((urlparse(url).hostname or "").lower(), NON_STORE_DOMAINS)
         for url in source_urls

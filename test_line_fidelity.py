@@ -1536,6 +1536,72 @@ def test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link():
           and "target_media = media_path" in deliver, "text-only not wired")
 
 
+def test_the_four_defects_the_user_photographed():
+    """USER REPORT (2026-09-06), four separate defects on the LOOT channels."""
+    import re as _re
+
+    # 1. "same products double times in same groups" - the Ergonomic Dustpan
+    # went out twice. Two-word product names had NO identity (the floor was
+    # three words), so the per-channel repeat guard never ran on them at all.
+    post = "\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL"
+    sig = bot.product_signature(post)
+    check("a two-word product now has an identity", bool(sig), repr(sig))
+    check("the repeat of the very same post keys the same",
+          sig == bot.product_signature(post))
+    check("a different product does not collide",
+          sig != bot.product_signature("\U0001f525 Ergonomic Mop @ \u20b955\nhttps://www.amazon.in/dp/B0X"))
+    for phrase in ("hair oil", "phone case", "Milton Bottle"):
+        check("a short category phrase %r is still NOT keyed" % phrase,
+              bot._product_identity(phrase) is None)
+
+    # 2. "ilaga link pamplkudnaa just names vasthunndi" - a priced LIST with no
+    # link at all was published. A reader cannot buy any of it.
+    listing = ("Cello Feast Deluxe Kids Lunch Box @264.\n\nApply 31% Off Coupon\n\n"
+               "2 Containers Lunch Box, 1024 ml @517.\n\nApply 30% Off Coupon")
+    priced = [ln for ln in listing.splitlines()
+              if bot.parse_price(ln) is not None and _re.search(r"[A-Za-z]{3}", ln)]
+    check("the offending post is recognised as a multi-product list",
+          len(priced) >= 2, str(priced))
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("a link-free MULTI-product list can no longer be published",
+          "len(_priced_lines) < 2" in src, "the link-free list hole is still open")
+    check("a single link-free product (photo deal) is still allowed",
+          "_priced_lines" in src and "has_media_now" in src)
+
+    # 3. "flipkart earnkaro tho change cheyatledu shortenga" - a 112-char link
+    # went out whole because its path said /p/item, not /p/itm<id>.
+    long_fk = ("https://www.flipkart.com/flipkart/p/item?lid=LSTSOPH2D7GGSYYMVFPST5QWO"
+               "&marketplace=FLIPKART&pid=SOPH2D7GGSYYMVFP")
+    compact = bot.compact_flipkart_product_link(long_fk)
+    check("the /p/item spelling is now compacted",
+          len(compact) < len(bot.clean_url(long_fk)), "%s -> %s" % (len(long_fk), len(compact)))
+    check("the product identity (pid) is kept", "SOPH2D7GGSYYMVFP" in compact, compact)
+    check("the tracking noise is gone",
+          "lid=" not in compact and "marketplace=" not in compact, compact)
+    check("the usual /p/itm spelling still works",
+          bot.compact_flipkart_product_link(
+              "https://www.flipkart.com/soap/p/itmabc123?lid=X&pid=PID9").endswith("pid=PID9"))
+    check("a search URL is still left for the shortener",
+          bot.compact_flipkart_product_link("https://www.flipkart.com/search?q=soap")
+          == "https://www.flipkart.com/search?q=soap")
+
+    # 4. "shopsy ani kuda exted avuthundi alaga avoddu" - Telegram unfurled a
+    # generic "Shopsy Store" card under a pen-stand deal, because an
+    # unresolved bitli.in link passed the preview test.
+    async def run_preview():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "prev.sqlite3")
+            unresolved = await store.preview_allowed(
+                "Decorative Boat Pen Stand at \u20b9261\nhttps://bitli.in/hlqmyQS")
+            amazon = await store.preview_allowed(
+                "Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+            return unresolved, amazon
+
+    unresolved, amazon = asyncio.run(run_preview())
+    check("an unresolved shortener gets NO preview card", unresolved is False)
+    check("a real Amazon product link keeps its preview", amazon is True)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1567,6 +1633,7 @@ def main() -> int:
     test_the_review_channel_posts_at_a_human_pace()
     test_our_tag_is_live_now_on_the_review_channel()
     test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
+    test_the_four_defects_the_user_photographed()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
