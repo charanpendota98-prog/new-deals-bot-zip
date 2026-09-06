@@ -504,12 +504,20 @@ def retag_foreign_amazon_links(text: str) -> str:
     return out
 
 
+# Amazon's own short domains. They ARE Amazon links, but they are not in
+# AMAZON_DOMAINS (which is the list used for tagging, where only a full
+# amazon.in URL can carry a tag). Judging "is this an Amazon post?" by that
+# list alone refused every post whose source used an amzn.to link.
+AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
+
+
 def is_amazon_only_post(text: str) -> bool:
     """True when every link in the post is an Amazon link (and there is one)."""
     urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text or ""))]
     if not urls:
         return False
-    return all(in_domains((urlparse(u).hostname or "").lower(), AMAZON_DOMAINS)
+    return all(in_domains((urlparse(u).hostname or "").lower(),
+                          AMAZON_DOMAINS | AMAZON_SHORT_DOMAINS)
                for u in urls)
 
 
@@ -1711,6 +1719,19 @@ def parse_price(text: str) -> int | None:
             price = int(match.group(1).replace(",", ""))
             if 1 <= price <= 1_000_000:
                 return price
+    # "899 (MRP 2990)" - the deal price written as a BARE number, with the MRP
+    # right after it. Nothing above matches (no currency mark, no @/only/at),
+    # so the MRP fallback below used to answer 2990: the post advertised a
+    # price the buyer does not pay, and price drives routing and dedup.
+    # A bare number immediately followed by an MRP is the deal price.
+    bare_before_mrp = re.search(
+        r"(?<![\d,.])([\d,]{2,})\s*[({\[]?\s*"
+        r"(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\b",
+        value, re.I)
+    if bare_before_mrp:
+        price = int(bare_before_mrp.group(1).replace(",", ""))
+        if 1 <= price <= 1_000_000:
+            return price
     # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
     # money on the post, so it is the best available answer (old behaviour).
     # The masking above only stops MRP from SHADOWING a real deal price.
@@ -5090,9 +5111,21 @@ class AffiliateClient:
                      or self.valid_generated(cached_url))
             )
             if cache_is_safe:
-                # Old cache rows may predate the current "Amazon or 2+" Bitly
-                # policy. Upgrade them before returning; never leak a long link.
-                needs_short = should_use_bitly(cached_resolved, multi_link) or len(cached_url) > SHORTEN_MIN_LEN
+                # Old cache rows may predate the current policy. Upgrade them
+                # before returning; never leak a long link.
+                #
+                # A TAGGED AMAZON LINK IS NEVER SHORTENED (Round 24): hiding
+                # that a link goes to Amazon is link cloaking, a documented
+                # closure reason. That rule was applied on the fresh path only,
+                # so a cached row still got wrapped in bitli.in - which is why
+                # one product in a list came out shortened while the next two
+                # stayed native. The rule belongs on BOTH paths.
+                cached_is_amazon = in_domains(
+                    (urlparse(cached_url).hostname or "").lower(), AMAZON_DOMAINS)
+                needs_short = (
+                    not cached_is_amazon
+                    and (should_use_bitly(cached_resolved, multi_link)
+                         or len(cached_url) > SHORTEN_MIN_LEN))
                 if needs_short and not in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS):
                     shortened = await self.shorten(cached_url)
                     if shortened:
@@ -5193,6 +5226,10 @@ class AffiliateClient:
                             compact = compact_flipkart_product_link(affiliate)
                             if compact != affiliate and len(compact) < len(affiliate):
                                 affiliate = result = compact
+                        # A LIST must look uniform: one link shortened and the
+                        # next left long reads like a mistake. Amazon products
+                        # in a list are already native (handled above), so this
+                        # only makes the remaining stores consistent.
                         if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
                             shortened = await self.shorten(result)
                             if shortened:

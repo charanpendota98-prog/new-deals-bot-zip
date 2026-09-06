@@ -1412,3 +1412,66 @@ DEDUP HOLE FOUND AND CLOSED
 
 Suite: 505 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 27 — end-to-end audit of the finished posts; 3 live defects
+=================================================================
+
+USER: "anni bestgaa fix build chesava implement perfectly."
+
+Answered by running seven real source shapes through the WHOLE delivery
+path - clean, split, pair, convert, tag, deliver - for a loot channel AND
+the review channel, and reading the finished posts. It was not perfect:
+three live defects were found, all now fixed and pinned by
+test_the_whole_delivery_path_end_to_end().
+
+DEFECT 1 - THE MRP WAS PUBLISHED AS THE PRICE (worst)
+    "boAt Rockerz 255 Pro+ Neckband
+     899 (MRP 2990)"          -> the review post said Price: Rs.2,990
+
+  A bare number with no currency mark matched none of the price patterns,
+  so the MRP fallback answered - and the post advertised a price the
+  buyer does not pay. Price also drives routing (under-99 / under-499),
+  dedup and the better-copy rule, so the damage was not only cosmetic.
+  A bare number immediately followed by an MRP is now read as the deal
+  price. Verified on 14 shapes: "899 (MRP 2990)"->899, "Deal 899 MRP
+  2990"->899, while "MRP 2990"->2990 and "MRP: Rs.270"->270 still answer
+  the MRP when it is the ONLY money on the post.
+
+DEFECT 2 - ONE LIST, TWO DIFFERENT LINK STYLES
+  In a single 3-product post the first link came back as bitli.in while
+  the other two were native amazon.in. Round 24 removed the shortener
+  from tagged Amazon links on the FRESH path only; the cache branch in
+  convert() still ran the old rule, so any product already in link_cache
+  was re-wrapped. The no-cloaking rule now applies on BOTH paths, and a
+  list looks uniform.
+
+DEFECT 3 - THE REVIEW CHANNEL REFUSED EVERY POST WITH AN amzn.to LINK
+  is_amazon_only_post() tested against AMAZON_DOMAINS, which lists only
+  amazon.in / amazon.com - so a source that used Amazon's own short
+  domain was judged "not an Amazon post" and dropped. New
+  AMAZON_SHORT_DOMAINS (amzn.to, amzn.eu, amzn.in, a.co) is used for
+  that judgement only; tagging still requires a full amazon.in URL,
+  because a tag cannot be attached to a short link.
+
+WHAT THE FINISHED POSTS LOOK LIKE NOW
+  loot   : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / 899 (MRP 2990) /
+           70% OFF / Rating 4.2 / 12,453 reviews / Apply 10% coupon /
+           native tagged amazon.in link          (no disclosure, no strip)
+  review : boAt Rockerz 255 Pro+ Neckband
+           Price: Rs.899
+           https://www.amazon.in/dp/B09N3ZNHTY?tag=mama086-21
+
+           #ad (paid link)
+
+  A 3-product list, in either source shape, reaches BOTH channels with
+  each product above its own native tagged link, every ASIN exactly once.
+  Flipkart still posts to the loot channels and is still refused by the
+  review channel.
+
+A/B against the pre-session code is unchanged: exactly one difference in
+the copy the reader sees, and it is the list pairing the user asked for.
+
+Suite: 520 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
