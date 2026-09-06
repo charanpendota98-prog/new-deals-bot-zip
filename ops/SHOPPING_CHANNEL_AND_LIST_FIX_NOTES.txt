@@ -1562,3 +1562,50 @@ Deploy is three commands (in DEPLOY_README.txt):
   bash deploy_bestgaa.sh
 Rollback is automatic on failure, and manual rollback is one cp from the
 timestamped backup the script takes.
+
+
+=================================================================
+Round 30 — sweep of the review-channel guards that had no tests
+=================================================================
+
+Before deploying, the review-channel rules that had never been probed
+individually were each exercised. One real hole was found.
+
+HOLE FOUND AND CLOSED - a plain-English route to the loot channels
+  has_telegram_pointer() blocked handles (@LootZoneIndia11) and t.me
+  links, but NOT sentences. These all reached the reviewed channel:
+      "Join our channel for more"      "Subscribe to our channel"
+      "Follow our telegram"            "more deals in our channel"
+      "join the group"                 "check our whatsapp group"
+  The rejection email named a loot channel as its worked example, so a
+  sentence that routes the reviewer off the channel is the same offence
+  as a link. Now blocked, and checked against false positives: "Join two
+  cables together", "Channel partner edition speaker", "5.1 channel home
+  theatre" and "Follow the instructions in the box" still pass, because
+  a false positive silently drops a good deal.
+
+VERIFIED SOUND, NO CHANGE NEEDED
+  * Trademarks: Amazon / Prime Day / Great Indian Festival / Amazon
+    Basics / Kindle / Alexa / Fire TV are all refused; ordinary product
+    names (boAt, Milton, Samsung, Cello) pass. Deliberately strict - a
+    post that needs the word still goes to every other channel.
+  * Coupon and CTA residue ("Apply 31% Off Coupon", "Use code SAVE50",
+    "Click below to buy", "Limited stock hurry", "Buy Max Quantity") is
+    stripped from the review copy while the product survives.
+  * The disclosure is appended exactly once, and an existing "#ad" /
+    "(paid link)" / "#CommissionsEarned" is respected.
+  * Text-only and the daily cap/pacing are enforced at SEND time, not
+    merely configured.
+  * The repeat guard is a sqlite table keyed (signature, target), so it
+    survives a restart and is per channel.
+  * The WhatsApp bridge has a silent-death watchdog that forces a
+    reconnect when the socket looks open but no deal has moved.
+
+A/B against the pre-session code: the loot-channel copy is byte-
+identical on all seven shapes tested, including a post that says "Join
+our channel for more" - that post is unchanged for the loot channels and
+refused only for the reviewed one.
+
+Suite: 573 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green. bestgaa_deploy.zip rebuilt and
+hash-matched against the repo.

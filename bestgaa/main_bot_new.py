@@ -447,7 +447,16 @@ _AMAZON_MARK_RE = re.compile(
 #    "https://t.me/LootZoneIndia11" as its worked example, so a reviewer who
 #    finds any route from this channel to a loot channel fails the whole
 #    application. Nothing on t.me may survive into the review copy.
-_TELEGRAM_POINTER_RE = re.compile(r"(?i)(?:https?://)?(?:t\.me|telegram\.(?:me|dog))/\S+|@[A-Za-z]\w{3,}")
+_TELEGRAM_POINTER_RE = re.compile(
+    r"(?i)(?:https?://)?(?:t\.me|telegram\.(?:me|dog))/\S+|@[A-Za-z]\w{3,}"
+    # A pointer does not need a handle to be a pointer. "Join our channel for
+    # more", "follow the group", "more deals in our channel" all route the
+    # reviewer somewhere else, which is the thing the rejection email named.
+    r"|\b(?:join|follow|subscribe|check)\b[^\n]{0,30}?"
+    r"\b(?:channel|group|telegram|whatsapp)\b"
+    r"|\b(?:channel|group)\b[^\n]{0,20}?\b(?:link|below|above|here)\b"
+    r"|\bmore\s+(?:deals?|loots?|offers?)\b[^\n]{0,20}?"
+    r"\b(?:channel|group|here|below)\b")
 
 
 def has_amazon_trademark(text: str) -> bool:

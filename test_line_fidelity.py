@@ -2618,6 +2618,85 @@ def test_the_review_channel_publishes_one_product_never_a_list():
           "pick_one_product_for_review" not in outside, "LEAKED to other channels")
 
 
+def test_no_route_from_the_review_channel_to_a_loot_channel():
+    """The rejection email named a loot channel as its worked example, so the
+    reviewer must find NO route off this channel - not a handle, not a link,
+    and not a sentence.
+
+    The handle/link forms were already blocked. A plain-English pointer
+    ("Join our channel for more") was not, and it is the same offence.
+    """
+    for pointer in ("Join our channel for more", "Follow our telegram",
+                    "join the group", "Subscribe to our channel",
+                    "more deals in our channel", "More offers below in channel",
+                    "check our whatsapp group", "Join @LootZoneIndia11",
+                    "https://t.me/LootZoneIndia11", "t.me/x"):
+        check("the pointer %r is blocked" % pointer,
+              bot.has_telegram_pointer(pointer), pointer)
+
+    # Ordinary product copy must NOT trip it - a false positive silently drops
+    # a good deal from the reviewed channel.
+    for innocent in ("boAt Rockerz 255 @899", "Samsung Galaxy M14 5G @9999",
+                     "Join two cables together", "Channel partner edition speaker",
+                     "Milton Bottle 1L @89", "Follow the instructions in the box",
+                     "5.1 channel home theatre"):
+        check("real copy %r is not blocked" % innocent,
+              not bot.has_telegram_pointer(innocent), innocent)
+
+
+def test_the_review_channel_guards_that_were_never_probed():
+    """Round-30 sweep of the review-channel rules that had no test of their own."""
+    # TRADEMARKS - deliberately strict: a post that needs the word simply goes
+    # to the other channels instead.
+    for named in ("Amazon Great Indian Festival", "Great deal on Amazon",
+                  "Amazon Basics Cable", "AmazonBasics Mouse", "Prime Day Deal",
+                  "Kindle Paperwhite", "Alexa Echo Dot", "Fire TV Stick"):
+        check("the mark %r is refused" % named,
+              bot.has_amazon_trademark(named + "\nhttps://amzn.to/a"), named)
+    for clean in ("boAt Rockerz 255 Pro+ Neckband", "Milton Thermosteel Flask",
+                  "Samsung Galaxy M14 5G", "Cello Feast Lunch Box"):
+        check("the product %r is allowed" % clean,
+              not bot.has_amazon_trademark(clean + "\nhttps://amzn.to/a"), clean)
+
+    # COUPON / CTA RESIDUE must not survive into the review copy.
+    for raw, residue in (("Cello Lunch Box @264\nApply 31% Off Coupon", "Coupon"),
+                         ("Boat 141 @899\nUse code SAVE50", "SAVE50"),
+                         ("Kettle @549\nClick below to buy", "Click below"),
+                         ("Mixer @1299\nLimited stock hurry!!", "hurry"),
+                         ("Bottle @89\nBuy Max Quantity", "Max Quantity")):
+        out = bot.affiliate_safe_text(raw + "\nhttps://amzn.to/a")
+        check("the residue %r is gone" % residue,
+              residue.lower() not in out.lower(), out)
+        check("but the product survives with it",
+              any(w in out for w in raw.splitlines()[0].split()[:2]), out)
+
+    # THE DISCLOSURE is added exactly once, whatever the source already said.
+    once = bot.add_link_disclosure("Product\nhttps://a.com")
+    check("the disclosure is appended", once.rstrip().endswith("#ad (paid link)"), once)
+    check("and never twice", bot.add_link_disclosure(once) == once,
+          bot.add_link_disclosure(once))
+    for already in ("Product #ad\nhttps://a.com",
+                    "Product (paid link)\nhttps://a.com",
+                    "Product #CommissionsEarned\nhttps://a.com"):
+        check("an existing disclosure is respected",
+              bot.add_link_disclosure(already) == already.strip(), already)
+
+    # TEXT-ONLY and the DAILY CAP are wired at delivery, not merely configured.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("media is dropped for the review channel",
+          "if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:" in deliver,
+          "text-only not enforced at send time")
+    check("the daily cap is consulted", "shopping_quota_left" in deliver, "no cap")
+    check("human pacing is applied", "shopping_pace_wait" in deliver, "no pacing")
+
+    # THE REPEAT GUARD IS PERSISTENT - a restart must not forget what was posted.
+    check("posted products live in the database, not memory",
+          "CREATE TABLE IF NOT EXISTS posted_products" in src, "not persisted")
+    check("the guard is per channel",
+          "PRIMARY KEY(signature,target)" in src, "not keyed by channel")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2663,6 +2742,8 @@ def main() -> int:
     test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener()
     test_the_whole_delivery_path_end_to_end()
     test_the_review_channel_publishes_one_product_never_a_list()
+    test_no_route_from_the_review_channel_to_a_loot_channel()
+    test_the_review_channel_guards_that_were_never_probed()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
