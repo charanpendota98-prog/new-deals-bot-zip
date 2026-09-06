@@ -1525,3 +1525,40 @@ copy the reader sees - the list pairing the user asked for.
 
 Suite: 524 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 29 — deploy bundle built
+=================================================================
+
+USER: "zip ga download chesi deploy cheddam."
+
+bestgaa_deploy.zip written at the repo root (17 files, 787 KB):
+  main_bot_new.py, deploy_bestgaa.sh, migrate_legacy_env.py,
+  requirements.txt, bestgaa.service, README_FIRST.txt,
+  coverage_audit.py, quality_audit.py,
+  DEPLOY_README.txt, AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt,
+  tg-wa-bridge/ (bridge.js, package.json, service, install, switch, readme)
+
+ONE CHANGE TO deploy_bestgaa.sh WAS NEEDED
+  The installer never rewrites an existing .env, so upgrading a live
+  server would have left AMAZON_TAG_TARGETS unset and the tag would have
+  silently stayed on smartbuyhub11 alone. The deploy script now appends
+  AMAZON_TAG_TARGETS=all when the key is missing, and prints which tag is
+  active on how many channels before restarting.
+
+VERIFIED ON THE ARTEFACT ITSELF, not on the repo copy
+  * sha256 of main_bot_new.py inside the zip == the repo file
+  * no .env, no .session, no .sqlite3, no hardcoded secrets
+  * unzipped into a clean directory, imported, and exercised:
+      review copy   -> one product + price + link + "#ad (paid link)"
+      loot copy     -> hype, MRP, ratings, review counts all intact
+      parse_price("899 (MRP 2990)") -> 899
+      AMAZON_TAG_TARGETS=all -> 8 channels
+
+Deploy is three commands (in DEPLOY_README.txt):
+  cd /home/ubuntu/bestgaa-bot/bestgaa-bot
+  unzip -o ~/bestgaa_deploy.zip
+  bash deploy_bestgaa.sh
+Rollback is automatic on failure, and manual rollback is one cp from the
+timestamped backup the script takes.
