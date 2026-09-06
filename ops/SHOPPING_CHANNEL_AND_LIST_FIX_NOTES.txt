@@ -851,3 +851,58 @@ touches the review channel's copy rules.
 
 Suite: 327 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 16 — the boundary, made permanent
+=================================================================
+
+USER RULE (2026-09-06), stated firmly after round 15:
+
+  "mana top remaining channel gurinchi vatilo elanti issue lekunda
+   cheyu anni perfectga post cheyali. only chala restricts for review
+   channel only"
+
+i.e. the ordinary channels get BUG FIXES ONLY - never a programme rule.
+Verified mechanically rather than by reading the diff, and the check is
+now a test so a later round cannot quietly cross the line.
+
+WHERE EVERY RESTRICTION LIVES
+  All of it sits inside `if target == SHOPPING_TARGET:` in process_job,
+  at delivery time: affiliate_safe_text, _strict_review_copy,
+  _STRICT_DROP_LINE_RE, _salvage_price_only, add_link_disclosure,
+  has_amazon_trademark, has_telegram_pointer, is_amazon_only_post,
+  shopping_quota_left, shopping_pace_wait, SHOPPING_TEXT_ONLY,
+  SHOPPING_NATIVE_LINKS.
+
+  None of those names appears anywhere in render_job - the shared path
+  that builds the copy every channel receives. (is_amazon_only_post is
+  read once in the ROUTING block, purely to decide whether to ADD the
+  review channel to the target list; it removes no other target.)
+
+SAME DEAL, TWO CHANNELS:
+
+  LOOT CHANNEL (unchanged)          REVIEW CHANNEL (strict)
+  ------------------------          -----------------------
+  LOOT DEAL (emoji, caps)           boAt Rockerz 255 Pro+ Neckband
+  boAt Rockerz 255 Pro+ Neckband    Price: Rs.899
+  Price - Rs.899 (MRP Rs.2990)      https://amzn.to/aaa
+  70% OFF, Rating 4.2, 12,453
+  reviews, Apply 10% coupon,        #ad (paid link)
+  Hurry limited stock, photo
+  https://amzn.to/aaa
+
+ROUND 15's FOUR FIXES ARE FIXES, NOT RESTRICTIONS
+  1. dedup    - blocks only an EXACT repeat on the SAME channel; another
+                channel still gets it, and a cheaper repeat still posts.
+  2. link-free- a single photo deal with a price still publishes; only a
+                multi-product list with NO link is held back, because a
+                reader cannot buy from it.
+  3. flipkart - the same product page, 112 chars -> 61. Nothing dropped
+                but lid/marketplace tracking.
+  4. preview  - real product cards still show; only the unresolvable
+                shortener card ("Shopsy Store / A trusted network...")
+                is suppressed.
+
+Suite: 331 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

@@ -1602,6 +1602,76 @@ def test_the_four_defects_the_user_photographed():
     check("a real Amazon product link keeps its preview", amazon is True)
 
 
+def test_only_the_review_channel_is_restricted():
+    """USER RULE (2026-09-06), restated firmly: "mana top remaining channel
+    gurinchi vatilo elanti issue lekunda cheyu ... only chala restricts for
+    review channel only".
+
+    Every programme rule written in rounds 5-15 must apply to SHOPPING_TARGET
+    and to nothing else. This test is the guard that keeps it that way.
+    """
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+
+    # The strict machinery must not appear in the shared render path at all.
+    for name in ("affiliate_safe_text", "_strict_review_copy", "add_link_disclosure",
+                 "_STRICT_DROP_LINE_RE", "_salvage_price_only", "has_amazon_trademark",
+                 "has_telegram_pointer", "shopping_pace_wait", "shopping_quota_left",
+                 "SHOPPING_TEXT_ONLY", "SHOPPING_NATIVE_LINKS"):
+        check("%s never runs on the shared path" % name, name not in render,
+              "%s leaked into render_job - it would restrict every channel" % name)
+
+    # A hype post must reach a loot channel completely untouched.
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\n"
+            "boAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n"
+            "70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "Apply 10% coupon | Hurry limited stock!\nAmazon Great Indian Festival\n\n"
+            "https://amzn.to/aaa")
+    strict = bot.affiliate_safe_text(hype)
+    check("the review copy DID strip the hype", "LOOT" not in strict and "70%" not in strict)
+    for keep in ("LOOT DEAL", "MRP", "70% OFF", "Rating 4.2", "12,453 reviews",
+                 "Apply 10% coupon", "Hurry limited stock", "Amazon Great Indian Festival",
+                 "\U0001f525"):
+        check("a loot channel keeps %r" % keep, keep in hype,
+              "the source text itself is the loot-channel copy")
+
+    # The four round-15 bug fixes must be FIXES, not new restrictions.
+    sig = bot.product_signature("\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://amzn.to/a")
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "r.sqlite3")
+            await store.mark_product_posted("LootZoneIndia11", sig, 55, 0)
+            same, _ = await store.product_already_posted("LootZoneIndia11", sig, 55, 0)
+            other, _ = await store.product_already_posted("Under99Deals11", sig, 55, 0)
+            cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig, 45, 0)
+            amazon = await store.preview_allowed("x\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+            shortener = await store.preview_allowed("x\nhttps://bitli.in/hlqmyQS")
+            return same, other, cheaper, amazon, shortener
+
+    same, other, cheaper, amazon, shortener = asyncio.run(run())
+    check("dedup blocks only an exact repeat on the SAME channel", same is True)
+    check("another channel still receives the very same deal", other is False)
+    check("a cheaper repeat is still published", cheaper is False)
+    check("a real product preview card is kept on the loot channels", amazon is True)
+    check("only the junk shortener card is suppressed", shortener is False)
+
+    compact = bot.compact_flipkart_product_link(
+        "https://www.flipkart.com/flipkart/p/item?lid=X&pid=SOPH2D7GG")
+    check("the Flipkart link still opens the same product, just shorter",
+          "SOPH2D7GG" in compact and "flipkart.com" in compact, compact)
+
+    # And the per-channel policy switches are all keyed to SHOPPING_TARGET.
+    deliver = src[src.index("async def process_job"):]
+    strict_block = deliver[deliver.index("if target == SHOPPING_TARGET:"):]
+    strict_block = strict_block[:strict_block.index("target_text = strip_amazon_tag_for_undeclared")]
+    for rule in ("affiliate_safe_text", "has_amazon_trademark", "add_link_disclosure",
+                 "shopping_quota_left", "shopping_pace_wait"):
+        check("%s sits inside the SHOPPING_TARGET branch" % rule, rule in strict_block,
+              "%s is applied outside the review-channel branch" % rule)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1634,6 +1704,7 @@ def main() -> int:
     test_our_tag_is_live_now_on_the_review_channel()
     test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
     test_the_four_defects_the_user_photographed()
+    test_only_the_review_channel_is_restricted()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
