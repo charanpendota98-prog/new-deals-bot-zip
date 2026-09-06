@@ -29,6 +29,19 @@ for key in TELEGRAM_API_ID TELEGRAM_API_HASH EARNKARO_API_KEY AMAZON_TAG; do
   grep -qE "^${key}=.+" "$ENV_FILE" || { echo "ERROR: $key missing in .env"; exit 1; }
 done
 
+# USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". A wrong
+# AMAZON_TAG would credit a SOURCE for our sales on every channel we own, so the
+# deploy refuses to ship a tag that is not ours. Keep this in step with the bot's
+# OUR_AMAZON_TAGS in main_bot_new.py. The check runs BEFORE anything below can
+# mutate .env, so a misconfigured tag never half-upgrades a server.
+OUR_AMAZON_TAGS="mama086-21"
+CONFIGURED_TAG="$(grep -E '^AMAZON_TAG=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+CONFIGURED_TAG_LOWER="$(printf '%s' "${CONFIGURED_TAG:-}" | tr '[:upper:]' '[:lower:]')"
+if [[ -n "$CONFIGURED_TAG" ]] && [[ ",${OUR_AMAZON_TAGS}," != *",${CONFIGURED_TAG_LOWER},"* ]]; then
+  echo "ERROR: AMAZON_TAG '${CONFIGURED_TAG}' is not one of ours (${OUR_AMAZON_TAGS}) - a source's tag would credit them for our sales. Deploy aborted."
+  exit 1
+fi
+
 # USER DECISION (2026-09-06): the Associates tag earns on EVERY owned channel,
 # not only the reviewed one. An existing .env is never rewritten by the
 # installer, so the switch is added here if it is missing - otherwise the tag
@@ -37,7 +50,6 @@ if ! grep -qE "^AMAZON_TAG_TARGETS=" "$ENV_FILE"; then
   echo "AMAZON_TAG_TARGETS=all" >> "$ENV_FILE"
   echo "      added AMAZON_TAG_TARGETS=all to .env"
 fi
-CONFIGURED_TAG="$(grep -E '^AMAZON_TAG=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '[:space:]')"
 echo "      Associates tag: ${CONFIGURED_TAG:-<none>} on $(grep -E '^AMAZON_TAG_TARGETS=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
 if grep -q "REPLACE_WITH_NEW_" "$ENV_FILE"; then
   echo "ERROR: .env migration left placeholders"
