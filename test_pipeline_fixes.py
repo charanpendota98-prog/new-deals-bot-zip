@@ -241,6 +241,45 @@ async def test_latency(store):
     store.conn.execute("UPDATE queue SET status='done' WHERE msg_id IN (1002,1003)")
     store.conn.commit()
 
+    # USER RULE (2026-09-07): "t.me/DealsUnder99_com first preference - first
+    # diniki next inka vereveru top vi, then list of products". The claim
+    # order is: preferred source -> other top deals -> product lists LAST.
+    store.conn.execute("UPDATE queue SET status='done' WHERE status='pending'")
+    store.conn.commit()
+    claim_now = time.time()
+    rows = [
+        # (msg_id, source, age_seconds, priority) - list rows carry priority 5
+        (2001, "DealsUnder99_com", 600, 1),   # preferred, OLDEST preferred single
+        (2002, "DealsUnder99_com", 60, 1),    # preferred, newer single
+        (2003, "src_a", 30, 4),               # other source's top (card) deal
+        (2004, "src_a", 20, 5),               # a big product LIST
+        (2005, "src_a", 10, 1),               # newest ordinary single
+    ]
+    for msg_id, source, age, prio in rows:
+        store.conn.execute(
+            "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,status,next_at) "
+            "VALUES(?,?,?,?,?,?,?,0)",
+            (-1005, msg_id, source, claim_now - age, prio, "-1005", "pending"))
+    store.conn.commit()
+    claimed_order = []
+    while True:
+        claimed = await store.claim_job()
+        if claimed is None:
+            break
+        claimed_order.append(claimed["msg_id"])
+        store.conn.execute("UPDATE queue SET status='done' WHERE id=?", (claimed["id"],))
+        store.conn.commit()
+    # Inside the preferred tier the newest/oldest knob still decides: this run
+    # has QUEUE_ORDER=newest, so the newer preferred post (2002) leads it.
+    check(f"the FIRST-preference source is claimed before every other source {claimed_order}",
+          claimed_order[:2] == [2002, 2001])
+    check(f"other sources' top deals are claimed next, by priority {claimed_order}",
+          claimed_order[2:4] == [2003, 2005])
+    check(f"product LISTS are claimed LAST (user rule 2026-09-07) {claimed_order}",
+          claimed_order[-1] == 2004)
+    check("preferred source env override is honoured",
+          "dealsunder99_com" in bot.PREFERRED_SOURCES)
+
     # Stale jobs are dropped, not posted late.
     store.conn.execute(
         "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key,status,next_at) "

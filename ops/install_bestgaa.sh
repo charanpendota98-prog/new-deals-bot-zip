@@ -88,7 +88,17 @@ if (( NEED_CREDS )); then
     read -rp "Telegram API_ID (my.telegram.org): " TG_API_ID
     read -rsp "Telegram API_HASH: " TG_API_HASH; echo
     read -rsp "EarnKaro API key: " EK_KEY
-    read -rp "Amazon associate tag [deals0911-21]: " AMZ_TAG; AMZ_TAG="${AMZ_TAG:-deals0911-21}"
+    # USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The old
+    # default here was deals0911-21 - the SOURCE's tag - so a fresh install used
+    # to write a stranger's tag into .env, and the very next deploy_bestgaa.sh
+    # run aborted on it. The default is now OUR tag, and anything the operator
+    # types is checked against the same allowlist the deploy guard enforces.
+    OUR_AMAZON_TAGS="mama086-21"
+    read -rp "Amazon associate tag [mama086-21]: " AMZ_TAG; AMZ_TAG="${AMZ_TAG:-mama086-21}"
+    until [[ ",${OUR_AMAZON_TAGS}," == *",$(echo "$AMZ_TAG" | tr '[:upper:]' '[:lower:]'),"* ]]; do
+      echo "ERROR: '$AMZ_TAG' is not one of ours (${OUR_AMAZON_TAGS}) - a source's tag would credit them for our sales." >&2
+      read -rp "Amazon associate tag [mama086-21]: " AMZ_TAG; AMZ_TAG="${AMZ_TAG:-mama086-21}"
+    done
     read -rp "EarnKaro publisher ID [5478322]: " EK_PUB; EK_PUB="${EK_PUB:-5478322}"
     read -rp "Session name [bestgaa_fresh]: " SESSION_NAME; SESSION_NAME="${SESSION_NAME:-bestgaa_fresh}"
     read -rp "Bitly tokens, comma separated (optional): " BITLY

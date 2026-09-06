@@ -93,7 +93,10 @@ QUIET_END=06:00
 HYBRID_QUIET=false
 STRICT_SOURCE_ONLY=true
 CURATE_TOP_DEALS=true
-AMAZON_TAG=deals0911-21
+# OUR Associates tag (USER RULE 2026-09-06: "kothaga thiskunna mama086-21 idi
+# manade"). bridge.js also refuses any non-owned value here at startup, but the
+# template ships the right tag so the warning never fires.
+AMAZON_TAG=mama086-21
 EARNKARO_PUBLISHER_ID=5478322
 BESTGAA_DB_PATH=/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3
 # Pacing. A source post must not sit for minutes: the list/special settle only

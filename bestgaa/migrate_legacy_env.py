@@ -15,6 +15,14 @@ from pathlib import Path
 
 APP_DIR = Path.cwd()
 ENV_PATH = APP_DIR / ".env"
+# The tags WE own (mirrors OUR_AMAZON_TAGS in main_bot_new.py - kept literal
+# here because this script must run without importing the bot's environment).
+# USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The legacy
+# bot's OUR_TAG was the SOURCE's tag (deals0911-21); migrating it verbatim used
+# to write a stranger's tag straight into our .env - exactly the value the
+# deploy guard then refuses, so the very first deploy would abort. A tag that
+# is not ours is replaced with ours.
+OUR_AMAZON_TAGS = {"mama086-21"}
 
 
 def assignments(path: Path) -> dict[str, object]:
@@ -66,6 +74,23 @@ def text(value: object, default: str = "") -> str:
     return str(value if value is not None else default).strip()
 
 
+def owned_tag(value: object) -> str:
+    """Return `value` when it is a tag we own, else our first owned tag.
+
+    The legacy bot's OUR_TAG can only ever be the source's tag today, so a
+    verbatim migration would poison .env with it and the next
+    deploy_bestgaa.sh run would abort. Anything not on OUR_AMAZON_TAGS is
+    replaced by ours (mama086-21).
+    """
+    tag = text(value)
+    if tag.lower() not in {t.lower() for t in OUR_AMAZON_TAGS}:
+        if tag:
+            print(f"NOTE: legacy OUR_TAG {tag!r} is not one of ours "
+                  f"{sorted(OUR_AMAZON_TAGS)} - writing ours instead.")
+        return sorted(OUR_AMAZON_TAGS)[0]
+    return tag
+
+
 def main() -> None:
     source, values = find_source()
     tokens = values.get("BITLY_TOKENS")
@@ -73,6 +98,8 @@ def main() -> None:
         bitly_tokens = ",".join(text(token) for token in tokens if text(token))
     else:
         bitly_tokens = text(values.get("BITLY_TOKEN"))
+
+    migrated_tag = owned_tag(values.get("OUR_TAG"))
 
     required = {
         "TELEGRAM_API_ID": text(values.get("API_ID")),
@@ -83,7 +110,7 @@ def main() -> None:
             values.get("EK_API"), "https://ekaro-api.affiliaters.in/api/converter/public"
         ),
         "EARNKARO_PUBLISHER_ID": text(values.get("OUR_EK_ID")),
-        "AMAZON_TAG": text(values.get("OUR_TAG")),
+        "AMAZON_TAG": migrated_tag,
         "BITLY_TOKENS": bitly_tokens,
         "BOT_DB_PATH": str(APP_DIR / "bestgaa.sqlite3"),
         "PRODUCT_DEDUP_SECONDS": "36000",
