@@ -2940,6 +2940,57 @@ def sanitize_outbound_text(text: str) -> str:
     return out.strip()
 
 
+# USER RULE (2026-09-06): the Flipkart app's own share sheet titles a product
+#   "Buy <long name> Online at Low Prices In India | Flipkart.com"
+# and forwards paste that title line into source posts verbatim. Those words are
+# the app's wrapper, not the deal: the post's headline must be the product's
+# real name, and the Flipkart link (already on its own line, or right after the
+# title) is kept untouched. Matched as a WHOLE line only - a line that merely
+# mentions Flipkart is never touched - and case-insensitive, because sources
+# paste both "...Low Prices In India | Flipkart.com" and "...in india...".
+FLIPKART_SHARE_TITLE_RE = re.compile(
+    r"(?i)^\s*(?:[*_~]+\s*)?buy\s+(?P<name>.+?)\s+online\s+at\s+low\s+prices?\s+"
+    r"in\s+india\s*\|\s*flipkart\.com\s*(?:[*_~]+\s*)?$"
+)
+# The same wrapper glued to the link on ONE line ("... | Flipkart.com
+# https://dl.flipkart.com/..."). split_inline_product_links only splits a line
+# with TWO or more links, so this single-link shape must be handled here.
+FLIPKART_SHARE_TITLE_GLUED_RE = re.compile(
+    r"(?i)^\s*(?:[*_~]+\s*)?buy\s+(?P<name>.+?)\s+online\s+at\s+low\s+prices?\s+"
+    r"in\s+india\s*\|\s*flipkart\.com\s*(?:[*_~]+\s*)?(?P<url>https?://\S+)\s*$"
+)
+
+
+def strip_flipkart_share_title(text: str) -> str:
+    """Rewrite every Flipkart share-sheet title line to the bare product name.
+
+    "Buy boAt Airdopes 141 ... Online at Low Prices In India | Flipkart.com"
+    becomes "boAt Airdopes 141 ...". The link is never edited: it lives on its
+    own line, or (glued shape) is moved to one whole, so the product name and
+    its link both survive. A title line whose name is empty after cleaning is
+    dropped entirely - it carried no product.
+    """
+    if not text or "lipkart" not in text.lower():
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        m = FLIPKART_SHARE_TITLE_RE.match(line)
+        if m:
+            name = tidy_post((m.group("name") or "").strip().strip("*_~").strip())
+            if name:
+                out.append(name)
+            continue
+        glued = FLIPKART_SHARE_TITLE_GLUED_RE.match(line)
+        if glued:
+            name = tidy_post((glued.group("name") or "").strip().strip("*_~").strip())
+            if name:
+                out.append(name)
+                out.append(glued.group("url"))
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def clean_source_text(text: str) -> str:
     text = (text or "").replace("\x00", "")
     # A source that wrote a whole list on ONE line ("name link name link") is
@@ -2947,6 +2998,11 @@ def clean_source_text(text: str) -> str:
     # would leave the names bunched in one paragraph above a block of anonymous
     # links - the reader could not tell which link belongs to which product.
     text = split_inline_product_links(text)
+    # The Flipkart app's share title ("Buy X Online at Low Prices In India |
+    # Flipkart.com") is wrapper words around the product's real name. It is
+    # rewritten before the noise passes so the name survives as the headline
+    # and no "| Flipkart.com" tail can be mistaken for deal content.
+    text = strip_flipkart_share_title(text)
     text = normalize_nested_link_markup(text)
     text = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", text)
     text = CK_FOOTER_RE.sub("\n", text)

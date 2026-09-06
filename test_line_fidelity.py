@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
@@ -2825,6 +2826,83 @@ def test_amazon_search_and_browse_links_are_taggable():
           "apply_amazon_tag(clean)" in amazon_branch, "not tagged")
 
 
+def test_flipkart_share_title_wrapper_is_stripped():
+    """USER RULE (2026-09-06): the Flipkart app's share sheet titles a product
+    "Buy <name> Online at Low Prices In India | Flipkart.com" and a forwarded
+    paste drops that title line into source posts verbatim. The wrapper words
+    are the app's, not the deal's: the post must carry the product's REAL name
+    (as the headline the reader and the dedup signature both see) and the real
+    link, and no "Online at Low Prices In India | Flipkart.com" tail."""
+    name = "boAt Airdopes 141 Bluetooth TWS Earbuds with 42H Playtime (Beat Black, True Wireless)"
+    link = "https://www.flipkart.com/airdopes-141/p/itmABC123"
+    # 1. The canonical share shape: title line, link line.
+    out = bot.clean_source_text(f"Buy {name} Online at Low Prices In India | Flipkart.com\n{link}")
+    check("the share title becomes the bare product name", out.splitlines()[0] == name, out)
+    check("the real link survives under the name", link in out, out)
+    check("no wrapper words survive", "low prices in india" not in out.lower()
+          and "Flipkart.com |" not in out and "| Flipkart.com" not in out, out)
+    # 2. The lowercase paste and bold-marker variants.
+    for variant in (f"Buy {name} Online at Low Prices in India | Flipkart.com",
+                    f"**Buy {name} Online at Low Prices In India | Flipkart.com**",
+                    f"*Buy {name} Online at Low Price in India | Flipkart.com*"):
+        out_v = bot.clean_source_text(f"{variant}\n{link}")
+        check("variant %r... is stripped to the name" % variant[:24],
+              out_v.splitlines()[0] == name, out_v)
+    # 3. Wrapper glued to the link on one line: split_inline_product_links runs
+    #    first, so the title still lands alone and is stripped.
+    out_glued = bot.clean_source_text(f"Buy {name} Online at Low Prices In India | Flipkart.com {link}")
+    check("the glued shape keeps name and link on their own lines",
+          name in out_glued and link in out_glued
+          and "Low Prices" not in out_glued, out_glued)
+    # 4. A line that merely mentions Flipkart is never touched.
+    keep = "Flipkart Big Billion Days sale is live"
+    out_keep = bot.clean_source_text(f"{keep}\n{link}")
+    check("a plain Flipkart mention is not edited", keep in out_keep, out_keep)
+    # 5. The dedup identity: the wrapped and bare titles are ONE product.
+    check("the wrapper no longer changes the product signature",
+          bot.product_signature(name) == bot.product_signature(
+              f"Buy {name} Online at Low Prices In India | Flipkart.com"),
+          "signature differs")
+    # 6. Bridge parity: the bridge must clean the same wrapper the same way.
+    src = Path("tg-wa-bridge/bridge.js").read_text(encoding="utf-8")
+    start = src.index("const FLIPKART_SHARE_TITLE_RE")
+    end = src.index("function cleanDealText", start)
+    probe_js = (
+        src[start:end]
+        + "const name = %s;\n" % json.dumps(name)
+        + "const out = stripFlipkartShareTitle('Buy ' + name + ' Online at Low Prices In India "
+          "| Flipkart.com\\nhttps://www.flipkart.com/airdopes-141/p/itmABC123');\n"
+          "const glued = stripFlipkartShareTitle('Buy ' + name + ' Online at Low Prices in India "
+          "| Flipkart.com https://dl.flipkart.com/dl/airdopes-141/p/itmXYZ');\n"
+          "const keep = stripFlipkartShareTitle('Flipkart Big Billion Days sale is live');\n"
+          "console.log(JSON.stringify({ out, glued, keep }));\n"
+    )
+    with tempfile.TemporaryDirectory() as tdir:
+        probe_path = Path(tdir) / "flipkart_wrapper_probe.mjs"
+        probe_path.write_text(probe_js, encoding="utf-8")
+        proc = subprocess.run(["node", str(probe_path)],
+                              capture_output=True, text=True, timeout=60)
+    if proc.returncode == 0 and proc.stdout.strip():
+        try:
+            res = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            res = None
+        if res:
+            check("the bridge strips the wrapper to the same name",
+                  res["out"].startswith(name) and "Low Prices" not in res["out"], res["out"][:160])
+            check("the bridge keeps the link whole",
+                  "https://www.flipkart.com/airdopes-141/p/itmABC123" in res["out"], res["out"][:160])
+            check("the bridge splits the glued shape too",
+                  name in res["glued"] and "dl.flipkart.com/dl/airdopes-141" in res["glued"],
+                  res["glued"][:160])
+            check("the bridge leaves a plain Flipkart mention alone",
+                  "Flipkart Big Billion Days sale is live" in res["keep"], res["keep"][:160])
+        else:
+            check("the bridge wrapper probe returned a result", False, proc.stderr[-200:])
+    else:
+        check("the bridge wrapper probe ran", False, (proc.stderr or proc.stdout)[-200:])
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2875,6 +2953,7 @@ def main() -> int:
     test_deploy_refuses_a_foreign_amazon_tag()
     test_non_shop_links_never_burn_the_retry_budget()
     test_amazon_search_and_browse_links_are_taggable()
+    test_flipkart_share_title_wrapper_is_stripped()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
