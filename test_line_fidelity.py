@@ -2147,6 +2147,109 @@ def test_a_markdown_product_name_is_never_thrown_away():
         check("the product name %r survives" % name, name in got, repr(got))
 
 
+def test_tag_on_every_owned_channel_when_switched_on():
+    """USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu,
+    not only review channel".
+
+    With AMAZON_TAG_TARGETS=all every owned channel carries mama086-21, and
+    every one of them is therefore a channel Amazon reviews - so the ratings
+    strip and the disclosure apply there too. A channel we do NOT own still
+    gets a clean, working, untagged link.
+
+    Run in a SUBPROCESS: AMAZON_TAG_TARGETS is read at import time, and
+    reloading the module in-process tears down its event loop.
+    """
+    import subprocess
+
+    probe = r"""
+import os, sys, json, random, asyncio
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+
+fail = []
+def check(name, ok, detail=""):
+    if not ok:
+        fail.append("%s <- %s" % (name, detail))
+
+owned = {bot.SHOPPING_TARGET} | set(bot.ALL_OWNED_TARGETS)
+check("all owned channels carry the tag",
+      bot.AMAZON_TAG_TARGETS >= owned, str(sorted(bot.AMAZON_TAG_TARGETS)))
+
+class Resp:
+    status = 200
+    def __init__(self, b): self._b = b
+    async def text(self): return self._b
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+class Session:
+    def post(self, url, **kw):
+        return Resp(json.dumps({"success": 1,
+                                "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
+
+class Aff(bot.AffiliateClient):
+    def __init__(self):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.session = Session()
+    async def cache_link(self, *a): pass
+    async def resolve(self, u): return u
+    async def link_not_broken(self, u): return True
+    async def shorten(self, u):
+        self._short_to_long["https://bitli.in/T1"] = u
+        return "https://bitli.in/T1"
+
+aff = Aff()
+res = asyncio.run(aff.convert("https://www.amazon.in/dp/B0ALLCHAN1?psc=1", False))
+link = res.affiliate
+check("the generated Amazon link carries our tag", bot.OUR_TAG in link, link)
+check("it is the native product URL, not an ekaro hop", "amazon.in/dp/" in link, link)
+
+for target in sorted(bot.AMAZON_TAG_TARGETS):
+    out = bot.strip_amazon_tag_for_undeclared("Deal\n" + link, target, aff)
+    check("%s keeps the tag" % target, bot.OUR_TAG in out, out)
+
+class NoCache:
+    _short_to_long = {}
+plain = "https://www.amazon.in/dp/B0ALLCHAN1?tag=" + bot.OUR_TAG
+out = bot.strip_amazon_tag_for_undeclared("Deal\n" + plain, "NotOursAtAll99", NoCache())
+check("an undeclared channel gets no tag", bot.OUR_TAG not in out, out)
+check("and still gets a working product link", "B0ALLCHAN1" in out, out)
+
+hype = ("LOOT\nboAt Rockerz 255\n899 (MRP 2990)\n70% OFF Rating 4.2 | 12,453 reviews")
+stripped = bot.strip_amazon_ratings(hype)
+check("ratings are gone on a tagged loot channel", "4.2" not in stripped, stripped)
+check("review counts are gone", "12,453" not in stripped, stripped)
+for keep in ("boAt Rockerz 255", "899", "2990", "70% OFF", "LOOT"):
+    check("the loot copy keeps %r" % keep, keep in stripped, stripped)
+
+print(json.dumps(fail))
+"""
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A private DB: the link cache persists across runs, and a cached
+        # ekaro.in entry from an earlier test would be returned instead of the
+        # freshly built native link.
+        env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                   BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                              capture_output=True, text=True, env=env, timeout=180)
+    tail = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not tail:
+        check("the tag-everywhere probe ran", False,
+              (proc.stderr or proc.stdout or "")[-400:])
+        return
+    try:
+        failures = json.loads(tail[-1])
+    except Exception:
+        check("the tag-everywhere probe returned a result", False, tail[-1][:300])
+        return
+    check("every owned channel carries our tag, nobody else does",
+          not failures, "; ".join(failures)[:600])
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2188,6 +2291,7 @@ def main() -> int:
     test_amazon_ratings_are_stripped_only_where_the_tag_rides()
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
+    test_tag_on_every_owned_channel_when_switched_on()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

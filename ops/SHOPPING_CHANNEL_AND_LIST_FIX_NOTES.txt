@@ -1231,3 +1231,49 @@ VERIFIED NOT CHANGED
 
 Suite: 471 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 23 — the tag is now ON for every owned channel
+=================================================================
+
+USER: "anni channels amazon tag tho cheyu okaynaa not only review
+channel." Done. ops/install_bestgaa.sh now writes AMAZON_TAG_TARGETS=all.
+
+WHAT EACH CHANNEL GETS NOW
+  All eight owned channels (smartbuyhub11, LootZoneIndia11,
+  LootzoneTricks, PowerLoots1, Premiumlootsdeals, SecretLootIndia1,
+  Under99Deals11, under499loots) publish Amazon PRODUCT links as
+      https://www.amazon.in/dp/ASIN?tag=mama086-21
+  built natively - no EarnKaro hop, so the commission is ours.
+  Lists still shorten through Bitly; the tag rides inside the short link.
+
+  Because a tagged channel is a channel Amazon can review, each of them
+  now also gets the two programme protections automatically:
+    * copied star ratings and review counts removed (documented closure
+      reason - the numbers go stale, Amazon wants live API data);
+    * "#ad (paid link)" appended.
+  Everything else is untouched: the hype line, MRP, percentage, coupon
+  text, emoji and photos all still go out exactly as the source wrote
+  them. The review channel keeps its own stricter copy as before.
+
+  A channel that is NOT ours still receives a clean, working, UNTAGGED
+  link - the guard stays in place.
+
+TEST NOTE
+  AMAZON_TAG_TARGETS is read at import time, and reloading the module
+  in-process tears down its event loop, so the new check runs the whole
+  scenario in a SUBPROCESS with its own temporary BOT_DB_PATH (the link
+  cache is persistent, and a stale ekaro.in row was masking the native
+  link on the first attempt).
+
+USER'S REMAINING TASK - THIS IS THE ONE THING CODE CANNOT DO
+  Every channel above must be listed in Associates Central with its FULL
+  URL and be public:
+    https://affiliate-program.amazon.in/home/account/profile/sitelist
+  Amazon reads the traffic source from the tag itself. The user has
+  confirmed LootZoneIndia11 was already given as the source; the other
+  seven still need to be on that list.
+
+Suite: 472 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
