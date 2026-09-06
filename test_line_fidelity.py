@@ -1972,11 +1972,14 @@ def test_our_tag_earns_on_amazon_and_lists_still_shorten():
     check("a list link is shortened", link.startswith("https://bitli.in/"), link)
     check("the shortened list link still carries our tag", bot.OUR_TAG in dest, dest)
 
-    # An Amazon SEARCH page has no ASIN, so it still goes through EarnKaro -
-    # a tag on a search page earns nothing anyway.
+    # An Amazon SEARCH page has no single ASIN, but it still earns: OUR tag rides
+    # natively on the search URL. EarnKaro has no campaign for a search page, so it
+    # used to return nothing and the click earned zero.
     link, dest, _ = asyncio.get_event_loop().run_until_complete(
         convert("https://www.amazon.in/s?k=headphones", False))
-    check("an Amazon search link still uses EarnKaro", "ekaro.in" in link, link)
+    check("an Amazon search link is tagged natively", bot.OUR_TAG in link, link)
+    check("it is not handed to EarnKaro", "ekaro.in" not in link, link)
+    check("it is still the search page the source linked", "/s?k=headphones" in link, link)
 
     # Other stores are untouched: they keep earning through EarnKaro.
     link, dest, _ = asyncio.get_event_loop().run_until_complete(
@@ -2697,6 +2700,131 @@ def test_the_review_channel_guards_that_were_never_probed():
           "PRIMARY KEY(signature,target)" in src, "not keyed by channel")
 
 
+def test_deploy_refuses_a_foreign_amazon_tag():
+    """USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". A wrong
+    AMAZON_TAG would credit a SOURCE for our sales on every channel we own, so the
+    installer must refuse to ship a tag that is not ours instead of riding it into
+    eight channels."""
+    deploy = (ROOT / "bestgaa" / "deploy_bestgaa.sh").read_text(encoding="utf-8")
+    check("the installer knows the tag we own", "mama086-21" in deploy, "tag absent")
+    check("the installer aborts on a foreign tag", "exit 1" in deploy, "no abort")
+    check("the guard names the offence",
+          "not one of ours" in deploy or "Deploy aborted" in deploy, "unclear error")
+    check("the guard is case-insensitive like the bot",
+          "tr '[:upper:]' '[:lower:]'" in deploy, "case handling absent")
+    # The check must run BEFORE the script mutates .env (adds AMAZON_TAG_TARGETS=all),
+    # so a misconfigured tag never half-upgrades a live server.
+    guard_idx = deploy.find("OUR_AMAZON_TAGS=")
+    targets_idx = deploy.find("AMAZON_TAG_TARGETS=all")
+    check("the tag guard runs before the env is mutated",
+          guard_idx != -1 and (targets_idx == -1 or guard_idx < targets_idx),
+          f"guard@{guard_idx} targets@{targets_idx}")
+    check("the allowed tag matches the bot's own allowlist",
+          bot.OUR_AMAZON_TAGS and "mama086-21" in bot.OUR_AMAZON_TAGS,
+          str(bot.OUR_AMAZON_TAGS))
+
+
+def test_non_shop_links_never_burn_the_retry_budget():
+    """USER RULE (2026-09-06): a deal blog (indiadesire.com) or an app-deep-link
+    wrapper (amzn.urlgeni.us) is NOT a shop. EarnKaro has no campaign for either,
+    and the old code re-queued the whole post until it went stale and dropped - a
+    source deal vanished for a link that was never a shop in the first place. They
+    are now cut from the copy like a dead short link: no EarnKaro call, no retry."""
+    import asyncio, json
+
+    check("indiadesire.com is classified as a non-shop",
+          "indiadesire.com" in bot.NON_SHOP_DOMAINS, str(bot.NON_SHOP_DOMAINS))
+    check("urlgeni.us (amzn.urlgeni.us) is classified as a non-shop",
+          "urlgeni.us" in bot.NON_SHOP_DOMAINS, str(bot.NON_SHOP_DOMAINS))
+    # A real merchant still is not a non-shop.
+    check("a real store is not swept up as a non-shop",
+          not bot.in_domains("www.amazon.in", bot.NON_SHOP_DOMAINS)
+          and not bot.in_domains("flipkart.com", bot.NON_SHOP_DOMAINS), "over-broad")
+
+    class Resp:
+        status = 200
+
+        def __init__(self, body):
+            self._b = body
+
+        async def text(self):
+            return self._b
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def __init__(self):
+            self.posted = []
+
+        def post(self, url, **kw):
+            self.posted.append(url)
+            return Resp(json.dumps({"success": 1, "data": "https://ekaro.in/ek1"}))
+
+    class Aff(bot.AffiliateClient):
+        def __init__(self):
+            self._health, self._short_cache, self._short_to_long = {}, {}, {}
+            self.session = Session()
+
+        async def cache_link(self, *a):
+            pass
+
+        async def resolve(self, u):
+            return u
+
+        async def link_not_broken(self, u):
+            return True
+
+        async def shorten(self, u):
+            return "https://bitli.in/noshort"
+
+    for url in ("https://www.indiadesire.com/amazon-prime-day-sale-offers/",
+                "https://amzn.urlgeni.us/dealxyz"):
+        aff = Aff()
+        res = asyncio.run(aff.convert(url, False))
+        check("the non-shop %r yields no affiliate link" % url, res is None, str(res))
+        check("no EarnKaro call is made for %r" % url,
+              not aff.session.posted, str(aff.session.posted))
+
+    # The caller must CUT a non-shop link (like a dead shortener), never re-queue it.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("async def render_job"):]
+    check("the renderer cuts a non-shop link instead of retrying it",
+          "in_domains(resolved_host, NON_SHOP_DOMAINS)" in render
+          and "unresolvable.append(source_url)" in render, "guard not wired")
+
+
+def test_amazon_search_and_browse_links_are_taggable():
+    """USER RULE (2026-09-06): Amazon search links (/s?k=, /s?hidden-keywords=,
+    /b?node=) used to go to EarnKaro, where there is no campaign for a search page
+    and the click earned zero. They are now tagged natively with mama086-21."""
+    for url in ("https://www.amazon.in/s?k=headphones",
+                "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y",
+                "https://www.amazon.in/s?k=sonata&rh=n%3A1&s=price-asc-rank",
+                "https://www.amazon.in/b?node=1389401031"):
+        check("the search/browse link %r is recognised" % url,
+              bot.is_amazon_search_or_browse_link(url), url)
+    for url in ("https://www.amazon.in/dp/B0ABCD1234",
+                "https://www.amazon.in/gp/product/B0ABCD1234",
+                "https://www.flipkart.com/x/p/itm123",
+                "https://www.amazon.in/"):
+        check("the non-search link %r is not misclassified" % url,
+              not bot.is_amazon_search_or_browse_link(url), url)
+
+    # The conversion path builds the tagged search link natively and never calls
+    # EarnKaro - the same branch that builds /dp/ product links.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    convert = src[src.index("async def convert"):]
+    amazon_branch = convert[convert.index("if OUR_TAG and in_domains(host, AMAZON_DOMAINS):"):]
+    check("the conversion path recognises a search/browse link",
+          "is_amazon_search_or_browse_link(clean)" in amazon_branch, "not wired")
+    check("a search/browse link is tagged with OUR tag in that branch",
+          "apply_amazon_tag(clean)" in amazon_branch, "not tagged")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2744,6 +2872,9 @@ def main() -> int:
     test_the_review_channel_publishes_one_product_never_a_list()
     test_no_route_from_the_review_channel_to_a_loot_channel()
     test_the_review_channel_guards_that_were_never_probed()
+    test_deploy_refuses_a_foreign_amazon_tag()
+    test_non_shop_links_never_burn_the_retry_budget()
+    test_amazon_search_and_browse_links_are_taggable()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
