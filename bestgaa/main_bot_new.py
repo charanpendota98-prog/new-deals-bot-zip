@@ -5077,10 +5077,14 @@ class AffiliateClient:
             if asin:
                 tagged = apply_amazon_tag(native)
                 affiliate = tagged
-                # Lists still shorten, exactly as before, so a 3-product post
-                # stays neat; a single ~48-char /dp/ link needs no shortener and
-                # spends no Bitly quota.
-                if should_use_bitly(clean, multi_link) or len(tagged) > SHORTEN_MIN_LEN:
+                # NO SHORTENER ON A TAGGED AMAZON LINK. Amazon lists link
+                # cloaking - hiding that a link goes to Amazon - as a closure
+                # reason, and a bitli.in hop does exactly that. The native form
+                # is https://www.amazon.in/dp/ASIN?tag=... at roughly 50
+                # characters, so the post stays just as neat without hiding
+                # anything, and the Bitly quota is spent only where it helps.
+                # (Non-Amazon links below are unaffected and still shorten.)
+                if False:
                     shortened = await self.shorten(tagged)
                     if shortened:
                         affiliate = shortened

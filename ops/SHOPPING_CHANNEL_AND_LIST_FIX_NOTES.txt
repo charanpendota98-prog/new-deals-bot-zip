@@ -1277,3 +1277,43 @@ USER'S REMAINING TASK - THIS IS THE ONE THING CODE CANNOT DO
 
 Suite: 472 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 24 — tag stays on all eight; cloaking removed from Amazon
+=================================================================
+
+USER: told that Amazon reads the traffic source from the tag itself -
+their reports show one referrer per channel automatically, it is not a
+manual review - the user chose to KEEP the tag on all eight channels and
+accept the undeclared-source risk. Recorded, not argued again.
+
+WHAT WAS DONE INSTEAD: remove the exposure that CAN still be removed.
+
+  A tagged Amazon link is no longer put behind bitli.in. Amazon lists
+  link cloaking - hiding that a link leads to Amazon - as a closure
+  reason, and a shortener hop does exactly that. The native form,
+      https://www.amazon.in/dp/ASIN?tag=mama086-21
+  is about 50 characters, so a 3-product list is just as neat without
+  hiding anything, and the Bitly quota is no longer spent on Amazon at
+  all. Non-Amazon links are untouched and still shorten in lists.
+
+  Before: 3-product Amazon list -> bitli.in/L1, L2, L3   (3 quota calls)
+  After : 3-product Amazon list -> three native tagged amazon.in links
+                                                          (0 quota calls)
+
+STATE OF THE EIGHT CHANNELS NOW
+  Tag on every one, native Amazon links, copied ratings and review
+  counts removed, "#ad (paid link)" appended, hype/MRP/percentage/
+  coupon/emoji/photos all still exactly as the source wrote them.
+
+THE ONE RISK THE USER ACCEPTED AND CODE CANNOT REMOVE
+  Six channels send tagged traffic while only smartbuyhub11 and
+  LootZoneIndia11 have been given to Amazon as sources. If Amazon
+  queries it, the fix is five minutes of work at
+    https://affiliate-program.amazon.in/home/account/profile/sitelist
+  Full URLs, public channels. Listed in
+  ops/AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt.
+
+Suite: 487 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

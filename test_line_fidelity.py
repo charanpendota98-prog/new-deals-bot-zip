@@ -2250,6 +2250,102 @@ print(json.dumps(fail))
           not failures, "; ".join(failures)[:600])
 
 
+def test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener():
+    """USER DECISION (2026-09-06): keep the tag on all eight channels and accept
+    the undeclared-source risk. Given that, the exposure that CAN still be
+    removed must be removed.
+
+    Amazon lists link cloaking - hiding that a link leads to Amazon - as a
+    closure reason. A bitli.in hop does exactly that. The native tagged form is
+    about 50 characters, so nothing is gained by hiding it. Non-Amazon links
+    are unaffected and still shorten.
+
+    Runs in a subprocess: AMAZON_TAG_TARGETS is read at import time.
+    """
+    import subprocess, tempfile
+
+    probe = r"""
+import os, sys, json, random, asyncio
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+
+fail = []
+def check(name, ok, detail=""):
+    if not ok:
+        fail.append("%s <- %s" % (name, detail))
+
+class Resp:
+    status = 200
+    def __init__(self, b): self._b = b
+    async def text(self): return self._b
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+class Session:
+    def post(self, url, **kw):
+        return Resp(json.dumps({"success": 1,
+                                "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
+
+class Aff(bot.AffiliateClient):
+    def __init__(self):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.calls, self.session = [], Session()
+    async def cache_link(self, *a): pass
+    async def resolve(self, u): return u
+    async def link_not_broken(self, u): return True
+    async def shorten(self, u):
+        self.calls.append(u)
+        return "https://bitli.in/S%d" % len(self.calls)
+
+async def main():
+    # A 3-product Amazon LIST: every link native and tagged, no shortener.
+    aff = Aff()
+    res = await asyncio.gather(*(aff.convert(u, True) for u in (
+        "https://www.amazon.in/dp/B0AMZLIST1",
+        "https://www.amazon.in/dp/B0AMZLIST2",
+        "https://www.amazon.in/dp/B0AMZLIST3")))
+    for r in res:
+        check("an Amazon list link is native", "amazon.in/dp/" in r.affiliate, r.affiliate)
+        check("and carries our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
+        check("and is not a shortener", "bitli.in" not in r.affiliate, r.affiliate)
+    check("no Bitly quota is spent on Amazon", not aff.calls, str(aff.calls))
+
+    # A single Amazon deal: same rule.
+    aff2 = Aff()
+    r = await aff2.convert("https://www.amazon.in/dp/B0AMZONE01", False)
+    check("a single Amazon deal is native too", "amazon.in/dp/" in r.affiliate, r.affiliate)
+    check("with our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
+
+    # Non-Amazon links are untouched: they still shorten in a list.
+    aff3 = Aff()
+    r = await aff3.convert("https://www.flipkart.com/x/p/itmZZZ", True)
+    check("Flipkart in a list still shortens", r.affiliate.startswith("https://bitli.in/"), r.affiliate)
+    check("and never carries an Amazon tag", bot.OUR_TAG not in r.affiliate, r.affiliate)
+
+    print(json.dumps(fail))
+
+asyncio.run(main())
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                   BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                              capture_output=True, text=True, env=env, timeout=180)
+    tail = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not tail:
+        check("the cloaking probe ran", False, (proc.stderr or proc.stdout or "")[-400:])
+        return
+    try:
+        failures = json.loads(tail[-1])
+    except Exception:
+        check("the cloaking probe returned a result", False, tail[-1][:300])
+        return
+    check("tagged Amazon links are never hidden behind a shortener",
+          not failures, "; ".join(failures)[:600])
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2292,6 +2388,7 @@ def main() -> int:
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
     test_tag_on_every_owned_channel_when_switched_on()
+    test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
