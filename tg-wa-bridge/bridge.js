@@ -44,9 +44,18 @@ function loadEnv(file) {
 }
 loadEnv(ENV_FILE)
 
+// --identity-probe only exercises the pure dedup-identity function; it never
+// touches Telegram or WhatsApp. Demanding live credentials for it meant the
+// cross-language dedup contract could not be verified on any machine without a
+// provisioned .env - so the check silently never ran. It is a diagnostic, not a
+// connection.
+const IDENTITY_PROBE = process.argv.includes('--identity-probe')
 const required = name => {
   const value = (process.env[name] || '').trim()
-  if (!value) throw new Error(`Missing ${name} in .env`)
+  if (!value) {
+    if (IDENTITY_PROBE) return ''
+    throw new Error(`Missing ${name} in .env`)
+  }
   return value
 }
 const TG_TOKEN = required('TELEGRAM_BOT_TOKEN')
@@ -3495,12 +3504,30 @@ async function connectionWatchdog() {
       const readyCount = state.jobs.filter(job => Number(job.availableAt || 0) <= now).length
       const lastSent = state.sentTimes.length ? Math.max(...state.sentTimes) : lastProgressAt
       const idleFor = now - Math.max(lastSent, lastProgressAt)
+      // A socket that died while the queue happened to be empty stays dead, and
+      // the next deal hours later lands on a broken connection - the channel
+      // just stops. So an idle-but-ready socket is re-established too, on a
+      // slower timer, whether or not anything is waiting.
+      if (waReady && readyCount === 0 && idleFor > 90 * 60_000) {
+        log.warn({ idleMinutes: Math.round(idleFor / 60_000) },
+                 'WhatsApp socket idle for a long time with an empty queue; refreshing it')
+        lastProgressAt = now
+        waReady = false
+        try { wa?.end?.(new Error('idle refresh')) } catch {}
+        setTimeout(() => connectWhatsApp().catch(error => log.error({ err: error.message }, 'idle refresh failed')), 5000)
+      }
       if (waReady && readyCount >= 1 && idleFor > 25 * 60_000) {
         log.error({ readyCount, idleMinutes: Math.round(idleFor / 60_000) }, 'WhatsApp idle with pending deals; forcing reconnect')
         lastProgressAt = now
         waReady = false
         try { wa?.end?.(new Error('watchdog reconnect')) } catch {}
         setTimeout(() => connectWhatsApp().catch(error => log.error({ err: error.message }, 'watchdog reconnect failed')), 5000)
+      }
+      // Not ready, and no reconnect in flight (the close handler schedules one,
+      // but a connectWhatsApp() that threw before registering leaves nothing).
+      if (!waReady && now - lastConnectionOpenAt > 10 * 60_000 && !shuttingDown) {
+        log.warn('WhatsApp not ready and no connection for 10 minutes; retrying');
+        connectWhatsApp().catch(error => log.error({ err: error.message }, 'watchdog cold retry failed'))
       }
       if (readyCount > 0) {
         log.info({
@@ -3634,8 +3661,16 @@ async function connectWhatsApp() {
       waReady = false
       const status = update.lastDisconnect?.error?.output?.statusCode
       if (status === DisconnectReason.loggedOut) {
-        log.error('WhatsApp logged out. Stop service and pair again; auth is preserved for diagnosis.')
+        // A real logout needs a human to re-pair - but going silent is how the
+        // user found the channel "agipoindi" days later. Keep shouting, and keep
+        // the process alive so the heartbeat below stays visible in the logs.
+        log.error('WhatsApp LOGGED OUT - re-pair required. Run: bash switch_whatsapp_number.sh')
+        setInterval(() => log.error('WhatsApp still logged out; deals are queued and waiting for re-pairing'),
+                    10 * 60_000).unref?.()
         return
+      }
+      if (status === 401 || status === 403) {
+        log.error({ status }, 'WhatsApp rejected the session; re-pair required')
       }
       reconnectAttempt += 1
       const delay = Math.min(300_000, 4000 * 2 ** Math.min(reconnectAttempt - 1, 7)) + randomMs(1, 12)

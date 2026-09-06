@@ -661,3 +661,38 @@ cheyaku" + "tag ni anni channels lo use cheyu okavela approve vasthadi".
 
    Until then nothing is lost: every other channel keeps monetising the
    same deal through EarnKaro exactly as it does today.
+
+
+=================================================================
+Round 12 — WhatsApp stopped, and the test that never ran
+=================================================================
+
+USER RULE (2026-09-06): "whatsapp lo bestga post cheyali smartgaa and
+agipoindi ippudu alaga agipovaddu".
+
+THE TEST THAT NEVER RAN
+  test_line_fidelity.py has failed on "the bridge identity probe ran"
+  for many rounds. It was not a flake: bridge.js demanded
+  TELEGRAM_BOT_TOKEN / WA_PHONE / WA_CHANNEL before it would do
+  ANYTHING, including --identity-probe, which is a pure function that
+  touches no network. So the cross-language dedup contract - "same
+  product on Telegram, new deal on WhatsApp" - was never actually
+  verified. required() now returns '' under --identity-probe.
+  The full suite is green for the first time in this session.
+
+THREE WAYS THE BRIDGE WENT QUIET
+  1. LOGGED OUT = SILENCE. On DisconnectReason.loggedOut the handler
+     logged once and returned. Nothing ever spoke again, which is how
+     the channel was found stopped days later. It now repeats the alarm
+     every 10 minutes and names the fix (switch_whatsapp_number.sh).
+  2. THE WATCHDOG ONLY WATCHED A BUSY QUEUE. It forced a reconnect only
+     when readyCount >= 1. A socket that died while the queue happened
+     to be empty stayed dead, and the next deal hours later landed on a
+     corpse. An idle-but-ready socket is now refreshed after 90 minutes
+     regardless of the queue.
+  3. A COLD SOCKET WAS NEVER RETRIED. If connectWhatsApp() failed before
+     registering its close handler, no reconnect was ever scheduled - the
+     bridge sat there, waReady=false, forever. The watchdog now retries
+     whenever the socket has not been open for 10 minutes.
+
+Nothing about WHAT is posted changed - only that it keeps posting.

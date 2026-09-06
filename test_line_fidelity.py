@@ -1377,6 +1377,37 @@ def test_native_links_on_review_channel_and_the_tag_switch():
           "AMAZON_TAG_TARGETS=all" in src and "AFTER" in src, "not documented")
 
 
+def test_the_whatsapp_bridge_cannot_go_quiet():
+    """USER RULE (2026-09-06): "whatsapp lo bestga post cheyali ... agipoindi
+    ippudu alaga agipovaddu". Three ways the bridge used to stop for good."""
+    bridge = (ROOT / "tg-wa-bridge" / "bridge.js").read_text(encoding="utf-8")
+
+    # 1. A logout used to `return` in silence - the channel simply stopped and
+    # the logs said nothing more, which is how it was found days later.
+    check("a logout keeps reporting itself instead of going silent",
+          "still logged out" in bridge, "silent logout")
+    check("the logout message names the fix to run",
+          "switch_whatsapp_number.sh" in bridge, "no remedy in the message")
+
+    # 2. The watchdog only fired when deals were WAITING. A socket that died
+    # while the queue was empty stayed dead, so the next deal hours later landed
+    # on a broken connection.
+    check("an idle socket is refreshed even with an empty queue",
+          "readyCount === 0 && idleFor > 90" in bridge, "idle refresh missing")
+
+    # 3. If the socket was never ready, nothing retried it at all.
+    check("a cold socket is retried by the watchdog",
+          "watchdog cold retry failed" in bridge, "cold retry missing")
+    check("the cold retry is driven by the last successful connection",
+          "lastConnectionOpenAt" in bridge, "no connection timestamp")
+
+    # The identity probe is a pure function and must not need live credentials -
+    # demanding them is why this contract silently never ran for many rounds.
+    check("the identity probe runs without WhatsApp credentials",
+          "IDENTITY_PROBE" in bridge and "if (IDENTITY_PROBE) return ''" in bridge,
+          "probe still needs a provisioned .env")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1404,6 +1435,7 @@ def main() -> int:
     test_our_new_associates_tag_and_the_self_source_loop()
     test_the_review_copy_is_clean_on_real_source_shapes()
     test_native_links_on_review_channel_and_the_tag_switch()
+    test_the_whatsapp_bridge_cannot_go_quiet()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
