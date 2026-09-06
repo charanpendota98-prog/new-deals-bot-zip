@@ -817,6 +817,24 @@ SOURCE_TO_TARGETS["loot_alerts"] = list(NO_TRICKS_TARGETS)
 # OZ Loot Bazaar private source: all non-Tricks main targets. Premiumlootsdeals
 # is added dynamically only when its premium filter passes.
 SOURCE_TO_TARGETS[OZ_SOURCE] = list(NO_TRICKS_TARGETS)
+# USER RULE (2026-09-07): "t.me/DealsUnder99_com idi main preference ivvu -
+# telegram and whatsapp 2 channels lo". The old route was EMPTY (a dead
+# source): its posts reached only the guaranteed main feed. It is the user's
+# FIRST-preference under-₹99 source, so it now feeds every non-Tricks main
+# target, the under-₹99/under-₹499 price channels layer on automatically for
+# its ≤₹99 posts, and PREFERRED_SOURCES (below, used by Store.claim_job)
+# claims its posts from the queue ahead of every other source.
+SOURCE_TO_TARGETS["DealsUnder99_com"] = list(NO_TRICKS_TARGETS)
+
+# USER RULE (2026-09-07): the queue is claimed in this order -
+#   (1) posts from the PREFERRED source(s)      - DealsUnder99_com first
+#   (2) every other single/top deal, by priority
+#   (3) product LISTS last ("then list of products")
+# Within a tier the QUEUE_ORDER knob (newest/oldest) still decides. Env-
+# extensible; matched case-insensitively against the queue's source column.
+PREFERRED_SOURCES = {s.strip().lstrip("@").lower()
+                     for s in os.getenv("PREFERRED_SOURCES", "DealsUnder99_com").split(",")
+                     if s.strip()}
 
 # These sources must contain true sub-₹99 deals; valid posts go to both price targets.
 UNDER99_SOURCES = {
@@ -1035,7 +1053,8 @@ def apply_amazon_tag(link: str) -> str:
             return clean_url(link)
         query = parse_qsl(parsed.query, keep_blank_values=True)
         query = [(key, value) for key, value in query if key.lower() != "tag"]
-        # TAGLESS: only add our tag if configured; pinned empty means strip stranger tags
+        # Tag era: OUR_AMAZON_TAGS has already refused any non-owned tag at
+        # startup, so OUR_TAG is always ours - set it on every tagged link.
         if OUR_TAG:
             query.append(("tag", OUR_TAG))
         return parsed._replace(query=urlencode(query, doseq=True)).geturl()
@@ -1045,12 +1064,13 @@ def apply_amazon_tag(link: str) -> str:
 
 def compact_amazon_product_link(link: str) -> str:
     """Collapse an Amazon PRODUCT (/dp/ASIN or /gp/product/ASIN) URL to its
-    shortest native form. TAGLESS: no tag is kept/added – clean /dp/ASIN only
-      https://www.amazon.in/dp/ASIN   (tagless)
-    All noise params (psc/smid/th/ref/linkCode/tag ...) are dropped, so product
-    links in a list are short WITHOUT spending Bitly quota. Amazon SEARCH /
-    category links (/s?...) have no single ASIN and are returned untouched so
-    the final shorten pass can Bitly them. Preserves the Amazon TLD."""
+    shortest native form:
+      https://www.amazon.in/dp/ASIN?tag=OUR_TAG
+    All noise params (psc/smid/th/linkCode/tag ...) are dropped - a stranger's
+    tag goes, ours is set - so product links in a list are short WITHOUT
+    spending Bitly quota. Amazon SEARCH / category links (/s?...) have no
+    single ASIN and are returned untouched so the final shorten pass can Bitly
+    them. Preserves the Amazon TLD."""
     try:
         raw = clean_url(link)
         m = re.search(r"(?:/dp/|/gp/(?:product|aw/d)/)([A-Z0-9]{10})(?:[/?#]|$)", raw, re.I)
@@ -1062,7 +1082,8 @@ def compact_amazon_product_link(link: str) -> str:
         if not in_domains(host, AMAZON_DOMAINS):
             return raw
         netloc = host if host.startswith("www.") else "www." + host
-        # TAGLESS: never keep source tag; only our tag if configured
+        # Tag era: our Associates tag rides on the compact form; a source's tag
+        # never survives the rebuild.
         if OUR_TAG:
             ref = None
             for key, value in parse_qsl(parsed.query, keep_blank_values=True):
@@ -1097,6 +1118,24 @@ def is_amazon_search_or_browse_link(link: str) -> bool:
         return False
     except Exception:
         return False
+
+
+def replace_url_everywhere(text: str, raw: str, replacement: str) -> str:
+    """Replace `raw` - and its &amp;-escaped twin - with `replacement` in ONE pass.
+
+    The chained `text.replace(raw, x).replace(raw.replace("&", "&amp;"), x)`
+    this used to be was a live corruption bug: str.replace rescans its own
+    output, and when raw carries no '&' the two calls are identical, so the
+    second call matched the bare URL as the PREFIX of the URL the first call
+    had just written and appended the query a second time - producing links
+    like ?tag=mama086-21?tag=mama086-21. A doubled tag is not our tag, so the
+    provenance gate rightly refused the post and a perfectly good deal was
+    silently dropped. A single regex pass can never re-match its own output.
+    """
+    variants = [v for v in (raw, raw.replace("&", "&amp;")) if v]
+    ordered = sorted(dict.fromkeys(variants), key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(v) for v in ordered))
+    return pattern.sub(lambda _match: replacement, text)
 
 
 # A Flipkart product URL is "slug + /p/ + item id + pid": lid, marketplace, srno,
@@ -1345,7 +1384,7 @@ def deal_quality_score(text: str) -> int:
 def numeric_tokens(text: str) -> set[str]:
     """Every number a post states, with URLs masked out.
 
-    URL masking matters: our own affiliate tag ("deals0911-21"), an ASIN and a
+    URL masking matters: our own affiliate tag ("mama086-21"), an ASIN and a
     shortener slug are digits the source text never claimed, and they must not
     be confused with prices or discounts.
     """
@@ -4471,9 +4510,27 @@ class Store:
             now = time.time()
             self.conn.execute("BEGIN IMMEDIATE")
             order = "DESC" if QUEUE_ORDER == "newest" else "ASC"
+            # USER RULE (2026-09-07): "t.me/DealsUnder99_com first preference -
+            # first diniki next inka vereveru top vi, then list of products".
+            # Claim order: posts from the preferred source first, then every
+            # other single/top deal by priority, then product LISTS last
+            # (priority 5 is classify_priority's list mark). The newest/oldest
+            # QUEUE_ORDER knob still decides inside a tier.
+            preferred = sorted(PREFERRED_SOURCES)
+            if preferred:
+                placeholders = ",".join("?" for _ in preferred)
+                tier_sql = (f"(CASE WHEN lower(source) IN ({placeholders}) THEN 0 ELSE 1 END) ASC, "
+                            "(CASE WHEN priority >= 5 THEN 1 ELSE 0 END) ASC, ")
+                # Placeholder order follows the SQL text: the next_at<=? bound
+                # comes first, then the IN (...) list values.
+                params: tuple = (now, *preferred)
+            else:
+                tier_sql = "(CASE WHEN priority >= 5 THEN 1 ELSE 0 END) ASC, "
+                params = (now,)
             row = self.conn.execute(
                 "SELECT * FROM queue WHERE status='pending' AND next_at<=? "
-                f"ORDER BY priority DESC, created_at {order} LIMIT 1", (now,)
+                f"ORDER BY {tier_sql}priority DESC, created_at {order} LIMIT 1",
+                params,
             ).fetchone()
             if row:
                 # next_at doubles as the claim timestamp while processing, so a
@@ -4554,6 +4611,39 @@ class Store:
             return self.conn.execute(
                 "SELECT * FROM link_cache WHERE source_url=?", (canonical_url(source_url),)
             ).fetchone()
+
+    def recent_shortened_amazon_links(self, limit: int = 2000) -> list[tuple[str, str]]:
+        """Durable (short link -> amazon URL) pairs for the restart gap.
+
+        AffiliateClient seeds its in-memory short->long map from this at startup
+        so a bit.ly/is.gd hop we minted can always be seen behind - by the
+        review channel's native-link expansion AND by
+        strip_amazon_tag_for_undeclared(). Only the RUNTIME shorteners matter
+        here: an ekaro.in/fktr.in link names its network in the domain itself,
+        while bit.ly/is.gd can hide a tagged amazon.in URL behind the hop.
+        Newest first; a synchronous read because it runs in __init__.
+        """
+        try:
+            rows = self.conn.execute(
+                "SELECT affiliate_url, resolved_url FROM link_cache "
+                "WHERE created_at>=? ORDER BY created_at DESC LIMIT ?",
+                (time.time() - 14 * 24 * 3600, int(limit)),
+            ).fetchall()
+        except Exception:
+            return []
+        pairs: list[tuple[str, str]] = []
+        for row in rows:
+            short, resolved = (row[0] or "").strip(), (row[1] or "").strip()
+            if not short or not resolved:
+                continue
+            short_host = (urlparse(short).hostname or "").lower()
+            if short_host not in OUR_RUNTIME_SHORTENER_DOMAINS:
+                continue
+            resolved_host = (urlparse(resolved).hostname or "").lower()
+            if not in_domains(resolved_host, AMAZON_DOMAINS):
+                continue
+            pairs.append((short, resolved))
+        return pairs
 
     async def affiliate_destination(self, short_url: str) -> str | None:
         """The native URL behind a short link WE minted, from the persistent
@@ -5175,6 +5265,17 @@ class AffiliateClient:
         # channel publishes the NATIVE store URL. Every short link we mint is
         # recorded here so the delivery step can put the real URL back.
         self._short_to_long: dict[str, str] = {}
+        # COMPLIANCE (restart gap): this map used to live only in memory, so a
+        # bit.ly minted before a restart could deliver OUR tag to an UNDECLARED
+        # channel - strip_amazon_tag_for_undeclared() could no longer see behind
+        # the hop, and Amazon reads the tag inside the redirect. The short->long
+        # pairs are durable in link_cache, so seed the map back at startup
+        # (newest first, capped) and both the review-channel expansion and the
+        # undeclared-channel strip work across restarts exactly as they do
+        # inside one process.
+        with contextlib.suppress(Exception):
+            for short, long_url in store.recent_shortened_amazon_links(limit=2000):
+                self._short_to_long[short] = apply_amazon_tag(long_url)
 
     async def cache_link(self, source_url: str, affiliate: str, resolved: str, key: str) -> None:
         """Proxy to the global store's link cache so subclasses/tests can override."""
@@ -5499,8 +5600,6 @@ class AffiliateClient:
             self._short_cache[long_url] = shortened
             self._short_to_long[shortened] = long_url
             return shortened
-        if shortened:
-            return shortened
         # Tokenless fallback for very long/multi-link posts. The authenticated
         # affiliate destination is created first; this service only redirects to it.
         try:
@@ -5577,7 +5676,9 @@ class AffiliateClient:
         Links already on a shortener domain are never re-shortened; if the
         shortener is unavailable the original link is kept (a deal is never lost)."""
         out = rendered or ""
-        # TAGLESS: Pass 0 – strip any foreign Amazon tag from ALL Amazon links first
+        # Pass 0: a foreign Amazon tag is replaced with OURS on every Amazon
+        # link first (a stranger's tag pays a third party; an untagged link
+        # earns nothing). apply_amazon_tag() keeps exactly one tag - ours.
         for raw in dict.fromkeys(URL_RE.findall(out)):
             url = clean_url(raw)
             host = (urlparse(url).hostname or "").lower()
@@ -5585,7 +5686,7 @@ class AffiliateClient:
                 continue
             stripped = apply_amazon_tag(url)
             if stripped and stripped != url and stripped != raw:
-                out = out.replace(raw, stripped).replace(raw.replace("&", "&amp;"), stripped)
+                out = replace_url_everywhere(out, raw, stripped)
         # Pass 1: native compaction of Amazon /dp/ product links (free).
         compacted = 0
         for raw in dict.fromkeys(URL_RE.findall(out)):
@@ -5595,7 +5696,7 @@ class AffiliateClient:
                 continue
             compact = compact_amazon_product_link(url)
             if compact and compact != url and compact != raw:
-                out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
+                out = replace_url_everywhere(out, raw, compact)
                 compacted += 1
         # Pass 1b: native compaction of Flipkart product links (also free).
         # A dl.flipkart.com product URL arrives ~177 chars because of lid /
@@ -5610,7 +5711,7 @@ class AffiliateClient:
                 continue
             compact = compact_flipkart_product_link(url)
             if compact and compact != url and compact != raw:
-                out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
+                out = replace_url_everywhere(out, raw, compact)
                 compacted += 1
         # Pass 2: Bitly/is.gd the remaining long links (search/category) — all
         # of them at once, so a 6-link list pays one round trip, not six.
@@ -5650,8 +5751,7 @@ class AffiliateClient:
                 with contextlib.suppress(Exception):
                     await self.cache_link(url, shortened, url, product_key(url))
         for raw, shortened in replacements.items():
-            out = out.replace(raw, shortened)
-            out = out.replace(raw.replace("&", "&amp;"), shortened)
+            out = replace_url_everywhere(out, raw, shortened)
         if compacted or replacements:
             log.info("FINAL link tidy: %d amazon product link(s) compacted, %d shortened",
                      compacted, len(replacements))

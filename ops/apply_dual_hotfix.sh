@@ -23,7 +23,7 @@ if [[ -f .env ]]; then
   python3 - <<'PY'
 from pathlib import Path
 p=Path('.env'); lines=p.read_text().splitlines(); out=[]; seen=set()
-updates={'AMAZON_TAG':'deals0911-21','PRICE_DEDUP_SECONDS':'0',
+updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          # Night quiet 02:00-06:00 IST: posting pauses, deals queue, 06:00 flush.
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
          # User-supplied Bitly token: best shortening for long links.
@@ -72,7 +72,7 @@ if [[ -f .env ]]; then
   python3 - <<'PY'
 from pathlib import Path
 p=Path('.env')
-updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'deals0911-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45','WA_BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'mama086-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45','WA_BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
  # Channel-only for now: groups are skipped (no group join/invite calls) so a
  # flaky group can never trigger WhatsApp disconnects. Set to 'false' and re-run
  # this script to turn group fan-out back on.

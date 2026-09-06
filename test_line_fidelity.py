@@ -21,7 +21,6 @@ import os
 import re
 import sys
 import tempfile
-import textwrap
 import time
 from pathlib import Path
 
@@ -765,12 +764,19 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
           str(bot.SHORTEN_MIN_LEN))
     tidy_link = "https://www.amazon.in/dp/B0AIR1"
     tidy = f"Boat Airdopes \u20b91,099 {tidy_link}"
+    quota_before = len(calls)
+    tidy_out = asyncio.run(aff.shorten_long_urls_in_text(tidy))
     if len(tidy_link) > min_len:
         check("a single link OVER the threshold is shortened too",
-              "bit.ly/OURSHORT" in asyncio.run(aff.shorten_long_urls_in_text(tidy)), tidy)
+              "bit.ly/OURSHORT" in tidy_out, tidy)
     else:
+        # Tag era: the tidy link comes back unchanged apart from OUR tag that
+        # Pass 0 puts on every Amazon link (and with the tag pinned empty, the
+        # bare link comes back verbatim). Either way no Bitly quota is spent.
         check("a short single link stays direct (no quota spent)",
-              asyncio.run(aff.shorten_long_urls_in_text(tidy)) == tidy, tidy)
+              tidy_out == tidy.replace(tidy_link, bot.apply_amazon_tag(tidy_link))
+              and len(calls) == quota_before,
+              tidy_out)
 
     async def out_of_quota(url):
         raise RuntimeError("Bitly quota exhausted")
@@ -1925,98 +1931,164 @@ def test_our_tag_earns_on_amazon_and_lists_still_shorten():
     commission goes to EarnKaro's Amazon account, not ours). Lists must still
     shorten so a multi-product post stays neat.
     """
-    import asyncio, json, random
+    import asyncio, json, random, tempfile
 
     if not bot.OUR_TAG:
         return
 
-    class Resp:
-        status = 200
+    # HERMETIC: convert() reads the persistent link cache (a stale fixture row
+    # from an earlier run of this very suite used to hand back an old short
+    # link and fail the tag checks). Run against a private, empty Store.
+    temp_dir = tempfile.TemporaryDirectory()
+    old_store = bot.store
+    bot.store = bot.Store(Path(temp_dir.name) / "tag-earns.sqlite3")
+    try:
 
-        def __init__(self, body):
-            self._b = body
+        class Resp:
+            status = 200
 
-        async def text(self):
-            return self._b
+            def __init__(self, body):
+                self._b = body
 
-        async def __aenter__(self):
-            return self
+            async def text(self):
+                return self._b
 
-        async def __aexit__(self, *a):
-            return False
+            async def __aenter__(self):
+                return self
 
-    class Session:
-        def post(self, url, **kw):
-            return Resp(json.dumps(
-                {"success": 1, "data": "https://ekaro.in/ek%d" % random.randint(10 ** 5, 9 * 10 ** 5)}))
+            async def __aexit__(self, *a):
+                return False
 
-    class Aff(bot.AffiliateClient):
-        def __init__(self):
-            self._health, self._short_cache, self._short_to_long = {}, {}, {}
-            self.calls, self.session = [], Session()
+        class Session:
+            def post(self, url, **kw):
+                return Resp(json.dumps(
+                    {"success": 1, "data": "https://ekaro.in/ek%d" % random.randint(10 ** 5, 9 * 10 ** 5)}))
 
-        async def cache_link(self, *a):
-            pass
+        class Aff(bot.AffiliateClient):
+            def __init__(self):
+                self._health, self._short_cache, self._short_to_long = {}, {}, {}
+                self.calls, self.session = [], Session()
 
-        async def resolve(self, u):
-            return u
+            async def cache_link(self, *a):
+                pass
 
-        async def link_not_broken(self, u):
-            return True
+            async def resolve(self, u):
+                return u
 
-        async def shorten(self, u):
-            self.calls.append(u)
-            short = "https://bitli.in/S%d" % len(self.calls)
-            self._short_to_long[short] = u
-            return short
+            async def link_not_broken(self, u):
+                return True
 
-    async def convert(url, multi):
-        aff = Aff()
-        res = await aff.convert(url, multi)
-        link = res.affiliate if res else ""
-        return link, aff._short_to_long.get(link, link), len(aff.calls)
+            async def shorten(self, u):
+                self.calls.append(u)
+                short = "https://bitli.in/S%d" % len(self.calls)
+                self._short_to_long[short] = u
+                return short
 
-    # A single Amazon product: our tag, posted natively, no Bitly quota spent.
-    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
-        convert("https://www.amazon.in/dp/B0TAGTEST1", False))
-    check("a single Amazon deal carries OUR tag", bot.OUR_TAG in dest, dest)
-    check("it is not handed to EarnKaro", "ekaro.in" not in dest, dest)
-    check("it is the native product URL", "/dp/B0TAGTEST1" in dest, dest)
-    check("a single short link spends no Bitly quota", shortened == 0, str(shortened))
+        async def convert(url, multi):
+            aff = Aff()
+            res = await aff.convert(url, multi)
+            link = res.affiliate if res else ""
+            return link, aff._short_to_long.get(link, link), len(aff.calls)
 
-    # A LIST still shortens, and the tag survives behind the short link.
-    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
-        convert("https://www.amazon.in/dp/B0TAGTEST2", True))
-    check("a list link is shortened", link.startswith("https://bitli.in/"), link)
-    check("the shortened list link still carries our tag", bot.OUR_TAG in dest, dest)
+        # A single Amazon product: our tag, posted natively, no Bitly quota spent.
+        link, dest, shortened = asyncio.run(convert("https://www.amazon.in/dp/B0TAGTEST1", False))
+        check("a single Amazon deal carries OUR tag", bot.OUR_TAG in dest, dest)
+        check("it is not handed to EarnKaro", "ekaro.in" not in dest, dest)
+        check("it is the native product URL", "/dp/B0TAGTEST1" in dest, dest)
+        check("a single short link spends no Bitly quota", shortened == 0, str(shortened))
 
-    # An Amazon SEARCH page has no single ASIN, but it still earns: OUR tag rides
-    # natively on the search URL. EarnKaro has no campaign for a search page, so it
-    # used to return nothing and the click earned zero.
-    link, dest, _ = asyncio.get_event_loop().run_until_complete(
-        convert("https://www.amazon.in/s?k=headphones", False))
-    check("an Amazon search link is tagged natively", bot.OUR_TAG in link, link)
-    check("it is not handed to EarnKaro", "ekaro.in" not in link, link)
-    check("it is still the search page the source linked", "/s?k=headphones" in link, link)
+        # A LIST still shortens, and the tag survives behind the short link.
+        link, dest, shortened = asyncio.run(convert("https://www.amazon.in/dp/B0TAGTEST2", True))
+        check("a list link is shortened", link.startswith("https://bitli.in/"), link)
+        check("the shortened list link still carries our tag", bot.OUR_TAG in dest, dest)
 
-    # Other stores are untouched: they keep earning through EarnKaro.
-    link, dest, _ = asyncio.get_event_loop().run_until_complete(
-        convert("https://www.flipkart.com/x/p/itmzzz", False))
-    check("Flipkart still goes through EarnKaro", "ekaro.in" in link, link)
-    check("Flipkart never carries an Amazon tag", bot.OUR_TAG not in link, link)
+        # An Amazon SEARCH page has no single ASIN, but it still earns: OUR tag rides
+        # natively on the search URL. EarnKaro has no campaign for a search page, so it
+        # used to return nothing and the click earned zero.
+        link, dest, _ = asyncio.run(convert("https://www.amazon.in/s?k=headphones", False))
+        check("an Amazon search link is tagged natively", bot.OUR_TAG in link, link)
+        check("it is not handed to EarnKaro", "ekaro.in" not in link, link)
+        check("it is still the search page the source linked", "/s?k=headphones" in link, link)
 
-    # The delivery-time guard is still the last word: a channel the user has NOT
-    # declared to Amazon must never show the tag, shortened or not.
-    class Rev:
-        _short_to_long = {"https://bitli.in/S1":
-                          "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+        # Other stores are untouched: they keep earning through EarnKaro.
+        link, dest, _ = asyncio.run(convert("https://www.flipkart.com/x/p/itmzzz", False))
+        check("Flipkart still goes through EarnKaro", "ekaro.in" in link, link)
+        check("Flipkart never carries an Amazon tag", bot.OUR_TAG not in link, link)
 
-    undeclared = "Zzz" + "NotDeclared11"
-    for text in ("Deal https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
-                 "Deal https://bitli.in/S1"):
-        out = bot.strip_amazon_tag_for_undeclared(text, undeclared, Rev())
-        check("an undeclared channel never shows the tag", bot.OUR_TAG not in out, out)
-        check("and its link still reaches the product", "B0X" in out, out)
+        # The delivery-time guard is still the last word: a channel the user has NOT
+        # declared to Amazon must never show the tag, shortened or not.
+        class Rev:
+            _short_to_long = {"https://bitli.in/S1":
+                              "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+
+        undeclared = "Zzz" + "NotDeclared11"
+        for text in ("Deal https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
+                     "Deal https://bitli.in/S1"):
+            out = bot.strip_amazon_tag_for_undeclared(text, undeclared, Rev())
+            check("an undeclared channel never shows the tag", bot.OUR_TAG not in out, out)
+            check("and its link still reaches the product", "B0X" in out, out)
+    finally:
+        bot.store = old_store
+        temp_dir.cleanup()
+
+
+
+def test_tagged_links_are_never_double_tagged():
+    """BUG (2026-09-07): shorten_long_urls_in_text replaced URLs with a chained
+    text.replace(raw, x).replace(raw_amp, x). With no '&' in the raw URL the two
+    calls are identical, so the second call re-matched the bare URL as the
+    PREFIX of the link the first call had just written and appended the query a
+    second time: ?tag=mama086-21?tag=mama086-21. A doubled tag is not our tag,
+    so the provenance gate refused the post - perfectly good deals silently
+    dropped on every channel the moment the tag era went live."""
+    import asyncio
+
+    if not bot.OUR_TAG:
+        return
+
+    class NoSession:  # the shortener is stubbed below; no session is touched
+        pass
+
+    aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
+
+    async def fake_bitly(url):
+        return "https://bit.ly/OURSHORT"
+
+    aff.bitly = fake_bitly
+
+    def single_provable_tag(out):
+        urls = bot.URL_RE.findall(out)
+        if len(urls) != 1:
+            return False, out
+        url = bot.clean_url(urls[0])
+        # The exact test the delivery-time provenance gate applies: a doubled
+        # tag makes this False, and the deal behind it was dropped.
+        return bot.Store.is_our_amazon_tag_link(url), out
+
+    # A bare /dp/ link - no query at all - is the exact shape that doubled.
+    out = asyncio.run(aff.shorten_long_urls_in_text(
+        "Kettle \u20b9499 https://www.amazon.in/dp/B0NOTWICE"))
+    ok, out = single_provable_tag(out)
+    check("a bare dp link comes out with exactly ONE self-proving tag", ok, out)
+
+    # A noisy link (extra params + a stranger's tag) must end up single-tagged.
+    noisy = ("Deal \u20b9899 https://www.amazon.in/dp/B0NOISY1"
+             "?psc=1&amp;smid=A1VVX&amp;tag=deals0911-21")
+    out2 = asyncio.run(aff.shorten_long_urls_in_text(noisy))
+    urls2 = [bot.clean_url(u) for u in bot.URL_RE.findall(out2)]
+    check("a noisy stranger-tagged link comes out with exactly one OUR tag",
+          len(urls2) == 1 and bot.Store.is_our_amazon_tag_link(urls2[0])
+          and out2.count("tag=" + bot.OUR_TAG) == 1 and "deals0911-21" not in out2,
+          out2)
+
+    # The compaction pass gets the same guard: a /gp/product/ link with a path
+    # ref compacts natively to one clean tagged /dp/ URL.
+    out3 = asyncio.run(aff.shorten_long_urls_in_text(
+        "Box \u20b9199 https://www.amazon.in/gp/product/B0COMPACT1/ref=some_ref"))
+    urls3 = [bot.clean_url(u) for u in bot.URL_RE.findall(out3)]
+    check("a /gp/product/ link compacts to one clean tagged URL",
+          len(urls3) == 1 and bot.Store.is_our_amazon_tag_link(urls3[0])
+          and "/dp/B0COMPACT1" in urls3[0], out3)
 
 
 def test_all_conditions_live_on_the_review_channel_only():
@@ -2768,6 +2840,163 @@ def test_deploy_refuses_a_foreign_amazon_tag():
           str(bot.OUR_AMAZON_TAGS))
 
 
+def test_no_operator_script_ships_a_strangers_tag():
+    """USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The bot
+    and the deploy guard refuse a foreign AMAZON_TAG, but the operator tooling
+    still SHIPPED the stranger's tag deals0911-21: install_bestgaa.sh offered it
+    as the default answer, apply_dual_hotfix.sh re-wrote it into .env on every
+    run, the bridge installer wrote it into the bridge .env, the quality auditor
+    masked against it by default, and migrate_legacy_env.py copied the legacy
+    OUR_TAG (the source's tag) verbatim - the exact value the deploy guard then
+    aborts on. Every entry point now defaults to OUR tag and validates it."""
+    stranger = "deals0911-21"
+
+    install = (ROOT / "ops" / "install_bestgaa.sh").read_text(encoding="utf-8")
+    check("the installer's default tag is OURS", "AMZ_TAG:-mama086-21" in install,
+          "default missing")
+    check("the installer validates the tag against OUR allowlist",
+          "OUR_AMAZON_TAGS=\"mama086-21\"" in install and "not one of ours" in install,
+          "no allowlist guard")
+    check("the installer never WRITES the stranger's tag",
+          not any(stranger in line and ("AMZ_TAG=" in line or "AMAZON_TAG=" in line)
+                  for line in install.splitlines()),
+          "a functional line still carries it")
+
+    hotfix = (ROOT / "ops" / "apply_dual_hotfix.sh").read_text(encoding="utf-8")
+    check("the dual hotfix writes OUR tag into .env",
+          "'AMAZON_TAG':'mama086-21'" in hotfix, "hotfix tag wrong")
+    check("the dual hotfix never writes the stranger's tag", stranger not in hotfix,
+          "stranger tag still written")
+
+    bridge_install = (ROOT / "tg-wa-bridge" / "install_bridge.sh").read_text(encoding="utf-8")
+    check("the bridge installer ships OUR tag", "AMAZON_TAG=mama086-21" in bridge_install,
+          "bridge .env template wrong")
+    check("the bridge installer never ships the stranger's tag",
+          stranger not in bridge_install, "stranger tag still present")
+
+    auditor = (ROOT / "ops" / "quality_audit.py").read_text(encoding="utf-8")
+    check("the quality auditor masks against OUR tag by default",
+          'os.getenv("AMAZON_TAG", "mama086-21")' in auditor, "auditor default wrong")
+    check("the quality auditor never defaults to the stranger's tag",
+          stranger not in auditor, "stranger tag still present")
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    check("the README names OUR tag as our own",
+          "our own tag `mama086-21`" in readme and stranger not in readme,
+          "stale tag reference")
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "migrate_legacy_env", ROOT / "bestgaa" / "migrate_legacy_env.py")
+    migrate = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migrate)
+    check("the migrator knows the tags we own",
+          migrate.OUR_AMAZON_TAGS == bot.OUR_AMAZON_TAGS, str(migrate.OUR_AMAZON_TAGS))
+    check("the migrator replaces a stranger's tag with ours",
+          migrate.owned_tag("deals0911-21") == "mama086-21",
+          migrate.owned_tag("deals0911-21"))
+    check("the migrator replaces an empty/missing tag with ours",
+          migrate.owned_tag("") == "mama086-21" and migrate.owned_tag(None) == "mama086-21",
+          "empty tag mishandled")
+    check("the migrator keeps our own tag untouched",
+          migrate.owned_tag("mama086-21") == "mama086-21", "our tag rewritten")
+
+
+def test_short_links_survive_a_restart_without_leaking_the_tag():
+    """COMPLIANCE (restart gap): the in-memory short->long map used to die with
+    the process, so a bit.ly minted before a restart could deliver OUR tag to an
+    UNDECLARED channel - strip_amazon_tag_for_undeclared() could no longer see
+    behind the hop. The pairs are durable in link_cache now and seed the map at
+    startup, so the review channel still expands to the native tagged URL and an
+    undeclared channel still gets the untagged native URL."""
+    import asyncio
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        store = bot.Store(Path(td) / "restart.sqlite3")
+        old_store = bot.store
+        old_tag = bot.OUR_TAG
+        bot.store = store
+        # Deterministic whether or not the operator's shell set AMAZON_TAG:
+        # this suite normally imports the bot with AMAZON_TAG="" (the tag tests
+        # skip), but the seeding above must be judged WITH the tag active.
+        bot.OUR_TAG = "mama086-21"
+        try:
+            async def seed():
+                await store.cache_link(
+                    "https://www.amazon.in/dp/B0RESTART1?tag=src&ref=x",
+                    "https://bit.ly/rstAmazon",
+                    "https://www.amazon.in/dp/B0RESTART1", "amazon:B0RESTART1")
+                await store.cache_link(
+                    "https://www.flipkart.com/x/p/itmRST1?pid=ITMRST1",
+                    "https://bit.ly/rstFlip",
+                    "https://www.flipkart.com/x/p/itmRST1?pid=ITMRST1",
+                    "flipkart:itmRST1")
+                # An old row beyond the 14-day window must not come back.
+                store.conn.execute(
+                    "INSERT OR REPLACE INTO link_cache VALUES(?,?,?,?,?)",
+                    ("https://www.amazon.in/dp/B0RESTART2",
+                     "https://bit.ly/rstAncient",
+                     "https://www.amazon.in/dp/B0RESTART2", "amazon:B0RESTART2",
+                     __import__("time").time() - 30 * 24 * 3600))
+                store.conn.commit()
+
+            asyncio.run(seed())
+            pairs = dict(store.recent_shortened_amazon_links())
+            check("the durable map finds our shortened amazon link",
+                  pairs.get("https://bit.ly/rstAmazon") == "https://www.amazon.in/dp/B0RESTART1",
+                  str(pairs))
+            check("the durable map ignores non-amazon short links",
+                  "https://bit.ly/rstFlip" not in pairs, str(pairs))
+            check("the durable map ignores rows beyond the window",
+                  "https://bit.ly/rstAncient" not in pairs, str(pairs))
+
+            client = bot.AffiliateClient(None)
+            check("a fresh client re-seeds short->long across a restart",
+                  client._short_to_long.get("https://bit.ly/rstAmazon")
+                  == bot.apply_amazon_tag("https://www.amazon.in/dp/B0RESTART1"),
+                  str(client._short_to_long))
+            tagged = client._short_to_long.get("https://bit.ly/rstAmazon", "")
+            check("the re-seeded long link carries OUR tag (review channel sees it)",
+                  bot.OUR_TAG in tagged and "amazon.in" in tagged, tagged)
+            # And the undeclared-channel strip still sees behind the hop.
+            # (A channel the operator HAS declared under AMAZON_TAG_TARGETS=all
+            # keeps the tag by design, so pick one that really is undeclared.)
+            undeclared = ("LootZoneIndia11"
+                          if "LootZoneIndia11" not in bot.AMAZON_TAG_TARGETS
+                          else "ZzzNotDeclared11")
+            stripped = bot.strip_amazon_tag_for_undeclared(
+                "deal https://bit.ly/rstAmazon", undeclared, client)
+            check("after a restart our tag still cannot ride into an undeclared channel",
+                  bot.OUR_TAG not in stripped and "https://www.amazon.in/dp/B0RESTART1" in stripped,
+                  stripped)
+            check("a declared channel keeps the native tagged link",
+                  bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared(
+                      f"x https://www.amazon.in/dp/B0KEEP?tag={bot.OUR_TAG}",
+                      bot.SHOPPING_TARGET, client),
+                  "declared channel stripped")
+        finally:
+            bot.store = old_store
+            bot.OUR_TAG = old_tag
+            store.conn.close()
+
+
+def test_dealsunder99_com_is_the_first_preference_source():
+    """USER RULE (2026-09-07): "t.me/DealsUnder99_com idi main preference ivvu -
+    telegram and whatsapp 2 channels lo; first diniki next inka vereveru top vi,
+    then list of products". The TG bot now routes it to every non-Tricks main
+    target (the route used to be EMPTY - a dead source), keeps its under-99
+    price-channel membership, and the queue claims its posts ahead of every
+    other source with product lists going out last."""
+    check("DealsUnder99_com feeds every non-Tricks main target",
+          bot.SOURCE_TO_TARGETS.get("DealsUnder99_com") == list(bot.NO_TRICKS_TARGETS),
+          str(bot.SOURCE_TO_TARGETS.get("DealsUnder99_com")))
+    check("DealsUnder99_com stays an under-99 source",
+          "DealsUnder99_com" in bot.UNDER99_SOURCES, str(bot.UNDER99_SOURCES))
+    check("DealsUnder99_com is the preferred (first-claimed) source",
+          "dealsunder99_com" in bot.PREFERRED_SOURCES, str(bot.PREFERRED_SOURCES))
+
+
 def test_non_shop_links_never_burn_the_retry_budget():
     """USER RULE (2026-09-06): a deal blog (indiadesire.com) or an app-deep-link
     wrapper (amzn.urlgeni.us) is NOT a shop. EarnKaro has no campaign for either,
@@ -3056,6 +3285,7 @@ def main() -> int:
     test_the_finished_review_post_end_to_end()
     test_no_regression_for_the_ordinary_channels()
     test_our_tag_earns_on_amazon_and_lists_still_shorten()
+    test_tagged_links_are_never_double_tagged()
     test_all_conditions_live_on_the_review_channel_only()
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
@@ -3066,6 +3296,9 @@ def main() -> int:
     test_no_route_from_the_review_channel_to_a_loot_channel()
     test_the_review_channel_guards_that_were_never_probed()
     test_deploy_refuses_a_foreign_amazon_tag()
+    test_no_operator_script_ships_a_strangers_tag()
+    test_short_links_survive_a_restart_without_leaking_the_tag()
+    test_dealsunder99_com_is_the_first_preference_source()
     test_non_shop_links_never_burn_the_retry_budget()
     test_amazon_search_and_browse_links_are_taggable()
     test_flipkart_share_title_wrapper_is_stripped()

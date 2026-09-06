@@ -61,8 +61,7 @@ const required = name => {
 const TG_TOKEN = required('TELEGRAM_BOT_TOKEN')
 const WA_PHONE = required('WA_PHONE').replace(/\D/g, '')
 const WA_CHANNEL = required('WA_CHANNEL')
-// Optional SECOND WhatsApp Channel that receives ONLY Under-₹99 products (and
-// the best-discount under-99 lists). Everything else still goes to WA_CHANNEL.
+// Optional SECOND WhatsApp Channel that receives ONLY Under-₹99 products. Everything else still goes to WA_CHANNEL.
 // Accepts an @newsletter JID or a https://whatsapp.com/channel/CODE invite.
 // Empty = single main channel.
 const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
@@ -75,13 +74,16 @@ const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerC
 // THE USER'S CHANNEL MATRIX - each WhatsApp channel is a POLICY, not just a JID.
 // Configure a channel via env and its rule applies automatically:
 //   WA_CHANNEL            -> main: every curated best deal (quality gate applies)
-//   WA_CHANNEL_UNDER99    -> under-₹99 products + ANY multi-product list
+//   WA_CHANNEL_UNDER99    -> STRICT under-₹99 shelf (USER RULE 2026-09-07,
+//                            "strict ga under 99 ye ravali"): only ≤₹99 products.
+//                            A list qualifies only when it actually features
+//                            under-₹99 items (majority of its priced items), and
+//                            the copy delivered there is filtered down to those
+//                            ≤₹99 items - a >₹99 item never appears on it.
 //   WA_CHANNEL_UNDER499   -> under-₹499 products + ANY multi-product list
 //   WA_CHANNEL_BEST_OF    -> only "the best of the moment": a deal that is not a
 //                            clear best-tier pick is SKIPPED on this channel
-// Lists go to BOTH price channels even when their prices sit above the band
-// ("list of products vachinappudu price tho sambandam lekunda 2 channels lo"), and
-// credit/bank-card offers are posted wherever they are configured.
+// Credit/bank-card offers are not under-₹99 products and stay off that shelf.
 const WA_CHANNEL_UNDER499 = (process.env.WA_CHANNEL_UNDER499 || '').trim()
 // The --self-test run must never rewrite the operator's live state file.
 const SELF_TEST = process.argv.includes('--self-test')
@@ -131,7 +133,24 @@ const QUIET_END = process.env.QUIET_END || '06:00'
 const HYBRID_QUIET = (process.env.HYBRID_QUIET || 'false').toLowerCase() === 'true'
 const STRICT_SOURCE_ONLY = (process.env.STRICT_SOURCE_ONLY || 'true').toLowerCase() === 'true'
 const CURATE_TOP_DEALS = (process.env.CURATE_TOP_DEALS || 'true').toLowerCase() === 'true'
-const AMAZON_TAG = '' // TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
+// USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The
+// previously seen tag (deals0911-21) belonged to a SOURCE, so it was pinned
+// empty to stop a stale .env re-enabling somebody else's tag. We now own
+// mama086-21 and the bot earns on OUR Associates tag again, so WhatsApp must
+// match: the tag is read from the environment again - but a tag that is not
+// ours must still never come back, so any value is checked against the tags we
+// actually own before it is used (mirrors the bot's OUR_AMAZON_TAGS).
+const OUR_AMAZON_TAGS = ['mama086-21']
+const AMAZON_TAG = (() => {
+  const configured = String(process.env.AMAZON_TAG || '').trim()
+  if (configured && !OUR_AMAZON_TAGS.some(tag => tag.toLowerCase() === configured.toLowerCase())) {
+    // A source's tag in our .env would credit THEM for our sales and, worse,
+    // put an undeclared tag on our channels. Ignore it and use ours.
+    console.warn(`[bridge] AMAZON_TAG ${JSON.stringify(configured)} is not one of ours ${JSON.stringify(OUR_AMAZON_TAGS)} - using ${OUR_AMAZON_TAGS[0]}`)
+    return OUR_AMAZON_TAGS[0]
+  }
+  return configured || OUR_AMAZON_TAGS[0]
+})()
 const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
 const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
 const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
@@ -175,6 +194,13 @@ const PRIMARY_SOURCE = (process.env.WA_PRIMARY_SOURCE || 'under499loots').toLowe
 // USER RULE (2026-09-04): the Under-99 feed is the second lead - its deals are
 // the cheapest, everyone-buys items and go ahead of ordinary posts on WhatsApp.
 const SECONDARY_SOURCE = (process.env.WA_SECONDARY_SOURCE || 'under99deals11').toLowerCase()
+// USER RULE (2026-09-07): "t.me/DealsUnder99_com idi main preference ivvu -
+// first diniki next inka vereveru, then list of products". This source's posts
+// are picked from the queue FIRST, above every other source (the primary feed
+// included); everything else follows; product LISTS go out last. Comma list,
+// env-extensible, matched lowercased like every source name here.
+const PREFERRED_SOURCES = new Set((process.env.WA_PREFERRED_SOURCES || 'DealsUnder99_com')
+  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
 // Media is the user's top display preference; a photo/video job may jump the
 // queue when the previous update was text-only.
 const MEDIA_FIRST = (process.env.WA_MEDIA_FIRST || 'true').toLowerCase() === 'true'
@@ -1307,8 +1333,8 @@ function isOurGeneratedLink(url) {
     const host = u.hostname.toLowerCase()
     if (OUR_LINK_HOSTS.has(host)) return true
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
-      // TAGLESS: clean amazon link = ours, ANY tag = reject (source tag never ours)
-      if (!AMAZON_TAG) return !u.searchParams.get('tag')
+      // Tag era: an amazon link is ours only when it carries OUR Associates
+      // tag (bare = unmonetized, any other tag = a stranger's).
       return u.searchParams.get('tag') === AMAZON_TAG
     }
     if (host === 'flipkart.com' || host.endsWith('.flipkart.com')) {
@@ -1333,8 +1359,8 @@ function isOurAmazonTagLink(url) {
     const u = new URL(url)
     const host = u.hostname.toLowerCase()
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
-      // TAGLESS: clean amazon link = ours, ANY tag = reject
-      if (!AMAZON_TAG) return !u.searchParams.get('tag')
+      // Tag era: only OUR tag is self-proving; bare or foreign-tagged links
+      // are not ours.
       return u.searchParams.get('tag') === AMAZON_TAG
     }
     return false
@@ -1374,7 +1400,9 @@ async function resolveUrl(url, fetchFn = fetch) {
 // Direct-source jobs carry RAW source links (fkrt.co, amzn.to, linkredirect.in,
 // bare merchant pages) — not our generated affiliate links. Smart handling:
 //   * our generated links keep the normal provenance verification
-//   * TAGLESS: stranger tags are always deleted, never added (source tag is not ours)
+//   * Amazon pages resolved from raw links are tagged natively with OUR tag
+//     (product AND search pages, exactly like the bot does): a stranger's tag
+//     is deleted first, then ours is set, so the click earns on our account
 //   * everything else is resolved (redirect follow) and posted unconverted, so
 //     the deal reaches WhatsApp even when the bot never posted it to Telegram
 async function prepareDirectJob(job, fetchFn = fetch) {
@@ -1389,9 +1417,12 @@ async function prepareDirectJob(job, fetchFn = fetch) {
       const u = new URL(resolved)
       const host = u.hostname.toLowerCase()
       const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
-      // TAGLESS: delete any foreign tag – never append ours
-      if (isAmazon && u.searchParams.get('tag')) {
+      // Tag era: a resolved Amazon page (dp AND /s search alike) carries OUR
+      // Associates tag — a stranger's tag is deleted, then ours is set (the
+      // same native tagging the bot does, so the click earns on our account).
+      if (isAmazon) {
         u.searchParams.delete('tag')
+        u.searchParams.set('tag', AMAZON_TAG)
         resolved = u.toString()
       }
     } catch { /* keep resolved as-is */ }
@@ -2255,8 +2286,13 @@ function stripAmazonJunk(url) {
     return url
   }
 }
-function stripStrangerAmazonTags(text) {
-  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip any tag
+function normalizeAmazonTags(text) {
+  // Tag era: repair the Amazon links of text about to be verified so every one
+  // of them earns on OUR account. A stranger's tag (old queued jobs may still
+  // carry ?tag=deals0911-21) is deleted and OURS is set, a bare amazon link
+  // gains OURS, and a link already carrying ours passes untouched. Called from
+  // verifyJob BEFORE validateAffiliateText, so the repaired text is what the
+  // policy gate sees.
   if (!text) return text
   let out = String(text)
   for (const url of urlsIn(out)) {
@@ -2264,11 +2300,12 @@ function stripStrangerAmazonTags(text) {
       const u = new URL(url)
       const host = u.hostname.toLowerCase()
       const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
-      if (isAmazon && u.searchParams.get('tag')) {
-        u.searchParams.delete('tag')
-        const cleaned = u.toString()
-        out = out.split(url).join(cleaned)
-      }
+      if (!isAmazon) continue
+      if (u.searchParams.get('tag') === AMAZON_TAG) continue
+      u.searchParams.delete('tag')
+      u.searchParams.set('tag', AMAZON_TAG)
+      const cleaned = u.toString()
+      if (cleaned !== url) out = out.split(url).join(cleaned)
     } catch {}
   }
   return out
@@ -2301,17 +2338,21 @@ function queuedJobPriorityVector(job) {
   // t.me/under499loots is the user's main WhatsApp feed. It leads the order.
   const src = (job.source || '').toLowerCase()
   const primaryRank = src === PRIMARY_SOURCE ? 2 : src === SECONDARY_SOURCE ? 1 : 0
-  // USER RULE (2026-09-03): when several deals are ready at the same time,
-  // product LISTS go out first, then the photo/video posts (the best-looking
-  // ones), then everything else. The list lead counts only a true multi-product
-  // list (4+ links / flagged largeList), not a two-link deal.
-  const listLead = listRank >= 2 ? 1 : 0
+  // USER RULE (2026-09-07): "t.me/DealsUnder99_com first preference - first
+  // diniki next inka vereveru top vi, then list of products". The queue order
+  // is now: (1) DealsUnder99_com posts, (2) every other top deal, (3) product
+  // lists LAST. So the FIRST rank is the preferred-source tier, and the old
+  // list lead is inverted into a list SINK: a list waits until the single
+  // deals ahead of it are out. Inside each tier the ladder below still ranks
+  // photos, commission, price, discount and recency exactly as before.
+  const preferredRank = PREFERRED_SOURCES.has(src) ? 1 : 0
+  const listLead = listRank >= 2 ? 0 : 1 // non-lists first; product lists go last
   const mediaLead = MEDIA_FIRST ? mediaRank : 0
   // Commission-aware ordering: among the same primary/list/media tier,
   // high-payout deals (fashion/beauty, high-commission merchants, healthy
   // order value) go first so the channel earns the most per slot.
   const commissionTier = COMMISSION_RANKING ? dealCommissionInfo(job).tier : 0
-  return [primaryRank, listLead, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
+  return [preferredRank, primaryRank, listLead, mediaLead, commissionTier, priceRank, mediaRank, listRank, discountRank, cardRank, womenRank, categoryRank, recency]
 }
 function compareQueuedJobs(a, b) {
   const left = queuedJobPriorityVector(a)
@@ -2411,7 +2452,15 @@ function enqueuePost(post) {
   const kind = classifySource(post)
   if (!kind) return
   const direct = kind === 'direct'
-  const text = post.caption || post.text || ''
+  // Tag era (dedup-key stability, USER RULE "duplicate multiple times post
+  // cheyoddu"): normalize Amazon tags HERE, before any dedup key, content
+  // fingerprint or product identity is computed. The send paths later store
+  // state.sent keys computed on the normalized text (verifyJob normalizes
+  // too); intake used to compute its keys on the RAW text, so a repeat of a
+  // deal that arrived first with a bare/foreign-tagged amazon link could slip
+  // past the layer-1 exact-key check. One normalize at birth keeps every
+  // layer on the same string.
+  const text = normalizeAmazonTags(post.caption || post.text || '')
   const media = mediaFromPost(post)
   const group = post.media_group_id
   const id = group ? `${post.chat.id}:album:${group}` : `${post.chat.id}:${post.message_id}`
@@ -2526,14 +2575,14 @@ function validateAffiliateText(job, text) {
       throw new Error('Foreign/source shortener blocked')
     }
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
-      // TAGLESS: ANY tag = stranger tag = blocked (clean link is the only valid form)
+      // Tag era: an Amazon link must earn on OUR tag. On bot-fed posts
+      // verifyJob has already normalized bare/stranger links, so anything left
+      // is a hard error (bare = unmonetized, foreign = somebody else's money).
+      // On direct jobs a bare link is still legal before prepareDirectJob
+      // resolution (it gains our tag there), but a stranger's tag never is.
       const tag = u.searchParams.get('tag')
-      if (!AMAZON_TAG) {
-        if (tag) throw new Error('Amazon tag mismatch (tagless: stranger tag blocked)')
-      } else {
-        if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
-        if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
-      }
+      if (!direct && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
+      if (direct && tag && tag !== AMAZON_TAG) throw new Error('Amazon tag mismatch')
     }
     const visiblePublisher = u.searchParams.get('affExtParam2')
     if (visiblePublisher && visiblePublisher !== PUBLISHER_ID) throw new Error('Publisher ID mismatch')
@@ -2627,9 +2676,11 @@ async function assertLinksHealthy(job, urls) {
     'link health says dead; posting anyway (WA_DROP_DEAD_LINKS=false)')
 }
 
-async function verifyJob(job) {
-  // TAGLESS detox: old queued jobs may still carry ?tag=deals0911-21 – strip it
-  if (job.text) job.text = stripStrangerAmazonTags(job.text)
+async function verifyJob(job, fetchFn = fetch) {
+  // Tag era: repair Amazon tags BEFORE the policy gate - a stranger's tag is
+  // deleted, a bare link gains ours, ours passes untouched - so
+  // validateAffiliateText only ever sees clean, monetized links.
+  if (job.text) job.text = normalizeAmazonTags(job.text)
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
@@ -2638,7 +2689,47 @@ async function verifyJob(job) {
   // BestGAA link_cache by design; only monetized store links get the provenance
   // DB check. Every link still gets the broken-destination health check.
   const toVerify = urlsForProvenance(job, urls)
-  const missing = toVerify.length ? await verifyBestGaaProvenance(toVerify) : []
+  let missing = toVerify.length ? await verifyBestGaaProvenance(toVerify) : []
+  if (missing.length && job.direct) {
+    // PROVENANCE RESCUE (direct-source jobs only). Raw deal channels very
+    // often carry a STRANGER's affiliate wrapper (fktr.in/ekaro.in/clnk.in -
+    // EarnKaro links of other marketers). It is not ours - the bot's
+    // link_cache has no such row, so it can never be published as-is - but
+    // the DEAL behind it must not be lost either. Follow the wrapper to the
+    // merchant page and post OUR form of it (raw, or natively tagged when it
+    // is an Amazon page), exactly like any other raw source link. A wrapper
+    // that will not resolve out of the affiliate family is CUT from the post
+    // (never published, deal text kept) - an unverified monetized link can
+    // never reach the channel, and the deal is not dropped for it either.
+    const rescued = []
+    const cut = []
+    for (const url of missing) {
+      const resolved = await resolveUrl(url, fetchFn)
+      if (resolved && resolved !== url && !isOurGeneratedLink(resolved) && !isShareIntent(resolved)) {
+        try {
+          const u = new URL(resolved)
+          const rHost = u.hostname.toLowerCase()
+          if (rHost === 'amazon.in' || rHost.endsWith('.amazon.in') || rHost === 'amazon.com' || rHost.endsWith('.amazon.com')) {
+            u.searchParams.delete('tag')
+            u.searchParams.set('tag', AMAZON_TAG)
+          }
+          job.resolvedLinks ||= {}
+          job.resolvedLinks[url] = u.toString()
+          rescued.push(url)
+        } catch { /* keep as unrescued */ }
+      } else {
+        cut.push(url)
+      }
+    }
+    for (const url of cut) {
+      job.text = String(job.text || '').split(url).join(' ').replace(/\n{3,}/g, '\n\n').trim()
+      log.warn({ id: job.id, url: url.slice(0, 60) }, 'provenance cut: stranger wrapper would not resolve; the link is out, the post stays')
+    }
+    if (rescued.length) {
+      log.info({ id: job.id, rescued: rescued.length }, 'provenance rescue: stranger wrapper resolved to the merchant page and re-tagged as ours')
+    }
+    missing = missing.filter(url => !rescued.includes(url) && !cut.includes(url))
+  }
   if (missing.length) throw new Error(`Provenance mismatch: ${missing[0]}`)
   await assertLinksHealthy(job, urls)
   // All links verified — now swap very long DISPLAY links for shorts (Bitly
@@ -2756,6 +2847,67 @@ function under99Eligible(job) {
   if (priceOk) return true
   return special && discount >= 80 && cheapest != null && cheapest <= UNDER99_MAX_PRICE
 }
+// The Under-₹99 channel's COPY filter (USER RULE 2026-09-07: "strict ga under
+// 99 ye ravali"). A qualifying list may still carry some items above ₹99; this
+// channel must never SHOW one, so the list is delivered with every PROVEN
+// >₹99 item removed WHOLE - its label lines, its link, and any note lines that
+// belong to it. Block model: a product block is the lines that arrived since
+// the previous URL (its label/header) plus its URL line - both the inline
+// shape ("Bottle ₹49 https://...") and the stacked shape (label above its own
+// link line) land in exactly one block. Lines after the last URL belong to
+// the last product.
+// Returns:
+//   null  -> nothing to change (send the text exactly as formatted)
+//   ''    -> nothing under-₹99 remains (the caller must NOT send to this channel)
+//   text  -> send this filtered copy instead
+function under99FilteredList(text) {
+  const lines = String(text || '').split('\n')
+  const blocks = []
+  let pending = { label: [] } // lines waiting to belong to the next URL
+  for (const line of lines) {
+    // A URL-bearing line closes a product block - whether the URL sits on its
+    // own line or INLINE behind the label ("Bottle ₹49 https://...").
+    if (/https?:\/\//i.test(line)) {
+      pending.url = line
+      blocks.push(pending)
+      pending = { label: [] }
+    } else {
+      pending.label.push(line)
+    }
+  }
+  // Trailing note lines after the last URL belong to the last product.
+  if (pending.label.length && blocks.length) {
+    blocks[blocks.length - 1].label.push(...pending.label)
+  }
+  if (!blocks.length) return null // not a list: nothing to filter
+  // An item is removed only when a PRICE proves it belongs above the band.
+  // An unpriced item cannot prove anything either way, and the list was
+  // already judged an under-₹99 feature by under99Eligible - gutting every
+  // bare-link list would break "list of products vachinapudu list ravali".
+  const kept = blocks.filter(block => {
+    const prices = dealPrices([...block.label, block.url].join('\n'))
+    return !prices.length || Math.min(...prices) <= UNDER99_MAX_PRICE
+  })
+  if (kept.length === blocks.length) return null // every item is ≤ ₹99 already
+  if (!kept.length) return '' // every priced item is over the band: post nothing
+  const out = []
+  for (const block of kept) out.push(...block.label, block.url)
+  return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+// The text ONE target receives. Every target gets the post exactly as
+// formatted, except the Under-₹99 shelf: a LIST delivered there is filtered
+// down to its ≤₹99 items (under99FilteredList). Returns null when this target
+// must be skipped entirely (nothing under-₹99 left in the copy).
+function textForTarget(job, jid, text) {
+  if (!text || !job || CHANNEL_ALL_POSTS) return text
+  const policy = CHANNEL_POLICY_OF_JID.get(jid) || (jid && jid === under99Jid ? 'under99' : '')
+  if (policy !== 'under99') return text
+  const urls = urlsIn(job.text || '')
+  if (!(Boolean(job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS)) return text
+  const filtered = under99FilteredList(text)
+  if (filtered === '') return null // nothing under-₹99 left: skip this target
+  return filtered || text // null = nothing to change: the text as formatted
+}
 // Targets for a post: main Channel + (groups) + Under-₹99 channel when eligible.
 // Digests/rotational batches pass job=null and go to the main channel only.
 // ---------------------------------------------------------------------------
@@ -2777,9 +2929,14 @@ function eligibleForChannel(job, policy) {
   const facts = channelFacts(job)
   if (policy === 'main') return true
   if (policy === 'under99') {
-    if (facts.isList) return true // lists reach both price channels, price-agnostic
-    if (facts.cardOffer) return true
-    return facts.price != null && facts.price <= UNDER99_MAX_PRICE
+    // USER RULE (2026-09-07): "strict ga under 99 ye ravali". The Under-₹99
+    // channel carries ≤₹99 products, NOTHING else. The old policy here waved
+    // EVERY list through price-agnostic and let card offers ride too - that is
+    // how ₹1,499 gadgets landed on the under-₹99 shelf. A list is judged by
+    // the same strict under99Eligible rule as any single deal, and the copy
+    // this channel receives is additionally filtered down to its ≤₹99 items
+    // (textForTarget -> under99FilteredList).
+    return under99Eligible(job)
   }
   if (policy === 'under499') {
     if (facts.isList) return true
@@ -2910,11 +3067,15 @@ async function broadcastText(sock, job, tag, text) {
   for (const jid of targets) {
     const mark = `${tag}:${jid}`
     if (marks.includes(mark)) continue
+    // Per-target copy: the Under-₹99 shelf receives the list filtered down to
+    // its ≤₹99 items; every other target receives the text as formatted.
+    const body = textForTarget(job, jid, text)
+    if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
     if (isNewsletterTarget(jid)) {
-      await sendNewsletterText(sock, jid, text)
+      await sendNewsletterText(sock, jid, body)
     } else {
       try {
-        await withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(text) }), 90_000, `group text send ${jid}`)
+        await withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(body) }), 90_000, `group text send ${jid}`)
       } catch (error) {
         log.warn({ jid, tag, err: error.message }, 'group text delivery failed; other targets unaffected')
         continue
@@ -2932,18 +3093,21 @@ async function broadcastText(sock, job, tag, text) {
 async function broadcastMediaItem(sock, job, item, caption) {
   const data = await telegramFile(item.fileId)
   const isVideo = item.type === 'video'
-  const groupCaption = sanitizeOutbound(caption || '') || undefined
-  const groupContent = isVideo
-    ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: groupCaption }
-    : { image: data, caption: groupCaption }
   const targets = allTargets(job)
   const marks = marksFor(job)
   for (const jid of targets) {
     const mark = `media:${item.fileId}:${jid}`
     if (marks.includes(mark)) continue
+    // Per-target caption: the Under-₹99 shelf gets the caption filtered down to
+    // its ≤₹99 items; every other target gets it as formatted.
+    const itemCaption = caption ? textForTarget(job, jid, caption) : caption
+    if (caption && itemCaption === null) { marks.push(mark); continue }
     if (isNewsletterTarget(jid)) {
-      await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption })
+      await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption })
     } else {
+      const groupContent = isVideo
+        ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: sanitizeOutbound(itemCaption || '') || undefined }
+        : { image: data, caption: sanitizeOutbound(itemCaption || '') || undefined }
       try {
         await withTimeout(sock.sendMessage(jid, groupContent), 150_000, `group media send ${jid}`)
       } catch (error) {
@@ -3214,9 +3378,25 @@ function buildLargeListChunks(job) {
   const lines = cleaned.split(/\n/)
     .map(line => compactLargeLine(line.trim(), job))
     .filter(line => line && line.trim() && !/^➜\s*$/.test(line.trim()))
+  // A price label must never be stranded from its link across a chunk
+  // boundary: the Under-₹99 per-target filter (under99FilteredList) judges
+  // each chunk's product blocks on their own, so glue a PRICED label line to
+  // a URL-only line that follows it. Coupon/MRP/shipping lines carry no
+  // dealPrices value and are never glued, and a line that already carries its
+  // link stays untouched - the source's layout is otherwise preserved.
+  const glued = []
+  for (const line of lines) {
+    const previous = glued[glued.length - 1]
+    if (previous && !/https?:\/\//i.test(previous)
+        && /^https?:\/\//i.test(line.trim()) && dealPrices(previous).length > 0) {
+      glued[glued.length - 1] = `${previous}\n${line}`
+    } else {
+      glued.push(line)
+    }
+  }
   const chunks = []
   let current = header
-  for (const line of lines) {
+  for (const line of glued) {
     const addition = `${current === header ? '' : '\n'}${line}`
     if (current.length + addition.length > DIGEST_MAX_CHARS - 32) {
       chunks.push(current.trim())
@@ -3901,17 +4081,34 @@ if (process.argv.includes('--self-test')) {
   if (strictSpecial !== 'Flipkart | 92% Off - Duck Slide Toy Set at Rs.229\nhttps://fktr.in/OUR') throw new Error('strict special cleanup test failed')
   const trailingToken = cleanDealText('https://www.amazon.in/dp/B0GLY3Q2XR 0GLY3Q2X\n₹3000 off')
   if (trailingToken.includes(' 0GLY3Q2X') || !trailingToken.includes('B0GLY3Q2XR')) throw new Error('trailing URL token cleanup test failed')
-  if (trailingToken.includes('tag=')) throw new Error('tagless: trailingToken must not contain tag')
+  if (trailingToken.includes('tag=')) throw new Error('cleanDealText must not invent a tag')
   const item = formatDigestItem(sample, 1)
   if (!item.includes('KILLER Mens Loafers') || !item.includes('\nhttps://fktr.in/OUR123')) throw new Error('digest format test failed:\n' + item)
   if (item.includes('➜')) throw new Error('digest items must not add bullet characters of ours:\n' + item)
-  validateAffiliateText(null, 'Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT')
+  // TAG ERA policy: a bot-fed Amazon link must carry OUR Associates tag.
+  // Ours is accepted; bare (unmonetized), foreign and the ex-our
+  // deals0911-21 are all blocked.
+  validateAffiliateText(null, `Gold Pendant\nhttps://amazon.in/dp/B084LFLYCT?tag=${AMAZON_TAG}`)
+  let bareBlocked = false
+  try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT') } catch { bareBlocked = true }
+  if (!bareBlocked) throw new Error('bare amazon link must be blocked on bot-fed posts (tag era)')
   let foreignBlocked = false
   try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=foreign-21') } catch { foreignBlocked = true }
-  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed (tagless)')
-  let ourTagBlocked = false
-  try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21') } catch { ourTagBlocked = true }
-  if (!ourTagBlocked) throw new Error('tagless: ex-our tag must also be blocked')
+  if (!foreignBlocked) throw new Error('foreign Amazon tag test failed (tag era)')
+  let exOurTagBlocked = false
+  try { validateAffiliateText(null, 'Bad\nhttps://amazon.in/dp/B084LFLYCT?tag=deals0911-21') } catch { exOurTagBlocked = true }
+  if (!exOurTagBlocked) throw new Error('ex-our tag deals0911-21 must also be blocked')
+  {
+    // normalizeAmazonTags (verifyJob's pre-gate repair): a stranger's tag is
+    // deleted, a bare amazon link gains OURS, ours passes untouched, and
+    // non-amazon links are left alone.
+    const bare = 'https://www.amazon.in/dp/B0NORM01'
+    const ours = `${bare}?tag=${AMAZON_TAG}`
+    if (normalizeAmazonTags(`Deal\n${bare}`) !== `Deal\n${ours}`) throw new Error('bare amazon link must gain our tag')
+    if (normalizeAmazonTags(`Deal\n${ours}`) !== `Deal\n${ours}`) throw new Error('our own tag must pass untouched')
+    if (normalizeAmazonTags('Deal\nhttps://www.amazon.in/dp/B0NORM01?tag=deals0911-21') !== `Deal\n${ours}`) throw new Error("a stranger's tag must be deleted and ours set")
+    if (normalizeAmazonTags('Deal\nhttps://www.flipkart.com/p/itm1') !== 'Deal\nhttps://www.flipkart.com/p/itm1') throw new Error('non-amazon links must be untouched')
+  }
   let sourceShortBlocked = false
   try { validateAffiliateText(null, 'Bad\nhttps://fkrt.cc/source123') } catch { sourceShortBlocked = true }
   if (!sourceShortBlocked) throw new Error('source shortener test failed')
@@ -3998,22 +4195,43 @@ if (process.argv.includes('--self-test')) {
   ]
   const ordered = [...prioritySamples].sort(compareQueuedJobs)
   const orderKeys = ordered.map(item => item.createdAt - fresh)
-  // USER RULE order: the multi-product LIST (item 3) leads, then the photo
-  // item (item 2), then the price/discount ladder; items 6 and 7 tie on every
-  // rank so the newest (createdAt=fresh+7) wins - latest-first. The media
-  // lead is a knob (WA_MEDIA_FIRST), so the exact order is only asserted in the
-  // mode that uses it; the invariants below must hold either way.
-  if (MEDIA_FIRST && orderKeys.join(',') !== '3,2,1,4,5,7,6') {
-    throw new Error('list-first + media + newest-first priority order test failed: ' + orderKeys)
+  // USER RULE (2026-09-07): "first diniki next inka vereveru top vi, then list
+  // of products". Singles lead (photo first when WA_MEDIA_FIRST, then the
+  // price/discount ladder), and the multi-product LIST (item 3) goes LAST.
+  // Items 6 and 7 tie on every rank so the newest (createdAt=fresh+7) wins -
+  // latest-first. The media lead is a knob (WA_MEDIA_FIRST), so the exact
+  // order is only asserted in the mode that uses it; the invariants below
+  // must hold either way.
+  if (MEDIA_FIRST && orderKeys.join(',') !== '2,1,4,5,7,6,3') {
+    throw new Error('preferred+media first, list-last priority order test failed: ' + orderKeys)
   }
-  if (orderKeys[0] !== 3) {
-    throw new Error('a ready multi-product list must always lead the queue: ' + orderKeys)
+  if (orderKeys[orderKeys.length - 1] !== 3) {
+    throw new Error('a product list must now go LAST in the queue (user rule 2026-09-07): ' + orderKeys)
   }
   if (orderKeys.indexOf(7) > orderKeys.indexOf(6)) {
     throw new Error('the newest-first tie-break must survive any knob: ' + orderKeys)
   }
   if (!MEDIA_FIRST && orderKeys[0] === 2) {
     throw new Error('the media lead must follow WA_MEDIA_FIRST: ' + orderKeys)
+  }
+  // USER RULE (2026-09-07): t.me/DealsUnder99_com is the FIRST preference -
+  // its posts lead the queue above the primary feed and above lists.
+  if (!PREFERRED_SOURCES.has('dealsunder99_com')) {
+    throw new Error('DealsUnder99_com must be a preferred source by default')
+  }
+  const preferredSamples = [
+    { text: 'Primary feed deal ₹299 https://a/1', media: [], largeList: false, createdAt: fresh + 1, source: 'under499loots' },
+    { text: 'DealsUnder99 deal ₹49 https://a/2', media: [], largeList: false, createdAt: fresh + 2, source: 'DealsUnder99_com' },
+    { text: 'A LIST https://a/3 https://a/4 https://a/5 https://a/6', media: [{}], largeList: true, createdAt: fresh + 3, source: 'DealsUnder99_com' },
+  ]
+  const preferredOrdered = [...preferredSamples].sort(compareQueuedJobs)
+  if (preferredOrdered[0].source !== 'DealsUnder99_com' || preferredOrdered[0].text.includes('LIST')) {
+    throw new Error('DealsUnder99_com posts must lead the queue ahead of every other source: ' +
+      preferredOrdered.map(job => job.createdAt - fresh).join(','))
+  }
+  if (preferredOrdered[preferredOrdered.length - 1].text.includes('LIST')) {
+    throw new Error('a list must not outrank single deals: ' +
+      preferredOrdered.map(job => job.createdAt - fresh).join(','))
   }
   // under499loots leads, and inside every source photo/video outranks text.
   const primarySamples = [
@@ -4439,9 +4657,19 @@ https://fktr.in/MANY${i}`,
   if (isServiceUrl('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('amazon URL wrongly classified as service URL')
   {
     // Service links AND our-tag Amazon links are both exempt from the link_cache
-    // DB check; a foreign-tag Amazon link still goes through for verification.
-    const toVerify = urlsForProvenance(null, ['https://www.amazon.in/dp/B0GLY3Q2XR', 'https://zom.to/abc', 'https://www.amazon.in/dp/B0CHECK99?tag=other-21'])
-    if (toVerify.length !== 1 || toVerify[0] !== 'https://www.amazon.in/dp/B0CHECK99?tag=other-21') throw new Error('service + our-tag provenance exemption test failed')
+    // DB check; a bare or foreign-tag Amazon link still goes through for
+    // verification (bare = not proven ours, foreign = not our money).
+    const toVerify = urlsForProvenance(null, [
+      `https://www.amazon.in/dp/B0OWN?tag=${AMAZON_TAG}`, // our tag: self-proving, skips the DB
+      'https://www.amazon.in/dp/B0GLY3Q2XR',              // bare: DB-checked
+      'https://zom.to/abc',                               // service link: exempt
+      'https://www.amazon.in/dp/B0CHECK99?tag=other-21',  // foreign tag: DB-checked
+    ])
+    if (toVerify.length !== 2 ||
+        !toVerify.includes('https://www.amazon.in/dp/B0GLY3Q2XR') ||
+        !toVerify.includes('https://www.amazon.in/dp/B0CHECK99?tag=other-21')) {
+      throw new Error('service exemption + tag-era provenance filter failed: ' + JSON.stringify(toVerify))
+    }
   }
   // Group JID resolution (pure parts; invite codes are resolved live on connect).
   if ((await resolveGroupTarget({}, '919876543210')) !== '919876543210@g.us') throw new Error('group phone resolution test failed')
@@ -4725,31 +4953,35 @@ https://fktr.in/MANY${i}`,
   if (!DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== null) throw new Error('TG_DIRECT_SOURCES= (empty) must disable direct sources')
   if (classifySource({ chat: { username: 'someRandomChannel' } }) !== null) throw new Error('unknown channel must be ignored')
   if (!isOurGeneratedLink('https://fktr.in/abc')) throw new Error('fktr.in must count as our generated link')
-  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be ours')
-  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('tagless: tagged amazon link is not ours')
-  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag is also foreign')
+  if (isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('bare amazon link is not ours (tag era)')
+  if (!isOurGeneratedLink(`https://www.amazon.in/dp/B0GLY3Q2XR?tag=${AMAZON_TAG}`)) throw new Error('our-tag amazon link must be ours')
+  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('foreign-tagged amazon link is not ours')
+  if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('ex-our tag deals0911-21 is also foreign')
   if (isOurGeneratedLink('https://amzn.to/x')) throw new Error('raw amazon shortener is not ours')
   // Our-tag Amazon links are self-proving and must NEVER reach the link_cache
   // DB check (provenance leak fix): the tag only exists on links WE tagged, the
   // cache stores conversion-API output only, so a DB row may legitimately be
   // absent (bridge-tagged safety-net pages; fresh/pruned/deploy-cleared cache).
-  // TAGLESS: clean Amazon links are SELF-PROVING (no tag = ours), any tag = foreign
-  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('tagless: clean amazon link must be recognised')
-  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('tagless: foreign-tag amazon link must not match')
-  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('tagless: ex-our tag must not match')
+  // Tag era: tag === AMAZON_TAG is SELF-PROVING; a bare or foreign-tagged
+  // amazon link is not ours (blocked / DB-checked).
+  if (!isOurAmazonTagLink(`https://www.amazon.in/dp/B0TAGGED?tag=${AMAZON_TAG}`)) throw new Error('our-tag amazon link must be recognised as self-proving')
+  if (isOurAmazonTagLink(`https://www.amazon.in/dp/B0GLY3Q2XR`)) throw new Error('bare amazon link is not self-proving (tag era)')
+  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=thief-21')) throw new Error('foreign-tag amazon link must not match')
+  if (isOurAmazonTagLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('ex-our tag must not match')
   if (isOurAmazonTagLink('https://amzn.to/x')) throw new Error('amazon shortener host has no tag param')
   {
-    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK`
-    // TAGLESS: clean amazon link is exempt; any tagged link goes to DB
-    const normal = urlsForProvenance({ direct: false }, [ourTagged, 'https://fktr.in/CHECK', 'https://www.amazon.in/dp/B0FOREIGN?tag=thief-21'])
-    if (normal.includes(ourTagged)) throw new Error('tagless: clean amazon link must skip provenance DB')
+    const ourTagged = `https://www.amazon.in/dp/B0TAGCHECK?tag=${AMAZON_TAG}`
+    // Our tag is exempt; bare and foreign-tagged links go to the DB.
+    const normal = urlsForProvenance({ direct: false }, [ourTagged, 'https://fktr.in/CHECK', 'https://www.amazon.in/dp/B0FOREIGN?tag=thief-21', 'https://www.amazon.in/dp/B0BARE'])
+    if (normal.includes(ourTagged)) throw new Error('our-tag amazon link must skip provenance DB')
     if (!normal.includes('https://fktr.in/CHECK')) throw new Error('our converted short link must still be provenance-checked')
     if (!normal.includes('https://www.amazon.in/dp/B0FOREIGN?tag=thief-21')) throw new Error('foreign-tag amazon link must still be provenance-checked')
-    // Direct job whose raw link resolved to a clean amazon page: the
+    if (!normal.includes('https://www.amazon.in/dp/B0BARE')) throw new Error('bare amazon link is not ours and must be provenance-checked')
+    // Direct job whose raw link resolved to a our-tag amazon page: the
     // resolved (display) form is self-proving, so it must be exempt too.
     const djobProv = { direct: true, resolvedLinks: { 'https://amzn.to/TAGGED': ourTagged } }
     const afterResolve = urlsForProvenance(djobProv, ['https://amzn.to/TAGGED'])
-    if (afterResolve.length !== 0) throw new Error('tagless: direct job resolving to clean amazon must skip provenance DB')
+    if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
   }
   {
     // Raw source links resolve to the merchant page; raw amazon gets OUR tag.
@@ -4761,7 +4993,7 @@ https://fktr.in/MANY${i}`,
     }
     const djob = { direct: true, text: 'Direct deal ₹299\nhttps://amzn.to/DEAL1\nAlso https://fkrt.co/DEAL2' }
     await prepareDirectJob(djob, fakeFetch)
-    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src`) throw new Error('tagless: raw amazon product page must resolve without tag')
+    if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src&tag=${AMAZON_TAG}`) throw new Error('raw amazon product page must resolve WITH our tag: ' + djob.resolvedLinks['https://amzn.to/DEAL1'])
     if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== 'https://www.flipkart.com/direct-item/p/itm77?ref=src') throw new Error('raw flipkart shortener not resolved')
     if (displayUrl(djob, 'https://amzn.to/DEAL1') !== djob.resolvedLinks['https://amzn.to/DEAL1']) throw new Error('displayUrl must prefer the resolved merchant link')
     // Direct jobs never send raw links to the provenance DB; our links do go.
@@ -4769,9 +5001,81 @@ https://fktr.in/MANY${i}`,
     if (prov.length !== 1 || prov[0] !== 'https://fktr.in/OURS') throw new Error('direct provenance filter failed')
     // Raw source shorteners are legal ON DIRECT JOBS only.
     validateAffiliateText(djob, djob.text)
+    // On a direct job a bare amazon link is legal before resolution; a
+    // stranger's tag is never legal.
+    validateAffiliateText(djob, 'X ₹99\nhttps://www.amazon.in/dp/B0DIRECT01')
     let foreignTagBlocked = false
     try { validateAffiliateText(djob, 'X ₹99\nhttps://www.amazon.in/dp/B0DIRECT01?tag=thief-21') } catch { foreignTagBlocked = true }
     if (!foreignTagBlocked) throw new Error('foreign amazon tag must stay blocked even on direct jobs')
+  }
+  {
+    // PROVENANCE RESCUE + CUT (USER RULE: "correct ga mana links ani verify
+    // cheyali; duplicate multiple times post cheyoddu"). A direct-source post
+    // carrying a STRANGER's affiliate wrapper must never publish that link -
+    // but the deal behind it must not be dropped either. verifyJob resolves
+    // the wrapper to the merchant page and posts OUR form (natively tagged on
+    // Amazon); a wrapper that will not resolve is CUT, the text stays.
+    const savedVerify = verifyBestGaaProvenance
+    const savedNotBroken = notBroken
+    try {
+      verifyBestGaaProvenance = async urls => urls // nothing is in the bot's cache
+      notBroken = async () => true
+      const fakeFetch = async url => {
+        const value = String(url)
+        if (value.includes('fktr.in/STRANGER1')) {
+          return { url: 'https://www.amazon.in/dp/B0RESCUE01?tag=deals0911-21&ref=x', body: { cancel: async () => {} } }
+        }
+        throw new Error('network unexpected for ' + value)
+      }
+      const job = { direct: true, id: 'rescue-1', text: 'Stranger deal ₹199\nhttps://fktr.in/STRANGER1' }
+      await verifyJob(job, fakeFetch)
+      const original = 'https://fktr.in/STRANGER1'
+      const display = displayUrl(job, original)
+      // The published form is the junk-stripped compact one (session ref gone,
+      // exactly ONE copy of OUR tag) - the same native shape the bot mints.
+      if (display !== `https://www.amazon.in/dp/B0RESCUE01?tag=${AMAZON_TAG}`) {
+        throw new Error('a stranger wrapper must be rescued to OUR tagged merchant page: ' + display)
+      }
+      if (new URL(display).searchParams.get('tag') !== AMAZON_TAG || display.includes('deals0911-21')) {
+        throw new Error('the rescued link must carry exactly OUR tag: ' + display)
+      }
+      // An unresolvable stranger wrapper is cut: the deal text stays, the link goes.
+      const job2 = { direct: true, id: 'rescue-2', text: 'Mystery deal ₹299\nhttps://fktr.in/STRANGER2\nReal line stays' }
+      await verifyJob(job2, fakeFetch)
+      if (/fktr\.in\/STRANGER2/.test(job2.text)) throw new Error('an unverifiable stranger link must be cut from the post: ' + job2.text)
+      if (!job2.text.includes('Real line stays') || !job2.text.includes('Mystery deal')) {
+        throw new Error('cutting a stranger link must keep the deal text: ' + job2.text)
+      }
+    } finally {
+      verifyBestGaaProvenance = savedVerify
+      notBroken = savedNotBroken
+    }
+    // Tag-era dedup-key stability: tags are normalized at INTAKE, so the keys
+    // the intake checks are the same keys the send paths store.
+    {
+      const savedJobs = state.jobs
+      const savedSent = state.sent
+      try {
+        state.jobs = []
+        state.sent = {}
+        state.sentProducts = {}
+        state.sentNamePrice = {}
+        enqueuePost({ chat: { id: -99, username: [...SOURCES][0] || 'under499loots' }, message_id: 501,
+          text: 'Kurta ₹499\nhttps://www.amazon.in/dp/B0STABLE1' })
+        const queued = state.jobs.find(job => job.id === '-99:501')
+        if (!queued || !queued.text.includes(`tag=${AMAZON_TAG}`)) {
+          throw new Error('intake must normalize amazon tags before any dedup key is computed: ' + (queued && queued.text))
+        }
+        const k1 = dealKey(queued.text)
+        // A repeat of the same post must be recognized by the SAME key.
+        if (dealKey(normalizeAmazonTags('Kurta ₹499\nhttps://www.amazon.in/dp/B0STABLE1')) !== k1) {
+          throw new Error('dedup keys must be stable across the normalize boundary')
+        }
+      } finally {
+        state.jobs = savedJobs
+        state.sent = savedSent
+      }
+    }
   }
   {
     // linkredirect.in ?dl= destinations decode without any network call.
@@ -4790,11 +5094,12 @@ https://fktr.in/MANY${i}`,
     const djob = { direct: true, text: 'Puma Men\n' + bigSearch }
     await prepareDirectJob(djob, noNet)
     const tagged = djob.resolvedLinks[cleanUrl(bigSearch)] || bigSearch
-    if (tagged.includes('tag=')) throw new Error('tagless: raw amazon SEARCH page must not gain a tag')
+    if (tagged !== bigSearch + `&tag=${AMAZON_TAG}`) throw new Error('raw amazon SEARCH page must gain OUR tag: ' + tagged)
     const cleanedSearch = stripAmazonJunk(tagged)
     if (/btn_ref|srctok|qid=|sprefix=|crid=|[?&]ds=/.test(cleanedSearch)) throw new Error('amazon search junk params not stripped: ' + cleanedSearch)
     if (!/k=puma/.test(cleanedSearch) || !/i=shoes/.test(cleanedSearch) || !/rh=/.test(cleanedSearch) || !/s=price-asc-rank/.test(cleanedSearch)) throw new Error('real amazon filters must survive junk strip: ' + cleanedSearch)
-    if (cleanedSearch.includes('tag=')) throw new Error('tagless: search link must stay clean')
+    if (!cleanedSearch.includes(`tag=${AMAZON_TAG}`)) throw new Error('our tag must survive the junk strip: ' + cleanedSearch)
+    if (cleanedSearch.replace(`tag=${AMAZON_TAG}`, '').includes('tag=')) throw new Error('no foreign tag may ride on the search link: ' + cleanedSearch)
     if (cleanedSearch.length > tagged.length) throw new Error('junk strip must not lengthen the search link')
     if (cleanedSearch.length >= bigSearch.length) throw new Error('junk strip must shorten the search link')
     if (!needsShortening(tagged)) throw new Error('a 200+ char amazon search link must qualify for Bitly')
@@ -4803,7 +5108,7 @@ https://fktr.in/MANY${i}`,
     if (stripAmazonJunk(fk) !== fk) throw new Error('non-amazon URL must not be junk-stripped')
     // Amazon product pages: th/psc style params survive (not in the junk set).
     const dp = 'https://www.amazon.in/dp/B0ABCDEFGH?th=1'
-    if (stripAmazonJunk(dp) !== dp) throw new Error('tagless: amazon dp link with th must be unchanged')
+    if (stripAmazonJunk(dp) !== dp) throw new Error('amazon dp link with th must be unchanged')
   }
   {
     // A deal already posted via our own channels must never be double-posted
@@ -4959,6 +5264,71 @@ https://fktr.in/MANY${i}`,
     if (!CHANNEL_ALL_POSTS && tMain !== 'main@newsletter') throw new Error('non-eligible deal must go main-only: ' + tMain)
     const tDigest = targetsFor(null).sort().join(',')
     if (!CHANNEL_ALL_POSTS && tDigest !== 'main@newsletter') throw new Error('digest must go main channel only: ' + tDigest)
+    // USER RULE (2026-09-07): "strict ga under 99 ye ravali" + "list of products
+    // vachinapudu list ravali anthe". The Under-₹99 channel is a STRICT shelf:
+    //  * a qualifying LIST (majority ≤₹99) reaches it AS A LIST, but the copy
+    //    delivered there is filtered down to its ≤₹99 items - a >₹99 item can
+    //    never appear on it (the old price-agnostic list bypass is gone);
+    //  * an expensive list and a card/bank offer never reach it at all;
+    //  * the main channel still receives the FULL list, untouched.
+    const mixedShelfList = ['Family Loot List',
+      'Bottle ₹49 https://a.test/s1', 'Mixer ₹1299 https://a.test/s2',
+      'Socks ₹79 https://a.test/s3', 'Kettle ₹899 https://a.test/s4'].join('\n')
+    const mixedShelfJob = { text: mixedShelfList, media: [], largeList: true }
+    if (!under99Eligible(mixedShelfJob)) throw new Error('majority-under-₹99 list must qualify for the under-₹99 shelf')
+    if (!targetsFor(mixedShelfJob).includes('u99@newsletter')) throw new Error('a qualifying list must reach the under-₹99 shelf')
+    if (!CHANNEL_ALL_POSTS) {
+      // In WA_CHANNEL_ALL_POSTS mirror mode the operator has asked for both
+      // channels to receive everything, so the strict filter is off by design.
+      const shelfCopy = textForTarget(mixedShelfJob, 'u99@newsletter', mixedShelfList)
+      if (!shelfCopy || /s2|1299|s4|899/.test(shelfCopy)) {
+        throw new Error('the under-₹99 shelf must not carry a >₹99 item:\n' + shelfCopy)
+      }
+      if (!shelfCopy.includes('s1') || !shelfCopy.includes('s3') || !shelfCopy.includes('Family Loot List')) {
+        throw new Error('the under-₹99 shelf must keep its own items as a list:\n' + shelfCopy)
+      }
+      if (textForTarget(mixedShelfJob, 'main@newsletter', mixedShelfList) !== mixedShelfList) {
+        throw new Error('the main channel must still receive the FULL list')
+      }
+      const allCheap = ['Cheap List',
+        'Pen ₹19 https://a.test/c1', 'Band ₹49 https://a.test/c2'].join('\n')
+      if (textForTarget({ text: allCheap, media: [], largeList: true }, 'u99@newsletter', allCheap) !== allCheap) {
+        throw new Error('an all-≤₹99 list must be delivered unchanged to the under-₹99 shelf')
+      }
+      if (textForTarget({ text: 'Socks ₹49\nhttps://a.test/one' }, 'u99@newsletter', 'Socks ₹49\nhttps://a.test/one') !== 'Socks ₹49\nhttps://a.test/one') {
+        throw new Error('a single ≤₹99 deal must be delivered unchanged to the under-₹99 shelf')
+      }
+      // The STACKED list shape (label lines above their own link line) filters
+      // just like the inline shape: the ₹1,299 item goes, label and link both.
+      const stacked = ['Family Loot List',
+        'Bottle ₹49', 'https://a.test/k1',
+        'Mixer ₹1299', 'https://a.test/k2',
+        'Socks ₹79', 'https://a.test/k3'].join('\n')
+      const stackedOut = textForTarget({ text: stacked, media: [], largeList: true }, 'u99@newsletter', stacked)
+      if (!stackedOut || /k2|1299/.test(stackedOut) || !stackedOut.includes('Bottle ₹49') || !stackedOut.includes('k3')) {
+        throw new Error('the stacked-shape list must drop the >₹99 item whole:\n' + stackedOut)
+      }
+      // An explicit "UNDER ₹99" list with bare links (no per-item prices) is
+      // delivered whole - nothing on it proves it belongs above the band.
+      const bareClaim = ['UNDER ₹99 LOOTS',
+        'https://a.test/b1', 'https://a.test/b2', 'https://a.test/b3'].join('\n')
+      if (textForTarget({ text: bareClaim, media: [], largeList: true }, 'u99@newsletter', bareClaim) !== bareClaim) {
+        throw new Error('an explicit under-₹99 bare-link list must be delivered whole')
+      }
+    }
+    if (!CHANNEL_ALL_POSTS) {
+      // (Mirror mode posts everything to both channels by design; these strict
+      // routing rules describe the default tiered mode.)
+      const priceyList = ['Gadget List',
+        'A ₹1499 https://a.test/p1', 'B ₹2499 https://a.test/p2'].join('\n')
+      if (targetsFor({ text: priceyList, media: [], largeList: true }).includes('u99@newsletter')) {
+        throw new Error('an expensive list must NOT reach the under-₹99 shelf (strict)')
+      }
+      const cardShelfJob = { text: 'HDFC Bank Credit Card Offer\nhttps://a.test/card' }
+      if (targetsFor(cardShelfJob).includes('u99@newsletter')) {
+        throw new Error('a card offer is not an under-₹99 product and must NOT reach the under-₹99 shelf')
+      }
+    }
     if (!isNewsletterTarget('u99@newsletter') || !isNewsletterTarget('main@newsletter')) throw new Error('both channels are newsletters')
     // v17.2: two-channel coverage + pacing.
     // WA_CHANNEL_ALL_POSTS=true mirrors EVERYTHING to both channels (that is the
@@ -5280,12 +5650,29 @@ https://fktr.in/MANY${i}`,
       throw new Error('an expensive weak deal must be skipped by the curated channels')
     }
     const list = { text: 'MEGA LIST\nShirt ₹1999 https://a.co/1\nShoes ₹2999 https://a.co/2\nBag ₹3999 https://a.co/3\nWatch ₹4999 https://a.co/4', largeList: true }
-    if (!eligibleForChannel(list, 'under99') || !eligibleForChannel(list, 'under499')) {
-      throw new Error('a product list must reach both price channels whatever the item prices')
+    // USER RULE (2026-09-07): "strict ga under 99 ye ravali". A list reaches a
+    // price channel only through that channel's own rule now - the under-₹99
+    // shelf takes a list ONLY when it actually features ≤₹99 items (this one is
+    // all-expensive, so it must stay off), while the under-₹499 channel keeps
+    // its own list policy.
+    if (eligibleForChannel(list, 'under99')) {
+      throw new Error('an all-expensive list must NOT reach the strict under-99 shelf')
     }
-    const card = { text: 'HDFC credit card offer: ₹2500 instant discount on Apple laptop\nhttps://a.co/x5' }
-    if (!(eligibleForChannel(card, 'under99') && eligibleForChannel(card, 'under499') && eligibleForChannel(card, 'bestOf'))) {
-      throw new Error('bank/card offers must be posted on every channel')
+    if (!eligibleForChannel(list, 'under499')) {
+      throw new Error('the under-499 channel keeps its list policy')
+    }
+    const under99List = { text: 'LOOT LIST\nPen ₹19 https://a.co/11\nBand ₹49 https://a.co/12\nMixer ₹1299 https://a.co/13', largeList: true }
+    if (!eligibleForChannel(under99List, 'under99')) {
+      throw new Error('a majority-under-99 list must reach the under-99 channel')
+    }
+    const card = { text: 'HDFC credit card offer: instant discount on Apple laptop\nhttps://a.co/x5' }
+    // Card/bank offers fan out wide, but the STRICT under-₹99 shelf is for
+    // ≤₹99 products only - a card offer is not one.
+    if (!(eligibleForChannel(card, 'under499') && eligibleForChannel(card, 'bestOf'))) {
+      throw new Error('bank/card offers must still reach the under-499 and best-of channels')
+    }
+    if (eligibleForChannel(card, 'under99')) {
+      throw new Error('a card offer must NOT reach the strict under-99 shelf')
     }
     // Ten deals arrive at once: the best-of channel must take exactly the winner.
     const saved = { targetJid, under99Jid, under499Jid, bestOfJid, jobs: state.jobs }
@@ -5361,10 +5748,10 @@ https://fktr.in/MANY${i}`,
     const job = {
       text: bannerSrc,
       shortLinks: {
-        'https://bitli.in/AAAA': 'https://www.amazon.in/dp/B0IKTHI4',
-        'https://bitli.in/BBBB': 'https://www.amazon.in/dp/B0IKTHI5',
-        'https://bitli.in/CCCC': 'https://www.amazon.in/dp/B0IKTHI6',
-        'https://bitli.in/DDDD': 'https://www.amazon.in/dp/B0IKTHI7',
+        'https://bitli.in/AAAA': `https://www.amazon.in/dp/B0IKTHI4?tag=${AMAZON_TAG}`,
+        'https://bitli.in/BBBB': `https://www.amazon.in/dp/B0IKTHI5?tag=${AMAZON_TAG}`,
+        'https://bitli.in/CCCC': `https://www.amazon.in/dp/B0IKTHI6?tag=${AMAZON_TAG}`,
+        'https://bitli.in/DDDD': `https://www.amazon.in/dp/B0IKTHI7?tag=${AMAZON_TAG}`,
       },
     }
     const post = formatWhatsAppPost(job)
@@ -5398,9 +5785,16 @@ https://fktr.in/MANY${i}`,
     }
     if (/bitli\.[iI]n/.test(post)) throw new Error('a source link survived - our link must replace it:\n' + post)
     if ((post.match(/https:\/\/www\.amazon\.in\/dp\//g) || []).length !== 4) {
-      throw new Error('tagless: all four links must be clean amazon dp links:\n' + post)
+      throw new Error('all four links must be our amazon dp links:\n' + post)
     }
-    if (/tag=/.test(post)) throw new Error('tagless: post must not contain any tag')
+    // Tag era: every one of our links carries OUR Associates tag - exactly
+    // four of ours, and no stranger's tag anywhere.
+    if (post.split(`tag=${AMAZON_TAG}`).length !== 5) {
+      throw new Error('the four-link post must carry exactly four of OUR tags:\n' + post)
+    }
+    if (post.replace(new RegExp(`tag=${AMAZON_TAG}`, 'g'), '').includes('tag=')) {
+      throw new Error('the post must carry no foreign tag:\n' + post)
+    }
     if (post.split('\n').filter(l => /^https:\/\//.test(l.trim())).length !== 4) {
       throw new Error('every link gets its own bare line:\n' + post)
     }

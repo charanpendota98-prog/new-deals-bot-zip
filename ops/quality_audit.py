@@ -659,8 +659,8 @@ def main(argv=None) -> int:
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--strict", action="store_true", help="exit 1 when anything is found")
-    parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", "deals0911-21"),
-                        help="our Amazon affiliate tag (default: $AMAZON_TAG)")
+    parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
+                        help="our Amazon affiliate tag (default: $AMAZON_TAG or mama086-21)")
     args = parser.parse_args(argv)
 
     if not args.db.exists():

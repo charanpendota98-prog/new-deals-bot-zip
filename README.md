@@ -490,7 +490,7 @@ Individual deploys:
   name-similar post is never re-pointed, and lists, card/bank offers and the Tricks
   path are excluded on both sides. On top of that, `enforce_numeric_fidelity`
   refuses to publish a `₹` amount or a discount percentage the source never
-  printed (URL digits are masked on both sides, so our own tag `deals0911-21` is
+  printed (URL digits are masked on both sides, so our own tag `mama086-21` is
   never mistaken for a price) — the bad *number* is removed, the *post* is kept.
   The bridge also stops dropping a whole roundup because one of its items was
   already queued (lists are coverage; only a single-product copy is "the same
