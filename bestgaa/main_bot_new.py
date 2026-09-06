@@ -472,6 +472,32 @@ def add_link_disclosure(text: str) -> str:
     return f"{body}\n\n{SHOPPING_DISCLOSURE}"
 
 
+def retag_foreign_amazon_links(text: str) -> str:
+    """Replace any Associates tag that is not ours with our own.
+
+    Only Amazon links are touched and only the `tag` parameter, so the product
+    and the price are untouched. With no tag configured the foreign tag is
+    removed outright rather than left to earn for somebody else.
+    """
+    out = text or ""
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        parsed = urlparse(url)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        tag = next((v for k, v in pairs if k.lower() == "tag"), "")
+        if not tag or tag.lower() == (OUR_TAG or "").lower():
+            continue
+        query = [(k, v) for k, v in pairs if k.lower() != "tag"]
+        if OUR_TAG:
+            query.append(("tag", OUR_TAG))
+        fixed = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+        out = out.replace(raw, fixed)
+    return out
+
+
 def is_amazon_only_post(text: str) -> bool:
     """True when every link in the post is an Amazon link (and there is one)."""
     urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text or ""))]
@@ -1532,11 +1558,25 @@ def parse_price(text: str) -> int | None:
     # for the deal price. The deal-price labels below never say MRP.
     masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
                     " ", value)
+    # A DISCOUNT is not a price. "Save Rs.500", "Rs.99 off", "Flat 200 off" and
+    # "Rs.50 cashback" all name money the buyer does NOT pay; reading one as the
+    # price prints a figure the source never charged. Masked before the scan so
+    # no pattern below can reach them.
+    masked = re.sub(r"(?i)\b(?:save|flat|upto|up\s*to|extra|discount|off|cashback)\s*"
+                    r"(?:rs\.?|₹|inr)?\s*[\d,]+", " ", masked)
+    # Only the amount IMMEDIATELY before the word, with no space swallowed from
+    # a preceding price: "Rs.1,999 Discount: 66%" must keep the 1,999. So the
+    # currency mark is required, or the number must hug the word.
+    masked = re.sub(r"(?i)(?:rs\.?|₹|inr)\s*[\d,]+\s*(?:off|cashback)\b", " ", masked)
+    masked = re.sub(r"(?i)\b[\d,]+\s*%?\s*(?:off|cashback)\b", " ", masked)
     patterns = [
         r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
         r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
         r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        # \b anchors the END of the number: without it "Rs.99 off" backtracked to
+        # "9" (the lookahead only had to fail for the SHORTER match) and printed
+        # a price of 9 rupees.
+        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)\b(?!\s*(?:off|coupon|cashback))",
         # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
         r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
         # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
@@ -3278,8 +3318,26 @@ def _strict_review_copy(body: str) -> str:
         # number or a lone symbol. Two letter-words is the floor ("Methi Dana").
         words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", line)
         if len(words) < 2:
-            # Not a product line - but a lone "@ 299/-" or "₹899" IS the price,
-            # written on its own line by many sources. Keep it as the price.
+            # "Dustpan @ 55" is a real product line: ONE specific noun plus the
+            # price. Requiring two words threw the product name away and left the
+            # reviewer a post that was nothing but "Price: 55" - no product at
+            # all. A single word counts when it is specific enough (>=5 letters)
+            # and the line states a price; a bare "@ 299/-" still becomes a price
+            # line, and a lone short word is still dropped as decoration.
+            # A brand plus a model number ("boAt 141", "Redmi 13C") is one word
+            # by this count but is unmistakably a product; losing it left the
+            # reviewer a price with no product name at all.
+            # "Redmi 13C" / "WH-1000XM4" / "boAt 141": a word next to a number,
+            # with an optional letter suffix on the number.
+            has_model = bool(re.search(
+                r"[A-Za-z][A-Za-z'&.-]*\s*[-]?\s*\d{2,}[A-Za-z]{0,3}\b", line))
+            if (len(words) == 1 and (len(words[0]) >= 5 or has_model)
+                    and not _STRICT_DROP_LINE_RE.search(line)
+                    and (parse_price(line) is not None or has_model)):
+                cleaned = re.sub(r"\s{2,}", " ", line).strip(" \t|-–—:•*~,")
+                if cleaned:
+                    kept.append(cleaned)
+                    continue
             salvaged = _salvage_price_only(line)
             if salvaged:
                 kept.append(salvaged)
@@ -3298,7 +3356,10 @@ def _strict_review_copy(body: str) -> str:
     has_price = re.search(
         r"(?i)(?:rs\.?|\u20b9|inr)\s*\.?\s*[\d,]+"
         r"|[\d,]+\s*/-"
-        r"|\b(?:at|only|for|@)\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]{2,}\b",
+        # "\b@" can never match after a space (@ is not a word character), so
+        # "Dustpan @ 55" looked price-less and gained a duplicate "Price: 55"
+        # line underneath. The word forms keep their boundary; @ does not need one.
+        r"|(?:\b(?:at|only|for)|@)\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]{2,}\b",
         body_text)
     if kept and not has_price:
         price = parse_price(body or "")
@@ -6304,14 +6365,29 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 if SHOPPING_NATIVE_LINKS:
                     target_text = affiliate.expand_our_short_links(target_text)
                 safe_text = affiliate_safe_text(target_text)
-                if (not safe_text or not URL_RE.search(safe_text)
-                        or not re.search(r"[A-Za-z]{3}", URL_RE.sub(" ", safe_text))):
+                # "Price: 99" + a link is not a reviewable listing - there is no
+                # product on it. The old test only looked for three letters
+                # anywhere, and the word "Price" satisfied that, so nameless
+                # posts were published. Require a real product line: something
+                # that is neither the link nor the price line we generated.
+                _named = [ln for ln in (safe_text or "").splitlines()
+                          if ln.strip() and not URL_RE.fullmatch(ln.strip())
+                          and not re.fullmatch(r"(?i)price\s*[::]\s*[₹\d,.]+", ln.strip())
+                          and re.search(r"[A-Za-z]{3}", ln)]
+                if (not safe_text or not URL_RE.search(safe_text) or not _named):
                     log.info("SHOPPING SKIP | queue=%s nothing reviewable left after the "
                              "programme-safe rewrite", row["id"])
                     await store.delivery(row["id"], target, True, "not programme-safe")
                     continue
                 # Off-programme store on the channel submitted for the AMAZON
                 # programme: it belongs on the other channels, not here.
+                # A STRANGER'S Associates tag on the channel under review is
+                # worse than no tag: to Amazon it reads as our channel paying a
+                # third party, and it is unattributable traffic on a property we
+                # declared. It can only get here if a link skipped the shorten
+                # pass, so it is rewritten to OUR tag (never merely stripped -
+                # an untagged link on the declared channel earns nothing).
+                safe_text = retag_foreign_amazon_links(safe_text)
                 if SHOPPING_AMAZON_ONLY and not is_amazon_only_post(safe_text):
                     log.info("SHOPPING SKIP | queue=%s not an Amazon-only deal", row["id"])
                     await store.delivery(row["id"], target, True, "not an amazon deal")

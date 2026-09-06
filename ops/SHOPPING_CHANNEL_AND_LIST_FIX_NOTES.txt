@@ -906,3 +906,56 @@ ROUND 15's FOUR FIXES ARE FIXES, NOT RESTRICTIONS
 
 Suite: 331 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 17 — deep audit: prices, foreign tags, nameless posts
+=================================================================
+
+Found by running REAL source shapes through the pipeline instead of
+invented examples. Four defects, two of them serious.
+
+1. A DISCOUNT WAS BEING READ AS THE PRICE  (worst of the four)
+   parse_price("Rs.99 off") returned 9. The pattern ended with a
+   lookahead rejecting "off", but nothing anchored the END of the
+   number - so the regex simply backtracked, matched the shorter "9",
+   and the lookahead passed. Every "Rs.X off" line in the feed could
+   print a price the source never charged, and the price drives routing
+   (under-99 / under-499), dedup and the "better copy" rule.
+   Fix: \b anchors the number, and discount phrasing is masked before
+   the scan - Save X, Flat X off, upto X off, X cashback, X% off.
+   Careful scoping: "Rs.1,999 Discount: 66%" must still read 1999, so
+   the amount-before-word mask requires a currency mark or a hugging
+   number. Verified on 15 real shapes, all correct.
+
+2. A STRANGER'S ASSOCIATES TAG COULD REACH THE REVIEWED CHANNEL
+   A link that skipped the shorten pass kept whatever tag the source
+   wrote. On the channel we DECLARED to Amazon that is our property
+   paying a third party - unattributable traffic on a reviewed
+   property. retag_foreign_amazon_links() now rewrites any foreign tag
+   to OURS at delivery (never merely strips it: an untagged link on the
+   declared channel earns nothing). Non-Amazon links untouched.
+
+3. THE PRODUCT NAME WAS BEING THROWN AWAY
+   The review copy required TWO words on a product line, so
+   "Dustpan @ 55" and "boAt 141" lost their names and the reviewer got
+   "Price: 55" with no product on it. One word now counts when it is
+   >=5 letters, or when it sits next to a model number (boAt 141,
+   Redmi 13C, WH-1000XM4, iPhone 15). Bare category words ("Soap",
+   "oil") are still refused.
+   Also fixed: "\b@" cannot match after a space, so "Dustpan @ 55"
+   looked price-less and gained a duplicate "Price: 55" underneath.
+
+4. NAMELESS POSTS WERE PUBLISHED AS LISTINGS
+   The delivery guard accepted any three letters, and the word "Price"
+   satisfied it - so "Price: 99 + link" went out as a product listing.
+   It now requires a line that is neither the link nor the generated
+   price line.
+
+Boundary re-verified: none of the review-only machinery (including the
+new retag) appears in render_job. The loot channels still parse 899 out
+of the same hype post and publish it with all its MRP, %, ratings and
+photos intact.
+
+Suite: 384 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

@@ -1672,6 +1672,82 @@ def test_only_the_review_channel_is_restricted():
               "%s is applied outside the review-channel branch" % rule)
 
 
+def test_deep_audit_prices_foreign_tags_and_nameless_posts():
+    """Round 17 deep audit: four defects found by running real source shapes
+    through the pipeline rather than invented examples."""
+    import re as _re
+
+    # 1. A DISCOUNT IS NOT A PRICE. "Rs.99 off" was read as a price of 9 - the
+    # regex lookahead only had to fail for the shorter match, so it backtracked
+    # off the last digit. A figure the source never charged is corruption.
+    check("'99 off' is not a price", bot.parse_price("\u20b999 off") is None)
+    check("'Save 500' is not a price", bot.parse_price("Save \u20b9500") is None)
+    check("'Flat 200 off' is not a price", bot.parse_price("Flat 200 off") is None)
+    check("'50 cashback' is not a price", bot.parse_price("\u20b950 cashback") is None)
+    check("'upto 300 off' is not a price", bot.parse_price("upto \u20b9300 off") is None)
+    # ...while every real price shape still reads correctly.
+    for text, expected in (("@264.", 264), ("\u20b91,299", 1299), ("Rs.9999", 9999),
+                           ("499/-", 499), ("only 89", 89), ("at 261", 261),
+                           ("MRP \u20b92990 Deal \u20b9899", 899),
+                           ("Deal \u20b9899 Save \u20b92091", 899),
+                           ("1024 ml @517", 517)):
+        check("%r still reads as %s" % (text, expected),
+              bot.parse_price(text) == expected, str(bot.parse_price(text)))
+
+    # 2. A STRANGER'S ASSOCIATES TAG MUST NEVER REACH THE REVIEWED CHANNEL.
+    # To Amazon that is our declared property paying a third party.
+    if bot.OUR_TAG:
+        foreign = "Dustpan @ 55\nhttps://www.amazon.in/dp/B0X?tag=stranger-21"
+        fixed = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(foreign))
+        check("a foreign tag is replaced on the review channel",
+              "stranger-21" not in fixed, repr(fixed))
+        check("it is replaced with OURS, not merely stripped",
+              "tag=" + bot.OUR_TAG in fixed, repr(fixed))
+        check("our own tag is left alone",
+              bot.retag_foreign_amazon_links("x https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG)
+              == "x https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG)
+        check("a non-Amazon link is never touched",
+              bot.retag_foreign_amazon_links("x https://www.flipkart.com/a/p/itmX?tag=z")
+              == "x https://www.flipkart.com/a/p/itmX?tag=z")
+        src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+        deliver = src[src.index("async def process_job"):]
+        check("the retag runs on the review path",
+              "retag_foreign_amazon_links(safe_text)" in deliver, "not wired")
+
+    # 3. THE PRODUCT NAME WAS BEING THROWN AWAY. A one-word name, and a brand
+    # plus model number, both failed the "two words" test - the reviewer was
+    # left with "Price: 55" and no product at all.
+    for raw, must_keep in (("Dustpan @ 55", "Dustpan"),
+                           ("Kettle at 549", "Kettle"),
+                           ("boAt 141\n\u20b9899", "boAt 141"),
+                           ("Redmi 13C\n\u20b98999", "Redmi 13C"),
+                           ("iPhone 15\n\u20b965999", "iPhone 15")):
+        out = bot.affiliate_safe_text(raw + "\nhttps://amzn.to/a")
+        check("the product name %r survives" % must_keep, must_keep in out, repr(out))
+    check("a price stated in the product line is not duplicated underneath",
+          bot.affiliate_safe_text("Dustpan @ 55\nhttps://amzn.to/a").count("55") == 1,
+          bot.affiliate_safe_text("Dustpan @ 55\nhttps://amzn.to/a"))
+
+    # 4. A POST WITH NO PRODUCT NAME MUST BE REFUSED, NOT PUBLISHED BARE.
+    # The old guard looked for three letters anywhere and the word "Price"
+    # satisfied it, so "Price: 99 + link" went out as a listing.
+    def publishable(raw):
+        safe = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(raw))
+        named = [ln for ln in (safe or "").splitlines()
+                 if ln.strip() and not bot.URL_RE.fullmatch(ln.strip())
+                 and not _re.fullmatch(r"(?i)price\s*[::]\s*[\u20b9\d,.]+", ln.strip())
+                 and _re.search(r"[A-Za-z]{3}", ln)]
+        return bool(safe and bot.URL_RE.search(safe) and named)
+
+    check("a bare category word is refused", publishable("Soap\nhttps://amzn.to/a") is False)
+    check("a price with no product is refused", publishable("oil @ 99\nhttps://amzn.to/a") is False)
+    check("a lone amount is refused", publishable("\u20b9299\nhttps://amzn.to/a") is False)
+    check("a real product still publishes", publishable("Dustpan @ 55\nhttps://amzn.to/a") is True)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the nameless-post guard is wired at delivery",
+          "_named = [ln for ln in" in src, "guard missing")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1705,6 +1781,7 @@ def main() -> int:
     test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
     test_the_four_defects_the_user_photographed()
     test_only_the_review_channel_is_restricted()
+    test_deep_audit_prices_foreign_tags_and_nameless_posts()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
