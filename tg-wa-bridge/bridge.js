@@ -735,11 +735,45 @@ function dropCampaignBanners(lines) {
   return firstBanner < 0 ? lines : lines.filter((line, i) => !flags[i] || i === firstBanner)
 }
 
+// USER RULE (2026-09-06): the Flipkart app's own share sheet titles a product
+// "Buy <name> Online at Low Prices In India | Flipkart.com" and forwards paste
+// that title line into source posts verbatim. The wrapper words are the app's,
+// never the deal's: the post's headline must be the product's real name, and
+// the link (on its own line, or glued right after the title) stays untouched.
+// Matched as a WHOLE line (or up to a trailing link) only - a line that merely
+// mentions Flipkart is never touched. Mirrors strip_flipkart_share_title() in
+// the bot so both ends clean the same wrapper the same way.
+const FLIPKART_SHARE_TITLE_RE = /^\s*(?:[*_~]+\s*)?buy\s+(.+?)\s+online\s+at\s+low\s+prices?\s+in\s+india\s*\|\s*flipkart\.com\s*[*_~]*\s*$/i
+
+function flipkartShareTitleName(title) {
+  const m = FLIPKART_SHARE_TITLE_RE.exec(title)
+  if (!m) return ''
+  const name = (m[1] || '').replace(/^[*_~]+|[*_~]+$/g, '').replace(/\s{2,}/g, ' ').trim()
+  return name
+}
+
+function stripFlipkartShareTitle(text) {
+  return String(text || '').split(/\r?\n/).map(line => {
+    const name = flipkartShareTitleName(line)
+    if (name) return name
+    // Same wrapper glued to the link on ONE line: keep the real product name
+    // and the link, drop the wrapper.
+    const inline = line.match(/^\s*[*_~]*\s*(buy\s+.+?\s+online\s+at\s+low\s+prices?\s+in\s+india\s*\|\s*flipkart\.com)\s*[*_~]*\s*(https?:\/\/\S+)\s*$/i)
+    if (inline) {
+      const name = flipkartShareTitleName(inline[1])
+      if (name) return name + '\n' + inline[2]
+    }
+    return line
+  }).join('\n')
+}
+
 function cleanDealText(text) {
   const noise = /^(?:\s*(?:🔥\s*LOOT\s+ZONE\s*[—-]\s*India|🚨\s*SPECIAL\s+OFFER|✅\s*Verified\s*•\s*Enjoy\s*\(Grab\s*fast\)|.*deal\s*time\s*:.*(?:IST)?|.*\bloot\s+fa+s+\s*t+\b.*|.*(?:@GrabOnIndiaOfficial|50\+\s*loots\s*daily).*|(?:h|ht|htt|https?|ttp|ttps|tps?:\/\/|s:\/\/|:\/\/|uy)|👉.*(?:https\s*:\s*are)|💰?\s*want\s+real\s+cash\s*back\s+too\??|forward\s+to\s+@cashkarolink_?bot|#(?:myntra|flipkart|amazon|ajio))\s*)$/i
   const fragments = new Set(['h','ht','htt','http','https','ttp','ttps','tps://','tp://','s://','://','uy'])
   const meaningful = new Set(['men','mens','women','womens','unisex','blue','black','white','red','green','yellow','brown','orange','pink','purple','grey','gray','beige','gold','silver','small','medium','large'])
-  const sourceLines = normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '').split(/\r?\n/)
+  const sourceLines = stripFlipkartShareTitle(
+    normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '')
+  ).split(/\r?\n/)
   // Branding always goes; the channel's own hype header only when the operator
   // opted into WA_STRIP_CAMPAIGN_BANNERS.
   const prepared = STRIP_CAMPAIGN_BANNERS
@@ -3736,6 +3770,25 @@ if (process.argv.includes('--self-test')) {
   }
   const noisy = cleanDealText('Deal ₹99\n#Myntra\nh\n👉h\n\u200bhtt\ntps://\nuy\n😱 Deal Time: 09:49 AM IST\nLOOT FASSS TT\n🔁 Share • @GrabOnIndiaOfficial - 50+ loots daily\n💰 Want Real Cash Back Too?\nForward to @cashkarolinkbot')
   if (!noisy.includes('Deal ₹99') || /Deal Time|LOOT FASSS|GrabOnIndiaOfficial|cashkarolinkbot|#Myntra|^(?:h|ht|htt|https?|tps?:\/\/|uy)$/m.test(noisy)) throw new Error('source-noise cleanup test failed')
+  // USER RULE (2026-09-06): the Flipkart app's share title ("Buy X Online at
+  // Low Prices In India | Flipkart.com") is wrapper words around the product's
+  // real name. Both shapes - title on its own line, and title glued to the
+  // link - must come out as the bare name plus the untouched link.
+  {
+    const name = 'boAt Airdopes 141 Bluetooth TWS Earbuds (Beat Black, True Wireless)'
+    const wrapped = cleanDealText(
+      `Buy ${name} Online at Low Prices In India | Flipkart.com\nhttps://www.flipkart.com/airdopes-141/p/itmABC`)
+    if (!wrapped.includes(name)) throw new Error('flipkart share-title wrapper not stripped: ' + wrapped)
+    if (!wrapped.includes('https://www.flipkart.com/airdopes-141/p/itmABC')) throw new Error('flipkart share-title cleanup lost the link')
+    if (/Low Prices In India|\|\s*Flipkart\.com/i.test(wrapped)) throw new Error('flipkart wrapper words survived: ' + wrapped)
+    const glued = cleanDealText(
+      `Buy ${name} Online at Low Prices in India | Flipkart.com https://dl.flipkart.com/dl/airdopes-141/p/itmXYZ`)
+    if (!glued.includes(name) || !glued.includes('https://dl.flipkart.com/dl/airdopes-141/p/itmXYZ')
+        || /Low Prices in India/i.test(glued)) throw new Error('glued flipkart share-title not split cleanly: ' + glued)
+    // A line that merely mentions Flipkart is never touched.
+    const mention = cleanDealText('Flipkart Big Billion Days deals live\nhttps://www.flipkart.com/x/p/itmQ')
+    if (!mention.includes('Flipkart Big Billion Days deals live')) throw new Error('flipkart mention line was wrongly edited: ' + mention)
+  }
   // Unwanted, non-source promo/navigation lines must be stripped while EVERY
   // line of actual deal content (name, price, discount, link) survives.
   {

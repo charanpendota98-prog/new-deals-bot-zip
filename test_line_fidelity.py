@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
@@ -1340,18 +1341,35 @@ def test_native_links_on_review_channel_and_the_tag_switch():
     native = "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21"
     affiliate._short_to_long["https://bit.ly/3xYz"] = native
     post = "boAt Rockerz 255\nPrice: \u20b9899\nhttps://bit.ly/3xYz"
-    expanded = affiliate.expand_our_short_links(post)
+    expanded = asyncio.run(affiliate.expand_our_short_links(post))
     check("our short link is swapped back to the native store URL",
           native in expanded and "bit.ly" not in expanded, repr(expanded))
     check("the store domain is visible to the reviewer",
           "amazon.in" in expanded, repr(expanded))
     check("our tag survives the swap", "tag=mama086-21" in expanded, repr(expanded))
     check("a SOURCE's own short link is never rewritten (we cannot know it)",
-          affiliate.expand_our_short_links("Deal\nhttps://fkrt.co/x") == "Deal\nhttps://fkrt.co/x")
+          asyncio.run(affiliate.expand_our_short_links("Deal\nhttps://fkrt.co/x"))
+          == "Deal\nhttps://fkrt.co/x")
     check("the native link is still short and neat", len(native) < 60, str(len(native)))
     check("native links are on by default", bot.SHOPPING_NATIVE_LINKS is True)
+    # A short link minted by an EARLIER process (render, then a restart before
+    # delivery) is not in the in-memory map - the persistent link cache knows
+    # its destination, and the reviewer must never meet a bare hop.
+    class FakeStore:
+        async def affiliate_destination(self, short):
+            return native if short == "https://bit.ly/4rTq" else None
+
+    real_store = bot.store
+    bot.store = FakeStore()
+    try:
+        expanded2 = asyncio.run(affiliate.expand_our_short_links(
+            "boAt Rockerz 255\nhttps://bit.ly/4rTq"))
+    finally:
+        bot.store = real_store
+    check("a short link from an earlier process is expanded from the cache too",
+          native in expanded2 and "bit.ly" not in expanded2, repr(expanded2))
     check("the swap runs on the review path only",
-          "affiliate.expand_our_short_links(target_text)" in deliver, "not wired")
+          "await affiliate.expand_our_short_links(target_text)" in deliver, "not wired")
     render = src[src.index("async def render_job"):src.index("async def process_job")]
     check("every other channel keeps its shortened link",
           "expand_our_short_links" not in render, "shared path was changed")
@@ -2263,15 +2281,14 @@ print(json.dumps(fail))
           not failures, "; ".join(failures)[:600])
 
 
-def test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener():
-    """USER DECISION (2026-09-06): keep the tag on all eight channels and accept
-    the undeclared-source risk. Given that, the exposure that CAN still be
-    removed must be removed.
-
-    Amazon lists link cloaking - hiding that a link leads to Amazon - as a
-    closure reason. A bitli.in hop does exactly that. The native tagged form is
-    about 50 characters, so nothing is gained by hiding it. Non-Amazon links
-    are unaffected and still shorten.
+def test_amazon_list_links_use_bitly_and_the_review_channel_sees_native():
+    """USER RULE (2026-09-06): "list lo unna amazon links bitly tho, review
+    channel tappa" - Amazon links INSIDE a product list go out as OUR Bitly
+    short links (one uniform link style, our key pays); a single Amazon link
+    stays native and spends no quota. The reviewed channel (t.me/smartbuyhub11)
+    must still show the DIRECT Amazon affiliate link with tag=mama086-21: every
+    short link is recorded when minted and delivery to the review channel
+    expands our short links back to exactly the tagged native URL.
 
     Runs in a subprocess: AMAZON_TAG_TARGETS is read at import time.
     """
@@ -2308,26 +2325,41 @@ class Aff(bot.AffiliateClient):
     async def link_not_broken(self, u): return True
     async def shorten(self, u):
         self.calls.append(u)
-        return "https://bitli.in/S%d" % len(self.calls)
+        short = "https://bitli.in/S%d" % len(self.calls)
+        self._short_to_long[short] = u   # exactly what the real shorten() records
+        return short
 
 async def main():
-    # A 3-product Amazon LIST: every link native and tagged, no shortener.
+    # A 3-product Amazon LIST: every link goes out as OUR Bitly short link,
+    # one uniform style.
     aff = Aff()
     res = await asyncio.gather(*(aff.convert(u, True) for u in (
         "https://www.amazon.in/dp/B0AMZLIST1",
         "https://www.amazon.in/dp/B0AMZLIST2",
         "https://www.amazon.in/dp/B0AMZLIST3")))
     for r in res:
-        check("an Amazon list link is native", "amazon.in/dp/" in r.affiliate, r.affiliate)
-        check("and carries our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
-        check("and is not a shortener", "bitli.in" not in r.affiliate, r.affiliate)
-    check("no Bitly quota is spent on Amazon", not aff.calls, str(aff.calls))
+        check("an Amazon list link is our Bitly link",
+              r.affiliate.startswith("https://bitli.in/"), r.affiliate)
+    check("the list spent Bitly quota once per link",
+          len(aff.calls) == 3, str(aff.calls))
+    check("every long link behind the shorts is the tagged native URL",
+          all(bot.OUR_TAG in u and "amazon.in/dp/" in u for u in aff.calls), str(aff.calls))
 
-    # A single Amazon deal: same rule.
+    # THE REVIEW CHANNEL: our short links expand back to the DIRECT tagged
+    # Amazon link - no hop survives on t.me/smartbuyhub11.
+    joined = " ".join(r.affiliate for r in res)
+    expanded = await aff.expand_our_short_links(joined)
+    check("the review channel sees the native links",
+          "bitli.in" not in expanded and expanded.count("amazon.in/dp/") == 3, expanded)
+    check("the expanded links still carry tag=mama086-21",
+          expanded.count("tag=" + bot.OUR_TAG) == 3, expanded)
+
+    # A single Amazon deal: native everywhere, no quota spent.
     aff2 = Aff()
     r = await aff2.convert("https://www.amazon.in/dp/B0AMZONE01", False)
     check("a single Amazon deal is native too", "amazon.in/dp/" in r.affiliate, r.affiliate)
     check("with our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
+    check("no Bitly quota is spent on a single Amazon deal", not aff2.calls, str(aff2.calls))
 
     # Non-Amazon links are untouched: they still shorten in a list.
     aff3 = Aff()
@@ -2348,14 +2380,14 @@ asyncio.run(main())
                               capture_output=True, text=True, env=env, timeout=180)
     tail = (proc.stdout or "").strip().splitlines()
     if proc.returncode != 0 or not tail:
-        check("the cloaking probe ran", False, (proc.stderr or proc.stdout or "")[-400:])
+        check("the list-link probe ran", False, (proc.stderr or proc.stdout or "")[-400:])
         return
     try:
         failures = json.loads(tail[-1])
     except Exception:
-        check("the cloaking probe returned a result", False, tail[-1][:300])
+        check("the list-link probe returned a result", False, tail[-1][:300])
         return
-    check("tagged Amazon links are never hidden behind a shortener",
+    check("Amazon list links use Bitly and the review channel stays native",
           not failures, "; ".join(failures)[:600])
 
 
@@ -2427,6 +2459,11 @@ async def deliver(src, target):
         text = re.sub("|".join(re.escape(k) for k in sorted(mapping, key=len, reverse=True)),
                       lambda m: mapping[m.group(0)], text)
     if target == bot.SHOPPING_TARGET:
+        # Exactly what delivery does before the safe-copy rebuild: our short
+        # links are expanded back to the native tagged URLs on the review
+        # channel, so a reviewer always sees the direct amazon.in link.
+        if bot.SHOPPING_NATIVE_LINKS:
+            text = await aff.expand_our_short_links(text)
         t = bot.retag_foreign_amazon_links(
             bot.affiliate_safe_text(bot.strip_amazon_ratings(text)))
         named = [l for l in (t or "").splitlines()
@@ -2468,9 +2505,11 @@ async def main():
           rev.rstrip().endswith("#ad (paid link)"), rev)
 
     # 2. THE THREE LIST SHAPES. Every product above its own link, and - the
-    #    defect this test was written for - every Amazon link in one post must
-    #    look the SAME. A cached row used to come back wrapped in bitli.in
-    #    while its neighbours stayed native.
+    #    USER RULE this test was updated for (2026-09-06) - every link in one
+    #    list must be the SAME STYLE: all of them OUR Bitly short links. A
+    #    cached row used to come back wrapped in bitli.in while its neighbours
+    #    stayed native (and later: Amazon rows stayed native while Flipkart
+    #    rows shortened). One list, one link style.
     inline = ("Deals Boat 141 @899 https://www.amazon.in/dp/%s "
               "Samsung M14 @9999 https://www.amazon.in/dp/%s "
               "Milton @89 https://www.amazon.in/dp/%s" % (A1, A2, A3))
@@ -2482,15 +2521,14 @@ async def main():
         lines = [l.strip() for l in out.splitlines()]
         links = [l for l in lines if bot.URL_RE.fullmatch(l)]
         check("%s list yields three links" % label, len(links) == 3, out)
-        check("%s list: every Amazon link is native" % label,
-              all("amazon.in/dp/" in l for l in links), out)
-        check("%s list: no link is hidden behind a shortener" % label,
-              not any("bitli.in" in l for l in links), out)
-        check("%s list: every link carries our tag" % label,
-              all(bot.OUR_TAG in l for l in links), out)
-        for asin in (A1, A2, A3):
-            check("%s list keeps %s exactly once" % (label, asin),
-                  out.count(asin) == 1, out)
+        check("%s list: every link is OUR Bitly link" % label,
+              all(l.startswith("https://bitli.in/") for l in links), out)
+        check("%s list: one uniform link style (never native/short mix)" % label,
+              len({bot.urlparse(l).hostname for l in links}) == 1, out)
+        check("%s list: no link still shows an Amazon URL" % label,
+              not any("amazon.in" in l for l in links), out)
+        for name in ("Boat 141", "Samsung M14", "Milton"):
+            check("%s list keeps the %r label" % (label, name), name in out, out)
         for i, line in enumerate(lines):
             if bot.URL_RE.fullmatch(line):
                 label_above = next((lines[j] for j in range(i - 1, -1, -1) if lines[j]), "")
@@ -2498,13 +2536,19 @@ async def main():
                       bool(label_above) and not bot.URL_RE.fullmatch(label_above), out)
 
     # 3. A LIST REACHES THE REVIEW CHANNEL. It used to be refused outright:
-    #    is_amazon_only_post() did not recognise amzn.to as Amazon.
+    #    is_amazon_only_post() did not recognise amzn.to as Amazon. And since
+    #    lists are Bitly'd, the review channel's native-link expansion must put
+    #    the DIRECT tagged amazon.in links back before the reviewer sees it.
     rev_list = await deliver(bottom, bot.SHOPPING_TARGET)
     check("an Amazon list is accepted by the review channel", rev_list is not None,
           "refused")
     if rev_list:
         for asin in (A1, A2, A3):
             check("the review list keeps %s" % asin, asin in rev_list, rev_list)
+        check("the review list shows the DIRECT amazon.in links",
+              "amazon.in/dp/" in rev_list and "bitli.in" not in rev_list, rev_list)
+        check("the review list carries our tag on every link",
+              bot.OUR_TAG in rev_list, rev_list)
         check("the review list ends with the disclosure",
               rev_list.rstrip().endswith("#ad (paid link)"), rev_list)
 
@@ -2825,6 +2869,155 @@ def test_amazon_search_and_browse_links_are_taggable():
           "apply_amazon_tag(clean)" in amazon_branch, "not tagged")
 
 
+def test_flipkart_share_title_wrapper_is_stripped():
+    """USER RULE (2026-09-06): the Flipkart app's share sheet titles a product
+    "Buy <name> Online at Low Prices In India | Flipkart.com" and a forwarded
+    paste drops that title line into source posts verbatim. The wrapper words
+    are the app's, not the deal's: the post must carry the product's REAL name
+    (as the headline the reader and the dedup signature both see) and the real
+    link, and no "Online at Low Prices In India | Flipkart.com" tail."""
+    name = "boAt Airdopes 141 Bluetooth TWS Earbuds with 42H Playtime (Beat Black, True Wireless)"
+    link = "https://www.flipkart.com/airdopes-141/p/itmABC123"
+    # 1. The canonical share shape: title line, link line.
+    out = bot.clean_source_text(f"Buy {name} Online at Low Prices In India | Flipkart.com\n{link}")
+    check("the share title becomes the bare product name", out.splitlines()[0] == name, out)
+    check("the real link survives under the name", link in out, out)
+    check("no wrapper words survive", "low prices in india" not in out.lower()
+          and "Flipkart.com |" not in out and "| Flipkart.com" not in out, out)
+    # 2. The lowercase paste and bold-marker variants.
+    for variant in (f"Buy {name} Online at Low Prices in India | Flipkart.com",
+                    f"**Buy {name} Online at Low Prices In India | Flipkart.com**",
+                    f"*Buy {name} Online at Low Price in India | Flipkart.com*"):
+        out_v = bot.clean_source_text(f"{variant}\n{link}")
+        check("variant %r... is stripped to the name" % variant[:24],
+              out_v.splitlines()[0] == name, out_v)
+    # 3. Wrapper glued to the link on one line: split_inline_product_links runs
+    #    first, so the title still lands alone and is stripped.
+    out_glued = bot.clean_source_text(f"Buy {name} Online at Low Prices In India | Flipkart.com {link}")
+    check("the glued shape keeps name and link on their own lines",
+          name in out_glued and link in out_glued
+          and "Low Prices" not in out_glued, out_glued)
+    # 4. A line that merely mentions Flipkart is never touched.
+    keep = "Flipkart Big Billion Days sale is live"
+    out_keep = bot.clean_source_text(f"{keep}\n{link}")
+    check("a plain Flipkart mention is not edited", keep in out_keep, out_keep)
+    # 5. The dedup identity: the wrapped and bare titles are ONE product.
+    check("the wrapper no longer changes the product signature",
+          bot.product_signature(name) == bot.product_signature(
+              f"Buy {name} Online at Low Prices In India | Flipkart.com"),
+          "signature differs")
+    # 6. Bridge parity: the bridge must clean the same wrapper the same way.
+    src = Path("tg-wa-bridge/bridge.js").read_text(encoding="utf-8")
+    start = src.index("const FLIPKART_SHARE_TITLE_RE")
+    end = src.index("function cleanDealText", start)
+    probe_js = (
+        src[start:end]
+        + "const name = %s;\n" % json.dumps(name)
+        + "const out = stripFlipkartShareTitle('Buy ' + name + ' Online at Low Prices In India "
+          "| Flipkart.com\\nhttps://www.flipkart.com/airdopes-141/p/itmABC123');\n"
+          "const glued = stripFlipkartShareTitle('Buy ' + name + ' Online at Low Prices in India "
+          "| Flipkart.com https://dl.flipkart.com/dl/airdopes-141/p/itmXYZ');\n"
+          "const keep = stripFlipkartShareTitle('Flipkart Big Billion Days sale is live');\n"
+          "console.log(JSON.stringify({ out, glued, keep }));\n"
+    )
+    with tempfile.TemporaryDirectory() as tdir:
+        probe_path = Path(tdir) / "flipkart_wrapper_probe.mjs"
+        probe_path.write_text(probe_js, encoding="utf-8")
+        proc = subprocess.run(["node", str(probe_path)],
+                              capture_output=True, text=True, timeout=60)
+    if proc.returncode == 0 and proc.stdout.strip():
+        try:
+            res = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            res = None
+        if res:
+            check("the bridge strips the wrapper to the same name",
+                  res["out"].startswith(name) and "Low Prices" not in res["out"], res["out"][:160])
+            check("the bridge keeps the link whole",
+                  "https://www.flipkart.com/airdopes-141/p/itmABC123" in res["out"], res["out"][:160])
+            check("the bridge splits the glued shape too",
+                  name in res["glued"] and "dl.flipkart.com/dl/airdopes-141" in res["glued"],
+                  res["glued"][:160])
+            check("the bridge leaves a plain Flipkart mention alone",
+                  "Flipkart Big Billion Days sale is live" in res["keep"], res["keep"][:160])
+        else:
+            check("the bridge wrapper probe returned a result", False, proc.stderr[-200:])
+    else:
+        check("the bridge wrapper probe ran", False, (proc.stderr or proc.stdout)[-200:])
+
+
+def test_already_posted_list_items_drop_whole():
+    """USER RULE (2026-09-06): when ONE item of a product list was already
+    posted, that item drops WHOLE - name, price and link together. The old
+    behaviour kept the item's label and emitted its raw source link, so the
+    "fresh" list still advertised a deal the channels had already seen, with
+    an unmonetized link under it."""
+    src3 = ("Boat 141 @ 899\nhttps://www.amazon.in/dp/B0FRESH001\n"
+            "Samsung M14 @ 9999\nhttps://www.amazon.in/dp/B0POSTED2\n"
+            "Milton @ 89\nhttps://www.amazon.in/dp/B0FRESH003")
+    mapping = {"https://www.amazon.in/dp/B0FRESH001": "https://bitli.in/F1",
+               "https://www.amazon.in/dp/B0POSTED2": "https://bitli.in/P2",
+               "https://www.amazon.in/dp/B0FRESH003": "https://bitli.in/F3"}
+    out = bot.format_visible_source_product_pairs(
+        src3, mapping, frozenset({"https://www.amazon.in/dp/B0POSTED2"}))
+    check("the stale item's link is gone",
+          out is not None and "B0POSTED2" not in out and "bitli.in/P2" not in out, out)
+    check("the stale item's name and price are gone too",
+          out is not None and "Samsung M14" not in out and "9999" not in out, out)
+    check("both fresh items keep their name above their own link",
+          out is not None and "Boat 141" in out and "bitli.in/F1" in out
+          and "Milton" in out and "bitli.in/F3" in out, out)
+    check("no raw source link is printed for the dropped item",
+          out is not None and "amazon.in/dp/B0POSTED2" not in out, out)
+    # Without the drop the same source still rebuilds as a full list.
+    full = bot.format_visible_source_product_pairs(src3, mapping)
+    check("nothing drops when everything is fresh",
+          full is not None and all(a in full for a in mapping.values()), full)
+    # A stale item whose label sits on its own line above the link drops that
+    # label line too - no orphan name is left behind.
+    out2 = bot.format_visible_source_product_pairs(
+        src3, mapping, frozenset({"https://www.amazon.in/dp/B0POSTED2",
+                                  "https://www.amazon.in/dp/B0FRESH003"}))
+    check("two stale items leave one clean product",
+          out2 is not None and "Samsung" not in out2 and "Milton" not in out2
+          and "Boat 141" in out2 and "bitli.in/F1" in out2, out2)
+    # The render path passes its dedup drops through: no other pass may print
+    # an already-posted item's raw link again.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("async def render_job"):]
+    check("render_job collects the dedup-dropped results",
+          "dedup_dropped = [r for r in converted if r.deal_key not in allowed]" in render,
+          "not wired")
+    check("render_job hands the drop set to the pair rebuild",
+          "format_visible_source_product_pairs(raw_text, mapping, drop_urls)" in render,
+          "not wired")
+
+
+def test_no_markdown_link_leaves_the_bot():
+    """USER RULE (2026-09-06): no [label](url) markdown may leave the bot. The
+    last outbound gate collapses every markdown link and strips the leftover
+    brackets, whatever produced them - including the new Bitly list path."""
+    posts = [
+        "🔥 Deals\n➜ [https://bitli.in/IKthI4w](https://bitli.in/IKthI4w)\n"
+        "[boAt 141](https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG + ")",
+        "[https://bitli.in/a](https://bitli.in/a) [b](https://bitli.in/b) "
+        "[[c](https://bitli.in/c)](https://bitli.in/c)",
+        "Item @99 [link](https://www.flipkart.com/x/p/itmQ)",
+    ]
+    for i, post in enumerate(posts):
+        guarded = bot.sanitize_outbound_text(post)
+        check("markdown post %d leaves with no brackets and no ]( " % i,
+              "[" not in guarded and "]" not in guarded and "](" not in guarded,
+              guarded)
+        check("markdown post %d keeps every real link" % i,
+              all(url in guarded for url in bot.URL_RE.findall(post)), guarded)
+    # The labelled form keeps the product's own words.
+    kept = bot.sanitize_outbound_text(
+        "[boAt Airdopes 141](https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG + ")")
+    check("a labelled markdown link keeps the name and the link",
+          "boAt Airdopes 141" in kept and "amazon.in/dp/B0X" in kept, kept)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2867,7 +3060,7 @@ def main() -> int:
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
     test_tag_on_every_owned_channel_when_switched_on()
-    test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener()
+    test_amazon_list_links_use_bitly_and_the_review_channel_sees_native()
     test_the_whole_delivery_path_end_to_end()
     test_the_review_channel_publishes_one_product_never_a_list()
     test_no_route_from_the_review_channel_to_a_loot_channel()
@@ -2875,6 +3068,9 @@ def main() -> int:
     test_deploy_refuses_a_foreign_amazon_tag()
     test_non_shop_links_never_burn_the_retry_budget()
     test_amazon_search_and_browse_links_are_taggable()
+    test_flipkart_share_title_wrapper_is_stripped()
+    test_already_posted_list_items_drop_whole()
+    test_no_markdown_link_leaves_the_bot()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
