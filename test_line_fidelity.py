@@ -1550,7 +1550,7 @@ def test_the_four_defects_the_user_photographed():
           sig == bot.product_signature(post))
     check("a different product does not collide",
           sig != bot.product_signature("\U0001f525 Ergonomic Mop @ \u20b955\nhttps://www.amazon.in/dp/B0X"))
-    for phrase in ("hair oil", "phone case", "Milton Bottle"):
+    for phrase in ("hair oil", "phone case", "Running Shoes"):
         check("a short category phrase %r is still NOT keyed" % phrase,
               bot._product_identity(phrase) is None)
 
@@ -1857,8 +1857,9 @@ def test_no_regression_for_the_ordinary_channels():
                  "Boat Airdopes 141", "Ergonomic Dustpan"):
         check("%r has a dedup identity" % name,
               bot._product_identity(name) is not None, name)
-    for phrase in ("hair oil", "phone case", "free gift", "Milton Bottle",
-                   "Men Cotton Shirt", "lunch box set"):
+    for phrase in ("hair oil", "phone case", "free gift", "Running Shoes",
+                   "Men Cotton Shirt", "lunch box set", "water bottle",
+                   "sports shoes", "casual shirt"):
         check("the category phrase %r is still refused" % phrase,
               bot._product_identity(phrase) is None, phrase)
 

@@ -1361,3 +1361,54 @@ is byte-identical on every shape tested.
 
 Suite: 486 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 26 — A/B audit of the ordinary channels; dedup hole closed
+=================================================================
+
+USER: "only review channel lo strictsga cheyu and remaining channel lo as
+it is as previous ... elanti mistakes lekunda."
+
+Verified by MEASURING, not asserting: 12 real post shapes were pushed
+through 14 shared functions in both the current code and the pre-session
+code (ee434cb) and every output compared.
+
+COPY THE READER SEES - exactly ONE difference, and it is the fix the
+user asked for: a list whose links were dumped at the bottom now pairs
+each product with its own link. Everything else - clean_source_text,
+tidy_post, sanitize_outbound_text, normalize_nested_link_markup,
+strip_url_residue, remove_source_url_residue, strict_orphan_token_cleanup
+- is byte-identical on all 12 shapes. Hype, MRP, percentages, ratings,
+review counts, coupons, emoji and photos all still go out untouched.
+
+DEDUP HOLE FOUND AND CLOSED
+  "Cello Box @264" had NO identity: nine characters, under the 15-char
+  floor, so the same lunch box could post twice - the Dustpan bug again.
+  The floor exists to reject GENERIC phrases, not short specific names,
+  so a phrase is now keyed when it contains a BRAND-like word: one that
+  is neither descriptive (_SIG_GENERIC_WORDS) nor an ordinary product
+  noun (_SIG_PRODUCT_NOUNS, new).
+
+    keyed      : Cello Box, Milton Bottle, Nike Shoes, Prestige Mixer,
+                 Ergonomic Dustpan, Dabur Gulabari Soap
+    not keyed  : Running Shoes, Men Cotton Shirt, water bottle,
+                 sports shoes, casual shirt, hair oil, phone case
+
+  Three regressions introduced while doing this were caught by the suite
+  and fixed in place:
+    * a URL on the same line as the name ("Shirt A 599 https://a.com/x")
+      made "https"/the host read as brand words - URLs are now dropped
+      from the identity tokens entirely, which also stops the same
+      product hashing differently once its link changes;
+    * a single letter ("Shirt A", "Shirt B") counted as a brand and gave
+      every row of a three-shirt roundup its own identity, breaking the
+      multi-product rule;
+    * two old tests expected "Milton Bottle" to be refused - Milton is a
+      real brand, so those expectations were wrong and were replaced
+      with genuine category phrases.
+
+  ops/quality_audit.py re-synced.
+
+Suite: 505 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

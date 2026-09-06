@@ -1385,6 +1385,10 @@ def _sig_tokens(line: str) -> list[str]:
 # longer floor before it may be used to skip a repeat.
 _SIG_GENERIC_WORDS = frozenset("""
 men mens women womens kids boys girls baby unisex adult
+hair face body skin lip eye nail hand foot head neck
+phone mobile laptop tablet tv led smart wireless bluetooth usb
+lunch dinner tea coffee water milk rice
+
 cotton silk leather steel plastic glass wooden metal rubber silicone
 shirt tshirt pant jeans saree kurti dress top jacket shoes sandals slippers
 oil soap cream powder shampoo lotion gel wash paste
@@ -1393,6 +1397,25 @@ watch band strap cable charger adapter holder stand mat mop broom
 kitchen home office travel sports gaming
 small medium large xl xxl free size regular fit slim
 new best top premium quality original genuine
+""".split())
+
+
+# Ordinary product nouns and descriptive adjectives. A phrase built only from
+# these plus _SIG_GENERIC_WORDS names a CATEGORY ("Running Shoes", "Shirt A"),
+# never one product, so it must clear the length floor before it may be used
+# to skip a repeat.
+_SIG_PRODUCT_NOUNS = frozenset("""
+shoes sneakers boots sandal sandals slipper slippers flipflop
+shirt tshirt shirts pant pants trouser trousers jeans short shorts
+kurta kurti saree dress top tops jacket coat sweater hoodie
+bottle flask jar container tiffin lunchbox casserole
+mixer grinder kettle cooker pan pot tawa knife spoon plate bowl
+headphone headphones earphone earphones earbuds neckband speaker
+watch smartwatch band tracker
+bag backpack luggage trolley wallet purse belt
+running walking sports casual formal party daily regular
+trimmer shaver dryer straightener iron fan heater cooler lamp bulb
+sheet curtain pillow blanket mattress towel mat rug carpet
 """.split())
 
 
@@ -1419,6 +1442,12 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
     # first signed "299" as a model and the duplicate got published twice.
     line_price = _sig_line_price(line or "")
     raw = [re.sub(r"[-_]", "", tok) for tok in _sig_tokens(line)]
+    # A URL is not part of the product's NAME. When the source writes the link
+    # on the same line ("Shirt A 599 https://a.com/x") the host used to become
+    # an identity word, which both invented an identity for a generic phrase
+    # and made the same product hash differently once its link changed.
+    raw = [w for w in raw
+           if not w.startswith(("http", "www")) and "/" not in w and "." not in w]
     words = [w for w in raw if not w.isdigit() and w not in _SIG_STOP_WORDS]
     if len(words) < 2:
         return None
@@ -1487,9 +1516,36 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
         # box could post twice.
         # A brand-like word - one that is not an ordinary descriptive word -
         # makes the phrase specific regardless of its length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "hair oil")
+        # that many products share; keying on those would suppress real deals.
+        # It must not reject a SHORT but specific name. "Cello Box" is nine
+        # characters, yet "cello" is a brand - one product, and without an
+        # identity it could post twice, which is the defect the user reported.
+        # So a phrase that pairs a brand-like word with a descriptive one is
+        # specific enough at two words; only all-generic phrases need length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "Running
+        # Shoes") that many products share; keying on those would suppress
+        # real deals. It must not reject a SHORT but specific name: "Cello
+        # Box" is nine characters, yet "cello" is a BRAND - one product - and
+        # with no identity it could post twice.
+        #
+        # A brand is recognised as a word that is neither descriptive nor a
+        # known product noun: "cello", "milton", "dabur", "nike". "Running
+        # Shoes" and "Shirt A" have no such word, so they keep the floor.
         basis = " ".join(sorted(set(words)))
-        specific = any(w not in _SIG_GENERIC_WORDS for w in words)
-        floor = 15 if specific else 18
+        # A URL is never a brand. When a source writes the link on the same
+        # line as the name ("Shirt A 599 https://a.com/x"), "https" and the
+        # host would otherwise read as brand words and give a generic
+        # category phrase an identity it must not have.
+        # A single letter is a list marker or a size ("Shirt A", "Shirt B"),
+        # never a brand: treating it as one gave every row of a three-shirt
+        # roundup its own identity and broke the multi-product rule.
+        brandish = [w for w in words
+                    if len(w) > 1
+                    and w not in _SIG_GENERIC_WORDS and w not in _SIG_PRODUCT_NOUNS]
+        if brandish and len(words) >= 2:
+            return ("W", basis)
+        floor = 15 if brandish else 18
         return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
