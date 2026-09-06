@@ -414,6 +414,14 @@ SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "50")))
 #    Amazon product links are already collapsed natively to
 #    https://www.amazon.in/dp/ASIN?tag=... (~48 chars), so this costs no
 #    neatness. Every other channel keeps using the shortener as before.
+# 8. HUMAN PACING. USER RULE (2026-09-06): "oka human laga daily oka 50 posts".
+#    A burst of 50 posts at 3am reads as an automated feed; the same 50 spread
+#    across the day reads as a person curating a shop. Posts are spaced across
+#    an active window with jitter, so the timing is never machine-regular.
+SHOPPING_HUMAN_PACING = os.getenv(
+    "SHOPPING_HUMAN_PACING", "true").strip().lower() not in ("0", "false", "no", "off")
+SHOPPING_ACTIVE_START = max(0, min(23, int(os.getenv("SHOPPING_ACTIVE_START", "8"))))
+SHOPPING_ACTIVE_END = max(1, min(24, int(os.getenv("SHOPPING_ACTIVE_END", "23"))))
 SHOPPING_NATIVE_LINKS = os.getenv(
     "SHOPPING_NATIVE_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
 # 4. NO IMAGES. The 2026-09-06 rejection cited "images (screenshots/screen
@@ -3468,10 +3476,14 @@ class Store:
         -- 20-30/day pace survives restarts instead of resetting to zero.
         CREATE TABLE IF NOT EXISTS shopping_quota (
           day_key TEXT PRIMARY KEY,
-          sent_count INTEGER NOT NULL DEFAULT 0
+          sent_count INTEGER NOT NULL DEFAULT 0,
+          last_sent_at REAL NOT NULL DEFAULT 0
         );
         """)
         # Backward-compatible migrations.
+        quota_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(shopping_quota)")}
+        if "last_sent_at" not in quota_columns:
+            self.conn.execute("ALTER TABLE shopping_quota ADD COLUMN last_sent_at REAL NOT NULL DEFAULT 0")
         delivery_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(deliveries)")}
         if "chunks_sent" not in delivery_columns:
             self.conn.execute("ALTER TABLE deliveries ADD COLUMN chunks_sent INTEGER NOT NULL DEFAULT 0")
@@ -4242,13 +4254,49 @@ class Store:
         used = int(row["sent_count"]) if row else 0
         return max(0, SHOPPING_DAILY_CAP - used)
 
+    async def shopping_pace_wait(self) -> float:
+        """Seconds to wait before this channel may post again, 0 when ready.
+
+        USER RULE (2026-09-06): "oka human laga daily oka 50 posts". A human
+        curator does not fire 50 posts in one burst at 3am and then vanish - and
+        a burst is exactly what a reviewer reads as an automated feed. So the
+        day's allowance is SPREAD: posting hours only, and a minimum gap between
+        posts derived from the cap, with a little jitter so the timing never
+        looks machine-regular.
+        """
+        if not SHOPPING_HUMAN_PACING:
+            return 0.0
+        now = datetime.now(IST)
+        # Outside posting hours nobody is shopping and nobody is curating.
+        if not (SHOPPING_ACTIVE_START <= now.hour < SHOPPING_ACTIVE_END):
+            tomorrow = now.replace(hour=SHOPPING_ACTIVE_START, minute=0, second=0, microsecond=0)
+            if now.hour >= SHOPPING_ACTIVE_END:
+                tomorrow += timedelta(days=1)
+            return max(60.0, (tomorrow - now).total_seconds())
+        day_key = now.strftime("%Y-%m-%d")
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT last_sent_at FROM shopping_quota WHERE day_key=?", (day_key,)
+            ).fetchone()
+        last = float(row["last_sent_at"]) if row and row["last_sent_at"] else 0.0
+        if not last:
+            return 0.0
+        active_seconds = (SHOPPING_ACTIVE_END - SHOPPING_ACTIVE_START) * 3600
+        cap = SHOPPING_DAILY_CAP if SHOPPING_DAILY_CAP > 0 else 50
+        # Spread the cap across the active window, then relax it slightly so a
+        # busy hour can still catch up rather than silently dropping deals.
+        gap = (active_seconds / max(1, cap)) * 0.7
+        gap += random.uniform(0, gap * 0.4)          # never machine-regular
+        waited = time.time() - last
+        return max(0.0, gap - waited)
+
     async def note_shopping_sent(self) -> None:
         day_key = datetime.now(IST).strftime("%Y-%m-%d")
         async with self.lock:
             self.conn.execute(
-                "INSERT INTO shopping_quota(day_key,sent_count) VALUES(?,1) "
-                "ON CONFLICT(day_key) DO UPDATE SET sent_count=sent_count+1",
-                (day_key,),
+                "INSERT INTO shopping_quota(day_key,sent_count,last_sent_at) VALUES(?,1,?) "
+                "ON CONFLICT(day_key) DO UPDATE SET sent_count=sent_count+1, last_sent_at=?",
+                (day_key, time.time(), time.time()),
             )
             # Keep the table tiny: yesterday's counters are of no further use.
             self.conn.execute("DELETE FROM shopping_quota WHERE day_key < ?",
@@ -6214,6 +6262,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     log.info("SHOPPING SKIP | queue=%s daily cap of %s reached",
                              row["id"], SHOPPING_DAILY_CAP)
                     await store.delivery(row["id"], target, True, "daily cap reached")
+                    continue
+                # Pace it like a person: the day's allowance is spread across
+                # posting hours instead of fired off in one burst. The deal is
+                # left PENDING (not closed), so it goes out on a later pass
+                # rather than being lost - and every other channel has already
+                # received it immediately, untouched by this gate.
+                pace_wait = await store.shopping_pace_wait()
+                if pace_wait > 0:
+                    log.info("SHOPPING PACE | queue=%s holding %s min so the channel "
+                             "posts like a human", row["id"], round(pace_wait / 60))
                     continue
                 # REJECTION 2026-09-06: "unapproved use of Amazon trademarked
                 # words, images ... or reviews". Naming the marketplace in the

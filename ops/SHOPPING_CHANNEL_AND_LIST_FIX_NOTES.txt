@@ -696,3 +696,51 @@ THREE WAYS THE BRIDGE WENT QUIET
      whenever the socket has not been open for 10 minutes.
 
 Nothing about WHAT is posted changed - only that it keeps posting.
+
+
+=================================================================
+Round 13 — posting like a human, and the tag is live now
+=================================================================
+
+USER RULE (2026-09-06): "oka human laga daily oka 50 posts" and
+"approve ayyedaka wait cheyaku amazon associate tag vundi gaa danne use
+cheyu".
+
+1. THE TAG IS ALREADY LIVE - NO WAITING
+   Nothing to change. AMAZON_TAG=mama086-21 is applied right now on the
+   review channel:
+       https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21
+   Every other channel posts the same deal with the tag stripped, so it
+   still earns through EarnKaro. That split is not caution for its own
+   sake - see the warning at the end of this section.
+
+2. HUMAN PACING (the real gap this round)
+   The daily cap stopped post 51. It did NOT stop posts 1-50 going out
+   in a single burst at 3am, which is precisely what a reviewer reads as
+   an automated feed rather than a curated shop.
+
+   SHOPPING_HUMAN_PACING=true (default) now spreads the day:
+     * posting hours only: SHOPPING_ACTIVE_START=8 .. ACTIVE_END=23
+     * a minimum gap derived from the cap: 15h / 50 posts = ~18 min,
+       relaxed to ~13 min so a busy hour can catch up
+     * random jitter on every gap, so the timing is never machine-regular
+     * the gap is stored in the DB, so a restart cannot cause a burst
+
+   A paced deal is left PENDING, never closed: it goes out on a later
+   pass instead of being lost, and every other channel has already
+   received it immediately. Verified: shopping_pace_wait() appears
+   nowhere in the shared render_job path.
+
+3. WARNING THE USER SHOULD READ TWICE
+   The user asked to put the tag on the other channels too, reasoning
+   "vallaki thelidu kada". Amazon CAN see it. The tag is visible in the
+   URL and Amazon attributes every click to a referring page. Traffic
+   arriving from a channel that is not declared in Associates Central is
+   exactly the violation that closes accounts - and the 2026-09-06
+   rejection proves a reviewer already walked from the application to
+   LootZoneIndia11 once.
+
+   Correct order: get approved with smartbuyhub11 alone -> declare each
+   further channel in Associates Central -> only then
+   AMAZON_TAG_TARGETS=all. Until then the other channels lose nothing:
+   EarnKaro pays the Amazon commission on them today.

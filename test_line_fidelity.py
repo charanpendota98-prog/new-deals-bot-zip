@@ -1408,6 +1408,74 @@ def test_the_whatsapp_bridge_cannot_go_quiet():
           "probe still needs a provisioned .env")
 
 
+def test_the_review_channel_posts_at_a_human_pace():
+    """USER RULE (2026-09-06): "oka human laga daily oka 50 posts".
+
+    50 posts fired in one burst at 3am is what a reviewer reads as an automated
+    feed. The same 50 spread across the day reads as a person curating a shop.
+    """
+    check("human pacing is on by default", bot.SHOPPING_HUMAN_PACING is True)
+    check("the active window is daytime, not 24h",
+          0 <= bot.SHOPPING_ACTIVE_START < bot.SHOPPING_ACTIVE_END <= 24
+          and (bot.SHOPPING_ACTIVE_END - bot.SHOPPING_ACTIVE_START) <= 16,
+          "%s-%s" % (bot.SHOPPING_ACTIVE_START, bot.SHOPPING_ACTIVE_END))
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "pace.sqlite3")
+            first = await store.shopping_pace_wait()
+            await store.note_shopping_sent()
+            second = await store.shopping_pace_wait()
+            left = await store.shopping_quota_left()
+            # the gap must survive a restart, like the counter does
+            reopened = bot.Store(Path(td) / "pace.sqlite3")
+            after_restart = await reopened.shopping_pace_wait()
+            return first, second, left, after_restart
+
+    first, second, left, after_restart = asyncio.run(run())
+    active_hours = bot.SHOPPING_ACTIVE_END - bot.SHOPPING_ACTIVE_START
+    ideal_gap = active_hours * 3600 / max(1, bot.SHOPPING_DAILY_CAP)
+
+    check("the first post of the day goes out immediately", first == 0.0, str(first))
+    if bot.SHOPPING_ACTIVE_START <= bot.datetime.now(bot.IST).hour < bot.SHOPPING_ACTIVE_END:
+        check("a second post is held back so the two are not a burst",
+              second > 0, str(second))
+        check("the gap is roughly the day's allowance spread over the window",
+              0.5 * ideal_gap <= second <= 1.3 * ideal_gap,
+              "gap %.0fs vs ideal %.0fs" % (second, ideal_gap))
+        check("the pacing survives a restart (no burst after a deploy)",
+              after_restart > 0, str(after_restart))
+    check("the daily counter still moves", left == bot.SHOPPING_DAILY_CAP - 1, str(left))
+
+    # A paced deal must be DEFERRED, never dropped - and only for this channel.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the pace gate runs on the review path", "shopping_pace_wait()" in deliver)
+    paced = deliver[deliver.index("shopping_pace_wait()"):]
+    paced = paced[:paced.index("continue") + len("continue")]
+    check("a paced deal is left pending, not closed as delivered",
+          "store.delivery(" not in paced, paced[-200:])
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+    check("no other channel is paced", "shopping_pace_wait" not in render)
+
+
+def test_our_tag_is_live_now_on_the_review_channel():
+    """USER RULE (2026-09-06): "approve ayyedaka wait cheyaku amazon associate
+    tag vundi gaa danne use cheyu"."""
+    if not bot.OUR_TAG:
+        return
+    compact = bot.compact_amazon_product_link(
+        "https://www.amazon.in/dp/B0FPDD9WKP?psc=1&smid=X&ref_=abc")
+    check("our tag is on the link right now, no waiting",
+          "tag=" + bot.OUR_TAG in compact, compact)
+    check("the noise params are gone", "psc" not in compact and "smid" not in compact, compact)
+    check("the review channel keeps the tag",
+          bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared("x\n" + compact, bot.SHOPPING_TARGET))
+    check("an UNDECLARED channel still posts the deal, just untagged",
+          bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared("x\n" + compact, "LootZoneIndia11")
+          and "B0FPDD9WKP" in bot.strip_amazon_tag_for_undeclared("x\n" + compact, "LootZoneIndia11"))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1436,6 +1504,8 @@ def main() -> int:
     test_the_review_copy_is_clean_on_real_source_shapes()
     test_native_links_on_review_channel_and_the_tag_switch()
     test_the_whatsapp_bridge_cannot_go_quiet()
+    test_the_review_channel_posts_at_a_human_pace()
+    test_our_tag_is_live_now_on_the_review_channel()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
