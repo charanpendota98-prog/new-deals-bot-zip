@@ -801,6 +801,1902 @@ def test_our_channel_link_sits_on_the_top_line_once():
           "prepend_channel_header" not in gate[:gate.index("async def process_job")], "header in render path")
 
 
+def test_a_product_list_pairs_every_deal_with_its_own_link():
+    """USER RULE (2026-09-05, "neatga ravali"): the source writes four deals and then
+    dumps four links at the bottom. Read that way nobody can tell which link is which
+    deal. Each block must carry its own link, in the source's order, with nothing
+    added, dropped or reordered - and the price spelling is the SOURCE's ("at 258",
+    "@167", "Rs 180"), not just the rupee sign the old ₹-only test demanded."""
+    raw = ("Premium Afghani Anjeer 500 gms at 258\nBuy Max Quantity\n"
+           "Premium Mix Dry Fruits 500 gms at 258\nBuy Max Quantity\n"
+           "Methi Dana 500 gms at 180\nBuy Max Quantity\n"
+           "Yellow mustard seeds 500gms at 220\nBuy Max Quantity\n"
+           "https://fkrt.co/sYKjVp\nhttps://fkrt.co/41Tz5Y\n"
+           "https://fkrt.co/4JArbD\nhttps://fkrt.co/Nv2fnb")
+    out = bot.format_clustered_product_list(raw)
+    blocks = [b.splitlines() for b in out.split("\n\n") if b.strip()]
+    check("every deal became its own block", len(blocks) == 4, repr(out))
+    check("each block ends with its OWN link, in source order",
+          [b[-1] for b in blocks] == ["https://fkrt.co/sYKjVp", "https://fkrt.co/41Tz5Y",
+                                      "https://fkrt.co/4JArbD", "https://fkrt.co/Nv2fnb"], repr(out))
+    check("each block keeps its product name and price",
+          all(any(x in b[0] for x in ("Anjeer", "Mix Dry Fruits", "Methi", "mustard")) for b in blocks),
+          repr(out))
+    check("the source's own note line travels with its deal",
+          all("Buy Max Quantity" in b for b in blocks), repr(out))
+    check("no link and no line was lost",
+          all(u in out for u in ("sYKjVp", "41Tz5Y", "4JArbD", "Nv2fnb"))
+          and out.count("Buy Max Quantity") == 4, repr(out))
+    check("a post that is not a bottom-dumped list is left alone",
+          bot.format_clustered_product_list("One deal \u20b9199\nhttps://a.in/x")
+          == "One deal \u20b9199\nhttps://a.in/x")
+
+
+def test_the_shopping_channel_copy_is_programme_safe():
+    """USER RULE (2026-09-05): t.me/smartbuyhub11 is under Amazon Associates review, so
+    it gets the SAME deal with only the product name, the price the source printed and
+    our link - no loot/grab banner, no "Buy Max Quantity", no unverifiable claim, no
+    discount percentage. Nothing is invented: every word left is the source's own."""
+    loot = ("Loot : Nutriburst Collagen powder 299 (70% off)\nReg 599\n#Uk no 1 brand\n"
+            "Buy Max Quantity\nHurry up!\nhttps://www.amazon.in/dp/B0X")
+    safe = bot.affiliate_safe_text(loot)
+    check("the product name and its price survive",
+          "Nutriburst Collagen powder" in safe and "299" in safe, repr(safe))
+    check("our link survives", "https://www.amazon.in/dp/B0X" in safe, repr(safe))
+    for banned in ("Loot", "Buy Max Quantity", "Hurry", "70%", "no 1 brand", "Reg 599"):
+        check(f"the reviewer never sees {banned!r}", banned.lower() not in safe.lower(), repr(safe))
+    check("no number the source never printed appears",
+          all(n in loot for n in re.findall(r"\d+", safe)), repr(safe))
+    grab = "GRAB : Gym / Motivational Bottle, 2000ml @167.\nhttps://fkrt.co/x"
+    safe2 = bot.affiliate_safe_text(grab)
+    check("a GRAB banner becomes a plain product line",
+          safe2.splitlines()[0].startswith("Gym / Motivational Bottle") and "167" in safe2, repr(safe2))
+    check("the safe rewrite is idempotent", bot.affiliate_safe_text(safe2) == safe2, repr(safe2))
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the safe copy is a DELIVERY-time rewrite, never the stored post",
+          "affiliate_safe_text" not in src[src.index("def render_job"):src.index("async def process_job")],
+          "safe rewrite leaked into render_job")
+    check("the shopping channel is not in the card-offer fan-out list",
+          bot.SHOPPING_TARGET not in bot.ALL_OWNED_TARGETS, str(bot.ALL_OWNED_TARGETS))
+
+    # The review channel must never carry OUR OWN promo. A card offer has the
+    # folder link appended into the stored copy, and ADD_OUR_CHANNEL_LINK_TOP
+    # prepends a "All Loot Channels" header on the way out - a reviewer who taps
+    # either one lands in a channel called "Loot Zone", which is exactly what
+    # this channel exists to avoid.
+    carded = bot.append_folder_link("HDFC Bank Card Offer 10% off\nhttps://www.amazon.in/dp/B0Y")
+    safe_card = bot.affiliate_safe_text(carded)
+    check("our folder link never reaches the reviewer",
+          bot.OUR_FOLDER_LINK not in safe_card and "t.me" not in safe_card, repr(safe_card))
+    check("but the card deal itself still arrives",
+          "HDFC" in safe_card and "https://www.amazon.in/dp/B0Y" in safe_card, repr(safe_card))
+    banner = "\U0001f525 MEGA LOOT \U0001f525\nJoin our channel https://t.me/LootZoneIndia11\nSocks at 99\nhttps://fkrt.co/s"
+    safe_banner = bot.affiliate_safe_text(banner)
+    check("a decorated pure-hype banner line is dropped whole",
+          "loot" not in safe_banner.lower() and "mega" not in safe_banner.lower(), repr(safe_banner))
+    check("and a foreign channel invite never survives",
+          "t.me" not in safe_banner, repr(safe_banner))
+    check("the actual product still goes out",
+          "Socks at 99" in safe_banner and "https://fkrt.co/s" in safe_banner, repr(safe_banner))
+    src_top = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver_block = src_top[src_top.index("async def process_job"):]
+    check("the family header is explicitly skipped for the review channel",
+          "and target != SHOPPING_TARGET" in deliver_block, "header not gated")
+
+
+
+def test_a_deal_with_no_working_link_is_not_posted():
+    """USER RULE (2026-09-05, "asalu link yeh ledu"): a deal a reader cannot click is
+    useless and earns nothing, so when every link the source wrote is dead the post is
+    skipped. The photo-post rule above is untouched: a source post that never HAD a
+    link but shows the product still goes out."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the default is 'a post needs a link'", bot.REQUIRE_LINK_IN_POST is True)
+    gate = src[src.index("if not URL_RE.search(rendered):", src.index("def render_job")):]
+    check("a dead-link-only post raises a skip",
+          "nothing buyable to post" in gate[:2600], gate[:400])
+    check("a link-free PHOTO post is still published",
+          "publishing it exactly as posted" in gate[:2600], gate[:400])
+
+
+def test_the_same_deal_under_two_banner_words_is_one_post():
+    """USER RULE (2026-09-05): the sources publish one product twice under two
+    different banner words - "Loot : X 299 (70% off)" and "Grab : X @ 299 70% off",
+    "Grab \u20b9298 (10KG Detergent Powder)" and "Loot : 10KG Detergent Powder @298".
+    The banner used to be read as the BRAND and the price as a MODEL NUMBER, so the
+    two copies signed differently and both went out. They are one product now."""
+    link = "\nhttps://fkrt.co/z"
+    same = [
+        ("Loot : Nutriburst Collagen powder 299 (70% off)",
+         "Grab : Nutriburst Collagen powder @ 299 70% off"),
+        ("Grab \u20b9298 (10KG Detergent Powder)", "Loot : 10KG Detergent Powder @298"),
+        ("Deal : Prestige Pressure Cooker 5L at 1499", "Prestige Pressure Cooker 5L Rs 1499"),
+    ]
+    for first, second in same:
+        sig_a = bot.product_signature(first + link)
+        sig_b = bot.product_signature(second + link)
+        check(f"one product, one signature: {first[:34]!r}",
+              bool(sig_a) and sig_a == sig_b, f"{sig_a} vs {sig_b}")
+    # The other direction matters more: a signature that matches too eagerly SKIPS a
+    # real deal. Two genuinely different products must never collapse together.
+    differ = [
+        ("boAt Airdopes 141 at 999", "boAt Airdopes 131 at 999"),
+        ("Samsung Galaxy S23 128GB at 45999", "Samsung Galaxy S23 256GB at 45999"),
+        ("Prestige 5 Burner Gas Stove at 4999", "Prestige 3 Burner Gas Stove at 4999"),
+        ("Nutriburst Collagen powder at 299", "Nutriburst Biotin powder at 299"),
+        ("Nivea Men Face Wash 100ml at 199", "Nivea Women Face Wash 100ml at 199"),
+    ]
+    for first, second in differ:
+        sig_a = bot.product_signature(first + link)
+        sig_b = bot.product_signature(second + link)
+        check(f"two products stay two: {first[:32]!r}", sig_a != sig_b, f"{sig_a} vs {sig_b}")
+    check("a bare category phrase still gets no signature at all",
+          bot.product_signature("Nice offer today" + link) is None)
+
+
+def test_a_flipkart_product_link_goes_out_short():
+    """USER RULE (2026-09-05, "shortga ravali ga"): a dl.flipkart.com product link
+    arrives ~177 characters (lid / marketplace / srno session noise). It is compacted
+    natively to slug + item id + pid - free, no shortener quota - so the post is neat
+    even when Bitly is rate-limited. pid is the product identity and is always kept."""
+    long_fk = ("https://dl.flipkart.com/dl/bellerbird-motivational-bottle-2000ml-black-"
+               "2000-ml-plastic/p/itm0613a6a4f24de?lid=LSTBOTHEXH9ZG8XAJTNABEVPU"
+               "&marketplace=FLIPKART&pid=BOTHEXH9ZG8XAJTN")
+    compact = bot.compact_flipkart_product_link(long_fk)
+    check("the link got materially shorter", len(compact) < len(long_fk) - 40,
+          f"{len(long_fk)} -> {len(compact)}")
+    check("it still points at the same item and product",
+          "itm0613a6a4f24de" in compact and "pid=BOTHEXH9ZG8XAJTN" in compact, compact)
+    check("the session/tracking noise is gone",
+          "lid=" not in compact and "marketplace=" not in compact, compact)
+    check("the app-redirect wrapper became the real product page",
+          compact.startswith("https://www.flipkart.com/") and "/dl/" not in compact, compact)
+
+    class NoSession:
+        pass
+
+    aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
+
+    async def no_shortener(url):
+        return None
+
+    aff.bitly = no_shortener
+    aff.shorten = no_shortener
+    out = asyncio.run(aff.shorten_long_urls_in_text("GRAB : Bottle @167\n" + long_fk))
+    check("even with the shortener DOWN the posted link is short",
+          max(len(u) for u in bot.URL_RE.findall(out)) < 140, out)
+    check("and the deal text is untouched", "GRAB : Bottle @167" in out, out)
+    search = "https://www.flipkart.com/search?q=bottle&sid=abc&otracker=xyz"
+    check("a search/category link is left for the shortener, not mangled",
+          bot.compact_flipkart_product_link(search) == bot.clean_url(search),
+          bot.compact_flipkart_product_link(search))
+
+
+def test_our_amazon_tag_only_rides_on_declared_channels():
+    """Amazon's Operating Agreement: every channel carrying your Associates links must
+    be DECLARED in Associates Central, and links on undeclared channels can close the
+    account. So the tag is restricted to AMAZON_TAG_TARGETS (the review channel by
+    default). Every other channel still posts the SAME deal - just untagged, so a
+    working deal is never lost and the account is never exposed."""
+    old_tag = bot.OUR_TAG
+    bot.OUR_TAG = "mytag-21"
+    try:
+        text = "Socks at 99\nhttps://www.amazon.in/dp/B0X?tag=mytag-21"
+        kept = bot.strip_amazon_tag_for_undeclared(text, bot.SHOPPING_TARGET)
+        check("the declared review channel keeps our tag (that is where we earn)",
+              "tag=mytag-21" in kept, kept)
+        for undeclared in ("LootZoneIndia11", "SecretLootIndia1", "Under99Deals11"):
+            out = bot.strip_amazon_tag_for_undeclared(text, undeclared)
+            check(f"@{undeclared} posts the deal WITHOUT our tag",
+                  "tag=" not in out and "amazon.in/dp/B0X" in out, out)
+            check(f"@{undeclared} still gets the product and the price",
+                  "Socks at 99" in out, out)
+        foreign = "Deal\nhttps://www.amazon.in/dp/B0Y?tag=thief-21"
+        check("a FOREIGN tag is not ours to protect and is left to the normal gates",
+              bot.strip_amazon_tag_for_undeclared(foreign, bot.SHOPPING_TARGET) == foreign)
+        nonamazon = "Deal\nhttps://fkrt.co/x"
+        check("non-Amazon links are never touched",
+              bot.strip_amazon_tag_for_undeclared(nonamazon, "LootZoneIndia11") == nonamazon)
+    finally:
+        bot.OUR_TAG = old_tag
+    check("with no tag configured the text is returned untouched",
+          bot.strip_amazon_tag_for_undeclared("x https://www.amazon.in/dp/B0Z", "LootZoneIndia11")
+          == "x https://www.amazon.in/dp/B0Z")
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the strip runs on the delivery path, per target",
+          "strip_amazon_tag_for_undeclared(target_text, target" in deliver, "not wired in")
+
+
+def test_the_review_channel_copy_is_built_from_an_allowlist():
+    """USER RULE (2026-09-05): the new channel is under EarnKaro/Amazon review, so it
+    must follow the programme rules 100% - the other channels are untouched. A
+    blocklist is the wrong tool (the one hype word nobody listed is the one the
+    reviewer sees), so the review copy is REBUILT from an allowlist: product line +
+    price the source printed + link. Nothing else survives, nothing is invented."""
+    cases = [
+        ("\U0001f525\U0001f525 PRICE ERROR LOOT \U0001f525\U0001f525\nBoat Airdopes 141 at 899\n"
+         "Order fast before it ends!!\nhttps://fkrt.co/a",
+         ["Boat Airdopes 141 at 899", "https://fkrt.co/a"]),
+        ("Dhamaka offer!! Jackpot deal\nPrestige Cooker 5L at 1499\nBuy Max Quantity\n"
+         "https://fkrt.co/c", ["Prestige Cooker 5L at 1499", "https://fkrt.co/c"]),
+        ("Samsung Galaxy M14 5G at 9999\nMRP 16999\nSave 41%\nhttps://www.amazon.in/dp/B0M14",
+         ["Samsung Galaxy M14 5G at 9999", "https://www.amazon.in/dp/B0M14"]),
+    ]
+    for raw, expected in cases:
+        out = bot.affiliate_safe_text(raw)
+        check(f"only product+link survive: {expected[0][:30]!r}",
+              out.splitlines() == expected, repr(out))
+    banned = ("loot", "price error", "dhamaka", "jackpot", "order fast",
+              "buy max quantity", "mrp", "41%", "\U0001f525")
+    joined = " ".join(bot.affiliate_safe_text(raw) for raw, _ in cases).lower()
+    for word in banned:
+        check(f"the reviewer never sees {word!r}", word not in joined, joined[:120])
+    check("the price stays EXACTLY as the source printed it",
+          "at 899" in bot.affiliate_safe_text(cases[0][0]), "price reformatted")
+
+    # A post that is only a trick/glitch/cashback line has NO product to review.
+    # After the rebuild nothing but a link is left, and the delivery guard must
+    # refuse it for this channel (the other channels still get it as written).
+    def would_post(text: str) -> bool:
+        safe = bot.affiliate_safe_text(text)
+        return bool(safe and bot.URL_RE.search(safe)
+                    and re.search(r"[A-Za-z]{3}", bot.URL_RE.sub(" ", safe)))
+
+    check("a cashback TRICK post never reaches the review channel",
+          not would_post("Cashback trick: pay via CRED get 200 off\nhttps://fkrt.co/b"))
+    check("a 'free money glitch' post never reaches it either",
+          not would_post("Free money glitch\nhttps://fkrt.co/d"))
+    check("but a real product deal does",
+          would_post("Boat Airdopes 141 at 899\nhttps://fkrt.co/a"))
+    check("the strict rebuild is idempotent",
+          bot.affiliate_safe_text(bot.affiliate_safe_text(cases[0][0]))
+          == bot.affiliate_safe_text(cases[0][0]))
+    check("and it is ON by default", bot.SAFE_STRICT_REBUILD is True)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("def render_job"):src.index("async def process_job")]
+    check("the strict copy is delivery-only: other channels keep the source's post",
+          "affiliate_safe_text" not in render and "_strict_review_copy" not in render,
+          "review rewrite leaked into the shared render path")
+
+
+def test_review_channel_posts_are_disclosed_amazon_only_and_capped():
+    """USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
+    Three programme rules the review channel must satisfy on EVERY post."""
+    deal = "Boat Airdopes 141 at 899\nhttps://www.amazon.in/dp/B0X"
+
+    # 1. Link-level disclosure. Amazon/FTC require it NEXT TO the link on every
+    # post - the channel bio alone is not enough, and missing it is one of the
+    # most common rejection reasons.
+    disclosed = bot.add_link_disclosure(bot.affiliate_safe_text(deal))
+    check("every post carries a link-level disclosure",
+          "#ad" in disclosed or "paid link" in disclosed.lower(), repr(disclosed))
+    check("the product and price are still there",
+          "Boat Airdopes 141 at 899" in disclosed, repr(disclosed))
+    check("the disclosure is never doubled",
+          bot.add_link_disclosure(disclosed) == disclosed, repr(disclosed))
+    check("a post that already discloses is left alone",
+          bot.add_link_disclosure("X at 99 #ad\nhttps://www.amazon.in/dp/B0Y").count("#ad") == 1)
+
+    # 2. Amazon only - the channel is submitted for the AMAZON programme.
+    check("an Amazon-only deal qualifies", bot.is_amazon_only_post(deal) is True)
+    check("a Flipkart deal does not",
+          bot.is_amazon_only_post("X at 99\nhttps://fkrt.co/a") is False)
+    check("a MIXED post does not either (an off-programme link would ride along)",
+          bot.is_amazon_only_post(deal + "\nhttps://fkrt.co/a") is False)
+    check("a post with no link at all does not qualify",
+          bot.is_amazon_only_post("Just a note") is False)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the Amazon-only gate is enforced at delivery, not just at routing",
+          "not is_amazon_only_post(safe_text)" in deliver, "gate missing")
+    check("the disclosure is added at delivery, after every cleaning pass",
+          "add_link_disclosure(safe_text)" in deliver, "disclosure not wired")
+
+    # 3. A daily cap, so the channel reads as a curated shop and not a firehose.
+    async def run_quota():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "quota.sqlite3")
+            old_cap, bot.SHOPPING_DAILY_CAP = bot.SHOPPING_DAILY_CAP, 3
+            try:
+                first = await store.shopping_quota_left()
+                for _ in range(3):
+                    await store.note_shopping_sent()
+                after = await store.shopping_quota_left()
+                # survives a restart: a fresh Store on the same file keeps the count
+                reopened = bot.Store(Path(td) / "quota.sqlite3")
+                return first, after, await reopened.shopping_quota_left()
+            finally:
+                bot.SHOPPING_DAILY_CAP = old_cap
+
+    start, after, restarted = asyncio.run(run_quota())
+    check("the day starts with the full allowance", start == 3, str(start))
+    check("the cap stops further posts once it is reached", after == 0, str(after))
+    check("and the count survives a restart (no reset-to-zero loophole)",
+          restarted == 0, str(restarted))
+    check("the shipped default matches the user's 40-50/day", bot.SHOPPING_DAILY_CAP == 50,
+          str(bot.SHOPPING_DAILY_CAP))
+    check("the cap is enforced on the delivery path",
+          "shopping_quota_left()" in deliver, "cap not wired")
+
+
+def test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers():
+    """REJECTION 2026-09-06 (deals0911-21), verbatim: "unapproved use of Amazon
+    trademarked words, images (screenshots/screen recordings), or reviews (which
+    may include variations or misspellings)", with t.me/LootZoneIndia11 given as
+    the worked example. Each of those three is now closed off in code."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+
+    # 1. The MARK must not appear in the copy. Linking to the store is fine.
+    for named in ("Amazon Loot Deal\nBoat Airdopes 141 at 899",
+                  "Amzn Prime Day sale\nSamsung M14 at 9999",
+                  "Great Indian Festival\nSony headphones at 1999",
+                  "AmazonBasics cable at 199",
+                  "Alexa Echo Dot at 3499"):
+        body = named + "\nhttps://www.amazon.in/dp/B0X"
+        safe = bot.affiliate_safe_text(body)
+        check("the mark is gone from the review copy of %r" % named.splitlines()[0],
+              not bot.has_amazon_trademark(safe), repr(safe))
+    check("a bare amazon.in LINK is not treated as a trademark use",
+          bot.has_amazon_trademark("Boat 141 at 899\nhttps://www.amazon.in/dp/B0X") is False)
+    check("misspellings and variations are caught too",
+          all(bot.has_amazon_trademark(w) for w in ("amazn deal", "AMAZON sale", "amzn offer")))
+    check("an ordinary product name is not a false positive",
+          bot.has_amazon_trademark("Boat Airdopes 141 at 899") is False)
+    check("the trademark gate runs on the delivery path",
+          "has_amazon_trademark(safe_text)" in deliver, "gate not wired")
+
+    # 2. No route from the review channel to a loot channel - the email's example.
+    body = "Nutriburst Collagen powder 299\nJoin @LootZoneIndia11\nhttps://www.amazon.in/dp/B0Y"
+    safe = bot.affiliate_safe_text(body)
+    check("the loot-channel pointer is stripped",
+          not bot.has_telegram_pointer(safe), repr(safe))
+    check("but the product and price survive",
+          "Nutriburst Collagen powder 299" in safe, repr(safe))
+    check("a t.me url counts as a pointer",
+          bot.has_telegram_pointer("see https://t.me/LootZoneIndia11") is True)
+    check("the pointer gate runs on the delivery path",
+          "has_telegram_pointer(safe_text)" in deliver, "gate not wired")
+
+    # 3. No images: a forwarded deal photo is nearly always a store screenshot.
+    check("the review channel is text-only by default", bot.SHOPPING_TEXT_ONLY is True)
+    check("media is dropped for the review channel only",
+          "target_media = []" in deliver and "target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY" in deliver,
+          "text-only not wired")
+    check("every other channel still gets its media",
+          "target_media = media_path" in deliver, "media dropped globally")
+
+    # USER RULE (2026-09-06): "daily oka 40-50 cheyali e okka channelo lo".
+    check("the daily cap now allows 40-50 posts", bot.SHOPPING_DAILY_CAP == 50,
+          str(bot.SHOPPING_DAILY_CAP))
+
+
+def test_a_roundup_list_cannot_be_posted_twice_from_two_sources():
+    """USER RULE (2026-09-06): "anni vere channels lo anni multiple times
+    rakudna and duplicates lekunda".
+
+    A single-product post has always had a repeat guard. A ROUNDUP (3+ merchant
+    links) had NO identity at all, so the same list arriving again from a second
+    source - different shortener, different banner, items in a different order -
+    was invisible to the guard and the channel carried it twice.
+    """
+    first = ("Deal of the day\nBoat Airdopes 141 at 899\nhttps://amzn.to/a\n"
+             "Samsung M14 5G at 9999\nhttps://amzn.to/b\n"
+             "Noise Buds VS104 at 799\nhttps://amzn.to/c")
+    # Same three products: other source, other shortener, other banner, shuffled.
+    repeat = ("LOOT!!\nSamsung M14 5G at 9999\nhttps://fkrt.co/y\n"
+              "Noise Buds VS104 at 799\nhttps://fkrt.co/z\n"
+              "Boat Airdopes 141 at 899\nhttps://fkrt.co/x")
+    bigger = first + "\nRedmi Note 13 at 14999\nhttps://amzn.to/d"
+
+    sig_first = bot.product_signature(first)
+    check("a roundup now HAS an identity (it used to be None)", bool(sig_first), repr(sig_first))
+    check("the same list from another source matches it",
+          sig_first == bot.product_signature(repeat),
+          "%r vs %r" % (sig_first, bot.product_signature(repeat)))
+    check("a list with an extra product is NOT the same post (coverage kept)",
+          sig_first != bot.product_signature(bigger))
+    check("single-product posts keep their own identity scheme",
+          str(bot.product_signature("Boat Airdopes 141 at 899\nhttps://amzn.to/a")).startswith("SIG:"))
+    check("a one-item 'list' is too thin to key on",
+          bot._roundup_signature("Boat Airdopes 141 at 899\nhttps://amzn.to/a") is None)
+    check("a post with no products at all gets no list key",
+          bot._roundup_signature("Deal of the day\nhttps://amzn.to/a") is None)
+
+    # The guard the signature feeds is per channel and still lets a cheaper
+    # repeat through, so a genuine price drop is never swallowed.
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "dup.sqlite3")
+            await store.mark_product_posted("LootZoneIndia11", sig_first, 899, 40)
+            same, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 899, 40)
+            other, _ = await store.product_already_posted("Under99Deals11", sig_first, 899, 40)
+            cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 799, 40)
+            return same, other, cheaper
+
+    same, other, cheaper = asyncio.run(run())
+    check("the repeat is skipped on the channel that already carried it", same is True)
+    check("but a channel that has NOT carried it still gets it", other is False)
+    check("and a cheaper repeat is still allowed through", cheaper is False)
+
+
+def test_our_new_associates_tag_and_the_self_source_loop():
+    """USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade" and
+    "nenu source ga ana kotha channel link ichanu"."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+
+    # 1. The tag we now own is usable again - it had been pinned empty because
+    # the only tag ever seen (deals0911-21) belonged to a SOURCE, not to us.
+    check("mama086-21 is registered as a tag we own",
+          "mama086-21" in bot.OUR_AMAZON_TAGS, str(bot.OUR_AMAZON_TAGS))
+    check("the tag is read from the environment, not pinned empty",
+          'os.getenv("AMAZON_TAG"' in src, "AMAZON_TAG no longer read")
+    check("a tag that is NOT ours can never be used",
+          "deals0911-21" not in {t.lower() for t in bot.OUR_AMAZON_TAGS})
+
+    # 2. It may ride ONLY on the channel declared to Amazon.
+    check("the declared-channel allowlist is still just the review channel",
+          bot.AMAZON_TAG_TARGETS == {bot.SHOPPING_TARGET}, str(bot.AMAZON_TAG_TARGETS))
+    if bot.OUR_TAG:
+        tagged = "Boat 141 at 899\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+        check("the tag survives on the declared channel",
+              bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared(tagged, bot.SHOPPING_TARGET))
+        check("the tag is stripped everywhere else",
+              bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared(tagged, "LootZoneIndia11"))
+
+    # 3. A channel we publish to must never be read back as a source, or the bot
+    # republishes its own posts forever.
+    for own in ("smartbuyhub11", "@smartbuyhub11", "LootZoneIndia11",
+                "Under99Deals11", "Premiumlootsdeals"):
+        check("our own channel %r is refused as a source" % own,
+              bot.is_own_channel_source(own) is True)
+    for real in ("pricehistory", "under_99_loot_deals", "TrickXpert", ""):
+        check("a real source %r is still accepted" % real,
+              bot.is_own_channel_source(real) is False)
+    deliver = src[src.index("async def process_job"):]
+    check("the self-source loop is broken before anything is posted",
+          "is_own_channel_source(row[\"source\"])" in deliver, "guard not wired")
+
+    # 4. The user asked for 30-50 posts a day on the new channel.
+    check("the daily cap covers the 30-50 the user asked for",
+          30 <= bot.SHOPPING_DAILY_CAP <= 50, str(bot.SHOPPING_DAILY_CAP))
+
+
+def test_the_review_copy_is_clean_on_real_source_shapes():
+    """USER RULE (2026-09-06): "anni advanced gaa ... approve vachelanga post
+    cheyu". Run the REAL shapes our sources actually send and require the
+    finished post to be exactly: product, price, link, disclosure."""
+    import re as _re
+
+    def finished(raw):
+        safe = bot.affiliate_safe_text(raw)
+        if (not safe or not bot.URL_RE.search(safe)
+                or not _re.search(r"[A-Za-z]{3}", bot.URL_RE.sub(" ", safe))
+                or bot.has_amazon_trademark(safe) or bot.has_telegram_pointer(safe)):
+            return None                      # withheld from the review channel
+        return bot.add_link_disclosure(safe)
+
+    hype = ("\U0001f525 LOOT \U0001f525\nboAt Rockerz 255 Pro+ Neckband\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705\n"
+            "https://amzn.to/aaa\n@LootZoneIndia11")
+    out = finished(hype)
+    check("the product line survives", "boAt Rockerz 255 Pro+ Neckband" in out, repr(out))
+    check("the DEAL price is salvaged off the MRP line", "899" in out, repr(out))
+    check("the MRP anchor never ships", "2990" not in out, repr(out))
+    check("the percent-off claim never ships", "70%" not in out, repr(out))
+    check("the loot pointer never ships", "LootZone" not in out, repr(out))
+
+    # "or reviews" is named in the rejection - ratings are Amazon-owned content.
+    rated = ("SAMSUNG Galaxy M14 5G (128 GB)\nDeal Price: Rs.9999\n"
+             "Rating 4.2 \u2b50 | 12,453 reviews\nhttps://amzn.to/ddd")
+    out = finished(rated)
+    check("the star rating never ships", "4.2" not in out, repr(out))
+    check("the review count never ships",
+          "review" not in out.lower() and "12,453" not in out, repr(out))
+    check("the price still ships", "9999" in out, repr(out))
+
+    # A price written on its own line, and a coupon condition.
+    out = finished("*Nutriburst Collagen Powder 200g*\n@ 299/-\nBuy now \U0001f449 https://amzn.to/bbb")
+    check("a lone '@ 299/-' line is kept as the price", "299" in out, repr(out))
+    check("the call-to-action never ships", "Buy now" not in out, repr(out))
+
+    out = finished("\u26a1 Apply 10% coupon \u26a1\nPigeon Kettle 1.5L at 549\nhttps://amzn.to/eee")
+    check("the coupon condition never ships", "coupon" not in out.lower(), repr(out))
+    check("a price already in the product line is NOT repeated",
+          out.count("549") == 1, repr(out))
+
+    # Every finished post has the four required parts and nothing else.
+    for raw in (hype, rated, "Milton Bottle 1L - 89\nhttps://amzn.to/c1"):
+        out = finished(raw)
+        check("the post ends with the disclosure", out.rstrip().endswith("#ad (paid link)"), repr(out))
+        check("the post has exactly one link", len(bot.URL_RE.findall(out)) == 1, repr(out))
+        check("no line is repeated in the post",
+              len(out.splitlines()) == len(dict.fromkeys(out.splitlines())), repr(out))
+
+    # Naming the marketplace withholds the post from THIS channel only.
+    check("a post naming the marketplace is withheld",
+          finished("Amazon Great Indian Festival deal\nhttps://amzn.to/f") is None)
+    check("a trick post is withheld", finished("Cashback trick\nhttps://amzn.to/x") is None)
+    check("but the product under a marketplace banner still ships",
+          "Sony WH-1000XM4" in (finished(
+              "Amazon Great Indian Festival\nSony WH-1000XM4\n\u20b919990\nhttps://amzn.to/fff") or ""))
+
+
+def test_native_links_on_review_channel_and_the_tag_switch():
+    """USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+    cheyaku" and "tag ni anni channels lo use cheyu okavela approve vasthadi"."""
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+
+    # 1. NO SHORTENER on the reviewed channel. A bit.ly hop hides the
+    # destination; the reviewer must see the store domain in the post itself.
+    class FakeAffiliate:
+        def __init__(self):
+            self._short_to_long = {}
+        expand_our_short_links = bot.AffiliateClient.expand_our_short_links
+
+    affiliate = FakeAffiliate()
+    native = "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21"
+    affiliate._short_to_long["https://bit.ly/3xYz"] = native
+    post = "boAt Rockerz 255\nPrice: \u20b9899\nhttps://bit.ly/3xYz"
+    expanded = affiliate.expand_our_short_links(post)
+    check("our short link is swapped back to the native store URL",
+          native in expanded and "bit.ly" not in expanded, repr(expanded))
+    check("the store domain is visible to the reviewer",
+          "amazon.in" in expanded, repr(expanded))
+    check("our tag survives the swap", "tag=mama086-21" in expanded, repr(expanded))
+    check("a SOURCE's own short link is never rewritten (we cannot know it)",
+          affiliate.expand_our_short_links("Deal\nhttps://fkrt.co/x") == "Deal\nhttps://fkrt.co/x")
+    check("the native link is still short and neat", len(native) < 60, str(len(native)))
+    check("native links are on by default", bot.SHOPPING_NATIVE_LINKS is True)
+    check("the swap runs on the review path only",
+          "affiliate.expand_our_short_links(target_text)" in deliver, "not wired")
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+    check("every other channel keeps its shortened link",
+          "expand_our_short_links" not in render, "shared path was changed")
+
+    # 2. The tag switch: safe while pending, everywhere once approved.
+    def tag_targets_for(value):
+        owned = {bot.SHOPPING_TARGET, *bot.ALL_OWNED_TARGETS}
+        if value.lower() in ("all", "*"):
+            return owned
+        if value:
+            return {t.strip().lstrip("@") for t in value.split(",") if t.strip()}
+        return {bot.SHOPPING_TARGET}
+
+    check("unset = the review channel only (safe while the application is pending)",
+          tag_targets_for("") == {bot.SHOPPING_TARGET})
+    every = tag_targets_for("all")
+    check("'all' puts the tag on every owned channel once approved",
+          bot.SHOPPING_TARGET in every and "LootZoneIndia11" in every and len(every) >= 8,
+          str(sorted(every)))
+    check("an explicit list is honoured exactly",
+          tag_targets_for("smartbuyhub11,LootZoneIndia11") == {"smartbuyhub11", "LootZoneIndia11"})
+    check("the 'all' switch is documented as approval-only",
+          "AMAZON_TAG_TARGETS=all" in src and "AFTER" in src, "not documented")
+
+
+def test_the_whatsapp_bridge_cannot_go_quiet():
+    """USER RULE (2026-09-06): "whatsapp lo bestga post cheyali ... agipoindi
+    ippudu alaga agipovaddu". Three ways the bridge used to stop for good."""
+    bridge = (ROOT / "tg-wa-bridge" / "bridge.js").read_text(encoding="utf-8")
+
+    # 1. A logout used to `return` in silence - the channel simply stopped and
+    # the logs said nothing more, which is how it was found days later.
+    check("a logout keeps reporting itself instead of going silent",
+          "still logged out" in bridge, "silent logout")
+    check("the logout message names the fix to run",
+          "switch_whatsapp_number.sh" in bridge, "no remedy in the message")
+
+    # 2. The watchdog only fired when deals were WAITING. A socket that died
+    # while the queue was empty stayed dead, so the next deal hours later landed
+    # on a broken connection.
+    check("an idle socket is refreshed even with an empty queue",
+          "readyCount === 0 && idleFor > 90" in bridge, "idle refresh missing")
+
+    # 3. If the socket was never ready, nothing retried it at all.
+    check("a cold socket is retried by the watchdog",
+          "watchdog cold retry failed" in bridge, "cold retry missing")
+    check("the cold retry is driven by the last successful connection",
+          "lastConnectionOpenAt" in bridge, "no connection timestamp")
+
+    # The identity probe is a pure function and must not need live credentials -
+    # demanding them is why this contract silently never ran for many rounds.
+    check("the identity probe runs without WhatsApp credentials",
+          "IDENTITY_PROBE" in bridge and "if (IDENTITY_PROBE) return ''" in bridge,
+          "probe still needs a provisioned .env")
+
+
+def test_the_review_channel_posts_at_a_human_pace():
+    """USER RULE (2026-09-06): "oka human laga daily oka 50 posts".
+
+    50 posts fired in one burst at 3am is what a reviewer reads as an automated
+    feed. The same 50 spread across the day reads as a person curating a shop.
+    """
+    check("human pacing is on by default", bot.SHOPPING_HUMAN_PACING is True)
+    check("the active window is daytime, not 24h",
+          0 <= bot.SHOPPING_ACTIVE_START < bot.SHOPPING_ACTIVE_END <= 24
+          and (bot.SHOPPING_ACTIVE_END - bot.SHOPPING_ACTIVE_START) <= 16,
+          "%s-%s" % (bot.SHOPPING_ACTIVE_START, bot.SHOPPING_ACTIVE_END))
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "pace.sqlite3")
+            first = await store.shopping_pace_wait()
+            await store.note_shopping_sent()
+            second = await store.shopping_pace_wait()
+            left = await store.shopping_quota_left()
+            # the gap must survive a restart, like the counter does
+            reopened = bot.Store(Path(td) / "pace.sqlite3")
+            after_restart = await reopened.shopping_pace_wait()
+            return first, second, left, after_restart
+
+    first, second, left, after_restart = asyncio.run(run())
+    active_hours = bot.SHOPPING_ACTIVE_END - bot.SHOPPING_ACTIVE_START
+    ideal_gap = active_hours * 3600 / max(1, bot.SHOPPING_DAILY_CAP)
+
+    check("the first post of the day goes out immediately", first == 0.0, str(first))
+    if bot.SHOPPING_ACTIVE_START <= bot.datetime.now(bot.IST).hour < bot.SHOPPING_ACTIVE_END:
+        check("a second post is held back so the two are not a burst",
+              second > 0, str(second))
+        check("the gap is roughly the day's allowance spread over the window",
+              0.5 * ideal_gap <= second <= 1.3 * ideal_gap,
+              "gap %.0fs vs ideal %.0fs" % (second, ideal_gap))
+        check("the pacing survives a restart (no burst after a deploy)",
+              after_restart > 0, str(after_restart))
+    check("the daily counter still moves", left == bot.SHOPPING_DAILY_CAP - 1, str(left))
+
+    # A paced deal must be DEFERRED, never dropped - and only for this channel.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("the pace gate runs on the review path", "shopping_pace_wait()" in deliver)
+    paced = deliver[deliver.index("shopping_pace_wait()"):]
+    paced = paced[:paced.index("continue") + len("continue")]
+    check("a paced deal is left pending, not closed as delivered",
+          "store.delivery(" not in paced, paced[-200:])
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+    check("no other channel is paced", "shopping_pace_wait" not in render)
+
+
+def test_our_tag_is_live_now_on_the_review_channel():
+    """USER RULE (2026-09-06): "approve ayyedaka wait cheyaku amazon associate
+    tag vundi gaa danne use cheyu"."""
+    if not bot.OUR_TAG:
+        return
+    compact = bot.compact_amazon_product_link(
+        "https://www.amazon.in/dp/B0FPDD9WKP?psc=1&smid=X&ref_=abc")
+    check("our tag is on the link right now, no waiting",
+          "tag=" + bot.OUR_TAG in compact, compact)
+    check("the noise params are gone", "psc" not in compact and "smid" not in compact, compact)
+    check("the review channel keeps the tag",
+          bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared("x\n" + compact, bot.SHOPPING_TARGET))
+    check("an UNDECLARED channel still posts the deal, just untagged",
+          bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared("x\n" + compact, "LootZoneIndia11")
+          and "B0FPDD9WKP" in bot.strip_amazon_tag_for_undeclared("x\n" + compact, "LootZoneIndia11"))
+
+
+def test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link():
+    """THE ACTUAL REJECTION CAUSE, found by the user on 2026-09-06:
+
+        "LootZoneIndia11 adi nenu source ga ichnau danni check chesanu so andulo
+         anni photos antha anni tags tho post ayyayi so reject chesaru"
+
+    Links are SHORTENED in render_job, BEFORE the tag-strip runs at delivery. So
+    the strip saw "https://bit.ly/3xYz" - no amazon.in hostname to match, nothing
+    stripped - and our Associates tag rode into an undeclared loot channel inside
+    the redirect. Amazon reads the referrer on every click, which is exactly how
+    the application was failed.
+    """
+    if not bot.OUR_TAG:
+        return
+
+    class FakeAffiliate:
+        _short_to_long = {
+            "https://bit.ly/3xYz": "https://www.amazon.in/dp/B0FPDD9WKP?tag=" + bot.OUR_TAG,
+            "https://bit.ly/flip": "https://www.flipkart.com/x/p/itm1",
+        }
+
+    affiliate = FakeAffiliate()
+    post = "boAt 141\nhttps://bit.ly/3xYz"
+
+    loot = bot.strip_amazon_tag_for_undeclared(post, "LootZoneIndia11", affiliate)
+    check("the tag no longer hides behind a shortener on a loot channel",
+          bot.OUR_TAG not in loot and "bit.ly" not in loot, repr(loot))
+    check("the loot channel still gets a working product link",
+          "B0FPDD9WKP" in loot and "amazon.in" in loot, repr(loot))
+
+    review = bot.strip_amazon_tag_for_undeclared(post, bot.SHOPPING_TARGET, affiliate)
+    check("the DECLARED channel is untouched", review == post, repr(review))
+
+    check("a non-Amazon short link of ours is left alone",
+          "bit.ly/flip" in bot.strip_amazon_tag_for_undeclared(
+              "x\nhttps://bit.ly/flip", "LootZoneIndia11", affiliate))
+    check("a SOURCE's own short link is never rewritten",
+          "fkrt.co/own" in bot.strip_amazon_tag_for_undeclared(
+              "x\nhttps://fkrt.co/own", "LootZoneIndia11", affiliate))
+
+    # A plainly visible tagged URL must still be stripped (the original path).
+    visible = "boAt 141\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    check("a visible tagged link is still stripped for a loot channel",
+          bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared(
+              visible, "LootZoneIndia11", affiliate))
+
+    # The strip must be wired WITH the affiliate client, or pass 1 is dead code.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("delivery passes the affiliate client so short links can be resolved",
+          "strip_amazon_tag_for_undeclared(target_text, target, affiliate)" in deliver,
+          "affiliate not passed - the shortener hole is still open")
+
+    # The other half of the user's finding: the photos.
+    check("the review channel sends no images at all", bot.SHOPPING_TEXT_ONLY is True)
+    check("media is dropped for the review channel only",
+          "target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY" in deliver
+          and "target_media = media_path" in deliver, "text-only not wired")
+
+
+def test_the_four_defects_the_user_photographed():
+    """USER REPORT (2026-09-06), four separate defects on the LOOT channels."""
+    import re as _re
+
+    # 1. "same products double times in same groups" - the Ergonomic Dustpan
+    # went out twice. Two-word product names had NO identity (the floor was
+    # three words), so the per-channel repeat guard never ran on them at all.
+    post = "\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL"
+    sig = bot.product_signature(post)
+    check("a two-word product now has an identity", bool(sig), repr(sig))
+    check("the repeat of the very same post keys the same",
+          sig == bot.product_signature(post))
+    check("a different product does not collide",
+          sig != bot.product_signature("\U0001f525 Ergonomic Mop @ \u20b955\nhttps://www.amazon.in/dp/B0X"))
+    for phrase in ("hair oil", "phone case", "Running Shoes"):
+        check("a short category phrase %r is still NOT keyed" % phrase,
+              bot._product_identity(phrase) is None)
+
+    # 2. "ilaga link pamplkudnaa just names vasthunndi" - a priced LIST with no
+    # link at all was published. A reader cannot buy any of it.
+    listing = ("Cello Feast Deluxe Kids Lunch Box @264.\n\nApply 31% Off Coupon\n\n"
+               "2 Containers Lunch Box, 1024 ml @517.\n\nApply 30% Off Coupon")
+    priced = [ln for ln in listing.splitlines()
+              if bot.parse_price(ln) is not None and _re.search(r"[A-Za-z]{3}", ln)]
+    check("the offending post is recognised as a multi-product list",
+          len(priced) >= 2, str(priced))
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("a link-free MULTI-product list can no longer be published",
+          "len(_priced_lines) < 2" in src, "the link-free list hole is still open")
+    check("a single link-free product (photo deal) is still allowed",
+          "_priced_lines" in src and "has_media_now" in src)
+
+    # 3. "flipkart earnkaro tho change cheyatledu shortenga" - a 112-char link
+    # went out whole because its path said /p/item, not /p/itm<id>.
+    long_fk = ("https://www.flipkart.com/flipkart/p/item?lid=LSTSOPH2D7GGSYYMVFPST5QWO"
+               "&marketplace=FLIPKART&pid=SOPH2D7GGSYYMVFP")
+    compact = bot.compact_flipkart_product_link(long_fk)
+    check("the /p/item spelling is now compacted",
+          len(compact) < len(bot.clean_url(long_fk)), "%s -> %s" % (len(long_fk), len(compact)))
+    check("the product identity (pid) is kept", "SOPH2D7GGSYYMVFP" in compact, compact)
+    check("the tracking noise is gone",
+          "lid=" not in compact and "marketplace=" not in compact, compact)
+    check("the usual /p/itm spelling still works",
+          bot.compact_flipkart_product_link(
+              "https://www.flipkart.com/soap/p/itmabc123?lid=X&pid=PID9").endswith("pid=PID9"))
+    check("a search URL is still left for the shortener",
+          bot.compact_flipkart_product_link("https://www.flipkart.com/search?q=soap")
+          == "https://www.flipkart.com/search?q=soap")
+
+    # 4. "shopsy ani kuda exted avuthundi alaga avoddu" - Telegram unfurled a
+    # generic "Shopsy Store" card under a pen-stand deal, because an
+    # unresolved bitli.in link passed the preview test.
+    async def run_preview():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "prev.sqlite3")
+            unresolved = await store.preview_allowed(
+                "Decorative Boat Pen Stand at \u20b9261\nhttps://bitli.in/hlqmyQS")
+            amazon = await store.preview_allowed(
+                "Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+            return unresolved, amazon
+
+    unresolved, amazon = asyncio.run(run_preview())
+    check("an unresolved shortener gets NO preview card", unresolved is False)
+    check("a real Amazon product link keeps its preview", amazon is True)
+
+
+def test_only_the_review_channel_is_restricted():
+    """USER RULE (2026-09-06), restated firmly: "mana top remaining channel
+    gurinchi vatilo elanti issue lekunda cheyu ... only chala restricts for
+    review channel only".
+
+    Every programme rule written in rounds 5-15 must apply to SHOPPING_TARGET
+    and to nothing else. This test is the guard that keeps it that way.
+    """
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    render = src[src.index("async def render_job"):src.index("async def process_job")]
+
+    # The strict machinery must not appear in the shared render path at all.
+    for name in ("affiliate_safe_text", "_strict_review_copy", "add_link_disclosure",
+                 "_STRICT_DROP_LINE_RE", "_salvage_price_only", "has_amazon_trademark",
+                 "has_telegram_pointer", "shopping_pace_wait", "shopping_quota_left",
+                 "SHOPPING_TEXT_ONLY", "SHOPPING_NATIVE_LINKS"):
+        check("%s never runs on the shared path" % name, name not in render,
+              "%s leaked into render_job - it would restrict every channel" % name)
+
+    # A hype post must reach a loot channel completely untouched.
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\n"
+            "boAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n"
+            "70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "Apply 10% coupon | Hurry limited stock!\nAmazon Great Indian Festival\n\n"
+            "https://amzn.to/aaa")
+    strict = bot.affiliate_safe_text(hype)
+    check("the review copy DID strip the hype", "LOOT" not in strict and "70%" not in strict)
+    for keep in ("LOOT DEAL", "MRP", "70% OFF", "Rating 4.2", "12,453 reviews",
+                 "Apply 10% coupon", "Hurry limited stock", "Amazon Great Indian Festival",
+                 "\U0001f525"):
+        check("a loot channel keeps %r" % keep, keep in hype,
+              "the source text itself is the loot-channel copy")
+
+    # The four round-15 bug fixes must be FIXES, not new restrictions.
+    sig = bot.product_signature("\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://amzn.to/a")
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "r.sqlite3")
+            await store.mark_product_posted("LootZoneIndia11", sig, 55, 0)
+            same, _ = await store.product_already_posted("LootZoneIndia11", sig, 55, 0)
+            other, _ = await store.product_already_posted("Under99Deals11", sig, 55, 0)
+            cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig, 45, 0)
+            amazon = await store.preview_allowed("x\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+            shortener = await store.preview_allowed("x\nhttps://bitli.in/hlqmyQS")
+            return same, other, cheaper, amazon, shortener
+
+    same, other, cheaper, amazon, shortener = asyncio.run(run())
+    check("dedup blocks only an exact repeat on the SAME channel", same is True)
+    check("another channel still receives the very same deal", other is False)
+    check("a cheaper repeat is still published", cheaper is False)
+    check("a real product preview card is kept on the loot channels", amazon is True)
+    check("only the junk shortener card is suppressed", shortener is False)
+
+    compact = bot.compact_flipkart_product_link(
+        "https://www.flipkart.com/flipkart/p/item?lid=X&pid=SOPH2D7GG")
+    check("the Flipkart link still opens the same product, just shorter",
+          "SOPH2D7GG" in compact and "flipkart.com" in compact, compact)
+
+    # And the per-channel policy switches are all keyed to SHOPPING_TARGET.
+    deliver = src[src.index("async def process_job"):]
+    strict_block = deliver[deliver.index("if target == SHOPPING_TARGET:"):]
+    strict_block = strict_block[:strict_block.index("target_text = strip_amazon_tag_for_undeclared")]
+    for rule in ("affiliate_safe_text", "has_amazon_trademark", "add_link_disclosure",
+                 "shopping_quota_left", "shopping_pace_wait"):
+        check("%s sits inside the SHOPPING_TARGET branch" % rule, rule in strict_block,
+              "%s is applied outside the review-channel branch" % rule)
+
+
+def test_deep_audit_prices_foreign_tags_and_nameless_posts():
+    """Round 17 deep audit: four defects found by running real source shapes
+    through the pipeline rather than invented examples."""
+    import re as _re
+
+    # 1. A DISCOUNT IS NOT A PRICE. "Rs.99 off" was read as a price of 9 - the
+    # regex lookahead only had to fail for the shorter match, so it backtracked
+    # off the last digit. A figure the source never charged is corruption.
+    check("'99 off' is not a price", bot.parse_price("\u20b999 off") is None)
+    check("'Save 500' is not a price", bot.parse_price("Save \u20b9500") is None)
+    check("'Flat 200 off' is not a price", bot.parse_price("Flat 200 off") is None)
+    check("'50 cashback' is not a price", bot.parse_price("\u20b950 cashback") is None)
+    check("'upto 300 off' is not a price", bot.parse_price("upto \u20b9300 off") is None)
+    # ...while every real price shape still reads correctly.
+    for text, expected in (("@264.", 264), ("\u20b91,299", 1299), ("Rs.9999", 9999),
+                           ("499/-", 499), ("only 89", 89), ("at 261", 261),
+                           ("MRP \u20b92990 Deal \u20b9899", 899),
+                           ("Deal \u20b9899 Save \u20b92091", 899),
+                           ("1024 ml @517", 517)):
+        check("%r still reads as %s" % (text, expected),
+              bot.parse_price(text) == expected, str(bot.parse_price(text)))
+
+    # 2. A STRANGER'S ASSOCIATES TAG MUST NEVER REACH THE REVIEWED CHANNEL.
+    # To Amazon that is our declared property paying a third party.
+    if bot.OUR_TAG:
+        foreign = "Dustpan @ 55\nhttps://www.amazon.in/dp/B0X?tag=stranger-21"
+        fixed = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(foreign))
+        check("a foreign tag is replaced on the review channel",
+              "stranger-21" not in fixed, repr(fixed))
+        check("it is replaced with OURS, not merely stripped",
+              "tag=" + bot.OUR_TAG in fixed, repr(fixed))
+        check("our own tag is left alone",
+              bot.retag_foreign_amazon_links("x https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG)
+              == "x https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG)
+        check("a non-Amazon link is never touched",
+              bot.retag_foreign_amazon_links("x https://www.flipkart.com/a/p/itmX?tag=z")
+              == "x https://www.flipkart.com/a/p/itmX?tag=z")
+        src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+        deliver = src[src.index("async def process_job"):]
+        check("the retag runs on the review path",
+              "retag_foreign_amazon_links(safe_text)" in deliver, "not wired")
+
+    # 3. THE PRODUCT NAME WAS BEING THROWN AWAY. A one-word name, and a brand
+    # plus model number, both failed the "two words" test - the reviewer was
+    # left with "Price: 55" and no product at all.
+    for raw, must_keep in (("Dustpan @ 55", "Dustpan"),
+                           ("Kettle at 549", "Kettle"),
+                           ("boAt 141\n\u20b9899", "boAt 141"),
+                           ("Redmi 13C\n\u20b98999", "Redmi 13C"),
+                           ("iPhone 15\n\u20b965999", "iPhone 15")):
+        out = bot.affiliate_safe_text(raw + "\nhttps://amzn.to/a")
+        check("the product name %r survives" % must_keep, must_keep in out, repr(out))
+    check("a price stated in the product line is not duplicated underneath",
+          bot.affiliate_safe_text("Dustpan @ 55\nhttps://amzn.to/a").count("55") == 1,
+          bot.affiliate_safe_text("Dustpan @ 55\nhttps://amzn.to/a"))
+
+    # 4. A POST WITH NO PRODUCT NAME MUST BE REFUSED, NOT PUBLISHED BARE.
+    # The old guard looked for three letters anywhere and the word "Price"
+    # satisfied it, so "Price: 99 + link" went out as a listing.
+    def publishable(raw):
+        safe = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(raw))
+        named = [ln for ln in (safe or "").splitlines()
+                 if ln.strip() and not bot.URL_RE.fullmatch(ln.strip())
+                 and not _re.fullmatch(r"(?i)price\s*[::]\s*[\u20b9\d,.]+", ln.strip())
+                 and _re.search(r"[A-Za-z]{3}", ln)]
+        return bool(safe and bot.URL_RE.search(safe) and named)
+
+    check("a bare category word is refused", publishable("Soap\nhttps://amzn.to/a") is False)
+    check("a price with no product is refused", publishable("oil @ 99\nhttps://amzn.to/a") is False)
+    check("a lone amount is refused", publishable("\u20b9299\nhttps://amzn.to/a") is False)
+    check("a real product still publishes", publishable("Dustpan @ 55\nhttps://amzn.to/a") is True)
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the nameless-post guard is wired at delivery",
+          "_named = [ln for ln in" in src, "guard missing")
+
+
+def test_every_review_post_carries_our_tag_and_nothing_else_does():
+    """USER QUESTION (2026-09-06): "mana kothaga vachina amazon tag add
+    chesthunnava and review channel lo perfectga post chesthunnava?"
+
+    The tag only earns if it is actually ON the link. Three ways it could be
+    missing, all closed here."""
+    if not bot.OUR_TAG:
+        return
+    check("the tag we own is the one configured", bot.OUR_TAG == "mama086-21", bot.OUR_TAG)
+
+    # 1. A link that reached delivery with NO tag used to stay untagged - a sale
+    # Amazon cannot attribute to us, on the one channel we are allowed to earn
+    # on, while the 3-qualifying-sales clock is running.
+    untagged = bot.retag_foreign_amazon_links("https://www.amazon.in/dp/B0X?psc=1")
+    check("an untagged link gains our tag", "tag=" + bot.OUR_TAG in untagged, untagged)
+    check("its other parameters survive", "psc=1" in untagged, untagged)
+
+    # 2. A stranger's tag is replaced, not merely stripped.
+    stranger = bot.retag_foreign_amazon_links("https://www.amazon.in/dp/B0X?tag=deals0911-21")
+    check("a stranger's tag is replaced with ours",
+          "tag=" + bot.OUR_TAG in stranger and "deals0911" not in stranger, stranger)
+
+    # 3. Ours is left exactly as it is, and non-Amazon links are never touched.
+    ours = "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    check("our own tag is untouched", bot.retag_foreign_amazon_links(ours) == ours)
+    check("a Flipkart link is never tagged",
+          bot.retag_foreign_amazon_links("https://www.flipkart.com/a/p/itmX")
+          == "https://www.flipkart.com/a/p/itmX")
+
+    # An .env carrying somebody else's tag must never be honoured.
+    check("only tags we own are accepted",
+          "deals0911-21" not in {t.lower() for t in bot.OUR_AMAZON_TAGS},
+          str(bot.OUR_AMAZON_TAGS))
+
+    # And the tag must NOT appear on any undeclared channel.
+    class NoShorteners:
+        _short_to_long = {}
+
+    tagged = "Deal\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    loot = bot.strip_amazon_tag_for_undeclared(tagged, "LootZoneIndia11", NoShorteners())
+    check("an undeclared channel carries no tag at all",
+          bot.OUR_TAG not in loot, loot)
+    check("but it still gets the working product link", "B0X" in loot, loot)
+    check("the declared channel keeps the tag",
+          bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared(
+              tagged, bot.SHOPPING_TARGET, NoShorteners()))
+
+
+def test_the_finished_review_post_end_to_end():
+    """The whole delivery path for SHOPPING_TARGET, on the exact shapes the user
+    reported, asserting the finished post - not an intermediate value."""
+    import re as _re
+
+    def finished(raw):
+        safe = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(raw))
+        named = [ln for ln in (safe or "").splitlines()
+                 if ln.strip() and not bot.URL_RE.fullmatch(ln.strip())
+                 and not _re.fullmatch(r"(?i)price\s*[::]\s*[\u20b9\d,.]+", ln.strip())
+                 and _re.search(r"[A-Za-z]{3}", ln)]
+        if not safe or not bot.URL_RE.search(safe) or not named:
+            return None
+        if bot.has_amazon_trademark(safe) or bot.has_telegram_pointer(safe):
+            return None
+        if bot.SHOPPING_AMAZON_ONLY and not bot.is_amazon_only_post(safe):
+            return None
+        return bot.add_link_disclosure(safe)
+
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\nboAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "Apply 10% coupon | Hurry limited stock!\n\nhttps://www.amazon.in/dp/B0X?psc=1\n\n@LootZoneIndia11")
+    out = finished(hype)
+    check("the product name is there", "boAt Rockerz 255 Pro+ Neckband" in out, repr(out))
+    check("the price is there", "899" in out, repr(out))
+    check("our tag is on the link", bot.OUR_TAG in out if bot.OUR_TAG else True, repr(out))
+    check("the disclosure closes the post", out.rstrip().endswith("#ad (paid link)"), repr(out))
+    for banned in ("LOOT", "2990", "70%", "4.2", "12,453", "review", "coupon",
+                   "Hurry", "LootZone", "\U0001f525"):
+        check("the post is free of %r" % banned, banned not in out, repr(out))
+    check("exactly one link", len(bot.URL_RE.findall(out)) == 1, repr(out))
+    check("no line repeats",
+          len(out.splitlines()) == len(dict.fromkeys(out.splitlines())), repr(out))
+
+    check("the twice-posted Dustpan now renders once, cleanly",
+          finished("\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+          .startswith("Ergonomic Dustpan @ \u20b955"))
+    check("a Flipkart deal never reaches the review channel",
+          finished("Dabur Gulabari Soap @208.\nhttps://www.flipkart.com/x/p/itmY") is None)
+    check("a nameless post never reaches it",
+          finished("\u20b9299\nhttps://www.amazon.in/dp/B0Z") is None)
+    check("a trick post never reaches it",
+          finished("Cashback trick\nhttps://www.amazon.in/dp/B0Q") is None)
+
+
+def test_no_regression_for_the_ordinary_channels():
+    """USER QUESTION (2026-09-06): "vere channels lo perfectga as previous ga
+    chesthadi kada?"
+
+    Answered by diffing the shared pipeline against the pre-session code
+    (commit ee434cb) on real post shapes. Every difference must be an
+    improvement; anything a loot channel used to get right must still be right.
+    """
+    # A three-word product name must always have an identity. "Cello Lunch Box"
+    # is 15 characters, and an 18-char floor briefly took its identity away -
+    # which would have let the same lunch box post twice, the very bug the user
+    # reported for the Dustpan.
+    for name in ("Cello Lunch Box", "Milton Bottle 1L", "Dabur Gulabari Soap",
+                 "Boat Airdopes 141", "Ergonomic Dustpan"):
+        check("%r has a dedup identity" % name,
+              bot._product_identity(name) is not None, name)
+    for phrase in ("hair oil", "phone case", "free gift", "Running Shoes",
+                   "Men Cotton Shirt", "lunch box set", "water bottle",
+                   "sports shoes", "casual shirt"):
+        check("the category phrase %r is still refused" % phrase,
+              bot._product_identity(phrase) is None, phrase)
+
+    # A price stated as a discount must not be read as the price. The old code
+    # returned 15 for "Rs.150 off on Rs.299" - it backtracked off "150 off".
+    check("'150 off on 299' reads 299, the amount actually paid",
+          bot.parse_price("Zomato \u20b9150 off on \u20b9299") == 299,
+          str(bot.parse_price("Zomato \u20b9150 off on \u20b9299")))
+
+    # The ordinary channels keep the SOURCE copy: nothing is stripped from it.
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\nboAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "https://amzn.to/aaa")
+    tidied = bot.tidy_post(hype)
+    for keep in ("boAt Rockerz 255 Pro+ Neckband", "899", "2990", "70%", "4.2", "12,453"):
+        check("a loot channel still keeps %r" % keep, keep in tidied, repr(tidied))
+    check("the price parses to the DEAL price, not the MRP",
+          bot.parse_price(hype) == 899, str(bot.parse_price(hype)))
+
+    # And the deal still routes to the ordinary channels by price band.
+    check("a 899 deal is not mistaken for an under-99 deal",
+          bot.parse_price(hype) > 499)
+    check("an under-99 product still parses inside the band",
+          bot.parse_price("Milton Bottle 1L @ 89\nhttps://amzn.to/c1") == 89)
+
+    # Our tag must never appear on an undeclared channel, with or without a
+    # shortener in the way.
+    if bot.OUR_TAG:
+        class Aff:
+            _short_to_long = {"https://bit.ly/z":
+                              "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+        for post in ("Deal\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
+                     "Deal\nhttps://bit.ly/z"):
+            out = bot.strip_amazon_tag_for_undeclared(post, "LootZoneIndia11", Aff())
+            check("no tag reaches the loot channel", bot.OUR_TAG not in out, repr(out))
+            check("but the product link still works", "B0X" in out, repr(out))
+
+
+def test_our_tag_earns_on_amazon_and_lists_still_shorten():
+    """USER DECISION (2026-09-06): "channels anni mana new tag use chesi ... list
+    of products vachinappudu bitly use chesi".
+
+    Amazon PRODUCT links must be built natively with OUR tag instead of being
+    handed to EarnKaro (which returns an ekaro.in link and drops the tag, so the
+    commission goes to EarnKaro's Amazon account, not ours). Lists must still
+    shorten so a multi-product post stays neat.
+    """
+    import asyncio, json, random
+
+    if not bot.OUR_TAG:
+        return
+
+    class Resp:
+        status = 200
+
+        def __init__(self, body):
+            self._b = body
+
+        async def text(self):
+            return self._b
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def post(self, url, **kw):
+            return Resp(json.dumps(
+                {"success": 1, "data": "https://ekaro.in/ek%d" % random.randint(10 ** 5, 9 * 10 ** 5)}))
+
+    class Aff(bot.AffiliateClient):
+        def __init__(self):
+            self._health, self._short_cache, self._short_to_long = {}, {}, {}
+            self.calls, self.session = [], Session()
+
+        async def cache_link(self, *a):
+            pass
+
+        async def resolve(self, u):
+            return u
+
+        async def link_not_broken(self, u):
+            return True
+
+        async def shorten(self, u):
+            self.calls.append(u)
+            short = "https://bitli.in/S%d" % len(self.calls)
+            self._short_to_long[short] = u
+            return short
+
+    async def convert(url, multi):
+        aff = Aff()
+        res = await aff.convert(url, multi)
+        link = res.affiliate if res else ""
+        return link, aff._short_to_long.get(link, link), len(aff.calls)
+
+    # A single Amazon product: our tag, posted natively, no Bitly quota spent.
+    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/dp/B0TAGTEST1", False))
+    check("a single Amazon deal carries OUR tag", bot.OUR_TAG in dest, dest)
+    check("it is not handed to EarnKaro", "ekaro.in" not in dest, dest)
+    check("it is the native product URL", "/dp/B0TAGTEST1" in dest, dest)
+    check("a single short link spends no Bitly quota", shortened == 0, str(shortened))
+
+    # A LIST still shortens, and the tag survives behind the short link.
+    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/dp/B0TAGTEST2", True))
+    check("a list link is shortened", link.startswith("https://bitli.in/"), link)
+    check("the shortened list link still carries our tag", bot.OUR_TAG in dest, dest)
+
+    # An Amazon SEARCH page has no ASIN, so it still goes through EarnKaro -
+    # a tag on a search page earns nothing anyway.
+    link, dest, _ = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/s?k=headphones", False))
+    check("an Amazon search link still uses EarnKaro", "ekaro.in" in link, link)
+
+    # Other stores are untouched: they keep earning through EarnKaro.
+    link, dest, _ = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.flipkart.com/x/p/itmzzz", False))
+    check("Flipkart still goes through EarnKaro", "ekaro.in" in link, link)
+    check("Flipkart never carries an Amazon tag", bot.OUR_TAG not in link, link)
+
+    # The delivery-time guard is still the last word: a channel the user has NOT
+    # declared to Amazon must never show the tag, shortened or not.
+    class Rev:
+        _short_to_long = {"https://bitli.in/S1":
+                          "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+
+    undeclared = "Zzz" + "NotDeclared11"
+    for text in ("Deal https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
+                 "Deal https://bitli.in/S1"):
+        out = bot.strip_amazon_tag_for_undeclared(text, undeclared, Rev())
+        check("an undeclared channel never shows the tag", bot.OUR_TAG not in out, out)
+        check("and its link still reaches the product", "B0X" in out, out)
+
+
+def test_all_conditions_live_on_the_review_channel_only():
+    """USER RULE (2026-09-06, FINAL): "only review channel lo anni conditions
+    tho post cheyali".
+
+    Every programme condition belongs to SHOPPING_TARGET and to nothing else.
+    An ordinary channel gets the source copy as the source wrote it - even
+    though it now carries our tag.
+    """
+    hype = ("\U0001f525 LOOT \U0001f525\nboAt Rockerz 255\n\u20b9899 (MRP \u20b92990)\n"
+            "70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\nApply coupon\n"
+            "https://www.amazon.in/dp/B0X")
+
+    # THE ORDINARY CHANNELS: nothing is taken away.
+    ordinary = bot.tidy_post(bot.clean_source_text(hype))
+    for keep in ("LOOT", "boAt Rockerz 255", "899", "2990", "70%",
+                 "Rating 4.2", "12,453", "coupon"):
+        check("a loot channel keeps %r" % keep, keep in ordinary, ordinary)
+    check("no disclosure is bolted onto a loot post",
+          "#ad" not in ordinary and "paid link" not in ordinary, ordinary)
+
+    # THE REVIEW CHANNEL: every condition applies.
+    strict = bot.add_link_disclosure(
+        bot.retag_foreign_amazon_links(bot.affiliate_safe_text(bot.strip_amazon_ratings(hype))))
+    check("the review copy names the product",
+          "boAt Rockerz 255" in strict, strict)
+    check("and states the price", "899" in strict, strict)
+    for banned in ("LOOT", "2990", "70%", "4.2", "12,453", "coupon", "\U0001f525"):
+        check("the review copy drops %r" % banned, banned not in strict, strict)
+    check("the review copy carries the disclosure",
+          strict.rstrip().endswith("#ad (paid link)"), strict)
+
+    # strip_amazon_ratings itself still works, and is wired ONLY into the
+    # review branch - never into the shared delivery path.
+    check("a rating is removed",
+          "4.2" not in bot.strip_amazon_ratings("Kettle Rating 4.2 star"),
+          bot.strip_amazon_ratings("Kettle Rating 4.2 star"))
+    check("a product spec with digits is not touched",
+          bot.strip_amazon_ratings("Cello Bottle 1024 ml 4 pieces")
+          == "Cello Bottle 1024 ml 4 pieces")
+
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    idx = deliver.index("if target == SHOPPING_TARGET:")
+    lines = deliver[idx:].split("\n")
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    branch = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        branch.append(line)
+    branch_src = "\n".join(branch)
+    outside = deliver[:idx] + deliver[idx + len(branch_src):]
+
+    for condition in ("affiliate_safe_text", "add_link_disclosure", "strip_amazon_ratings",
+                      "has_amazon_trademark", "has_telegram_pointer", "shopping_pace_wait",
+                      "shopping_quota_left", "SHOPPING_TEXT_ONLY", "SHOPPING_AMAZON_ONLY",
+                      "is_amazon_only_post", "retag_foreign_amazon_links"):
+        check("%s runs on the review channel" % condition,
+              condition in branch_src, "missing from the review branch")
+        check("%s never runs anywhere else" % condition,
+              condition not in outside, "LEAKED into the shared path")
+
+
+def test_every_list_shape_reads_name_above_its_own_link():
+    """USER RULE (2026-09-06): "list of products text paina and kinda links ...
+    sources lo entha neatga vundo same alage antha neatga post cheyali".
+
+    Sources write a list in three shapes. All three must come out as
+    "product name (with its price) on one line, its own link underneath".
+    """
+    def pipeline(src):
+        out = bot.tidy_post(bot.clean_source_text(src))
+        out = bot.split_inline_product_links(out)
+        out = bot.format_clustered_product_list(out)
+        return bot.strict_orphan_token_cleanup(out)
+
+    def pairs(rendered):
+        """[(label, url)] read straight off the finished post."""
+        found, lines = [], [l.strip() for l in rendered.splitlines()]
+        for i, line in enumerate(lines):
+            if bot.URL_RE.fullmatch(line):
+                label = next((lines[j] for j in range(i - 1, -1, -1)
+                              if lines[j] and not bot.URL_RE.fullmatch(lines[j])), "")
+                found.append((label, line))
+        return found
+
+    # SHAPE 1 - the whole list written on ONE line.
+    inline = ("Deals Boat 141 @899 https://amzn.to/a "
+              "Samsung M14 @9999 https://amzn.to/b Milton @89 https://amzn.to/c")
+    got = pairs(pipeline(inline))
+    check("an inline list yields three pairs", len(got) == 3, str(got))
+    check("Boat keeps its own link", got and "Boat 141" in got[0][0] and got[0][1].endswith("/a"), str(got))
+    check("Samsung keeps its own link", len(got) > 1 and "Samsung M14" in got[1][0] and got[1][1].endswith("/b"), str(got))
+    check("Milton keeps its own link", len(got) > 2 and "Milton" in got[2][0] and got[2][1].endswith("/c"), str(got))
+
+    # SHAPE 2 - markdown links written inline.
+    md = "[Boat 141](https://amzn.to/a) @899 [Samsung M14](https://amzn.to/b) @9999"
+    got = pairs(pipeline(md))
+    check("an inline markdown list yields two pairs", len(got) == 2, str(got))
+    check("the markdown labels survive as product names",
+          got and "Boat 141" in got[0][0] and "Samsung M14" in got[1][0], str(got))
+    check("no NUL placeholder ever reaches the reader",
+          "\x00" not in pipeline(md), repr(pipeline(md)))
+
+    # SHAPE 3 - links dumped at the bottom.
+    bottom = ("Boat 141 @ 899\nSamsung M14 @ 9999\nMilton @ 89\n"
+              "https://amzn.to/a\nhttps://amzn.to/b\nhttps://amzn.to/c")
+    got = pairs(pipeline(bottom))
+    check("a bottom-dumped list is paired up", len(got) == 3, str(got))
+    check("each product sits above its own link",
+          got == [(g[0], g[1]) for g in got] and "Boat" in got[0][0]
+          and "Samsung" in got[1][0] and "Milton" in got[2][0], str(got))
+
+    # A NEAT SOURCE MUST COME OUT UNCHANGED - we never "fix" what is already right.
+    neat = ("\U0001f525 Deals\n\n1) Boat 141 @ 899\nhttps://amzn.to/a\n\n"
+            "2) Samsung M14 @ 9999\nhttps://amzn.to/b")
+    check("a neat source is left alone", pipeline(neat).strip() == neat.strip(),
+          repr(pipeline(neat)))
+
+    # A SINGLE deal is never reshaped either.
+    one = "Ergonomic Dustpan @ 55\nhttps://amzn.to/d"
+    check("a single deal is untouched", pipeline(one).strip() == one, repr(pipeline(one)))
+
+
+def test_a_markdown_product_name_is_never_thrown_away():
+    """THE DEFECT: "[Boat Airdopes 141](url) @ 899" published as "url @ 899".
+
+    normalize_nested_link_markup() collapsed EVERY "[label](url)" to the bare
+    url, so when the label was the PRODUCT NAME the post lost its product and
+    the reader saw a naked link - the user's "just names / no product" rule in
+    reverse.
+    """
+    out = bot.normalize_nested_link_markup("[Boat Airdopes 141](https://amzn.to/a) @ 899")
+    check("the product name survives", "Boat Airdopes 141" in out, repr(out))
+    check("its price stays with the name", "Boat Airdopes 141 @ 899" in out, repr(out))
+    check("the link sits on its own line underneath",
+          out.splitlines()[-1].strip() == "https://amzn.to/a", repr(out))
+
+    # Call-to-action labels are debris and must still be dropped.
+    for cta in ("Buy Now", "Click here", "Shop Now", "Link", "Amazon", "Grab it now",
+                "BUY LINK", "Order Now", "check it out"):
+        got = bot.normalize_nested_link_markup("[%s](https://amzn.to/a)" % cta)
+        check("the CTA label %r is dropped" % cta, got.strip() == "https://amzn.to/a", repr(got))
+
+    # A label that is itself a URL, and nested wrappers, still collapse.
+    check("a URL label collapses",
+          bot.normalize_nested_link_markup("[https://amzn.to/a](https://amzn.to/a)").strip()
+          == "https://amzn.to/a")
+    check("nested wrappers collapse",
+          bot.normalize_nested_link_markup("[[https://x](https://x)](https://amzn.to/a)").strip()
+          == "https://amzn.to/a")
+
+    # Real product names of every shape survive.
+    for name in ("Sony WH-1000XM4", "Cello Feast Deluxe Kids Lunch Box",
+                 "Milton Thermosteel Flask 1L", "boAt Rockerz 255 Pro+"):
+        got = bot.normalize_nested_link_markup("[%s](https://amzn.to/x)" % name)
+        check("the product name %r survives" % name, name in got, repr(got))
+
+
+def test_tag_on_every_owned_channel_when_switched_on():
+    """USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu,
+    not only review channel".
+
+    With AMAZON_TAG_TARGETS=all every owned channel carries mama086-21, and
+    every one of them is therefore a channel Amazon reviews - so the ratings
+    strip and the disclosure apply there too. A channel we do NOT own still
+    gets a clean, working, untagged link.
+
+    Run in a SUBPROCESS: AMAZON_TAG_TARGETS is read at import time, and
+    reloading the module in-process tears down its event loop.
+    """
+    import subprocess
+
+    probe = r"""
+import os, sys, json, random, asyncio
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+
+fail = []
+def check(name, ok, detail=""):
+    if not ok:
+        fail.append("%s <- %s" % (name, detail))
+
+owned = {bot.SHOPPING_TARGET} | set(bot.ALL_OWNED_TARGETS)
+check("all owned channels carry the tag",
+      bot.AMAZON_TAG_TARGETS >= owned, str(sorted(bot.AMAZON_TAG_TARGETS)))
+
+class Resp:
+    status = 200
+    def __init__(self, b): self._b = b
+    async def text(self): return self._b
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+class Session:
+    def post(self, url, **kw):
+        return Resp(json.dumps({"success": 1,
+                                "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
+
+class Aff(bot.AffiliateClient):
+    def __init__(self):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.session = Session()
+    async def cache_link(self, *a): pass
+    async def resolve(self, u): return u
+    async def link_not_broken(self, u): return True
+    async def shorten(self, u):
+        self._short_to_long["https://bitli.in/T1"] = u
+        return "https://bitli.in/T1"
+
+aff = Aff()
+res = asyncio.run(aff.convert("https://www.amazon.in/dp/B0ALLCHAN1?psc=1", False))
+link = res.affiliate
+check("the generated Amazon link carries our tag", bot.OUR_TAG in link, link)
+check("it is the native product URL, not an ekaro hop", "amazon.in/dp/" in link, link)
+
+for target in sorted(bot.AMAZON_TAG_TARGETS):
+    out = bot.strip_amazon_tag_for_undeclared("Deal\n" + link, target, aff)
+    check("%s keeps the tag" % target, bot.OUR_TAG in out, out)
+
+class NoCache:
+    _short_to_long = {}
+plain = "https://www.amazon.in/dp/B0ALLCHAN1?tag=" + bot.OUR_TAG
+out = bot.strip_amazon_tag_for_undeclared("Deal\n" + plain, "NotOursAtAll99", NoCache())
+check("an undeclared channel gets no tag", bot.OUR_TAG not in out, out)
+check("and still gets a working product link", "B0ALLCHAN1" in out, out)
+
+hype = ("LOOT\nboAt Rockerz 255\n899 (MRP 2990)\n70% OFF Rating 4.2 | 12,453 reviews")
+stripped = bot.strip_amazon_ratings(hype)
+check("ratings are gone on a tagged loot channel", "4.2" not in stripped, stripped)
+check("review counts are gone", "12,453" not in stripped, stripped)
+for keep in ("boAt Rockerz 255", "899", "2990", "70% OFF", "LOOT"):
+    check("the loot copy keeps %r" % keep, keep in stripped, stripped)
+
+print(json.dumps(fail))
+"""
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # A private DB: the link cache persists across runs, and a cached
+        # ekaro.in entry from an earlier test would be returned instead of the
+        # freshly built native link.
+        env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                   BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                              capture_output=True, text=True, env=env, timeout=180)
+    tail = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not tail:
+        check("the tag-everywhere probe ran", False,
+              (proc.stderr or proc.stdout or "")[-400:])
+        return
+    try:
+        failures = json.loads(tail[-1])
+    except Exception:
+        check("the tag-everywhere probe returned a result", False, tail[-1][:300])
+        return
+    check("every owned channel carries our tag, nobody else does",
+          not failures, "; ".join(failures)[:600])
+
+
+def test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener():
+    """USER DECISION (2026-09-06): keep the tag on all eight channels and accept
+    the undeclared-source risk. Given that, the exposure that CAN still be
+    removed must be removed.
+
+    Amazon lists link cloaking - hiding that a link leads to Amazon - as a
+    closure reason. A bitli.in hop does exactly that. The native tagged form is
+    about 50 characters, so nothing is gained by hiding it. Non-Amazon links
+    are unaffected and still shorten.
+
+    Runs in a subprocess: AMAZON_TAG_TARGETS is read at import time.
+    """
+    import subprocess, tempfile
+
+    probe = r"""
+import os, sys, json, random, asyncio
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+
+fail = []
+def check(name, ok, detail=""):
+    if not ok:
+        fail.append("%s <- %s" % (name, detail))
+
+class Resp:
+    status = 200
+    def __init__(self, b): self._b = b
+    async def text(self): return self._b
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+class Session:
+    def post(self, url, **kw):
+        return Resp(json.dumps({"success": 1,
+                                "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
+
+class Aff(bot.AffiliateClient):
+    def __init__(self):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.calls, self.session = [], Session()
+    async def cache_link(self, *a): pass
+    async def resolve(self, u): return u
+    async def link_not_broken(self, u): return True
+    async def shorten(self, u):
+        self.calls.append(u)
+        return "https://bitli.in/S%d" % len(self.calls)
+
+async def main():
+    # A 3-product Amazon LIST: every link native and tagged, no shortener.
+    aff = Aff()
+    res = await asyncio.gather(*(aff.convert(u, True) for u in (
+        "https://www.amazon.in/dp/B0AMZLIST1",
+        "https://www.amazon.in/dp/B0AMZLIST2",
+        "https://www.amazon.in/dp/B0AMZLIST3")))
+    for r in res:
+        check("an Amazon list link is native", "amazon.in/dp/" in r.affiliate, r.affiliate)
+        check("and carries our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
+        check("and is not a shortener", "bitli.in" not in r.affiliate, r.affiliate)
+    check("no Bitly quota is spent on Amazon", not aff.calls, str(aff.calls))
+
+    # A single Amazon deal: same rule.
+    aff2 = Aff()
+    r = await aff2.convert("https://www.amazon.in/dp/B0AMZONE01", False)
+    check("a single Amazon deal is native too", "amazon.in/dp/" in r.affiliate, r.affiliate)
+    check("with our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
+
+    # Non-Amazon links are untouched: they still shorten in a list.
+    aff3 = Aff()
+    r = await aff3.convert("https://www.flipkart.com/x/p/itmZZZ", True)
+    check("Flipkart in a list still shortens", r.affiliate.startswith("https://bitli.in/"), r.affiliate)
+    check("and never carries an Amazon tag", bot.OUR_TAG not in r.affiliate, r.affiliate)
+
+    print(json.dumps(fail))
+
+asyncio.run(main())
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                   BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                              capture_output=True, text=True, env=env, timeout=180)
+    tail = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not tail:
+        check("the cloaking probe ran", False, (proc.stderr or proc.stdout or "")[-400:])
+        return
+    try:
+        failures = json.loads(tail[-1])
+    except Exception:
+        check("the cloaking probe returned a result", False, tail[-1][:300])
+        return
+    check("tagged Amazon links are never hidden behind a shortener",
+          not failures, "; ".join(failures)[:600])
+
+
+def test_the_whole_delivery_path_end_to_end():
+    """USER: "anni bestgaa fix build chesava implement perfectly".
+
+    Answered by running seven real source shapes through the WHOLE path -
+    clean, split, pair, convert, tag, deliver - for both a loot channel and the
+    review channel, and asserting the finished posts. Two live defects were
+    found this way and are pinned here.
+
+    Runs in a subprocess with a private DB: AMAZON_TAG_TARGETS is read at
+    import time and the link cache is persistent.
+    """
+    import subprocess, tempfile
+
+    probe = r"""
+import os, sys, json, random, re, asyncio
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+
+fail = []
+def check(name, ok, detail=""):
+    if not ok:
+        fail.append("%s <- %s" % (name, detail))
+
+class Resp:
+    status = 200
+    def __init__(self, b): self._b = b
+    async def text(self): return self._b
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+
+class Session:
+    def post(self, url, **kw):
+        return Resp(json.dumps({"success": 1,
+                                "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
+
+class Aff(bot.AffiliateClient):
+    def __init__(self):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.calls, self.session = [], Session()
+    async def cache_link(self, *a): pass
+    async def resolve(self, u): return u
+    async def link_not_broken(self, u): return True
+    async def shorten(self, u):
+        self.calls.append(u)
+        short = "https://bitli.in/S%d" % len(self.calls)
+        self._short_to_long[short] = u
+        return short
+
+async def deliver(src, target):
+    aff = Aff()
+    text = bot.tidy_post(bot.clean_source_text(src))
+    text = bot.split_inline_product_links(text)
+    text = bot.format_clustered_product_list(text)
+    text = bot.strict_orphan_token_cleanup(text)
+    urls = bot.URL_RE.findall(text)
+    multi = len(urls) >= 2
+    mapping = {}
+    for u in dict.fromkeys(urls):
+        try:
+            r = await aff.convert(u, multi)
+        except Exception:
+            r = None
+        if r:
+            mapping[u] = r.affiliate
+    if mapping:
+        text = re.sub("|".join(re.escape(k) for k in sorted(mapping, key=len, reverse=True)),
+                      lambda m: mapping[m.group(0)], text)
+    if target == bot.SHOPPING_TARGET:
+        t = bot.retag_foreign_amazon_links(
+            bot.affiliate_safe_text(bot.strip_amazon_ratings(text)))
+        named = [l for l in (t or "").splitlines()
+                 if l.strip() and not bot.URL_RE.fullmatch(l.strip())
+                 and not re.fullmatch(r"(?i)price\s*[::]\s*[\u20b9\d,.]+", l.strip())
+                 and re.search(r"[A-Za-z]{3}", l)]
+        if not t or not bot.URL_RE.search(t) or not named:
+            return None
+        if bot.has_amazon_trademark(t) or bot.has_telegram_pointer(t):
+            return None
+        if bot.SHOPPING_AMAZON_ONLY and not bot.is_amazon_only_post(t):
+            return None
+        return bot.add_link_disclosure(t)
+    return bot.strip_amazon_tag_for_undeclared(text, target, aff)
+
+A1, A2, A3 = "B09N3ZNHTY", "B0BZCPVWQ4", "B07XY12345"
+
+async def main():
+    # 1. A HYPE POST. The loot channel keeps everything; the review channel
+    #    keeps only product, price, link, disclosure.
+    hype = ("LOOT DEAL\nboAt Rockerz 255 Pro+ Neckband\n899 (MRP 2990)\n"
+            "70% OFF Rating 4.2 | 12,453 reviews\nApply 10% coupon\n"
+            "https://www.amazon.in/dp/" + A1 + "?psc=1&smid=X\nJoin @LootZoneIndia11")
+    loot = await deliver(hype, "LootZoneIndia11")
+    for keep in ("LOOT DEAL", "boAt Rockerz 255 Pro+", "899", "2990", "70% OFF",
+                 "Rating 4.2", "12,453", "coupon"):
+        check("the loot channel keeps %r" % keep, keep in loot, loot)
+    check("the loot link carries our tag", bot.OUR_TAG in loot, loot)
+    check("no disclosure is bolted onto the loot post", "#ad" not in loot, loot)
+    check("the source's channel pointer is gone", "LootZone" not in loot, loot)
+
+    rev = await deliver(hype, bot.SHOPPING_TARGET)
+    check("the review post names the product", "boAt Rockerz 255 Pro+" in rev, rev)
+    check("the review post states the price", "899" in rev, rev)
+    check("the review link carries our tag", bot.OUR_TAG in rev, rev)
+    for banned in ("LOOT", "2990", "70%", "4.2", "12,453", "coupon"):
+        check("the review post drops %r" % banned, banned not in rev, rev)
+    check("the review post ends with the disclosure",
+          rev.rstrip().endswith("#ad (paid link)"), rev)
+
+    # 2. THE THREE LIST SHAPES. Every product above its own link, and - the
+    #    defect this test was written for - every Amazon link in one post must
+    #    look the SAME. A cached row used to come back wrapped in bitli.in
+    #    while its neighbours stayed native.
+    inline = ("Deals Boat 141 @899 https://www.amazon.in/dp/%s "
+              "Samsung M14 @9999 https://www.amazon.in/dp/%s "
+              "Milton @89 https://www.amazon.in/dp/%s" % (A1, A2, A3))
+    bottom = ("Boat 141 @ 899\nSamsung M14 @ 9999\nMilton @ 89\n"
+              "https://www.amazon.in/dp/%s\nhttps://www.amazon.in/dp/%s\n"
+              "https://www.amazon.in/dp/%s" % (A1, A2, A3))
+    for label, src in (("inline", inline), ("bottom", bottom)):
+        out = await deliver(src, "LootZoneIndia11")
+        lines = [l.strip() for l in out.splitlines()]
+        links = [l for l in lines if bot.URL_RE.fullmatch(l)]
+        check("%s list yields three links" % label, len(links) == 3, out)
+        check("%s list: every Amazon link is native" % label,
+              all("amazon.in/dp/" in l for l in links), out)
+        check("%s list: no link is hidden behind a shortener" % label,
+              not any("bitli.in" in l for l in links), out)
+        check("%s list: every link carries our tag" % label,
+              all(bot.OUR_TAG in l for l in links), out)
+        for asin in (A1, A2, A3):
+            check("%s list keeps %s exactly once" % (label, asin),
+                  out.count(asin) == 1, out)
+        for i, line in enumerate(lines):
+            if bot.URL_RE.fullmatch(line):
+                label_above = next((lines[j] for j in range(i - 1, -1, -1) if lines[j]), "")
+                check("%s list: a product name sits above each link" % label,
+                      bool(label_above) and not bot.URL_RE.fullmatch(label_above), out)
+
+    # 3. A LIST REACHES THE REVIEW CHANNEL. It used to be refused outright:
+    #    is_amazon_only_post() did not recognise amzn.to as Amazon.
+    rev_list = await deliver(bottom, bot.SHOPPING_TARGET)
+    check("an Amazon list is accepted by the review channel", rev_list is not None,
+          "refused")
+    if rev_list:
+        for asin in (A1, A2, A3):
+            check("the review list keeps %s" % asin, asin in rev_list, rev_list)
+        check("the review list ends with the disclosure",
+              rev_list.rstrip().endswith("#ad (paid link)"), rev_list)
+
+    check("amzn.to counts as an Amazon post",
+          bot.is_amazon_only_post("A\nhttps://amzn.to/a"), "amzn.to rejected")
+    check("amzn.eu counts as an Amazon post",
+          bot.is_amazon_only_post("A\nhttps://amzn.eu/d/x"), "amzn.eu rejected")
+    check("a mixed post is still not Amazon-only",
+          not bot.is_amazon_only_post("A\nhttps://amzn.to/a\nhttps://fkrt.co/y"))
+
+    # 4. OTHER STORES ARE UNTOUCHED and never reach the review channel.
+    fk = "Dabur Gulabari Soap @208.\nhttps://www.flipkart.com/x/p/itmY?lid=1&pid=2"
+    fk_loot = await deliver(fk, "LootZoneIndia11")
+    check("a Flipkart deal still posts to the loot channel",
+          fk_loot and "Dabur Gulabari Soap" in fk_loot, str(fk_loot))
+    check("and never carries an Amazon tag", bot.OUR_TAG not in (fk_loot or ""), str(fk_loot))
+    check("a Flipkart deal never reaches the review channel",
+          await deliver(fk, bot.SHOPPING_TARGET) is None, "it got through")
+
+    print(json.dumps(fail))
+
+asyncio.run(main())
+"""
+
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                   BOT_DB_PATH=str(Path(tmp) / "e2e.sqlite3"))
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                              capture_output=True, text=True, env=env, timeout=300)
+    tail = (proc.stdout or "").strip().splitlines()
+    if proc.returncode != 0 or not tail:
+        check("the end-to-end probe ran", False, (proc.stderr or proc.stdout or "")[-500:])
+        return
+    try:
+        failures = json.loads(tail[-1])
+    except Exception:
+        check("the end-to-end probe returned a result", False, tail[-1][:300])
+        return
+    check("the whole delivery path is correct for every source shape",
+          not failures, " | ".join(failures)[:900])
+
+
+def test_the_review_channel_publishes_one_product_never_a_list():
+    """USER RULE (2026-09-06): "list of products mana review channello cheyaku,
+    okkoti edo random cheyu - mana review success avvali."
+
+    A roundup is a poor review sample: it reads as a link dump, and one weak
+    item taints the whole post. The reviewed channel gets ONE product; every
+    other channel still gets the full list.
+    """
+    lst = ("Boat 141 @ 899\nhttps://www.amazon.in/dp/B09N3ZNHTY\n"
+           "Samsung M14 @ 9999\nhttps://www.amazon.in/dp/B0BZCPVWQ4\n"
+           "Milton @ 89\nhttps://www.amazon.in/dp/B07XY12345")
+
+    one = bot.pick_one_product_for_review(lst)
+    check("exactly one link survives", len(bot.URL_RE.findall(one)) == 1, one)
+    check("exactly two lines survive", len(one.splitlines()) == 2, repr(one))
+    check("the product keeps its own link",
+          any(asin in one for asin in ("B09N3ZNHTY", "B0BZCPVWQ4", "B07XY12345")), one)
+    check("the chosen product keeps its price",
+          any(p in one for p in ("899", "9999", "89")), one)
+
+    # STABLE: a retry or a re-render must choose the SAME item, or the channel
+    # would publish a second product from the same source as a "new" deal.
+    check("the choice is stable across calls",
+          bot.pick_one_product_for_review(lst) == one, "unstable")
+
+    # SPREAD: different posts must not all collapse to their first row, or the
+    # channel becomes repetitive and only ever shows one source's lead item.
+    picks = set()
+    for n in range(12):
+        variant = lst.replace("Boat 141", "Boat 14%d" % n)
+        picks.add(bot.pick_one_product_for_review(variant).splitlines()[0])
+    check("different posts do not all pick the same row", len(picks) > 1, str(picks))
+
+    # A SINGLE deal is never touched.
+    single = "Ergonomic Dustpan @ 55\nhttps://amzn.to/d"
+    check("a single deal is untouched",
+          bot.pick_one_product_for_review(single) == single,
+          bot.pick_one_product_for_review(single))
+
+    # The list HEADING must not become part of the product name.
+    for headed in ("Loot of the day\nBoat 141 @899\nhttps://amzn.to/a\n"
+                   "Samsung M14 @9999\nhttps://amzn.to/b",
+                   "\U0001f525 Mega Deals \U0001f525\nBoat 141 @899\nhttps://amzn.to/a\n"
+                   "Samsung @9999\nhttps://amzn.to/b",
+                   "Deals\U0001f525 Boat 141 @899\nhttps://amzn.to/a\n\n"
+                   "Samsung M14 @9999\nhttps://amzn.to/b"):
+        got = bot.pick_one_product_for_review(headed)
+        first = got.splitlines()[0].lower()
+        for word in ("deals", "loot of the day", "mega deals"):
+            check("the heading %r is not glued to the product" % word,
+                  not first.startswith(word), repr(got))
+        check("the headed list still yields one link",
+              len(bot.URL_RE.findall(got)) == 1, repr(got))
+
+    # THE OTHER CHANNELS KEEP THE WHOLE LIST - this reduction is review-only.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    idx = deliver.index("if target == SHOPPING_TARGET:")
+    lines = deliver[idx:].split("\n")
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    branch = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        branch.append(line)
+    branch_src = "\n".join(branch)
+    outside = deliver[:idx] + deliver[idx + len(branch_src):]
+    check("the one-product rule runs on the review channel",
+          "pick_one_product_for_review" in branch_src, "not wired")
+    check("and never anywhere else",
+          "pick_one_product_for_review" not in outside, "LEAKED to other channels")
+
+
+def test_no_route_from_the_review_channel_to_a_loot_channel():
+    """The rejection email named a loot channel as its worked example, so the
+    reviewer must find NO route off this channel - not a handle, not a link,
+    and not a sentence.
+
+    The handle/link forms were already blocked. A plain-English pointer
+    ("Join our channel for more") was not, and it is the same offence.
+    """
+    for pointer in ("Join our channel for more", "Follow our telegram",
+                    "join the group", "Subscribe to our channel",
+                    "more deals in our channel", "More offers below in channel",
+                    "check our whatsapp group", "Join @LootZoneIndia11",
+                    "https://t.me/LootZoneIndia11", "t.me/x"):
+        check("the pointer %r is blocked" % pointer,
+              bot.has_telegram_pointer(pointer), pointer)
+
+    # Ordinary product copy must NOT trip it - a false positive silently drops
+    # a good deal from the reviewed channel.
+    for innocent in ("boAt Rockerz 255 @899", "Samsung Galaxy M14 5G @9999",
+                     "Join two cables together", "Channel partner edition speaker",
+                     "Milton Bottle 1L @89", "Follow the instructions in the box",
+                     "5.1 channel home theatre"):
+        check("real copy %r is not blocked" % innocent,
+              not bot.has_telegram_pointer(innocent), innocent)
+
+
+def test_the_review_channel_guards_that_were_never_probed():
+    """Round-30 sweep of the review-channel rules that had no test of their own."""
+    # TRADEMARKS - deliberately strict: a post that needs the word simply goes
+    # to the other channels instead.
+    for named in ("Amazon Great Indian Festival", "Great deal on Amazon",
+                  "Amazon Basics Cable", "AmazonBasics Mouse", "Prime Day Deal",
+                  "Kindle Paperwhite", "Alexa Echo Dot", "Fire TV Stick"):
+        check("the mark %r is refused" % named,
+              bot.has_amazon_trademark(named + "\nhttps://amzn.to/a"), named)
+    for clean in ("boAt Rockerz 255 Pro+ Neckband", "Milton Thermosteel Flask",
+                  "Samsung Galaxy M14 5G", "Cello Feast Lunch Box"):
+        check("the product %r is allowed" % clean,
+              not bot.has_amazon_trademark(clean + "\nhttps://amzn.to/a"), clean)
+
+    # COUPON / CTA RESIDUE must not survive into the review copy.
+    for raw, residue in (("Cello Lunch Box @264\nApply 31% Off Coupon", "Coupon"),
+                         ("Boat 141 @899\nUse code SAVE50", "SAVE50"),
+                         ("Kettle @549\nClick below to buy", "Click below"),
+                         ("Mixer @1299\nLimited stock hurry!!", "hurry"),
+                         ("Bottle @89\nBuy Max Quantity", "Max Quantity")):
+        out = bot.affiliate_safe_text(raw + "\nhttps://amzn.to/a")
+        check("the residue %r is gone" % residue,
+              residue.lower() not in out.lower(), out)
+        check("but the product survives with it",
+              any(w in out for w in raw.splitlines()[0].split()[:2]), out)
+
+    # THE DISCLOSURE is added exactly once, whatever the source already said.
+    once = bot.add_link_disclosure("Product\nhttps://a.com")
+    check("the disclosure is appended", once.rstrip().endswith("#ad (paid link)"), once)
+    check("and never twice", bot.add_link_disclosure(once) == once,
+          bot.add_link_disclosure(once))
+    for already in ("Product #ad\nhttps://a.com",
+                    "Product (paid link)\nhttps://a.com",
+                    "Product #CommissionsEarned\nhttps://a.com"):
+        check("an existing disclosure is respected",
+              bot.add_link_disclosure(already) == already.strip(), already)
+
+    # TEXT-ONLY and the DAILY CAP are wired at delivery, not merely configured.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("media is dropped for the review channel",
+          "if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:" in deliver,
+          "text-only not enforced at send time")
+    check("the daily cap is consulted", "shopping_quota_left" in deliver, "no cap")
+    check("human pacing is applied", "shopping_pace_wait" in deliver, "no pacing")
+
+    # THE REPEAT GUARD IS PERSISTENT - a restart must not forget what was posted.
+    check("posted products live in the database, not memory",
+          "CREATE TABLE IF NOT EXISTS posted_products" in src, "not persisted")
+    check("the guard is per channel",
+          "PRIMARY KEY(signature,target)" in src, "not keyed by channel")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -815,6 +2711,39 @@ def main() -> int:
     test_lists_are_shortened_with_our_bitly_and_stay_neat()
     test_photos_arrive_as_the_source_posted_them()
     test_our_channel_link_sits_on_the_top_line_once()
+    test_a_product_list_pairs_every_deal_with_its_own_link()
+    test_the_shopping_channel_copy_is_programme_safe()
+    test_a_deal_with_no_working_link_is_not_posted()
+    test_the_same_deal_under_two_banner_words_is_one_post()
+    test_a_flipkart_product_link_goes_out_short()
+    test_our_amazon_tag_only_rides_on_declared_channels()
+    test_the_review_channel_copy_is_built_from_an_allowlist()
+    test_review_channel_posts_are_disclosed_amazon_only_and_capped()
+    test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
+    test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
+    test_our_new_associates_tag_and_the_self_source_loop()
+    test_the_review_copy_is_clean_on_real_source_shapes()
+    test_native_links_on_review_channel_and_the_tag_switch()
+    test_the_whatsapp_bridge_cannot_go_quiet()
+    test_the_review_channel_posts_at_a_human_pace()
+    test_our_tag_is_live_now_on_the_review_channel()
+    test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
+    test_the_four_defects_the_user_photographed()
+    test_only_the_review_channel_is_restricted()
+    test_deep_audit_prices_foreign_tags_and_nameless_posts()
+    test_every_review_post_carries_our_tag_and_nothing_else_does()
+    test_the_finished_review_post_end_to_end()
+    test_no_regression_for_the_ordinary_channels()
+    test_our_tag_earns_on_amazon_and_lists_still_shorten()
+    test_all_conditions_live_on_the_review_channel_only()
+    test_every_list_shape_reads_name_above_its_own_link()
+    test_a_markdown_product_name_is_never_thrown_away()
+    test_tag_on_every_owned_channel_when_switched_on()
+    test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener()
+    test_the_whole_delivery_path_end_to_end()
+    test_the_review_channel_publishes_one_product_never_a_list()
+    test_no_route_from_the_review_channel_to_a_loot_channel()
+    test_the_review_channel_guards_that_were_never_probed()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

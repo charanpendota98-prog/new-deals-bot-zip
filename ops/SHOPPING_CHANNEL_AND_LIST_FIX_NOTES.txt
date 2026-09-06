@@ -1,0 +1,1611 @@
+2026-09-05 — "anni fix cheyu, motham" round
+=================================================================
+
+Four complaints, four fixes. All in bestgaa/main_bot_new.py, all covered by
+tests (test_line_fidelity.py, test_duplicate_sim.py).
+
+
+1. "neatga ravali" — a product list must not dump its links at the bottom
+-------------------------------------------------------------------------
+The source posts
+
+    Premium Afghani Anjeer 500 gms at 258
+    Buy Max Quantity
+    Premium Mix Dry Fruits 500 gms at 258
+    Buy Max Quantity
+    ...
+    <link1> <link2> <link3> <link4>
+
+and the reader cannot tell which link belongs to which deal.
+
+format_clustered_product_list() now splits the head into BLOCKS (a new block
+starts on every price-bearing line; the note lines under it, "Buy Max
+Quantity", an MRP line, travel with it) and puts each block's own link directly
+under it, in the source's order.
+
+The price test used to be ₹-only, which is why this exact post was never
+re-laid out: the sources write "at 258", "@167", "Rs 180", "220/-". PRICE_LABEL_RE
+now reads all of those. Extra links (variant links) and extra blocks are
+appended rather than dropped — a lost link is a lost deal.
+
+
+2. "asalu link yeh ledu" — never publish a deal with no link
+-------------------------------------------------------------
+Earlier rounds published a post as complete text when every link the source
+wrote turned out to be a dead shortener. The user has reversed that: a post a
+reader cannot click is useless to them and earns nothing.
+
+  REQUIRE_LINK_IN_POST (default true)
+    every link dead  ->  PermanentSkip("every link the source wrote is dead")
+    set to false     ->  old behaviour (post it as text)
+
+UNCHANGED: a source post that never had a link but carries the product PHOTO is
+still published exactly as posted (round 13's rule). The two cases are
+different — one shows the reader the product, the other shows them nothing.
+
+The new skip reason is registered as a POLICY skip in ops/quality_audit.py and
+ops/coverage_audit.py, so the auditors do not report it as a lost post.
+
+
+3. Duplicates across differently-worded copies
+----------------------------------------------
+    "Loot : Nutriburst Collagen powder 299 (70% off)"
+    "Grab : Nutriburst Collagen powder @ 299 70% off"
+
+product_signature() already resolves both to the same key (verified), so the
+per-channel dedup catches it. Nothing to change here — the two posts were
+reaching the channel because the FIRST one was a linkless teaser (fix 2) and
+therefore never registered a delivery. Fix 2 closes this hole too.
+
+
+4. t.me/smartbuyhub11 — the Amazon Associates review channel
+-------------------------------------------------------------
+    SHOPPING_TARGET = "smartbuyhub11"
+    SHOPPING_TARGET_ENABLED (default true)
+
+It receives the SAME product deals as every other channel, in a
+programme-safe form rendered by affiliate_safe_text() AT DELIVERY TIME (so the
+stored copy every other channel gets stays exactly the source's):
+
+  kept     product name, the price the source printed, our link
+  removed  "Loot :" / "GRAB :" banners, "Buy Max Quantity", hurry/limited-stock
+           urgency, "#UK no 1 brand" and other unverifiable superlatives,
+           discount percentages and struck-through MRP lines, emoji shouting
+
+Nothing is invented: every word and every number left is the source's own.
+
+Routing rules for that channel:
+  * product deals only — trick / recharge / app-promo posts never reach it
+  * a post with no buyable link never reaches it
+  * a post left with nothing but a link after the rewrite is skipped for THAT
+    channel only (logged "SHOPPING SKIP"), the other channels are unaffected
+  * if the account cannot resolve @smartbuyhub11 yet, the delivery is closed as
+    done for that target instead of putting the whole job into retry — a live
+    deal is never held back from the channels that DO exist
+
+It is deliberately NOT in ALL_OWNED_TARGETS, so the bank/card-offer fan-out
+does not push those posts (which are not shoppable products) at the reviewer.
+
+
+Before you run it
+-----------------
+The bot account must be an admin of @smartbuyhub11 with post rights. Until it
+is, every other channel keeps working normally and the log says
+"SHOPPING TARGET UNRESOLVED".
+
+
+=================================================================
+Round 2 (same day) — "migilina channels lo anni fix chesava?"
+=================================================================
+
+5. "shortga ravali ga earnkaro tho" — long Flipkart links
+---------------------------------------------------------
+A dl.flipkart.com product link arrives ~177 characters because of lid /
+marketplace / srno session noise, and it was posted at full length whenever the
+shortener was rate-limited or out of quota (the shorten pass had no fallback).
+
+compact_flipkart_product_link() now collapses it natively to
+    https://www.flipkart.com/<slug>/p/<item id>?pid=<pid>
+(~127 chars, no quota spent), in two places:
+  * the final shorten pass (pass 1b, next to the Amazon /dp compaction)
+  * convert(), before the link is handed to the shortener at all
+
+`pid` is the product identity and is ALWAYS kept, so the link still opens the
+exact item the source linked. Search/category URLs have no item id and are left
+untouched for the shortener.
+
+
+6. "idi manvena?" — is that link actually ours?
+------------------------------------------------
+Investigated. The bot runs TAGLESS (OUR_TAG = "", pinned at line 134 because
+the Associates account kept getting rejected), so an Amazon link genuinely
+carries no proof of ownership.
+
+I tried tightening the provenance gate to reject bare Amazon links, and REVERTED
+it: that check is what lets a legitimately-tagged link post when the link cache
+is cold (right after deploy, after a prune), and tightening it dropped real
+deals in the suite. Losing a deal to prove a point is the wrong trade.
+
+Instead, an unmonetized link is now LOUD instead of silent:
+    log.warning("UNMONETIZED LINK | queue=%s this deal posts a plain merchant
+                 link (the affiliate network had no campaign for it): %s")
+Grep the log for "UNMONETIZED LINK" to see exactly which posts earn nothing.
+
+TO ACTUALLY EARN on Amazon you must set AMAZON_TAG (OUR_TAG) once the
+Associates account is approved — that is a credentials issue, not a code one.
+
+
+7. Duplicates — the real root cause
+------------------------------------
+    "Loot : Nutriburst Collagen powder 299 (70% off)"
+    "Grab : Nutriburst Collagen powder @ 299 70% off"
+    "Grab ₹298 (10KG Detergent Powder)"  /  "Loot : 10KG Detergent Powder @298"
+
+Three separate bugs in the product signature made these sign differently:
+  a) the banner word ("Loot :", "Grab ") was read as the BRAND. It is stripped
+     now, colon or no colon, using the same _SAFE_PREFIX_RE the safe rewrite
+     uses (so the two can never drift apart).
+  b) a price written without "₹" ("@298", "at 167", "299 (70% off)") was read
+     as a MODEL NUMBER. _SIG_AMOUNT_RE now reads every spelling, and a bare
+     number equal to the line's own price is never a model.
+  c) a product with no model number at all needed FOUR agreeing words, so
+     "Nutriburst Collagen powder" was un-dedupable. Three long words is enough.
+
+Guarded in the other direction (a signature that matches too eagerly SKIPS a
+real deal), with a regression test covering:
+  Airdopes 141 vs 131, S23 128GB vs 256GB, 5 Burner vs 3 Burner,
+  Collagen vs Biotin, and Nivea MEN vs WOMEN — the last one was a PRE-EXISTING
+  collision (gender words are now variant words, like "pro"/"fe").
+
+ops/quality_audit.py mirrors this block; it was re-synced with
+`python3 ops/sync_identity.py` and the suite enforces that they match.
+
+
+Still NOT auto-fixable from here
+--------------------------------
+* AMAZON_TAG must be set for Amazon links to earn (see 6).
+* The bot account must be admin of @smartbuyhub11 (see 4).
+
+
+=================================================================
+Round 3 — "e channel source ga pettam ga, idi matrame review chesthada?"
+=================================================================
+
+ANSWER: yes — @smartbuyhub11 is a TARGET only, never a source.
+
+Verified in code:
+  * SHOPPING_TARGET appears only in the routing/delivery path
+  * it is NOT in SOURCE_TO_TARGETS, TRICKS_SOURCES, UNDER99_SOURCES or
+    PRIORITY_SOURCES, and not in the bridge's TG_SOURCE_USERNAMES
+So nothing is ever read FROM it, and it never feeds the other channels.
+
+BUT the honest answer to "does Amazon only look at this one channel?" is:
+they review the channel you submit — and they follow the links inside it.
+That is where two real leaks were found and fixed this round:
+
+  a) CARD/BANK OFFERS carry our folder link. render_job appends
+     OUR_FOLDER_LINK into the stored copy for card offers, so the safe copy
+     inherited it. A reviewer tapping it lands in the "Loot Zone" folder.
+  b) ADD_OUR_CHANNEL_LINK_TOP prepends "👉 All Loot Channels: <folder link>"
+     to every outgoing post at delivery time — including this one.
+
+Both are now blocked:
+  * affiliate_safe_text() drops any line containing our folder link, our main
+    channel links, any t.me link, or our own promo wording ("All Loot
+    Channels", "Loot Zone", "Secret Loot", "join ... channel", "One Tap")
+  * the family header is explicitly NOT prepended when target == SHOPPING_TARGET
+
+Also fixed: a pure-hype banner line ("🔥 MEGA LOOT 🔥") survived because the
+drop test ran BEFORE the emoji were stripped. Emoji now come off first, so the
+decorated and undecorated versions are treated the same.
+
+What the reviewer sees now, for every post: product name, the price the source
+printed, and the merchant link. Nothing else.
+
+REMINDER — still on you, not fixable in code:
+  * set AMAZON_TAG once Associates is approved (otherwise Amazon links earn 0)
+  * make the bot an admin of @smartbuyhub11 with post rights
+  * the channel's own Telegram DESCRIPTION / pinned message is not written by
+    this bot — make sure they carry no "loot/deal" wording either.
+
+
+=================================================================
+Round 4 — "review ayyaka okka sari approve vasthe chalu kada?"
+=================================================================
+
+Half right, and the other half is the dangerous half. Read this one.
+
+TRUE: Amazon reviews the channel you SUBMIT. They do not go hunting through
+your other Telegram channels at application time, and the review copy this bot
+now renders (name + price + link, no loot/urgency/claims, no t.me promo) is
+built for exactly that review.
+
+NOT TRUE: "approve vachaka chalu, migatha channels lo em avvadu."
+
+Amazon's Operating Agreement (affiliate-program.amazon.in, "top do's and
+don'ts", section "Sites and social channels"):
+
+  "Do keep your websites, social media channels, and mobile applications ...
+   that you use to drive traffic to Amazon updated in your account on
+   Associates Central."
+
+and Amazon states plainly that listing a channel wrongly / not listing a
+channel that carries your links "can lead to closure of your account".
+
+So the rule is not "one channel gets reviewed once". The rule is:
+    wherever your TAGGED link appears, that channel must be declared.
+Approval is not a one-time gate - compliance is ongoing, and Amazon audits link
+placement against your declared properties.
+
+THE CONCRETE RISK HERE
+----------------------
+The moment you set AMAZON_TAG (which you must, to earn anything), the SAME
+tagged Amazon link was going to be published to ALL owned channels -
+LootZoneIndia11, SecretLootIndia1, PowerLoots1, Under99Deals11, ... - because
+the tag is applied in the render path, before fan-out. Those channels are
+undeclared AND full of "Loot"/urgency wording. That is the account-closure
+scenario, and it would have happened silently on the first tagged post.
+
+THE FIX (this round)
+--------------------
+    AMAZON_TAG_TARGETS   (default: smartbuyhub11)
+
+Our Associates tag now rides ONLY on the channels named there. On every other
+channel, strip_amazon_tag_for_undeclared() removes our `tag` parameter at
+delivery time - per target, after the stored copy is final.
+
+  * the deal still posts everywhere, with a working link (nothing is lost)
+  * only OUR tag is removed, and only the `tag` parameter
+  * non-Amazon links are untouched; EarnKaro links are unaffected
+  * a foreign tag is not ours to protect and is left to the existing gates
+
+If/when you declare more channels in Associates Central, add them:
+    AMAZON_TAG_TARGETS=smartbuyhub11,LootZoneIndia11
+
+WHAT YOU STILL HAVE TO DO YOURSELF
+----------------------------------
+1. Declare @smartbuyhub11 in Associates Central as the FULL URL
+   (https://t.me/smartbuyhub11 — not "t.me", not "telegram.org").
+2. Put the affiliate disclosure in the channel bio/description, e.g.
+   "As an Amazon Associate I earn from qualifying purchases."
+   Amazon requires it at channel level; the bot cannot write your bio.
+3. Keep the channel PUBLIC (no private/invite-only), posts visible to
+   non-subscribers.
+4. Do not put "Amazon" in the channel name/handle (trademark rule).
+5. Make 3 qualifying sales in 180 days or the account is closed anyway.
+6. Set AMAZON_TAG only after approval, and leave AMAZON_TAG_TARGETS at the
+   declared channel(s).
+
+NOTE ON TELEGRAM ITSELF: Amazon's approved-social list names Facebook,
+Instagram, X, YouTube, TikTok and Twitch. Telegram is not on that list - it is
+a grey area. People do run approved Telegram channels, but understand you are
+not standing on the same firm ground as a website, and keep the channel clean.
+
+
+=================================================================
+Round 5 — EarnKaro review channel: 100% rules, allowlist rebuild
+=================================================================
+
+"andulo chala conditions unnai, aa channel anni rules follow avvali;
+ approve ayyaka migatha channels lo enaina post cheyyochu"
+
+That is exactly how it is built now, and ONLY that channel changes.
+
+WHY THE APPROACH CHANGED
+------------------------
+Until now the review copy was a BLOCKLIST: remove "loot", remove "hurry",
+remove "buy max quantity"... The flaw is structural - the one hype word nobody
+thought of is the one the reviewer reads. Real source posts carry "PRICE ERROR",
+"Dhamaka", "Jackpot", "cashback trick", "free money glitch".
+
+So the review copy is now REBUILT FROM AN ALLOWLIST (_strict_review_copy):
+
+    a line survives ONLY if it is
+      1. the link, or
+      2. a product line - 2+ real words, no banned word
+
+    everything else is dropped.
+
+Nothing is invented: every word and every digit still comes from the source,
+and the price is kept EXACTLY as the source printed it (₹298 / at 258 / @167).
+A price we re-format is a price we could get wrong, and a wrong price is the one
+thing a marketplace programme does not forgive.
+
+    SAFE_STRICT_REBUILD=true   (default; set false to fall back to the blocklist)
+
+WORKED EXAMPLES (real shapes from your sources)
+-----------------------------------------------
+  "PRICE ERROR LOOT / Boat Airdopes 141 at 899 / Order fast before it ends!!"
+      -> Boat Airdopes 141 at 899
+         <link>
+
+  "Dhamaka offer!! Jackpot deal / Prestige Cooker 5L at 1499 / Buy Max Quantity"
+      -> Prestige Cooker 5L at 1499
+         <link>
+
+  "Samsung Galaxy M14 5G at 9999 / MRP 16999 / Save 41%"
+      -> Samsung Galaxy M14 5G at 9999
+         <link>
+
+  "Cashback trick: pay via CRED get 200 off"   -> NOT POSTED to this channel
+  "Free money glitch"                          -> NOT POSTED to this channel
+
+The last two are the important ones: after the rebuild there is no product left,
+only a link, and the delivery guard refuses to post that to the review channel
+(logged "SHOPPING SKIP"). Those posts still reach every OTHER channel exactly as
+the source wrote them - nothing is lost anywhere else.
+
+SCOPE - the other channels are untouched
+----------------------------------------
+The rewrite runs at DELIVERY time, per target. The stored copy, the ledger, the
+auditor and every other channel keep seeing the source-derived post exactly as
+before. Enforced by a test that fails if affiliate_safe_text/_strict_review_copy
+ever appears in the shared render path.
+
+So: this channel plays by the rules; the others behave exactly as they do today.
+
+
+=================================================================
+Round 6 — daily 20-30 Amazon posts on the review channel
+=================================================================
+
+"daily 20-30 post cheyali, Amazon vi veyu, reject cheyakunda"
+
+Three rejection risks were still open. All three are now enforced in code, so
+they cannot be forgotten on a busy day.
+
+1. LINK-LEVEL DISCLOSURE  (the biggest one)
+-------------------------------------------
+Amazon/FTC require a clear disclosure NEXT TO the link on EVERY post. The
+channel bio alone is NOT enough - Amazon's own help page says the link-level
+disclosure must be "clear" and "conspicuous", and names "(paid link)", "#ad",
+"#CommissionsEarned" as acceptable. Missing it is one of the most common
+rejection/warning reasons.
+
+    SHOPPING_DISCLOSURE="#ad (paid link)"    (default)
+
+add_link_disclosure() appends it to every review-channel post, at delivery,
+AFTER every cleaning pass - so no later pass can strip it - and never twice.
+
+    Boat Airdopes 141 at 899
+    https://www.amazon.in/dp/B0X
+
+    #ad (paid link)
+
+2. AMAZON ONLY
+--------------
+The channel is submitted for the AMAZON programme, so a Flipkart/Myntra link on
+it is off-programme noise to a reviewer.
+
+    SHOPPING_AMAZON_ONLY=true   (default)
+
+Only a post whose links are ALL Amazon reaches this channel. A mixed post
+(Amazon + Flipkart) is excluded too - otherwise the off-programme link rides
+along. Everything else keeps going to the other channels exactly as today.
+Enforced twice: at routing AND at delivery.
+
+3. A DAILY CAP
+--------------
+20-30 curated posts/day reads like a shop. 200 reads like spam and is itself a
+rejection risk.
+
+    SHOPPING_DAILY_CAP=30       (default; 0 = unlimited)
+
+Counted per IST day in a `shopping_quota` table, so the pace SURVIVES RESTARTS
+(an in-memory counter would reset to zero every deploy and quietly blow the
+cap). Old rows are pruned after 3 days.
+
+Over the cap, the post is closed for this channel only ("daily cap reached") -
+every other channel still receives it.
+
+TUNING FOR YOUR 20-30 TARGET
+----------------------------
+Default is 30/day. For a tighter 20:
+    SHOPPING_DAILY_CAP=20
+The channel takes the deals as they come; if your Amazon flow exceeds the cap,
+the surplus simply goes to the other channels.
+
+WHAT A REVIEWER NOW SEES, EVERY POST
+------------------------------------
+    <product name> <price exactly as the source printed it>
+    <Amazon link>
+
+    #ad (paid link)
+
+No loot/urgency wording, no "buy max quantity", no unverifiable claims, no
+discount percentages, no MRP, no emoji shouting, no t.me promo, no trick/glitch
+posts, no non-Amazon links, no duplicates, and never more than the daily cap.
+
+STILL YOURS TO DO (cannot be done from code)
+--------------------------------------------
+  * channel bio: "As an Amazon Associate I earn from qualifying purchases."
+  * channel PUBLIC, posts visible to non-subscribers
+  * no "Amazon"/"Loot"/"Deal" in the channel name or handle
+  * declare the FULL URL https://t.me/smartbuyhub11 in Associates Central
+  * set AMAZON_TAG only after approval (AMAZON_TAG_TARGETS already limits it
+    to this channel)
+  * 3 qualifying sales in 180 days
+
+
+=================================================================
+Round 7 — the real rejection, and what changed because of it
+=================================================================
+
+The application (deals0911-21) was REJECTED on 2026-09-06:
+
+  "unapproved use of Amazon trademarked words, images (screenshots/
+   screen recordings), or reviews (which may include variations or
+   misspellings) ... An example can be found here:
+   https://t.me/LootZoneIndia11"
+
+The example URL is the whole story. The reviewer did not fail
+smartbuyhub11 on its own posts - they walked from the application to
+LootZoneIndia11 and judged everything on that. Round 6 had assumed the
+review channel would be read in isolation. It is not.
+
+Four changes:
+
+1. NO MARKETPLACE NAME IN THE COPY
+   has_amazon_trademark() covers the mark, its brands and its
+   misspellings/variants: amazon/amazn/amzn/amz, Prime Day|Deals|Sale|
+   Video|Music, Great Indian Festival, AmazonBasics, Alexa, Kindle,
+   Echo/Echo Dot/Show, Fire TV/Stick, Audible, Mini TV, Pantry,
+   Subscribe & Save. Matched on the copy with URLs masked out, so
+   LINKING to amazon.in stays fine while NAMING it does not.
+   Enforced twice: the line is dropped inside _strict_review_copy(),
+   and a post that still names the mark is withheld at delivery.
+   "amazing quality shirt" is not a false positive.
+
+2. NO IMAGES ON THE REVIEW CHANNEL
+   SHOPPING_TEXT_ONLY=true (default). A forwarded deal photo is nearly
+   always a product-page screenshot - the exact thing cited. media_path
+   is blanked for this target only; every other channel keeps its album.
+
+3. NO POINTERS TO THE LOOT CHANNELS
+   has_telegram_pointer() kills any t.me/telegram.me URL or @handle in
+   the review copy, so the route the reviewer actually used is closed.
+
+4. DAILY CAP 30 -> 50
+   USER RULE (2026-09-06): "daily oka 40-50 cheyali e okka channelo lo,
+   remaining anni as usual ga run avvali". SHOPPING_DAILY_CAP defaults
+   to 50; set 40 for the lower end. No other channel is capped.
+
+What did NOT change: every other channel still gets the source copy,
+its photos, its hype and its links exactly as before.
+
+The remaining risk is not code. The reviewer can still find the loot
+channels if smartbuyhub11 shares a folder/addlist, a discussion group,
+a pin or a forward with them. That cleanup is in
+ops/AMAZON_APPLICATION_CHECKLIST.txt, STEP 0.
+
+
+=================================================================
+Round 8 — the duplicate hole in ROUNDUP posts
+=================================================================
+
+USER RULE (2026-09-06): "anni vere channels lo anni multiple times
+rakudna and duplicates lekunda".
+
+Audit of the four dedup layers found three of them sound and one with a
+real hole:
+
+  1. seen_message()          - same source message twice          OK
+  2. content_deal_key()      - same text from any source, 24h     OK
+  3. deal_claims/posted_deals- two live jobs racing               OK
+  4. product_signature()     - same PRODUCT per channel, 24h      HOLE
+
+product_signature() returned None for any post with 3+ merchant links,
+i.e. every roundup/list post. No key means the per-channel repeat guard
+never ran on them, so the same list arriving again from a second source
+- different shortener, different banner, items shuffled - was published
+a second time. That is the "multiple times" the user reported.
+
+_roundup_signature() now keys a roundup on the SET of products it names,
+using the same _product_identity() the single-product path uses:
+
+  * order-independent  (sources shuffle the items)
+  * link-independent   (two shorteners, one product)
+  * banner-independent (_SAFE_PREFIX_RE strips "Loot :" / "Grab :")
+  * 2-item floor       (one match is too thin to drop a live deal on)
+
+A list that ADDS or DROPS an item is a different post and still goes
+out, and the existing "better copy" rule is untouched, so a genuine
+price drop is never swallowed.
+
+Verified: A and a reordered A from another source now collide; A plus a
+fourth product does not; single-product posts keep their SIG: scheme.
+
+
+=================================================================
+Round 9 — our own tag (mama086-21) and the self-source loop
+=================================================================
+
+USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade so dinni
+approve cheyali mana new channel lo post cheyu vere channels lo as usual
+... nenu source ga ana kotha channel link ichanu ... 30-50 post veyu".
+
+1. THE TAG IS OURS NOW
+   OUR_TAG had been pinned to "" because the only tag ever seen in the
+   wild (deals0911-21) belonged to a SOURCE - putting it on our posts
+   would have paid THEM. We now own mama086-21, so the tag is read from
+   AMAZON_TAG again, but it is validated against OUR_AMAZON_TAGS first:
+   a value that is not ours is refused with a warning and the bot posts
+   tagless rather than credit a stranger. A stale .env can no longer do
+   damage in either direction.
+
+   Set on the server:   AMAZON_TAG=mama086-21
+
+   AMAZON_TAG_TARGETS still defaults to the review channel alone, so the
+   tag rides ONLY on the channel declared to Amazon. Every other channel
+   posts the same deal through EarnKaro, untagged - which is both the
+   user's "vere channels lo as usual" and the Operating Agreement's
+   requirement that links only appear on declared properties.
+
+2. THE NEW CHANNEL WAS ADDED AS A SOURCE - THAT IS A LOOP
+   The user added the new channel's own link to the source list. A
+   channel that is both source and target feeds its own output back into
+   the queue: the bot re-reads what it just published, re-shortens the
+   link and posts it again. is_own_channel_source() now refuses any of
+   our own channels as a deal source, checked at the very top of
+   process_job before any work is done. Real sources are unaffected.
+
+3. 30-50 A DAY
+   SHOPPING_DAILY_CAP stays at 50 (set 30 or 40 for a lower pace); the
+   cap applies to the review channel only.
+
+
+=================================================================
+Round 10 — the review copy, tested against REAL source shapes
+=================================================================
+
+USER RULE (2026-09-06): "anni advanced gaa ... new channel lo perfectga
+approve vachelanga post cheyu, remaining mana channels lo as usual".
+
+Rounds 5-9 were tested on invented examples. This round ran the shapes
+our sources ACTUALLY send, and three defects fell out immediately.
+
+DEFECT 1 - RATINGS AND REVIEW COUNTS WERE SHIPPING
+  "Rating 4.2 * | 12,453 reviews" went out untouched. The rejection
+  email says "trademarked words, images ... OR REVIEWS". Star ratings
+  and review counts are marketplace-owned content we are not licensed
+  to republish - this alone could have failed the re-application.
+
+DEFECT 2 - MRP, PERCENT-OFF AND COUPON CONDITIONS WERE SHIPPING
+  "Price - Rs.899 (MRP Rs.2990)", "70% OFF", "Apply 10% coupon". An MRP
+  is an anchor claim the reviewer must be able to verify; a coupon is a
+  condition. Neither is needed to sell the product.
+
+DEFECT 3 - THE PRICE WAS BEING LOST
+  Once the MRP line was dropped, the DEAL price went with it, and posts
+  reduced to "product + link" with no price at all.
+
+_STRICT_DROP_LINE_RE now removes: ratings, review counts, star scores,
+bestseller badges, MRP/list price, percent-off, "save Rs.X", coupons,
+promo codes, cashback, bank offer, EMI, exchange, buy/shop/order now,
+click/tap, join/share/subscribe/follow, stock and quantity lines.
+
+_salvage_price_only() rescues the DEAL price off any line it drops, with
+the MRP masked out first so the higher number can never be published as
+the price. A lone "@ 299/-" line is kept as the price too. If no
+surviving line carries a price, one is taken from the original post via
+parse_price() rather than publish a product without a price - and the
+"already has a price" test accepts "at 549" / "only 549" / "@ 549", so
+"Pigeon Kettle 1.5L at 549" never gains a duplicate "Price: 549" under
+it. Finally the line list is de-duplicated.
+
+VERIFIED OUTPUT (real shapes in, finished post out):
+
+  boAt Rockerz 255 Pro+ Neckband      SAMSUNG Galaxy M14 5G (128 GB)
+  Price: Rs.899                       Deal Price: Rs.9999
+  https://amzn.to/aaa                 https://amzn.to/ddd
+
+  #ad (paid link)                     #ad (paid link)
+
+Withheld from this channel (still posted to every other channel):
+  "Amazon Great Indian Festival deal"  -> names the mark
+  "Cashback trick"                     -> not a shoppable product
+
+EVERY OTHER CHANNEL IS UNCHANGED. Verified mechanically: none of
+affiliate_safe_text, _strict_review_copy, add_link_disclosure,
+_STRICT_DROP_LINE_RE, _salvage_price_only or has_amazon_trademark
+appears anywhere in the shared render_job path. They run at delivery,
+for SHOPPING_TARGET only. The loot channels keep their hype, their
+photos, their MRP and their ratings exactly as before.
+
+
+=================================================================
+Round 11 — native links on the review channel, and the tag switch
+=================================================================
+
+USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+cheyaku" + "tag ni anni channels lo use cheyu okavela approve vasthadi".
+
+1. NO SHORTENER ON THE REVIEWED CHANNEL
+   A bit.ly/is.gd hop hides where the link goes. A reviewer who cannot
+   see the store domain in the post cannot verify it, and a redirect
+   chain is exactly what a compliance check treats as cloaking.
+
+   Every short link this process mints is now recorded in a reverse map
+   (_short_to_long), and expand_our_short_links() puts the NATIVE store
+   URL back at delivery time, for the review channel only:
+
+       review channel : https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21
+       every other one: https://bit.ly/3xYz          (unchanged)
+
+   Only links WE created are swapped - a source's own short link is left
+   exactly as it arrived, because we cannot know its destination.
+
+   This costs nothing in neatness: the native product URL is already
+   collapsed to ~50 characters, and it is self-proving (the reviewer can
+   read the ASIN and our tag straight off the post).
+
+   Knob: SHOPPING_NATIVE_LINKS=false restores shortening if ever needed.
+
+2. THE TAG SWITCH - SAFE NOW, EVERYWHERE AFTER APPROVAL
+   The user wants to earn on all channels once approved. Amazon requires
+   that any channel carrying the tag is DECLARED in Associates Central.
+   Both are satisfied by one switch:
+
+       AMAZON_TAG_TARGETS unset  -> review channel only   (DEFAULT, use
+                                    this while the application is
+                                    pending - it is what keeps the other
+                                    channels off Amazon's radar)
+       AMAZON_TAG_TARGETS=all    -> every owned channel   (ONLY after
+                                    approval AND after listing each one
+                                    in Associates Central)
+       AMAZON_TAG_TARGETS=a,b    -> exactly those
+
+   Do NOT set "all" before approval. An undeclared channel carrying the
+   tag is grounds for closing the account - and the account is the thing
+   we are trying to win.
+
+   Until then nothing is lost: every other channel keeps monetising the
+   same deal through EarnKaro exactly as it does today.
+
+
+=================================================================
+Round 12 — WhatsApp stopped, and the test that never ran
+=================================================================
+
+USER RULE (2026-09-06): "whatsapp lo bestga post cheyali smartgaa and
+agipoindi ippudu alaga agipovaddu".
+
+THE TEST THAT NEVER RAN
+  test_line_fidelity.py has failed on "the bridge identity probe ran"
+  for many rounds. It was not a flake: bridge.js demanded
+  TELEGRAM_BOT_TOKEN / WA_PHONE / WA_CHANNEL before it would do
+  ANYTHING, including --identity-probe, which is a pure function that
+  touches no network. So the cross-language dedup contract - "same
+  product on Telegram, new deal on WhatsApp" - was never actually
+  verified. required() now returns '' under --identity-probe.
+  The full suite is green for the first time in this session.
+
+THREE WAYS THE BRIDGE WENT QUIET
+  1. LOGGED OUT = SILENCE. On DisconnectReason.loggedOut the handler
+     logged once and returned. Nothing ever spoke again, which is how
+     the channel was found stopped days later. It now repeats the alarm
+     every 10 minutes and names the fix (switch_whatsapp_number.sh).
+  2. THE WATCHDOG ONLY WATCHED A BUSY QUEUE. It forced a reconnect only
+     when readyCount >= 1. A socket that died while the queue happened
+     to be empty stayed dead, and the next deal hours later landed on a
+     corpse. An idle-but-ready socket is now refreshed after 90 minutes
+     regardless of the queue.
+  3. A COLD SOCKET WAS NEVER RETRIED. If connectWhatsApp() failed before
+     registering its close handler, no reconnect was ever scheduled - the
+     bridge sat there, waReady=false, forever. The watchdog now retries
+     whenever the socket has not been open for 10 minutes.
+
+Nothing about WHAT is posted changed - only that it keeps posting.
+
+
+=================================================================
+Round 13 — posting like a human, and the tag is live now
+=================================================================
+
+USER RULE (2026-09-06): "oka human laga daily oka 50 posts" and
+"approve ayyedaka wait cheyaku amazon associate tag vundi gaa danne use
+cheyu".
+
+1. THE TAG IS ALREADY LIVE - NO WAITING
+   Nothing to change. AMAZON_TAG=mama086-21 is applied right now on the
+   review channel:
+       https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21
+   Every other channel posts the same deal with the tag stripped, so it
+   still earns through EarnKaro. That split is not caution for its own
+   sake - see the warning at the end of this section.
+
+2. HUMAN PACING (the real gap this round)
+   The daily cap stopped post 51. It did NOT stop posts 1-50 going out
+   in a single burst at 3am, which is precisely what a reviewer reads as
+   an automated feed rather than a curated shop.
+
+   SHOPPING_HUMAN_PACING=true (default) now spreads the day:
+     * posting hours only: SHOPPING_ACTIVE_START=8 .. ACTIVE_END=23
+     * a minimum gap derived from the cap: 15h / 50 posts = ~18 min,
+       relaxed to ~13 min so a busy hour can catch up
+     * random jitter on every gap, so the timing is never machine-regular
+     * the gap is stored in the DB, so a restart cannot cause a burst
+
+   A paced deal is left PENDING, never closed: it goes out on a later
+   pass instead of being lost, and every other channel has already
+   received it immediately. Verified: shopping_pace_wait() appears
+   nowhere in the shared render_job path.
+
+3. WARNING THE USER SHOULD READ TWICE
+   The user asked to put the tag on the other channels too, reasoning
+   "vallaki thelidu kada". Amazon CAN see it. The tag is visible in the
+   URL and Amazon attributes every click to a referring page. Traffic
+   arriving from a channel that is not declared in Associates Central is
+   exactly the violation that closes accounts - and the 2026-09-06
+   rejection proves a reviewer already walked from the application to
+   LootZoneIndia11 once.
+
+   Correct order: get approved with smartbuyhub11 alone -> declare each
+   further channel in Associates Central -> only then
+   AMAZON_TAG_TARGETS=all. Until then the other channels lose nothing:
+   EarnKaro pays the Amazon commission on them today.
+
+
+=================================================================
+Round 14 — THE ACTUAL REJECTION CAUSE (found by the user)
+=================================================================
+
+USER, 2026-09-06:
+  "LootZoneIndia11 adi nenu source ga ichnau danni check chesanu so
+   andulo anni photos antha anni tags tho post ayyayi so reject chesaru"
+
+The user opened the loot channel and found the posts carrying OUR
+Associates tag. That is the violation, and it was a real bug, not a
+misconfiguration.
+
+WHY THE TAG GOT THERE DESPITE THE GUARD
+  The ordering was wrong, and the guard was blind to it:
+
+    render_job   L5936  shorten_long_urls_in_text()  -> link becomes
+                                                        https://bit.ly/3xYz
+    delivery     L6300  strip_amazon_tag_for_undeclared()
+
+  The strip only rewrote URLs whose HOSTNAME was an Amazon domain. By the
+  time it ran, the post said "bit.ly" - no hostname to match, nothing
+  stripped - and the tag went out inside the redirect, invisible in the
+  post but perfectly visible to Amazon, which attributes every click to
+  its referring page. So an UNDECLARED loot channel was sending tagged
+  traffic to Amazon. That is precisely the Operating Agreement breach
+  that fails an application, and it explains why the rejection email
+  pointed at t.me/LootZoneIndia11.
+
+  Rounds 6-13 all assumed the strip worked. It never did for any post
+  whose link had been shortened - which is most of them.
+
+THE FIX
+  strip_amazon_tag_for_undeclared() now takes the affiliate client and
+  resolves OUR short links back to their destination first:
+
+    loot channel  : https://bit.ly/3xYz -> https://www.amazon.in/dp/B0FPDD9WKP
+                    (tag removed, product intact, link still works)
+    review channel: https://bit.ly/3xYz  (unchanged - it IS declared)
+
+  A source's own short link is never rewritten (we cannot know where it
+  goes, and it was never carrying our tag). A non-Amazon short link of
+  ours is left alone.
+
+THE PHOTOS, THE OTHER HALF OF THE FINDING
+  Already closed in round 7: SHOPPING_TEXT_ONLY=true, so the review
+  channel posts no images at all. The loot channels keep theirs - they
+  are not the channel under review, and once the tag is gone they are
+  not sending tagged traffic either.
+
+Full suite green: 311 checks in test_line_fidelity, 225 and 160 in the
+others, sync_identity ok.
+
+
+=================================================================
+Round 15 — four defects the user photographed on the LOOT channels
+=================================================================
+
+All four are on the ORDINARY channels, which the user wants running as
+usual - no programme restrictions, just correct. None of these fixes
+touches the review channel's copy rules.
+
+1. THE SAME PRODUCT POSTED TWICE IN ONE CHANNEL
+   "Ergonomic Dustpan @ 55" went out twice, identically, minutes apart.
+   Cause: _product_identity() required THREE product words when the post
+   had no model number. A two-word product name therefore had NO
+   identity, product_signature() returned None, and the per-channel
+   repeat guard never ran on it. Every short-named product in the feed
+   was un-dedupable.
+   Fix: two words are accepted when the joined basis is >= 15 characters
+   ("Ergonomic Dustpan" yes; "hair oil", "phone case", "Milton Bottle"
+   still refused as category phrases, so a real deal is never lost).
+   ops/quality_audit.py re-synced via ops/sync_identity.py.
+
+2. PRODUCT NAMES WITH NO LINK AT ALL
+   "Cello Feast Deluxe Kids Lunch Box @264 / Apply 31% Off Coupon /
+    2 Containers Lunch Box, 1024 ml @517 / Apply 30% Off Coupon"
+   published with nothing to tap. Cause: the link_free_post allowance,
+   written for a PHOTO deal whose picture is the product, also accepted
+   multi-product lists. A list with no link is a broken post - the
+   reader cannot buy any of it.
+   Fix: the allowance is limited to a SINGLE priced product. A link-free
+   list is skipped and retried instead of published half-dead.
+
+3. FLIPKART LINK NOT SHORTENED (112 CHARACTERS)
+   https://www.flipkart.com/flipkart/p/item?lid=...&marketplace=...&pid=...
+   FLIPKART_ITEM_RE expected "/p/itm<id>"; this path says the literal
+   word "item", so nothing matched and the raw link went out.
+   Fix: the regex accepts both spellings. 112 chars -> 61, pid kept, lid
+   and marketplace dropped. /p/itm<id> and search URLs unchanged.
+
+4. A "SHOPSY STORE" CARD UNDER A PEN-STAND DEAL
+   Telegram unfurled "linkredirect.in / Shopsy Store / A trusted network
+   that gives sellers an opportunity to grow their business!" beneath
+   "Decorative Boat Pen Stand at 261".
+   Cause: preview_allowed() looked the link up in link_cache to find its
+   destination. A freshly minted bitli.in link is not cached yet, so
+   `resolved` fell back to the bitli.in URL itself, whose host passed
+   every block below - and Telegram previewed whatever the redirect
+   landed on.
+   Fix: an affiliate shortener hides its destination by design, so it
+   can never be judged safe. No preview unless the real destination is
+   known. Amazon product links keep their preview.
+
+Suite: 327 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 16 — the boundary, made permanent
+=================================================================
+
+USER RULE (2026-09-06), stated firmly after round 15:
+
+  "mana top remaining channel gurinchi vatilo elanti issue lekunda
+   cheyu anni perfectga post cheyali. only chala restricts for review
+   channel only"
+
+i.e. the ordinary channels get BUG FIXES ONLY - never a programme rule.
+Verified mechanically rather than by reading the diff, and the check is
+now a test so a later round cannot quietly cross the line.
+
+WHERE EVERY RESTRICTION LIVES
+  All of it sits inside `if target == SHOPPING_TARGET:` in process_job,
+  at delivery time: affiliate_safe_text, _strict_review_copy,
+  _STRICT_DROP_LINE_RE, _salvage_price_only, add_link_disclosure,
+  has_amazon_trademark, has_telegram_pointer, is_amazon_only_post,
+  shopping_quota_left, shopping_pace_wait, SHOPPING_TEXT_ONLY,
+  SHOPPING_NATIVE_LINKS.
+
+  None of those names appears anywhere in render_job - the shared path
+  that builds the copy every channel receives. (is_amazon_only_post is
+  read once in the ROUTING block, purely to decide whether to ADD the
+  review channel to the target list; it removes no other target.)
+
+SAME DEAL, TWO CHANNELS:
+
+  LOOT CHANNEL (unchanged)          REVIEW CHANNEL (strict)
+  ------------------------          -----------------------
+  LOOT DEAL (emoji, caps)           boAt Rockerz 255 Pro+ Neckband
+  boAt Rockerz 255 Pro+ Neckband    Price: Rs.899
+  Price - Rs.899 (MRP Rs.2990)      https://amzn.to/aaa
+  70% OFF, Rating 4.2, 12,453
+  reviews, Apply 10% coupon,        #ad (paid link)
+  Hurry limited stock, photo
+  https://amzn.to/aaa
+
+ROUND 15's FOUR FIXES ARE FIXES, NOT RESTRICTIONS
+  1. dedup    - blocks only an EXACT repeat on the SAME channel; another
+                channel still gets it, and a cheaper repeat still posts.
+  2. link-free- a single photo deal with a price still publishes; only a
+                multi-product list with NO link is held back, because a
+                reader cannot buy from it.
+  3. flipkart - the same product page, 112 chars -> 61. Nothing dropped
+                but lid/marketplace tracking.
+  4. preview  - real product cards still show; only the unresolvable
+                shortener card ("Shopsy Store / A trusted network...")
+                is suppressed.
+
+Suite: 331 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 17 — deep audit: prices, foreign tags, nameless posts
+=================================================================
+
+Found by running REAL source shapes through the pipeline instead of
+invented examples. Four defects, two of them serious.
+
+1. A DISCOUNT WAS BEING READ AS THE PRICE  (worst of the four)
+   parse_price("Rs.99 off") returned 9. The pattern ended with a
+   lookahead rejecting "off", but nothing anchored the END of the
+   number - so the regex simply backtracked, matched the shorter "9",
+   and the lookahead passed. Every "Rs.X off" line in the feed could
+   print a price the source never charged, and the price drives routing
+   (under-99 / under-499), dedup and the "better copy" rule.
+   Fix: \b anchors the number, and discount phrasing is masked before
+   the scan - Save X, Flat X off, upto X off, X cashback, X% off.
+   Careful scoping: "Rs.1,999 Discount: 66%" must still read 1999, so
+   the amount-before-word mask requires a currency mark or a hugging
+   number. Verified on 15 real shapes, all correct.
+
+2. A STRANGER'S ASSOCIATES TAG COULD REACH THE REVIEWED CHANNEL
+   A link that skipped the shorten pass kept whatever tag the source
+   wrote. On the channel we DECLARED to Amazon that is our property
+   paying a third party - unattributable traffic on a reviewed
+   property. retag_foreign_amazon_links() now rewrites any foreign tag
+   to OURS at delivery (never merely strips it: an untagged link on the
+   declared channel earns nothing). Non-Amazon links untouched.
+
+3. THE PRODUCT NAME WAS BEING THROWN AWAY
+   The review copy required TWO words on a product line, so
+   "Dustpan @ 55" and "boAt 141" lost their names and the reviewer got
+   "Price: 55" with no product on it. One word now counts when it is
+   >=5 letters, or when it sits next to a model number (boAt 141,
+   Redmi 13C, WH-1000XM4, iPhone 15). Bare category words ("Soap",
+   "oil") are still refused.
+   Also fixed: "\b@" cannot match after a space, so "Dustpan @ 55"
+   looked price-less and gained a duplicate "Price: 55" underneath.
+
+4. NAMELESS POSTS WERE PUBLISHED AS LISTINGS
+   The delivery guard accepted any three letters, and the word "Price"
+   satisfied it - so "Price: 99 + link" went out as a product listing.
+   It now requires a line that is neither the link nor the generated
+   price line.
+
+Boundary re-verified: none of the review-only machinery (including the
+new retag) appears in render_job. The loot channels still parse 899 out
+of the same hype post and publish it with all its MRP, %, ratings and
+photos intact.
+
+Suite: 384 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 18 — final verification, and the last earning hole
+=================================================================
+
+USER QUESTION: "mana kothaga vachina amazon tag add chesthunnava and
+review channel lo perfectga post chesthunnava?"
+
+Answer, verified against the code rather than asserted:
+
+THE TAG
+  AMAZON_TAG=mama086-21 is applied on smartbuyhub11 and nowhere else.
+  Four cases, all now correct:
+    stranger's tag  -> replaced with ours
+    NO tag at all   -> ours is ADDED           <- fixed this round
+    already ours    -> untouched
+    non-Amazon link -> never touched
+  A tag that is not in OUR_AMAZON_TAGS is refused with a warning and the
+  bot posts tagless rather than pay a stranger.
+
+THE HOLE CLOSED THIS ROUND
+  retag_foreign_amazon_links() only replaced a FOREIGN tag. A link that
+  reached delivery carrying NO tag stayed untagged - so a sale from the
+  one channel we are allowed to earn on could not be attributed to us,
+  while the 3-qualifying-sales-in-180-days clock was running. It now
+  adds our tag when none is present.
+
+THE FINISHED REVIEW POST (asserted end to end, not intermediate values)
+
+  in : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / Price Rs.899
+       (MRP Rs.2990) / 70% OFF / Rating 4.2 / 12,453 reviews /
+       Apply 10% coupon / Hurry limited stock / @LootZoneIndia11 / photo
+
+  out: boAt Rockerz 255 Pro+ Neckband
+       Price: Rs.899
+       https://www.amazon.in/dp/B0X?psc=1&tag=mama086-21
+
+       #ad (paid link)
+
+  No hype, no MRP, no percentage, no rating, no review count, no coupon
+  condition, no urgency, no channel pointer, no emoji, no photo, one
+  link, no repeated line, disclosure last.
+
+  Refused for this channel (still posted to every other channel):
+    a Flipkart deal        - wrong programme
+    a post with no product - "Rs.299 + link" is not a listing
+    a trick/cashback post  - not a shoppable product
+    a post naming the mark - unlicensed trademark use
+
+THE OTHER CHANNELS
+  Re-verified mechanically: none of the review-only machinery appears in
+  render_job. A loot channel gets the source copy with its hype, MRP,
+  ratings, photos and emoji intact - and with NO tag on the link, which
+  is what keeps the account safe while the application is pending.
+
+Suite: 405 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green, py_compile ok.
+
+
+=================================================================
+Round 19 — A/B against the pre-session code, and one REGRESSION
+=================================================================
+
+USER QUESTION: "vere channels lo perfectga as previous ga chesthadi
+kada?"
+
+Rather than assert it, the shared pipeline was diffed against commit
+ee434cb (the code before this session) by running 9 real post shapes
+through 14 shared functions in both versions and comparing every output.
+
+A REGRESSION WAS FOUND AND FIXED
+  "Cello Lunch Box" is three real product words but only 15 characters.
+  Round 15 had set an 18-character floor for names with no model number,
+  so this product lost its identity entirely - the same lunch box could
+  post twice, which is exactly the Dustpan bug the user reported.
+
+  The floor exists to reject GENERIC phrases ("Men Cotton Shirt",
+  "lunch box set") that many products share; keying on those would
+  suppress real deals. It must not reject a short but SPECIFIC name.
+  So _SIG_GENERIC_WORDS now lists ordinary descriptive words, and a
+  phrase containing anything outside that list is treated as specific
+  (floor 15); a phrase built only from generic words keeps the 18-char
+  floor.
+
+    Cello Lunch Box     -> keyed      Men Cotton Shirt -> not keyed
+    Dabur Gulabari Soap -> keyed      lunch box set    -> not keyed
+    Ergonomic Dustpan   -> keyed      hair oil         -> not keyed
+
+  ops/quality_audit.py re-synced.
+
+EVERY OTHER DIFFERENCE IS A FIX, NOT A CHANGE IN BEHAVIOUR
+  parse_price("Rs.150 off on Rs.299")
+      old 15   <- backtracked off "150 off"; a price the source never
+                  charged, and price drives routing and dedup
+      new 299  <- what the buyer actually pays
+  product_signature for short-named products and for roundups
+      old None <- no identity meant the repeat guard never ran, so the
+                  same product/list could post twice
+      new keyed
+  compact_flipkart_product_link
+      new function; /p/item links 112 chars -> 61
+
+  The copy itself is untouched on the ordinary channels: clean_source_text,
+  tidy_post, sanitize_outbound_text, normalize_nested_link_markup,
+  strip_url_residue and remove_source_url_residue return byte-identical
+  output to the pre-session code on all 9 shapes. A loot channel still
+  gets its hype, MRP, percentages, ratings, emoji and photos, and still
+  gets no Associates tag on the link.
+
+Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 20 — our tag now EARNS on every channel; lists still Bitly
+=================================================================
+
+USER QUESTION: "channels anni perfectga amazon mana new tag use chesi
+and list of products vachinappudu bitly use chesi chesthada?"
+
+AUDIT FINDING (the tag was NOT earning anywhere)
+  Round 18 verified strip_amazon_tag_for_undeclared(), which is only the
+  delivery-time guard. The real link path is AffiliateClient.convert(),
+  and a 2026-09-03 rule had removed the direct-Associates branch: EVERY
+  Amazon link was sent to EarnKaro, which returns its own ekaro.in link.
+  apply_amazon_tag() then had no amazon.in URL left to tag. So the tag
+  reached NO channel - not even the review channel - and the Amazon
+  commission went to EarnKaro's account rather than mama086-21.
+
+FIX (user chose "tag_everywhere" + "bitly for lists only", 2026-09-06)
+  An Amazon PRODUCT link (one with an ASIN) is now built natively in
+  convert():  https://www.amazon.in/dp/ASIN?tag=mama086-21
+  and never sent to EarnKaro. Everything else is unchanged:
+    Amazon SEARCH/category  -> EarnKaro (no ASIN; a tag there earns
+                               nothing anyway)
+    Flipkart and all others -> EarnKaro exactly as before
+  AMAZON_TAG_TARGETS=all is now written by ops/install_bestgaa.sh.
+
+BITLY - unchanged, and confirmed correct
+    list (2+ links) -> every link shortened, post stays neat
+    single product  -> native ~48-char /dp/ASIN?tag= link, no quota spent
+  A 3-product list posts as three bitli.in links whose destinations each
+  carry our tag.
+
+THE TWO LAYERS
+  1. convert()  decides whether the tag goes ON the link.
+  2. strip_amazon_tag_for_undeclared() is still the last word at
+     delivery: any channel NOT in AMAZON_TAG_TARGETS has the tag removed,
+     including when it is hidden behind a short link we minted.
+  With AMAZON_TAG_TARGETS=all every owned channel is declared, so layer 2
+  now passes the tag through - but the guard remains, so removing a
+  channel from the list instantly stops the tag reaching it.
+
+!! ACCOUNT RISK THE USER ACCEPTED
+  Amazon requires every channel carrying the tag to be listed in
+  Associates Central. All eight owned channels must be added there, or
+  set AMAZON_TAG_TARGETS back to unset (review channel only) until the
+  account is approved.
+
+Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 21 — "vallu chudaru" is not true, and what follows from it
+=================================================================
+
+USER BELIEF: we gave Amazon one source channel, so the others are
+private and we can do as we like on them.
+
+THIS IS FALSE, AND IT IS WHY THE LAST APPLICATION WAS REJECTED.
+Amazon identifies the traffic source from the TAG, not from the channel
+list. Every click on a mama086-21 link reaches amazon.in with the
+referring channel attached. Their closure notice reads: "traffic coming
+to Amazon from one or more site/social media handle ... not included in
+your Associates account". The user already lived this: "LootZoneIndia11
+... anni tags tho post ayyayi so reject chesaru."
+
+USER DECISION: declare all eight channels first, THEN turn the tag on.
+
+WHAT CHANGED
+  * AMAZON_TAG_TARGETS=all is commented OUT again in
+    ops/install_bestgaa.sh. The tag rides on smartbuyhub11 only until
+    the user has listed the channels. Every other channel is byte-for-
+    byte unchanged and keeps earning through EarnKaro.
+  * ops/AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt written: the eight
+    full channel URLs to paste into Associates Central, and the one line
+    to change afterwards.
+  * NEW strip_amazon_ratings(). Copied star ratings and review counts
+    are a documented closure reason (they go stale; Amazon requires live
+    Product API data). They are harmless on a tagless channel, so they
+    are removed ONLY on channels that carry the tag, together with the
+    "#ad (paid link)" disclosure. Product name, price, MRP, percentage,
+    emoji and photos are untouched.
+
+      in : boAt Rockerz 255 / Rs.899 (MRP Rs.2990) / 70% OFF /
+           Rating 4.2 * | 12,453 reviews
+      out: boAt Rockerz 255 / Rs.899 (MRP Rs.2990) / 70% OFF
+
+    Verified that specs and prices with digits survive: "1024 ml",
+    "4 pieces", "70% OFF", "Rs.899" are all kept.
+
+  With the tag unset (today's state) NONE of this runs, so the ordinary
+  channels have no restrictions at all - the user's standing rule.
+
+Suite: 445 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 22 — list shapes, and a product name that was deleted
+=================================================================
+
+USER: "list of products text paina and kinda links ... sources lo entha
+neatga vundo same alage antha neatga post cheyali ... asalu mistake
+cheyoddu". Also confirmed LootZoneIndia11 was previously declared as the
+source, so that channel is not the undeclared-traffic risk.
+
+DEFECT 1 - THE PRODUCT NAME WAS DELETED BY THE LINK CLEANER (serious)
+  normalize_nested_link_markup() collapsed EVERY "[label](url)" to the
+  bare url. When the label was the PRODUCT NAME the post lost its
+  product:
+
+    in : [Boat Airdopes 141](https://amzn.to/a) @ 899
+    out: https://amzn.to/a @ 899        <- no product at all
+
+  Now a substantial label is kept ABOVE its link, with anything written
+  after the link (usually the price) folded back onto the name line:
+
+    out: Boat Airdopes 141 @ 899
+         https://amzn.to/a
+
+  Call-to-action labels are still dropped ("Buy Now", "Click here",
+  "Link", "Amazon", "Shop Now", "Grab it now", ...), as are labels that
+  are themselves a URL or a nested wrapper. Emphasis debris is stripped
+  before judging the label - but only RUNS of markers, so
+  "boAt Rockerz 255 Pro+" keeps its "+".
+
+DEFECT 2 - INLINE LISTS WERE PUBLISHED AS A WALL OF TEXT
+  A source that writes the whole list on ONE line -
+    Boat 141 @899 https://a Samsung M14 @9999 https://b Milton @89 https://c
+  - was left as-is, because format_clustered_product_list() only handles
+  the other shape (all links grouped at the bottom). The reader could
+  not tell which link belonged to which product.
+
+  NEW split_inline_product_links() cuts after each URL and puts every
+  product above its own link. It runs FIRST in clean_source_text(),
+  before the passes that hoist URLs onto their own lines. Markdown lists
+  on one line are split on the markdown boundary instead.
+
+  All three list shapes now read the same way:
+      product name + price
+      its own link
+
+REGRESSIONS CAUGHT AND FIXED DURING THIS ROUND (6 in test_render_job)
+  The user's real forwarded posts wrap the SAME url 2-7 times
+  ("++**[[url](url)++**]([url](url))**"). The new splitter ran inside
+  that markup and emitted the duplicate copies as separate products.
+  Fixed twice over: the plain-text splitter skips any line still holding
+  brackets, and a label that CONTAINS a url (or "amazon."/"flipkart.")
+  is treated as markup, never as a product name.
+
+VERIFIED NOT CHANGED
+  A neat source is byte-identical to the pre-session code (commit
+  ee434cb) on every neat shape tested - we never "fix" what is already
+  right. A single deal is untouched. Duplicate links still collapse to
+  one. Dedup still recognises the same product across different wording
+  and different prices.
+
+Suite: 471 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 23 — the tag is now ON for every owned channel
+=================================================================
+
+USER: "anni channels amazon tag tho cheyu okaynaa not only review
+channel." Done. ops/install_bestgaa.sh now writes AMAZON_TAG_TARGETS=all.
+
+WHAT EACH CHANNEL GETS NOW
+  All eight owned channels (smartbuyhub11, LootZoneIndia11,
+  LootzoneTricks, PowerLoots1, Premiumlootsdeals, SecretLootIndia1,
+  Under99Deals11, under499loots) publish Amazon PRODUCT links as
+      https://www.amazon.in/dp/ASIN?tag=mama086-21
+  built natively - no EarnKaro hop, so the commission is ours.
+  Lists still shorten through Bitly; the tag rides inside the short link.
+
+  Because a tagged channel is a channel Amazon can review, each of them
+  now also gets the two programme protections automatically:
+    * copied star ratings and review counts removed (documented closure
+      reason - the numbers go stale, Amazon wants live API data);
+    * "#ad (paid link)" appended.
+  Everything else is untouched: the hype line, MRP, percentage, coupon
+  text, emoji and photos all still go out exactly as the source wrote
+  them. The review channel keeps its own stricter copy as before.
+
+  A channel that is NOT ours still receives a clean, working, UNTAGGED
+  link - the guard stays in place.
+
+TEST NOTE
+  AMAZON_TAG_TARGETS is read at import time, and reloading the module
+  in-process tears down its event loop, so the new check runs the whole
+  scenario in a SUBPROCESS with its own temporary BOT_DB_PATH (the link
+  cache is persistent, and a stale ekaro.in row was masking the native
+  link on the first attempt).
+
+USER'S REMAINING TASK - THIS IS THE ONE THING CODE CANNOT DO
+  Every channel above must be listed in Associates Central with its FULL
+  URL and be public:
+    https://affiliate-program.amazon.in/home/account/profile/sitelist
+  Amazon reads the traffic source from the tag itself. The user has
+  confirmed LootZoneIndia11 was already given as the source; the other
+  seven still need to be on that list.
+
+Suite: 472 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 24 — tag stays on all eight; cloaking removed from Amazon
+=================================================================
+
+USER: told that Amazon reads the traffic source from the tag itself -
+their reports show one referrer per channel automatically, it is not a
+manual review - the user chose to KEEP the tag on all eight channels and
+accept the undeclared-source risk. Recorded, not argued again.
+
+WHAT WAS DONE INSTEAD: remove the exposure that CAN still be removed.
+
+  A tagged Amazon link is no longer put behind bitli.in. Amazon lists
+  link cloaking - hiding that a link leads to Amazon - as a closure
+  reason, and a shortener hop does exactly that. The native form,
+      https://www.amazon.in/dp/ASIN?tag=mama086-21
+  is about 50 characters, so a 3-product list is just as neat without
+  hiding anything, and the Bitly quota is no longer spent on Amazon at
+  all. Non-Amazon links are untouched and still shorten in lists.
+
+  Before: 3-product Amazon list -> bitli.in/L1, L2, L3   (3 quota calls)
+  After : 3-product Amazon list -> three native tagged amazon.in links
+                                                          (0 quota calls)
+
+STATE OF THE EIGHT CHANNELS NOW
+  Tag on every one, native Amazon links, copied ratings and review
+  counts removed, "#ad (paid link)" appended, hype/MRP/percentage/
+  coupon/emoji/photos all still exactly as the source wrote them.
+
+THE ONE RISK THE USER ACCEPTED AND CODE CANNOT REMOVE
+  Six channels send tagged traffic while only smartbuyhub11 and
+  LootZoneIndia11 have been given to Amazon as sources. If Amazon
+  queries it, the fix is five minutes of work at
+    https://affiliate-program.amazon.in/home/account/profile/sitelist
+  Full URLs, public channels. Listed in
+  ops/AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt.
+
+Suite: 487 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 25 — every condition belongs to the review channel ONLY
+=================================================================
+
+USER RULE (FINAL): "only review channel lo anni conditions tho post
+cheyali."
+
+Round 23 had applied two programme conditions (the ratings strip and the
+"#ad" disclosure) to every channel that carried the tag. That is now
+REVERSED. The ordinary channels receive the source copy exactly as the
+source wrote it - hype, MRP, percentages, RATINGS, REVIEW COUNTS,
+coupons, emoji and photos all intact - even though they still carry our
+Associates tag.
+
+strip_amazon_ratings() is not deleted; it moved INTO the review branch,
+because a rating written inside a product line ("boAt Rockerz 255 4.2
+star") would otherwise survive affiliate_safe_text().
+
+MECHANICALLY ENFORCED, not asserted. The new test slices process_job at
+"if target == SHOPPING_TARGET:", takes exactly that branch, and requires
+each of these to appear INSIDE it and nowhere else:
+    affiliate_safe_text        has_amazon_trademark    SHOPPING_TEXT_ONLY
+    add_link_disclosure        has_telegram_pointer    SHOPPING_AMAZON_ONLY
+    strip_amazon_ratings       shopping_pace_wait      is_amazon_only_post
+    retag_foreign_amazon_links shopping_quota_left
+All eleven: inside the branch, zero leaks outside.
+
+SAME DEAL, TWO CHANNELS
+  loot   : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / Rs.899
+           (MRP Rs.2990) / 70% OFF / Rating 4.2 / 12,453 reviews /
+           Apply coupon / photo / tagged amazon.in link
+  review : boAt Rockerz 255 Pro+ Neckband
+           Price: Rs.899
+           https://www.amazon.in/dp/B09N3ZNHTY?tag=mama086-21
+
+           #ad (paid link)
+
+A/B against the pre-session code (ee434cb) confirms the loot-channel copy
+is byte-identical on every shape tested.
+
+Suite: 486 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 26 — A/B audit of the ordinary channels; dedup hole closed
+=================================================================
+
+USER: "only review channel lo strictsga cheyu and remaining channel lo as
+it is as previous ... elanti mistakes lekunda."
+
+Verified by MEASURING, not asserting: 12 real post shapes were pushed
+through 14 shared functions in both the current code and the pre-session
+code (ee434cb) and every output compared.
+
+COPY THE READER SEES - exactly ONE difference, and it is the fix the
+user asked for: a list whose links were dumped at the bottom now pairs
+each product with its own link. Everything else - clean_source_text,
+tidy_post, sanitize_outbound_text, normalize_nested_link_markup,
+strip_url_residue, remove_source_url_residue, strict_orphan_token_cleanup
+- is byte-identical on all 12 shapes. Hype, MRP, percentages, ratings,
+review counts, coupons, emoji and photos all still go out untouched.
+
+DEDUP HOLE FOUND AND CLOSED
+  "Cello Box @264" had NO identity: nine characters, under the 15-char
+  floor, so the same lunch box could post twice - the Dustpan bug again.
+  The floor exists to reject GENERIC phrases, not short specific names,
+  so a phrase is now keyed when it contains a BRAND-like word: one that
+  is neither descriptive (_SIG_GENERIC_WORDS) nor an ordinary product
+  noun (_SIG_PRODUCT_NOUNS, new).
+
+    keyed      : Cello Box, Milton Bottle, Nike Shoes, Prestige Mixer,
+                 Ergonomic Dustpan, Dabur Gulabari Soap
+    not keyed  : Running Shoes, Men Cotton Shirt, water bottle,
+                 sports shoes, casual shirt, hair oil, phone case
+
+  Three regressions introduced while doing this were caught by the suite
+  and fixed in place:
+    * a URL on the same line as the name ("Shirt A 599 https://a.com/x")
+      made "https"/the host read as brand words - URLs are now dropped
+      from the identity tokens entirely, which also stops the same
+      product hashing differently once its link changes;
+    * a single letter ("Shirt A", "Shirt B") counted as a brand and gave
+      every row of a three-shirt roundup its own identity, breaking the
+      multi-product rule;
+    * two old tests expected "Milton Bottle" to be refused - Milton is a
+      real brand, so those expectations were wrong and were replaced
+      with genuine category phrases.
+
+  ops/quality_audit.py re-synced.
+
+Suite: 505 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 27 — end-to-end audit of the finished posts; 3 live defects
+=================================================================
+
+USER: "anni bestgaa fix build chesava implement perfectly."
+
+Answered by running seven real source shapes through the WHOLE delivery
+path - clean, split, pair, convert, tag, deliver - for a loot channel AND
+the review channel, and reading the finished posts. It was not perfect:
+three live defects were found, all now fixed and pinned by
+test_the_whole_delivery_path_end_to_end().
+
+DEFECT 1 - THE MRP WAS PUBLISHED AS THE PRICE (worst)
+    "boAt Rockerz 255 Pro+ Neckband
+     899 (MRP 2990)"          -> the review post said Price: Rs.2,990
+
+  A bare number with no currency mark matched none of the price patterns,
+  so the MRP fallback answered - and the post advertised a price the
+  buyer does not pay. Price also drives routing (under-99 / under-499),
+  dedup and the better-copy rule, so the damage was not only cosmetic.
+  A bare number immediately followed by an MRP is now read as the deal
+  price. Verified on 14 shapes: "899 (MRP 2990)"->899, "Deal 899 MRP
+  2990"->899, while "MRP 2990"->2990 and "MRP: Rs.270"->270 still answer
+  the MRP when it is the ONLY money on the post.
+
+DEFECT 2 - ONE LIST, TWO DIFFERENT LINK STYLES
+  In a single 3-product post the first link came back as bitli.in while
+  the other two were native amazon.in. Round 24 removed the shortener
+  from tagged Amazon links on the FRESH path only; the cache branch in
+  convert() still ran the old rule, so any product already in link_cache
+  was re-wrapped. The no-cloaking rule now applies on BOTH paths, and a
+  list looks uniform.
+
+DEFECT 3 - THE REVIEW CHANNEL REFUSED EVERY POST WITH AN amzn.to LINK
+  is_amazon_only_post() tested against AMAZON_DOMAINS, which lists only
+  amazon.in / amazon.com - so a source that used Amazon's own short
+  domain was judged "not an Amazon post" and dropped. New
+  AMAZON_SHORT_DOMAINS (amzn.to, amzn.eu, amzn.in, a.co) is used for
+  that judgement only; tagging still requires a full amazon.in URL,
+  because a tag cannot be attached to a short link.
+
+WHAT THE FINISHED POSTS LOOK LIKE NOW
+  loot   : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / 899 (MRP 2990) /
+           70% OFF / Rating 4.2 / 12,453 reviews / Apply 10% coupon /
+           native tagged amazon.in link          (no disclosure, no strip)
+  review : boAt Rockerz 255 Pro+ Neckband
+           Price: Rs.899
+           https://www.amazon.in/dp/B09N3ZNHTY?tag=mama086-21
+
+           #ad (paid link)
+
+  A 3-product list, in either source shape, reaches BOTH channels with
+  each product above its own native tagged link, every ASIN exactly once.
+  Flipkart still posts to the loot channels and is still refused by the
+  review channel.
+
+A/B against the pre-session code is unchanged: exactly one difference in
+the copy the reader sees, and it is the list pairing the user asked for.
+
+Suite: 520 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 28 — the review channel publishes ONE product, never a list
+=================================================================
+
+USER RULE: "list of products mana review channello cheyaku, okkoti edo
+random cheyu - mana review success avvali."
+
+A roundup is a poor review sample: it reads as a link dump, and one weak
+item in it taints the whole post. So the reviewed channel now reduces any
+multi-product post to a SINGLE product. Every other channel still
+receives the complete list, unchanged.
+
+WHICH ITEM - the two traps avoided
+  * NOT always the first. The lead row of a source list is often the
+    weakest, and always taking it would make the channel repetitive.
+  * NOT random by chance either. random.choice() would pick a DIFFERENT
+    product on a retry or a re-render, and the channel would publish a
+    second item from the same source as if it were a new deal.
+  So the choice is deterministic-but-spread: a SHA-1 of the post selects
+  the index. Same post -> same product, always. Different posts spread
+  across the list. Both properties are asserted in the test.
+
+HEADINGS
+  A list heading must not become part of the product name. Two shapes
+  are handled: the heading on its own line above the first product
+  ("Loot of the day", "Mega Deals") and the heading glued to the front
+  of the first product because the source wrote the list inline
+  ("Deals Boat 141 @899 <link>"). A single-product post is never touched.
+
+SAME SOURCE, TWO CHANNELS
+  loot   : Boat 141 @ 899        + link
+           Samsung M14 @ 9999    + link
+           Milton @ 89           + link
+  review : Samsung M14 @ 9999
+           https://www.amazon.in/dp/B0BZCPVWQ4?tag=mama086-21
+
+           #ad (paid link)
+
+MECHANICALLY ENFORCED
+  The test slices process_job at "if target == SHOPPING_TARGET:" and
+  requires pick_one_product_for_review to appear inside that branch and
+  NOWHERE else, so the reduction can never leak onto a loot channel.
+
+A/B against the pre-session code is still one single difference in the
+copy the reader sees - the list pairing the user asked for.
+
+Suite: 524 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 29 — deploy bundle built
+=================================================================
+
+USER: "zip ga download chesi deploy cheddam."
+
+bestgaa_deploy.zip written at the repo root (17 files, 787 KB):
+  main_bot_new.py, deploy_bestgaa.sh, migrate_legacy_env.py,
+  requirements.txt, bestgaa.service, README_FIRST.txt,
+  coverage_audit.py, quality_audit.py,
+  DEPLOY_README.txt, AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt,
+  tg-wa-bridge/ (bridge.js, package.json, service, install, switch, readme)
+
+ONE CHANGE TO deploy_bestgaa.sh WAS NEEDED
+  The installer never rewrites an existing .env, so upgrading a live
+  server would have left AMAZON_TAG_TARGETS unset and the tag would have
+  silently stayed on smartbuyhub11 alone. The deploy script now appends
+  AMAZON_TAG_TARGETS=all when the key is missing, and prints which tag is
+  active on how many channels before restarting.
+
+VERIFIED ON THE ARTEFACT ITSELF, not on the repo copy
+  * sha256 of main_bot_new.py inside the zip == the repo file
+  * no .env, no .session, no .sqlite3, no hardcoded secrets
+  * unzipped into a clean directory, imported, and exercised:
+      review copy   -> one product + price + link + "#ad (paid link)"
+      loot copy     -> hype, MRP, ratings, review counts all intact
+      parse_price("899 (MRP 2990)") -> 899
+      AMAZON_TAG_TARGETS=all -> 8 channels
+
+Deploy is three commands (in DEPLOY_README.txt):
+  cd /home/ubuntu/bestgaa-bot/bestgaa-bot
+  unzip -o ~/bestgaa_deploy.zip
+  bash deploy_bestgaa.sh
+Rollback is automatic on failure, and manual rollback is one cp from the
+timestamped backup the script takes.
+
+
+=================================================================
+Round 30 — sweep of the review-channel guards that had no tests
+=================================================================
+
+Before deploying, the review-channel rules that had never been probed
+individually were each exercised. One real hole was found.
+
+HOLE FOUND AND CLOSED - a plain-English route to the loot channels
+  has_telegram_pointer() blocked handles (@LootZoneIndia11) and t.me
+  links, but NOT sentences. These all reached the reviewed channel:
+      "Join our channel for more"      "Subscribe to our channel"
+      "Follow our telegram"            "more deals in our channel"
+      "join the group"                 "check our whatsapp group"
+  The rejection email named a loot channel as its worked example, so a
+  sentence that routes the reviewer off the channel is the same offence
+  as a link. Now blocked, and checked against false positives: "Join two
+  cables together", "Channel partner edition speaker", "5.1 channel home
+  theatre" and "Follow the instructions in the box" still pass, because
+  a false positive silently drops a good deal.
+
+VERIFIED SOUND, NO CHANGE NEEDED
+  * Trademarks: Amazon / Prime Day / Great Indian Festival / Amazon
+    Basics / Kindle / Alexa / Fire TV are all refused; ordinary product
+    names (boAt, Milton, Samsung, Cello) pass. Deliberately strict - a
+    post that needs the word still goes to every other channel.
+  * Coupon and CTA residue ("Apply 31% Off Coupon", "Use code SAVE50",
+    "Click below to buy", "Limited stock hurry", "Buy Max Quantity") is
+    stripped from the review copy while the product survives.
+  * The disclosure is appended exactly once, and an existing "#ad" /
+    "(paid link)" / "#CommissionsEarned" is respected.
+  * Text-only and the daily cap/pacing are enforced at SEND time, not
+    merely configured.
+  * The repeat guard is a sqlite table keyed (signature, target), so it
+    survives a restart and is per channel.
+  * The WhatsApp bridge has a silent-death watchdog that forces a
+    reconnect when the socket looks open but no deal has moved.
+
+A/B against the pre-session code: the loot-channel copy is byte-
+identical on all seven shapes tested, including a post that says "Join
+our channel for more" - that post is unchanged for the loot channels and
+refused only for the reviewed one.
+
+Suite: 573 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green. bestgaa_deploy.zip rebuilt and
+hash-matched against the repo.

@@ -1,0 +1,278 @@
+=================================================================
+AMAZON ASSOCIATES — RE-APPLICATION AFTER THE 2026-09-06 REJECTION
+=================================================================
+
+WHAT THEY ACTUALLY SAID (deals0911-21, rejected):
+
+  "Your website/app/social media account includes an unapproved use of
+   Amazon trademarked words, images (screenshots/screen recordings), or
+   reviews (which may include variations or misspellings) ... An example
+   can be found here: https://t.me/LootZoneIndia11"
+
+Read the example URL carefully. They did NOT reject smartbuyhub11 on its
+own content. They followed a trail to LootZoneIndia11 and judged the
+whole application on THAT channel: its name contains "Loot", its posts
+carry marketplace screenshots and the marketplace's name in the text.
+
+So there are two separate jobs now:
+  A. stop the review channel from naming or picturing the marketplace
+  B. stop the review channel from LEADING ANYWHERE NEAR the loot channels
+
+Both are now enforced in code. What is left for you is the account and
+channel side, below.
+
+
+-----------------------------------------------------------------
+WHAT THE BOT NOW DOES AUTOMATICALLY (no action needed)
+-----------------------------------------------------------------
+  * NO MARKETPLACE NAME IN THE COPY. Any line naming the store or its
+    brands - including misspellings and variants (amazn, amzn, Prime
+    Day, Great Indian Festival, AmazonBasics, Alexa, Kindle, Echo, Fire
+    TV, Audible, Mini TV) - is dropped from the review copy. If the post
+    cannot survive without the word, it is withheld from this channel
+    and still goes to every other channel unchanged.
+    LINKING to the store is allowed and unchanged. Naming it is not.
+  * NO IMAGES. The review channel is now TEXT ONLY. A forwarded deal
+    photo is nearly always a product-page screenshot, which is exactly
+    the "images (screenshots/screen recordings)" they cited. Every other
+    channel keeps its photos.
+  * NO POINTERS TO THE LOOT CHANNELS. No t.me link and no @handle can
+    survive into a review-channel post, so a reviewer cannot walk from
+    smartbuyhub11 to LootZoneIndia11 the way they did this time.
+  * Still enforced from before: "#ad (paid link)" on every post,
+    marketplace-only deals, product name + the source's own price only,
+    no hype/urgency, one shortened link per product, no duplicates,
+    never a product without its link.
+  * Daily cap raised to 50 (your "40-50 a day"). Set
+    SHOPPING_DAILY_CAP=40 if you want the lower end.
+
+
+-----------------------------------------------------------------
+STEP 0 — THE THING THAT ACTUALLY GOT YOU REJECTED  (do this first)
+-----------------------------------------------------------------
+The reviewer reached LootZoneIndia11 from your application. You must cut
+every path between the two, because you CANNOT clean up the loot
+channels themselves - they need the hype to work.
+
+  [ ] smartbuyhub11 must NOT be in the same public folder / addlist as
+      the loot channels. Remove it from t.me/addlist/... entirely.
+  [ ] smartbuyhub11 must have NO linked discussion group shared with a
+      loot channel, and no loot channel pinned/forwarded into it.
+  [ ] Delete every post in smartbuyhub11 that was FORWARDED from
+      another channel - a forward header shows the source channel name
+      and is a direct route for the reviewer.
+  [ ] Your Associates account email/PAN is now associated with a
+      rejected application. Re-apply from the SAME account (that is the
+      normal, allowed path) but with ONLY smartbuyhub11 declared.
+  [ ] Do NOT list any loot channel in the application. Not as a second
+      site, not anywhere.
+
+-----------------------------------------------------------------
+STEP 1 — CLEAN THE CHANNEL  (today, ~20 minutes)
+-----------------------------------------------------------------
+Open t.me/smartbuyhub11 and DELETE every old post that has any of:
+
+    THE WORD "AMAZON" (or Amzn / Prime / Great Indian Festival /
+      AmazonBasics / Alexa / Kindle / Echo / Fire TV) IN THE TEXT
+    ANY SCREENSHOT of a product page, price graph, cart or order page
+    ANY forwarded post (the forward header names the source channel)
+    ANY t.me link or @handle
+    Loot, Lootlo, Steal, Jackpot, Dhamaka, Price error, Glitch,
+    Trick, Free money, Hurry, Limited stock, Grab fast,
+    Buy max quantity, "Order fast!!", 🔥🔥🔥 style shouting,
+    any non-Amazon link
+
+The first four are the ones that got you rejected. Be ruthless.
+
+If in doubt, delete it. An empty channel is better than a hypey one.
+The reviewer scrolls; one bad post is enough to fail.
+
+Easiest option: delete ALL existing posts and start fresh. The bot will
+refill the channel with clean ones within days.
+
+
+-----------------------------------------------------------------
+STEP 2 — FIX THE CHANNEL IDENTITY  (~10 minutes)
+-----------------------------------------------------------------
+Telegram -> channel -> Edit.
+
+NAME — must NOT contain: Amazon, Loot, Deal, Offer, Discount, Sale, Free
+  Bad :  "Amazon Loot Deals"      -> instant red flag
+  Good:  "Smart Buy Hub"
+         "SmartBuy Picks"
+
+DESCRIPTION — must contain the association statement, word for word:
+
+    Handpicked product picks with current prices, updated daily.
+
+    As an Amazon Associate I earn from qualifying purchases.
+
+  Copy that Associate sentence EXACTLY. Do not reword it. Amazon looks
+  for this exact phrase.
+
+  This is the ONE place the word "Amazon" is allowed - it is the
+  disclosure Amazon itself requires. Everywhere else (channel name,
+  handle, post text) the word must not appear.
+
+CHANNEL TYPE — must be PUBLIC, with a public link (t.me/smartbuyhub11)
+  A private/invite-only channel CANNOT be reviewed and is auto-rejected.
+
+VISIBILITY — open t.me/smartbuyhub11 in a browser while LOGGED OUT
+  (incognito window). If you cannot read the posts there, neither can
+  the reviewer. Fix it before applying.
+
+PROFILE PHOTO — set a simple logo. A blank channel looks abandoned.
+
+
+-----------------------------------------------------------------
+STEP 3 — LET THE BOT BUILD A HISTORY  (3-4 days, no work for you)
+-----------------------------------------------------------------
+Just leave the bot running. It now posts to this channel:
+
+    <product name> <price exactly as the source printed it>
+    <Amazon link>
+
+    #ad (paid link)
+
+and nothing else. Amazon-only deals, max 30 a day.
+
+WAIT UNTIL YOU HAVE AT LEAST 30 CLEAN POSTS. More is better.
+Applying with 5 posts is the single most common reason these
+applications get rejected as "insufficient content".
+
+While waiting, get subscribers however you normally do. Even 100-200
+real subscribers reads much better than 10.
+
+Your target is 40-50/day; the default is now 50. For the lower end:
+    SHOPPING_DAILY_CAP=40
+then restart the service.
+
+
+-----------------------------------------------------------------
+STEP 4 — FINAL EYEBALL CHECK  (~5 minutes, before you apply)
+-----------------------------------------------------------------
+Scroll the channel top to bottom and confirm:
+
+  [ ] 40+ posts
+  [ ] NO post contains the word Amazon (or a variant) in its TEXT
+  [ ] NO post has an image of any kind
+  [ ] NO post is a forward from another channel
+  [ ] NO t.me link or @handle anywhere, including the description
+  [ ] EVERY post ends with "#ad (paid link)"
+  [ ] EVERY link is amazon.in (no Flipkart, Myntra, Ajio, no fkrt.co)
+  [ ] EVERY post has a working link (tap 3 at random and check)
+  [ ] NO hype words anywhere
+  [ ] NO discount percentages, NO "MRP", NO "Save 41%"
+  [ ] NO duplicate posts of the same product
+  [ ] Description has the "As an Amazon Associate..." sentence
+  [ ] Channel opens fine in an incognito browser window
+  [ ] From the channel, a stranger CANNOT reach any loot channel:
+      no folder/addlist, no linked group, no pin, no forward
+
+If any box fails, fix it and wait another day. Do not apply "close
+enough".
+
+
+-----------------------------------------------------------------
+STEP 5 — APPLY
+-----------------------------------------------------------------
+Go to:  https://affiliate-program.amazon.in
+
+WEBSITE / MOBILE APP LIST
+  Enter the FULL url, with https:// :
+
+      https://t.me/smartbuyhub11
+
+  Not "smartbuyhub11". Not "t.me/smartbuyhub11". The full URL.
+
+  Leave the rest of the list EMPTY. Do not pad it with links you do not
+  control — a dead or unrelated URL in this list fails the application
+  on its own.
+
+"ARE ANY OF YOUR SITES DIRECTED AT CHILDREN UNDER 13?"
+  -> No
+
+PREFERRED ASSOCIATES STORE ID
+  Something plain, e.g.  smartbuyhub-21
+
+"WHAT ARE YOUR WEBSITES/APPS ABOUT?"
+  Write it plainly. No marketing voice, no "loot", no promises:
+
+      I run a public Telegram channel where I share handpicked product
+      recommendations from Amazon.in, mostly electronics, home and
+      daily-use items. Each post gives the product name, its current
+      price and a link to the product page, and is labelled as a paid
+      link. I post around 20-30 items a day for shoppers who want a
+      short curated list instead of browsing the whole catalogue.
+
+"WHICH TOPICS BEST DESCRIBE..."  -> Consumer Electronics / Home
+"WHAT TYPE OF AMAZON ITEMS..."   -> the categories you actually post
+"HOW DO YOU DRIVE TRAFFIC?"      -> Social Networks / Blogs
+"HOW DO YOU UTILIZE YOUR..."     -> Social Media
+"HOW DO YOU BUILD LINKS?"        -> Web / Content
+"HOW MANY VISITORS?"             -> your REAL subscriber count. Do not
+                                    inflate it; a number that does not
+                                    match a visible channel looks like
+                                    a lie.
+
+PAYMENT / TAX
+  Fill your PAN and bank details honestly. Mismatched name vs PAN is a
+  quiet, common rejection cause.
+
+
+-----------------------------------------------------------------
+STEP 6 — AFTER YOU APPLY
+-----------------------------------------------------------------
+You normally get a decision by email in 1-3 days.
+
+DO NOT stop the bot while under review. A channel that goes silent
+during review looks abandoned. Keep posting normally.
+
+DO NOT set AMAZON_TAG yet. Wait for the approval email.
+
+
+IF APPROVED
+  1. Copy your tracking id (e.g. smartbuyhub-21) from Associates Central
+  2. Put it in your env:
+         AMAZON_TAG=smartbuyhub-21
+     AMAZON_TAG_TARGETS already defaults to smartbuyhub11 only, so the
+     tag rides ONLY on the channel you declared to Amazon. Your other
+     channels stay on EarnKaro and are unaffected.
+  3. Restart the service.
+  4. THE 180-DAY CLOCK STARTS. You need 3 qualifying sales within 180
+     days or the account is closed automatically. With 20-30 posts a
+     day this is normally easy, but do not ignore it.
+
+IF REJECTED
+  Nothing breaks. Leave AMAZON_TAG unset and carry on — EarnKaro keeps
+  paying you the Amazon commission with zero account risk.
+
+  Read the reason in the email. Almost always it is one of:
+     "insufficient content"      -> too few posts. Wait, post more.
+     "site not accessible"       -> channel was private. Make it public.
+     "unsuitable content"        -> hype words survived somewhere.
+
+  Do NOT immediately re-apply with the same details. Fix the stated
+  reason, let another 2-3 weeks of clean posts build up, and if it
+  fails a second time, put up a small website (Blogger/WordPress is
+  enough: 8-10 posts, About, Privacy Policy, Affiliate Disclosure),
+  apply with the WEBSITE as the primary property and add the Telegram
+  channel afterwards from inside your account. That route is close to
+  a formality.
+
+
+-----------------------------------------------------------------
+WHAT THE BOT ALREADY GUARANTEES (you do not need to police these)
+-----------------------------------------------------------------
+  * "#ad (paid link)" on every single post, added last so no later
+    cleaning pass can strip it, and never doubled
+  * Amazon-only: a Flipkart or mixed post never reaches this channel,
+    it still goes to all your other channels
+  * Max 30 posts/day, counted per IST day in the database so a restart
+    cannot reset it and blow the cap
+  * Copy rebuilt from an allowlist: product name + the price exactly as
+    the source printed it. Hype, urgency, MRP, discount %, conditions,
+    trick/glitch posts and t.me promos cannot get through
+  * Only our own shortened affiliate link, one per product, no
+    duplicates, and a product is never posted without its link
+  * AMAZON_TAG rides only on channels declared to Amazon

@@ -28,6 +28,17 @@ fi
 for key in TELEGRAM_API_ID TELEGRAM_API_HASH EARNKARO_API_KEY AMAZON_TAG; do
   grep -qE "^${key}=.+" "$ENV_FILE" || { echo "ERROR: $key missing in .env"; exit 1; }
 done
+
+# USER DECISION (2026-09-06): the Associates tag earns on EVERY owned channel,
+# not only the reviewed one. An existing .env is never rewritten by the
+# installer, so the switch is added here if it is missing - otherwise the tag
+# would silently stay on smartbuyhub11 alone after an upgrade.
+if ! grep -qE "^AMAZON_TAG_TARGETS=" "$ENV_FILE"; then
+  echo "AMAZON_TAG_TARGETS=all" >> "$ENV_FILE"
+  echo "      added AMAZON_TAG_TARGETS=all to .env"
+fi
+CONFIGURED_TAG="$(grep -E '^AMAZON_TAG=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+echo "      Associates tag: ${CONFIGURED_TAG:-<none>} on $(grep -E '^AMAZON_TAG_TARGETS=' "$ENV_FILE" | head -1 | cut -d= -f2-)"
 if grep -q "REPLACE_WITH_NEW_" "$ENV_FILE"; then
   echo "ERROR: .env migration left placeholders"
   exit 1

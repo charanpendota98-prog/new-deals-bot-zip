@@ -66,6 +66,9 @@ POLICY_SKIPS = (
     "already posted", "duplicate deal", "duplicate product", "night window",
     "STALE DROP", "already covered", "no monetizable", "no eligible targets",
     "not a deal", "skip list", "superseded", "not worth", "confirmed dead merchant",
+    # USER RULE (2026-09-05): a deal whose every link is a dead shortener is skipped on
+    # purpose ("asalu link yeh ledu") - it is policy, not a lost post.
+    "nothing buyable to post", "not programme-safe", "shopping target unresolved",
 )
 
 
@@ -184,8 +187,14 @@ _AUDIT_SIG_VARIANT_RE = re.compile(
 # Only words that name a genuinely different product line. "smart"/"air"/"elite" are
 # marketing adjectives here and there, and a copy that drops one must not turn the
 # same watch into a different product - so the list stays short and factual.
+# The gender/audience words are here for the same reason as "pro"/"fe": a
+# "Nivea MEN Face Wash" and a "Nivea WOMEN Face Wash" are two different products
+# at the same price, and with no model number to separate them they used to sign
+# identically - so the second one was skipped as a duplicate and that deal never
+# reached the channel.
 _AUDIT_SIG_VARIANTS = frozenset("""
 pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
+men mens women womens kids boys girls unisex
 """.split())
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
@@ -196,7 +205,42 @@ _AUDIT_SIG_BY_NON_BRAND = frozenset(
     "powered brought inspired sponsored posted shared sent curated verified".split())
 _AUDIT_SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+    # "70%" followed by a space failed the trailing \b (a percent sign is not a
+    # word char), so the discount stayed in the identity and two copies of one
+    # deal signed differently whenever the channels typed the discount apart.
+    r"\b\d{1,3}\s*%|"
+    # A bare number sitting immediately in front of the discount IS the price
+    # ("Collagen powder 299 (70% off)"), whatever marker the channel omitted.
+    r"\b[\d,]{2,}(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))|"
+    # A price written WITHOUT the rupee sign is still a price, not a model
+    # number: "@298", "at 167", "Rs 180", "220/-". Leaving these in made the
+    # SAME product signed differently depending on how the channel typed its
+    # price, so the duplicate slipped through. (A number that is genuinely part
+    # of the product - "10KG", "2000ml" - carries a unit and is keyed elsewhere.)
+    r"(?:@|\bat\b|\brs\.?|\binr)\s*[\d,]{2,}(?:\.\d+)?\b|\b[\d,]{2,}\s*/-|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
+
+
+# The price this LINE quotes, however the channel typed it. Deliberately a small
+# self-contained reader rather than a call to parse_price(): this block is mirrored
+# verbatim into ops/quality_audit.py by ops/sync_identity.py, so it must not depend
+# on anything outside itself or the auditor stops importing.
+_AUDIT_SIG_PRICE_RE = re.compile(
+    r"(?i)(?:[\u20b9$]|\brs\.?|\binr|@|\bat\b)\s*([\d,]{2,})(?:\.\d+)?\b"
+    r"|\b([\d,]{2,})\s*/-"
+    r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
+
+
+def _sig_line_price(line: str) -> int | None:
+    match = _AUDIT_SIG_PRICE_RE.search(line or "")
+    if not match:
+        return None
+    raw = next((g for g in match.groups() if g), "")
+    try:
+        value = int(str(raw).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 1 <= value <= 1_000_000 else None
 
 
 def _audit_sig_tokens(line: str) -> list[str]:
@@ -217,6 +261,45 @@ def _audit_sig_tokens(line: str) -> list[str]:
     return out
 
 
+# Ordinary descriptive words. A phrase built ONLY from these ("Men Cotton
+# Shirt", "hair oil set") describes a category, not a product, so it needs the
+# longer floor before it may be used to skip a repeat.
+_AUDIT_SIG_GENERIC_WORDS = frozenset("""
+men mens women womens kids boys girls baby unisex adult
+hair face body skin lip eye nail hand foot head neck
+phone mobile laptop tablet tv led smart wireless bluetooth usb
+lunch dinner tea coffee water milk rice
+
+cotton silk leather steel plastic glass wooden metal rubber silicone
+shirt tshirt pant jeans saree kurti dress top jacket shoes sandals slippers
+oil soap cream powder shampoo lotion gel wash paste
+bottle box case cover bag pouch set combo pack piece pieces
+watch band strap cable charger adapter holder stand mat mop broom
+kitchen home office travel sports gaming
+small medium large xl xxl free size regular fit slim
+new best top premium quality original genuine
+""".split())
+
+
+# Ordinary product nouns and descriptive adjectives. A phrase built only from
+# these plus _AUDIT_SIG_GENERIC_WORDS names a CATEGORY ("Running Shoes", "Shirt A"),
+# never one product, so it must clear the length floor before it may be used
+# to skip a repeat.
+_AUDIT_SIG_PRODUCT_NOUNS = frozenset("""
+shoes sneakers boots sandal sandals slipper slippers flipflop
+shirt tshirt shirts pant pants trouser trousers jeans short shorts
+kurta kurti saree dress top tops jacket coat sweater hoodie
+bottle flask jar container tiffin lunchbox casserole
+mixer grinder kettle cooker pan pot tawa knife spoon plate bowl
+headphone headphones earphone earphones earbuds neckband speaker
+watch smartwatch band tracker
+bag backpack luggage trolley wallet purse belt
+running walking sports casual formal party daily regular
+trimmer shaver dryer straightener iron fan heater cooler lamp bulb
+sheet curtain pillow blanket mattress towel mat rug carpet
+""".split())
+
+
 def _product_identity(line: str) -> tuple[str, ...] | None:
     """The few tokens that decide WHICH product a headline names, as a SET.
 
@@ -234,7 +317,18 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
     With no number to hold on to (a shirt, a handbag) every product word has to
     agree instead - the conservative answer that loses a duplicate rather than a deal.
     """
+    # A bare number that is simply the line's PRICE is not a model number.
+    # "Nutriburst Collagen powder 299" and "Nutriburst Collagen powder @ 299"
+    # are one product; only the second spelling was recognised as money, so the
+    # first signed "299" as a model and the duplicate got published twice.
+    line_price = _sig_line_price(line or "")
     raw = [re.sub(r"[-_]", "", tok) for tok in _audit_sig_tokens(line)]
+    # A URL is not part of the product's NAME. When the source writes the link
+    # on the same line ("Shirt A 599 https://a.com/x") the host used to become
+    # an identity word, which both invented an identity for a generic phrase
+    # and made the same product hash differently once its link changed.
+    raw = [w for w in raw
+           if not w.startswith(("http", "www")) and "/" not in w and "." not in w]
     words = [w for w in raw if not w.isdigit() and w not in _AUDIT_SIG_STOP_WORDS]
     if len(words) < 2:
         return None
@@ -268,15 +362,72 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
                 continue
             if len(digits) < 2 or (len(digits) == 4 and 1900 <= int(digits) <= 2099):
                 continue                   # a quantity, or a launch year - not an id
+            if line_price is not None and int(digits) == line_price:
+                continue                   # that is the price, however it was typed
             if digits in digit_cores:
                 continue                   # the number is already inside a size id
             models.add(token)
     variants = {t for t in raw if t in _AUDIT_SIG_VARIANTS}
     if not ids and not models:
-        if len(words) < 4:
+        # No number to hold on to, so every product word has to agree. THREE
+        # words is enough when they are long enough to be a real product name
+        # ("Nutriburst Collagen powder"): demanding four made a named product
+        # with no model number un-dedupable, which is how the same collagen
+        # powder went out twice under two different banner words. A short
+        # category phrase ("hair oil set") still fails the length test below.
+        # USER REPORT (2026-09-06): "Ergonomic Dustpan @ 55" went out TWICE in
+        # the same channel. Two long, specific words ARE a product name; the
+        # three-word floor left every such post with no identity at all, so the
+        # per-channel repeat guard never ran on them. Two words are accepted
+        # when they are long and specific enough not to be a category phrase
+        # ("hair oil", "phone case" stay un-keyed via the length test below).
+        if len(words) < 2:
             return None                    # a category phrase is not an identity
+        # REGRESSION GUARD (2026-09-06): "Cello Lunch Box" is three real product
+        # words but only 15 characters, so an 18-char floor gave it no identity
+        # and the same lunch box could post twice. THREE words are already
+        # specific enough - the floor exists to reject two-word category phrases
+        # ("hair oil"), not to reject short real names. Four+ words are always
+        # specific. Only the two-word case still needs the length test.
+        # The floor exists to reject GENERIC phrases ("Men Cotton Shirt",
+        # "hair oil") that many different products share - keying on those
+        # would suppress real deals. It must not reject a short but SPECIFIC
+        # name: "Cello Lunch Box" is 15 characters and names one product, and
+        # an 18-char floor left it un-dedupable, which is how the same lunch
+        # box could post twice.
+        # A brand-like word - one that is not an ordinary descriptive word -
+        # makes the phrase specific regardless of its length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "hair oil")
+        # that many products share; keying on those would suppress real deals.
+        # It must not reject a SHORT but specific name. "Cello Box" is nine
+        # characters, yet "cello" is a brand - one product, and without an
+        # identity it could post twice, which is the defect the user reported.
+        # So a phrase that pairs a brand-like word with a descriptive one is
+        # specific enough at two words; only all-generic phrases need length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "Running
+        # Shoes") that many products share; keying on those would suppress
+        # real deals. It must not reject a SHORT but specific name: "Cello
+        # Box" is nine characters, yet "cello" is a BRAND - one product - and
+        # with no identity it could post twice.
+        #
+        # A brand is recognised as a word that is neither descriptive nor a
+        # known product noun: "cello", "milton", "dabur", "nike". "Running
+        # Shoes" and "Shirt A" have no such word, so they keep the floor.
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 16 else ("W", basis)
+        # A URL is never a brand. When a source writes the link on the same
+        # line as the name ("Shirt A 599 https://a.com/x"), "https" and the
+        # host would otherwise read as brand words and give a generic
+        # category phrase an identity it must not have.
+        # A single letter is a list marker or a size ("Shirt A", "Shirt B"),
+        # never a brand: treating it as one gave every row of a three-shirt
+        # roundup its own identity and broke the multi-product rule.
+        brandish = [w for w in words
+                    if len(w) > 1
+                    and w not in _AUDIT_SIG_GENERIC_WORDS and w not in _AUDIT_SIG_PRODUCT_NOUNS]
+        if brandish and len(words) >= 2:
+            return ("W", basis)
+        floor = 15 if brandish else 18
+        return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can

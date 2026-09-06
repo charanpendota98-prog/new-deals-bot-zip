@@ -50,6 +50,9 @@ POLICY_MARKERS = (
     "night", "stale", "expired", "no urls", "no affiliate", "no monetizable",
     "no deal content", "not a deal", "promo", "skipped: no", "quiet",
     "silence", "no eligible targets", "oversized",
+    # Deliberate 2026-09-05 skips: nothing clickable to publish, and the
+    # Amazon-review channel declining a post it cannot show a reviewer.
+    "nothing buyable", "not programme-safe", "shopping target unresolved",
 )
 # Reasons the CURRENT build can recover: the deal had real content, the old code
 # just gave up on it.

@@ -596,28 +596,37 @@ def test_scenarios():
         finally:
             bot.ADD_OUR_CHANNEL_LINK_TOP = old_top
 
-        # ---- S11: a post whose ONLY link is a dead shortener still reaches us ----
-        # A short link dies every day (quota, expired campaign, deleted post). Retrying
-        # the whole job until the price goes stale is how a source post vanished with
-        # nothing in the log to show for it, so the link is cut and the deal is posted.
-        print("\n== S11: dead short link, live deal ==")
+        # ---- S11: a post whose ONLY link is dead is not published as a teaser ----
+        # USER RULE (2026-09-05, "asalu link yeh ledu"): earlier rounds published such a
+        # deal as complete text without a link. The user has now reversed that: a post a
+        # reader cannot click is useless to them and earns nothing, so when every link the
+        # source wrote is a dead shortener the deal is skipped (logged), not sent bare.
+        # A source post that never had a link but carries the product PHOTO is unaffected.
+        print("\n== S11: dead short link, no linkless teaser ==")
         dead = ("Cello Stoneware Casserole 1.5L\n\u2705Deal Price: \u20b9499\n\u274cMRP: \u20b91,299 "
                 "(62% off)\nhttps://bit.ly/deadshortlink12345")
         store, client, sends, _ = await scenario("s11a", {(-1009042, 1703): FakeMsg(dead, 1703)},
                                                  [(-1009042, 1703, dead)], 1)
         posts = [p for texts in sends.values() for p in texts]
-        check("[S11a] the post was NOT swallowed by the dead link",
-              bool(sends) and all(texts for texts in sends.values()),
-              str({n: len(v) for n, v in sends.items()}))
-        joined = "\n".join(posts)
-        check("[S11a] the deal is complete: name, price, MRP, discount",
-              all(x in joined for x in ["Cello Stoneware Casserole", "\u20b9499", "\u20b91,299", "62%"]),
-              joined[:160])
-        check("[S11a] and no foreign link was published in its place",
-              "bit.ly" not in joined and "shorturl" not in joined, joined[:160])
+        check("[S11a] nothing was published without a link", not posts, str(posts[:1]))
         row11 = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
-        check("[S11a] the job finished (not pending-retry, not skipped)",
-              row11[0] == "done" and not row11[1], str(tuple(row11)))
+        check("[S11a] the job is closed as a skip, not left burning retries",
+              row11[0] == "done" and "dead" in (row11[1] or ""), str(tuple(row11)))
+        check("[S11a] and no foreign link leaked anywhere",
+              all("bit.ly" not in p for p in posts), str(posts[:1]))
+
+        # ---- S11c: the operator switch restores the old "post it anyway" behaviour ----
+        old_require = bot.REQUIRE_LINK_IN_POST
+        bot.REQUIRE_LINK_IN_POST = False
+        try:
+            store, client, sends_any, _ = await scenario(
+                "s11c", {(-1009043, 1704): FakeMsg(dead, 1704)}, [(-1009043, 1704, dead)], 1)
+            any_posts = [p for texts in sends_any.values() for p in texts]
+            check("[S11c] REQUIRE_LINK_IN_POST=false still posts the deal as text",
+                  bool(any_posts) and "Cello Stoneware Casserole" in "\n".join(any_posts),
+                  str(any_posts[:1]))
+        finally:
+            bot.REQUIRE_LINK_IN_POST = old_require
 
         # ---- S12: the delivery-side link repair (a dead destination next to a live one)
         # The repair re-writes the post, so it must not throw over a missing column, must

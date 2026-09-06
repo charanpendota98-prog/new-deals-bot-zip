@@ -105,6 +105,21 @@ EARNKARO_API_KEY=$EK_KEY
 EARNKARO_API_URL=https://ekaro-api.affiliaters.in/api/converter/public
 EARNKARO_PUBLISHER_ID=$EK_PUB
 AMAZON_TAG=$AMZ_TAG
+# USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu, not
+# only review channel". The tag earns on every owned channel.
+#
+# YOUR SIDE OF THIS: every channel below must be listed in Associates Central,
+# with its FULL URL (t.me/LootZoneIndia11, not t.me), and must be public.
+#   https://affiliate-program.amazon.in/home/account/profile/sitelist
+# Amazon reads the traffic source from the tag itself, so a channel carrying
+# the tag but missing from that list is the exact violation that caused the
+# earlier rejection. See ops/AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt.
+#
+# The bot now protects every tagged channel automatically: copied star ratings
+# and review counts are removed and "#ad (paid link)" is appended, because a
+# tagged channel is a channel Amazon reviews.
+AMAZON_TAG_TARGETS=all
+
 BITLY_TOKENS=$BITLY
 BOT_DB_PATH=$APP/bestgaa.sqlite3
 PRODUCT_DEDUP_SECONDS=36000

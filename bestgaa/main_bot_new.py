@@ -131,7 +131,22 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
-OUR_TAG = ""  # TAGLESS: source tag deals0911-21 is not ours – pinned empty prevents stale .env override
+# USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The
+# previously seen tag (deals0911-21) belonged to a SOURCE, so it was pinned
+# empty to stop a stale .env re-enabling somebody else's tag. We now own
+# mama086-21, so the tag is read from the environment again - but a tag that
+# is not ours must still never come back, so any value is checked against the
+# tags we actually own before it is used.
+OUR_AMAZON_TAGS = {"mama086-21"}
+_configured_tag = os.getenv("AMAZON_TAG", "").strip()
+if _configured_tag and _configured_tag.lower() not in {t.lower() for t in OUR_AMAZON_TAGS}:
+    # A source's tag in our .env would credit THEM for our sales and, worse,
+    # put an undeclared tag on our channels. Refuse it loudly rather than post.
+    logging.getLogger("bestgaa").warning(
+        "AMAZON_TAG %r is not one of ours %s - ignoring it and posting tagless",
+        _configured_tag, sorted(OUR_AMAZON_TAGS))
+    _configured_tag = ""
+OUR_TAG = _configured_tag
 OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
 # USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
@@ -231,6 +246,13 @@ LINK_PROBE_BUDGET_SECONDS = _num("LINK_PROBE_BUDGET_SECONDS", 3.5, 0.5, 60)
 # is therefore false by default (post with an unverified link) and only an operator who
 # would rather lose the deal than risk a dead page turns it on.
 DROP_DEAD_LINKS = os.getenv("DROP_DEAD_LINKS", "false").strip().lower() in ("1", "true", "yes", "on")
+# USER RULE (2026-09-05): "asalu link yeh ledu" - a deal published with no link at
+# all is useless to the reader and earns nothing, so a post whose every link died
+# is skipped rather than sent as a linkless teaser. A source post that never had a
+# link but DOES carry the product photo is unaffected (round 13's rule). Set
+# REQUIRE_LINK_IN_POST=false to restore the old "post it anyway" behaviour.
+REQUIRE_LINK_IN_POST = os.getenv(
+    "REQUIRE_LINK_IN_POST", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # A huge source video must never freeze a worker; oversized/slow media is
 # posted as text so the deal itself goes out on time.
@@ -296,6 +318,11 @@ POWER_FILTER_TARGET = "PowerLoots1"
 PREMIUM_TARGET = "Premiumlootsdeals"
 SECRET_TARGET = "SecretLootIndia1"
 TRICKS_TARGET = "LootzoneTricks"
+# USER RULE (2026-09-05): the channel submitted for Amazon Associates review.
+# It carries the same deals in a programme-safe form (product name, price,
+# link - no loot/urgency wording, no "buy max quantity", no unverifiable claim).
+# Defined here so routing and the safe-copy renderer share one name.
+SHOPPING_TARGET = "smartbuyhub11"
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
@@ -312,10 +339,339 @@ PRIORITY_SOURCES.add("under_99_loot_deals")
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
+# USER RULE (2026-09-06): the user added the new channel's own link as a
+# SOURCE. A channel that is both a source and a target feeds its own posts back
+# into the queue: the bot would re-read what it just published, re-shorten the
+# link, and post it again - the exact "multiple times" the user wants gone. Any
+# channel we OWN is therefore never accepted as a source of deals.
+def is_own_channel_source(source: str) -> bool:
+    """True when a queue job came from a channel we publish to ourselves."""
+    name = (source or "").strip().lstrip("@").lower()
+    if not name:
+        return False
+    owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
+             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET}
+    return name in {t.lower() for t in owned}
+
+
 ALL_OWNED_TARGETS = list(dict.fromkeys(
     [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET, PREMIUM_TARGET,
      UNDER99_TARGET, UNDER499_TARGET, TRICKS_TARGET]
 ))
+# The shopping channel takes PRODUCT deals only: a trick/recharge/app-promo post
+# is not a shoppable product and must never be shown to a marketplace reviewer.
+# Set SHOPPING_TARGET_ENABLED=false to hold the channel back entirely.
+SHOPPING_TARGET_ENABLED = os.getenv(
+    "SHOPPING_TARGET_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
+# AMAZON ASSOCIATES COMPLIANCE (2026-09-05).
+# Amazon's Operating Agreement requires that EVERY site/channel carrying your
+# Associates links is declared in Associates Central, and explicitly warns that
+# links appearing on undeclared channels can close the account. So the tag must
+# NOT simply appear everywhere the moment AMAZON_TAG is set: it is restricted to
+# the channels actually declared to Amazon. Every other channel keeps posting the
+# same deal with an untagged (or EarnKaro) link - no deal is lost, the account is
+# not exposed. Comma-separated usernames; defaults to the review channel only.
+# USER RULE (2026-09-06): "tag ni anni channels lo use cheyu okavela approve
+# vasthadi" - once the account is approved, earn on every channel, not just one.
+# Amazon's own rule is that a channel carrying the tag must be DECLARED in
+# Associates Central. Both can be true at once, so this is one switch:
+#
+#   AMAZON_TAG_TARGETS=all   -> tag on every owned channel. Use this only AFTER
+#                               the account is approved AND every channel below
+#                               is listed in Associates Central. Undeclared
+#                               channels carrying the tag can close the account.
+#   (unset)                  -> tag on the review channel only (safe default,
+#                               correct while the application is pending).
+#   a,b,c                    -> exactly those channels.
+_tag_targets_env = os.getenv("AMAZON_TAG_TARGETS", "").strip()
+if _tag_targets_env.lower() in ("all", "*"):
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS}
+elif _tag_targets_env:
+    AMAZON_TAG_TARGETS = {t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()}
+else:
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET}
+# --- Review-channel posting policy (t.me/smartbuyhub11) ---------------------
+# USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
+# Three programme rules decide what this channel may publish:
+#
+#  1. LINK-LEVEL DISCLOSURE. Amazon/FTC require a clear disclosure NEXT TO the
+#     link on every post - the channel bio alone is not enough. Amazon names
+#     "(paid link)", "#ad" and "#CommissionsEarned" as acceptable. Missing this
+#     is one of the most common rejection reasons, so it is appended to every
+#     post automatically and can never be forgotten.
+#  2. AMAZON ONLY. The channel is submitted for the AMAZON programme, so it
+#     carries Amazon deals only; a Flipkart/Myntra link on the reviewed channel
+#     is off-programme noise. Other stores keep going to the other channels.
+#  3. A DAILY CAP. 20-30 quality posts a day reads like a curated shop; a
+#     200-post firehose reads like spam and is a rejection risk.
+SHOPPING_DISCLOSURE = os.getenv("SHOPPING_DISCLOSURE", "#ad (paid link)").strip()
+SHOPPING_AMAZON_ONLY = os.getenv(
+    "SHOPPING_AMAZON_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
+SHOPPING_DAILY_CAP = max(0, int(os.getenv("SHOPPING_DAILY_CAP", "50")))
+# 7. NO SHORTENER ON THE REVIEWED CHANNEL. USER RULE (2026-09-06): "review
+#    channelo shorten ga marchatam bitly use cheyaku". A bit.ly/is.gd hop hides
+#    where the link goes; the reviewer must see the store domain in the post.
+#    Amazon product links are already collapsed natively to
+#    https://www.amazon.in/dp/ASIN?tag=... (~48 chars), so this costs no
+#    neatness. Every other channel keeps using the shortener as before.
+# 8. HUMAN PACING. USER RULE (2026-09-06): "oka human laga daily oka 50 posts".
+#    A burst of 50 posts at 3am reads as an automated feed; the same 50 spread
+#    across the day reads as a person curating a shop. Posts are spaced across
+#    an active window with jitter, so the timing is never machine-regular.
+SHOPPING_HUMAN_PACING = os.getenv(
+    "SHOPPING_HUMAN_PACING", "true").strip().lower() not in ("0", "false", "no", "off")
+SHOPPING_ACTIVE_START = max(0, min(23, int(os.getenv("SHOPPING_ACTIVE_START", "8"))))
+SHOPPING_ACTIVE_END = max(1, min(24, int(os.getenv("SHOPPING_ACTIVE_END", "23"))))
+SHOPPING_NATIVE_LINKS = os.getenv(
+    "SHOPPING_NATIVE_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
+# 4. NO IMAGES. The 2026-09-06 rejection cited "images (screenshots/screen
+#    recordings)" of Amazon. A forwarded deal photo is almost always an Amazon
+#    product-page screenshot, which is exactly the trademarked use that gets an
+#    application killed. The review channel therefore posts TEXT ONLY; every
+#    other channel keeps its media untouched.
+SHOPPING_TEXT_ONLY = os.getenv(
+    "SHOPPING_TEXT_ONLY", "true").strip().lower() not in ("0", "false", "no", "off")
+# 5. NO AMAZON TRADEMARKS IN THE COPY. Verbatim rejection reason (2026-09-06):
+#    "unapproved use of Amazon trademarked words, images ... or reviews (which
+#    may include variations or misspellings)". Writing "Amazon", "Prime",
+#    "Great Indian Festival" etc. in the post body is an unlicensed use of the
+#    mark. LINKING to amazon.in is fine and stays; naming it in the text does
+#    not. A post that needs the word is simply not shown to the reviewer - it
+#    still goes to every other channel unchanged.
+_AMAZON_MARK_RE = re.compile(
+    r"(?i)(?:\bam[ae]z[o0]?n\w*|\bamzn?\b|\bamz\b|\bprime\s*(?:day|deals?|sale|member\w*|video|music)\b"
+    r"|\bgreat\s+indian\s+festival\b|\bgif\s+sale\b|\balexa\b|\bkindle\b|\becho\s*(?:dot|show)?\b"
+    r"|\bfire\s*(?:tv|stick)\b|\baudible\b|\bamazon\s*basics\b|\bamazonbasics\b"
+    r"|\bab\s*deals?\b|\bmini\s*tv\b|\bpantry\b|\bsubscribe\s*&?\s*save\b)")
+# 6. NO POINTERS TO THE LOOT CHANNELS. The rejection email named
+#    "https://t.me/LootZoneIndia11" as its worked example, so a reviewer who
+#    finds any route from this channel to a loot channel fails the whole
+#    application. Nothing on t.me may survive into the review copy.
+_TELEGRAM_POINTER_RE = re.compile(
+    r"(?i)(?:https?://)?(?:t\.me|telegram\.(?:me|dog))/\S+|@[A-Za-z]\w{3,}"
+    # A pointer does not need a handle to be a pointer. "Join our channel for
+    # more", "follow the group", "more deals in our channel" all route the
+    # reviewer somewhere else, which is the thing the rejection email named.
+    r"|\b(?:join|follow|subscribe|check)\b[^\n]{0,30}?"
+    r"\b(?:channel|group|telegram|whatsapp)\b"
+    r"|\b(?:channel|group)\b[^\n]{0,20}?\b(?:link|below|above|here)\b"
+    r"|\bmore\s+(?:deals?|loots?|offers?)\b[^\n]{0,20}?"
+    r"\b(?:channel|group|here|below)\b")
+
+
+def has_amazon_trademark(text: str) -> bool:
+    """True when the COPY names an Amazon mark (links are exempt and fine)."""
+    return bool(_AMAZON_MARK_RE.search(URL_RE.sub(" ", text or "")))
+
+
+def has_telegram_pointer(text: str) -> bool:
+    """True when the copy points at another Telegram channel (our loot ones)."""
+    return bool(_TELEGRAM_POINTER_RE.search(text or ""))
+
+
+def add_link_disclosure(text: str) -> str:
+    """Append the link-level affiliate disclosure exactly once."""
+    body = (text or "").strip()
+    if not body or not SHOPPING_DISCLOSURE:
+        return body
+    # Already disclosed (any of the accepted forms)? Never say it twice.
+    if re.search(r"(?i)#ad\b|\bpaid link\b|#commissionsearned\b|"
+                 r"amazon associate i earn", body):
+        return body
+    return f"{body}\n\n{SHOPPING_DISCLOSURE}"
+
+
+def retag_foreign_amazon_links(text: str) -> str:
+    """Put OUR Associates tag on every Amazon link, replacing any other.
+
+    Used for the DECLARED channel only. Three cases, one rule:
+      * a stranger's tag -> replaced with ours (that link would otherwise pay a
+        third party from the one property we are allowed to earn on);
+      * NO tag at all     -> ours is added. A link that skipped the tagging pass
+        earns nothing, and an untagged post on the reviewed channel is a sale
+        Amazon cannot attribute to us - the 3-qualifying-sales clock never moves;
+      * already ours       -> untouched.
+    Only the `tag` parameter changes, so the product and the price are intact.
+    """
+    out = text or ""
+    if not OUR_TAG:
+        return out
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        parsed = urlparse(url)
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        tag = next((v for k, v in pairs if k.lower() == "tag"), "")
+        if tag.lower() == OUR_TAG.lower():
+            continue
+        query = [(k, v) for k, v in pairs if k.lower() != "tag"]
+        query.append(("tag", OUR_TAG))
+        fixed = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+        out = out.replace(raw, fixed)
+    return out
+
+
+# Amazon's own short domains. They ARE Amazon links, but they are not in
+# AMAZON_DOMAINS (which is the list used for tagging, where only a full
+# amazon.in URL can carry a tag). Judging "is this an Amazon post?" by that
+# list alone refused every post whose source used an amzn.to link.
+AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
+
+
+def pick_one_product_for_review(text: str) -> str:
+    """Reduce a multi-product post to ONE product for the review channel.
+
+    USER RULE (2026-09-06): "list of products mana review channello cheyaku,
+    okkoti edo random cheyu - mana review success avvali."
+
+    A roundup is a worse review sample than a single listing: it reads as a
+    link dump, and one bad item in it taints the whole post. The other channels
+    keep the full list; only this one is reduced.
+
+    Which item? Not the first - the first row of a source list is often the
+    weakest, and always picking it would make the channel repetitive. Not
+    random-by-chance either: the SAME post must reduce to the SAME product on a
+    retry, or a re-render would publish a second item as a duplicate. So the
+    choice is deterministic-but-spread: a hash of the post picks the index.
+    """
+    lines = [ln for ln in (text or "").splitlines()]
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        current.append(line)
+        if URL_RE.fullmatch(line.strip()):
+            blocks.append(current)
+            current = []
+    # Trailing text with no link of its own is not a product block.
+    if len(blocks) < 2:
+        return text
+    # Keep only blocks that actually name something (a link with no label is a
+    # stray, not a product).
+    named = [blk for blk in blocks
+             if any(not URL_RE.fullmatch(ln.strip()) and re.search(r"[A-Za-z]{3}", ln)
+                    for ln in blk)]
+    if len(named) < 2:
+        return text
+    seed = hashlib.sha1((text or "").encode("utf-8", "ignore")).hexdigest()
+    chosen = named[int(seed[:8], 16) % len(named)]
+    out = [ln.strip() for ln in chosen]
+    # The list's own heading may sit on its own line above the first product
+    # ("Loot of the day" / "Deals") - carrying it into a single-product post
+    # would read as part of the product name.
+    _HEADING_ONLY = re.compile(
+        r"(?i)^\s*(?:\U0001f525|\u26a1|\u2b50|\U0001f381|\U0001f6d2|\s)*"
+        r"(?:top\s+|mega\s+|super\s+)?(?:deals?|loots?|offers?|sale|dhamaka|steals?)"
+        r"\s*(?:of\s+the\s+day|today|zone|store)?\s*"
+        r"[:\-\u2013\u2014|]?\s*(?:\U0001f525|\u26a1|\u2b50|\s)*$")
+    if len(out) > 2:
+        head = out[0]
+        if (parse_price(head) is None and not URL_RE.search(head)
+                and (_HEADING_ONLY.match(head) or is_promo_noise_line(head))):
+            out = out[1:]
+    # ...or it may be glued to the FRONT of the first product's line, because
+    # the source wrote the whole list inline ("Deals Boat 141 @899 <link>").
+    # Strip a leading heading word only when the rest still names a product.
+    if out:
+        stripped = re.sub(
+            r"(?i)^\s*(?:\U0001f525|\u26a1|\u2b50|\U0001f381|\U0001f6d2|\s)*"
+            r"(?:top\s+)?(?:deals?|loots?|offers?|sale|dhamaka|steals?)\s*"
+            r"(?:of\s+the\s+day|today)?\s*[:\-\u2013\u2014|]?\s*",
+            "", out[0])
+        if stripped.strip() and re.search(r"[A-Za-z]{3}", stripped):
+            out[0] = stripped.strip()
+    return "\n".join(out)
+
+
+def is_amazon_only_post(text: str) -> bool:
+    """True when every link in the post is an Amazon link (and there is one)."""
+    urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text or ""))]
+    if not urls:
+        return False
+    return all(in_domains((urlparse(u).hostname or "").lower(),
+                          AMAZON_DOMAINS | AMAZON_SHORT_DOMAINS)
+               for u in urls)
+
+
+_AMAZON_RATING_RE = re.compile(
+    r"(?:\u2b50\s*)?\b(?:rating|rated|stars?)\s*[:\-]?\s*[0-5](?:[.,]\d)?\s*(?:/\s*5)?\s*(?:\u2b50|stars?)?"
+    r"|\b[0-5][.,]\d\s*(?:\u2b50|/\s*5|stars?)"
+    r"|\b[\d,]+\s*(?:\+\s*)?(?:ratings?|reviews?)\b",
+    re.IGNORECASE)
+
+
+def strip_amazon_ratings(text: str) -> str:
+    """Remove copied Amazon star ratings and review counts.
+
+    Amazon lists republished ratings/reviews as an account-closure reason: the
+    numbers go stale, and the programme requires them to refresh live through
+    the Product API. The product name, the price and the link are untouched, so
+    the deal itself reads exactly as before.
+    """
+    out = []
+    for line in (text or "").splitlines():
+        cleaned = _AMAZON_RATING_RE.sub(" ", line)
+        # tidy the separators the removal leaves behind ("899 |  | 70% OFF")
+        cleaned = re.sub(r"\s*\|\s*(?=\||$)", "", cleaned)
+        cleaned = re.sub(r"^\s*[|,\-\u2013\u2014]\s*", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).rstrip(" |,-\u2013\u2014")
+        # a line that was ONLY a rating disappears; one that had other words stays
+        if cleaned.strip() or not line.strip():
+            out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
+    return "\n".join(out)
+
+
+def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
+    """Remove OUR Associates tag from Amazon links bound for an undeclared channel.
+
+    THE BUG THIS FIXES (found by the user, 2026-09-06): "LootZoneIndia11 ... anni
+    tags tho post ayyayi so reject chesaru". Links are SHORTENED in render_job
+    before this runs at delivery, so by the time we got here the post read
+    "https://bit.ly/3xYz" - no amazon.in hostname to match, nothing stripped, and
+    our tag rode into an undeclared loot channel INSIDE the redirect. Amazon sees
+    the referrer, and that is the violation that killed the application.
+
+    So a short link WE minted is resolved back to its destination first; if that
+    destination is a tagged Amazon URL, the untagged native URL is published
+    instead. A source's own short link is left alone - we cannot know where it
+    goes, and it was never carrying our tag anyway.
+
+    Only our own tag is touched. The product, the price and the link still work,
+    so the reader of that channel loses nothing.
+    """
+    if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
+        return text
+    out = text
+    # Pass 1: our tag hidden behind a shortener we created.
+    reverse = dict(getattr(affiliate, "_short_to_long", {}) or {})
+    for short, long_url in reverse.items():
+        if short not in out:
+            continue
+        host = (urlparse(clean_url(long_url)).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        if OUR_TAG.lower() not in long_url.lower():
+            continue
+        parsed = urlparse(clean_url(long_url))
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                 if k.lower() != "tag"]
+        out = out.replace(short, parsed._replace(query=urlencode(query, doseq=True)).geturl())
+    # Pass 2: the plainly visible amazon.in links.
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        parsed = urlparse(url)
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                 if k.lower() != "tag"]
+        untagged = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+        if untagged != raw:
+            out = out.replace(raw, untagged)
+    return out
 OUR_MAIN_CHANNEL_LINKS = ("https://t.me/SecretLootIndia1", "https://t.me/LootZoneIndia11")
 PREMIUM_MAX_PER_NIGHT = max(1, int(os.getenv("PREMIUM_MAX_PER_NIGHT", "12")))
 # The Premium channel is curated, not a firehose — but the gap between its
@@ -708,6 +1064,55 @@ def compact_amazon_product_link(link: str) -> str:
         return clean_url(link)
 
 
+# A Flipkart product URL is "slug + /p/ + item id + pid": lid, marketplace, srno,
+# ssid, otracker and the rest are session/tracking noise that triples the length.
+# USER RULE (2026-09-05, "shortga ravali"): a link of ours must never go out 177
+# characters long just because the shortener was busy, so a product link is first
+# compacted natively (free, no quota) and only then handed to the shortener.
+# The leading "/dl" of a dl.flipkart.com app link is part of the wrapper, not of
+# the product path: www.flipkart.com/<slug>/p/<item id> is the canonical page.
+# USER REPORT (2026-09-06): a Flipkart link went out at 130 characters,
+# unshortened - "flipkart earnkaro tho change cheyatledu shortenga". Its path was
+#   /flipkart/p/item?lid=...&pid=...
+# i.e. the literal word "item", not the usual "itm<id>" slug, so this regex did
+# not match and the link was handed back untouched. Both spellings are real
+# Flipkart product pages; the identity lives in the pid either way.
+FLIPKART_ITEM_RE = re.compile(r"(?i)^(?:/dl)?(?P<path>/.*?/p/(?:itm[a-z0-9]+|item))")
+FLIPKART_HOSTS = {"flipkart.com", "www.flipkart.com", "dl.flipkart.com", "m.flipkart.com"}
+
+
+def compact_flipkart_product_link(link: str) -> str:
+    """Collapse a Flipkart product URL to slug + item id + pid.
+
+    Only a PRODUCT page (/p/itm...) is touched, and only tracking parameters are
+    dropped - `pid` is the product identity and is always kept, so the link still
+    opens exactly the item the source linked. A search/category/offer URL has no
+    item id and is returned untouched for the shortener to handle.
+    """
+    try:
+        raw = clean_url(link)
+        parsed = urlparse(raw)
+        host = (parsed.hostname or "").lower()
+        if host not in FLIPKART_HOSTS:
+            return raw
+        match = FLIPKART_ITEM_RE.match(parsed.path or "")
+        if not match:
+            return raw
+        pid = ""
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            if key.lower() == "pid" and value:
+                pid = value
+                break
+        # A dl.* link is Flipkart's own app-redirect wrapper for the same page.
+        netloc = "www.flipkart.com"
+        return parsed._replace(
+            scheme="https", netloc=netloc, path=match.group("path"),
+            query=urlencode([("pid", pid)]) if pid else "", fragment="", params="",
+        ).geturl()
+    except Exception:
+        return clean_url(link)
+
+
 def clean_url(value: str) -> str:
     # Telegram/Markdown copies can contain HTML-escaped query separators (`&amp;`).
     # Decode before parsing so foreign affiliate wrappers are always unwrapped.
@@ -984,8 +1389,14 @@ _SIG_VARIANT_RE = re.compile(
 # Only words that name a genuinely different product line. "smart"/"air"/"elite" are
 # marketing adjectives here and there, and a copy that drops one must not turn the
 # same watch into a different product - so the list stays short and factual.
+# The gender/audience words are here for the same reason as "pro"/"fe": a
+# "Nivea MEN Face Wash" and a "Nivea WOMEN Face Wash" are two different products
+# at the same price, and with no model number to separate them they used to sign
+# identically - so the second one was skipped as a duplicate and that deal never
+# reached the channel.
 _SIG_VARIANTS = frozenset("""
 pro plus max ultra lite neo fe se mini prime classic edge fold flip turbo
+men mens women womens kids boys girls unisex
 """.split())
 # Words that put a number in front of them into a model name: "Pro 4" and "Model
 # 2600" are the product, "2023" at the end of a headline is the launch year.
@@ -996,7 +1407,42 @@ _SIG_BY_NON_BRAND = frozenset(
     "powered brought inspired sponsored posted shared sent curated verified".split())
 _SIG_AMOUNT_RE = re.compile(
     r"(?i)[\u20b9$]\s*[\d,]+(?:\.\d+)?|\b\d+(?:\.\d+)?\s*(?:%|percent|off)\b|"
+    # "70%" followed by a space failed the trailing \b (a percent sign is not a
+    # word char), so the discount stayed in the identity and two copies of one
+    # deal signed differently whenever the channels typed the discount apart.
+    r"\b\d{1,3}\s*%|"
+    # A bare number sitting immediately in front of the discount IS the price
+    # ("Collagen powder 299 (70% off)"), whatever marker the channel omitted.
+    r"\b[\d,]{2,}(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))|"
+    # A price written WITHOUT the rupee sign is still a price, not a model
+    # number: "@298", "at 167", "Rs 180", "220/-". Leaving these in made the
+    # SAME product signed differently depending on how the channel typed its
+    # price, so the duplicate slipped through. (A number that is genuinely part
+    # of the product - "10KG", "2000ml" - carries a unit and is keyed elsewhere.)
+    r"(?:@|\bat\b|\brs\.?|\binr)\s*[\d,]{2,}(?:\.\d+)?\b|\b[\d,]{2,}\s*/-|"
     r"\b(?:mrp|mrp\.?|regular\s+price|list\s+price|strike\s+price)\b\s*[:\-]?[^,|;\n]*")
+
+
+# The price this LINE quotes, however the channel typed it. Deliberately a small
+# self-contained reader rather than a call to parse_price(): this block is mirrored
+# verbatim into ops/quality_audit.py by ops/sync_identity.py, so it must not depend
+# on anything outside itself or the auditor stops importing.
+_SIG_PRICE_RE = re.compile(
+    r"(?i)(?:[\u20b9$]|\brs\.?|\binr|@|\bat\b)\s*([\d,]{2,})(?:\.\d+)?\b"
+    r"|\b([\d,]{2,})\s*/-"
+    r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
+
+
+def _sig_line_price(line: str) -> int | None:
+    match = _SIG_PRICE_RE.search(line or "")
+    if not match:
+        return None
+    raw = next((g for g in match.groups() if g), "")
+    try:
+        value = int(str(raw).replace(",", ""))
+    except ValueError:
+        return None
+    return value if 1 <= value <= 1_000_000 else None
 
 
 def _sig_tokens(line: str) -> list[str]:
@@ -1017,6 +1463,45 @@ def _sig_tokens(line: str) -> list[str]:
     return out
 
 
+# Ordinary descriptive words. A phrase built ONLY from these ("Men Cotton
+# Shirt", "hair oil set") describes a category, not a product, so it needs the
+# longer floor before it may be used to skip a repeat.
+_SIG_GENERIC_WORDS = frozenset("""
+men mens women womens kids boys girls baby unisex adult
+hair face body skin lip eye nail hand foot head neck
+phone mobile laptop tablet tv led smart wireless bluetooth usb
+lunch dinner tea coffee water milk rice
+
+cotton silk leather steel plastic glass wooden metal rubber silicone
+shirt tshirt pant jeans saree kurti dress top jacket shoes sandals slippers
+oil soap cream powder shampoo lotion gel wash paste
+bottle box case cover bag pouch set combo pack piece pieces
+watch band strap cable charger adapter holder stand mat mop broom
+kitchen home office travel sports gaming
+small medium large xl xxl free size regular fit slim
+new best top premium quality original genuine
+""".split())
+
+
+# Ordinary product nouns and descriptive adjectives. A phrase built only from
+# these plus _SIG_GENERIC_WORDS names a CATEGORY ("Running Shoes", "Shirt A"),
+# never one product, so it must clear the length floor before it may be used
+# to skip a repeat.
+_SIG_PRODUCT_NOUNS = frozenset("""
+shoes sneakers boots sandal sandals slipper slippers flipflop
+shirt tshirt shirts pant pants trouser trousers jeans short shorts
+kurta kurti saree dress top tops jacket coat sweater hoodie
+bottle flask jar container tiffin lunchbox casserole
+mixer grinder kettle cooker pan pot tawa knife spoon plate bowl
+headphone headphones earphone earphones earbuds neckband speaker
+watch smartwatch band tracker
+bag backpack luggage trolley wallet purse belt
+running walking sports casual formal party daily regular
+trimmer shaver dryer straightener iron fan heater cooler lamp bulb
+sheet curtain pillow blanket mattress towel mat rug carpet
+""".split())
+
+
 def _product_identity(line: str) -> tuple[str, ...] | None:
     """The few tokens that decide WHICH product a headline names, as a SET.
 
@@ -1034,7 +1519,18 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
     With no number to hold on to (a shirt, a handbag) every product word has to
     agree instead - the conservative answer that loses a duplicate rather than a deal.
     """
+    # A bare number that is simply the line's PRICE is not a model number.
+    # "Nutriburst Collagen powder 299" and "Nutriburst Collagen powder @ 299"
+    # are one product; only the second spelling was recognised as money, so the
+    # first signed "299" as a model and the duplicate got published twice.
+    line_price = _sig_line_price(line or "")
     raw = [re.sub(r"[-_]", "", tok) for tok in _sig_tokens(line)]
+    # A URL is not part of the product's NAME. When the source writes the link
+    # on the same line ("Shirt A 599 https://a.com/x") the host used to become
+    # an identity word, which both invented an identity for a generic phrase
+    # and made the same product hash differently once its link changed.
+    raw = [w for w in raw
+           if not w.startswith(("http", "www")) and "/" not in w and "." not in w]
     words = [w for w in raw if not w.isdigit() and w not in _SIG_STOP_WORDS]
     if len(words) < 2:
         return None
@@ -1068,15 +1564,72 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
                 continue
             if len(digits) < 2 or (len(digits) == 4 and 1900 <= int(digits) <= 2099):
                 continue                   # a quantity, or a launch year - not an id
+            if line_price is not None and int(digits) == line_price:
+                continue                   # that is the price, however it was typed
             if digits in digit_cores:
                 continue                   # the number is already inside a size id
             models.add(token)
     variants = {t for t in raw if t in _SIG_VARIANTS}
     if not ids and not models:
-        if len(words) < 4:
+        # No number to hold on to, so every product word has to agree. THREE
+        # words is enough when they are long enough to be a real product name
+        # ("Nutriburst Collagen powder"): demanding four made a named product
+        # with no model number un-dedupable, which is how the same collagen
+        # powder went out twice under two different banner words. A short
+        # category phrase ("hair oil set") still fails the length test below.
+        # USER REPORT (2026-09-06): "Ergonomic Dustpan @ 55" went out TWICE in
+        # the same channel. Two long, specific words ARE a product name; the
+        # three-word floor left every such post with no identity at all, so the
+        # per-channel repeat guard never ran on them. Two words are accepted
+        # when they are long and specific enough not to be a category phrase
+        # ("hair oil", "phone case" stay un-keyed via the length test below).
+        if len(words) < 2:
             return None                    # a category phrase is not an identity
+        # REGRESSION GUARD (2026-09-06): "Cello Lunch Box" is three real product
+        # words but only 15 characters, so an 18-char floor gave it no identity
+        # and the same lunch box could post twice. THREE words are already
+        # specific enough - the floor exists to reject two-word category phrases
+        # ("hair oil"), not to reject short real names. Four+ words are always
+        # specific. Only the two-word case still needs the length test.
+        # The floor exists to reject GENERIC phrases ("Men Cotton Shirt",
+        # "hair oil") that many different products share - keying on those
+        # would suppress real deals. It must not reject a short but SPECIFIC
+        # name: "Cello Lunch Box" is 15 characters and names one product, and
+        # an 18-char floor left it un-dedupable, which is how the same lunch
+        # box could post twice.
+        # A brand-like word - one that is not an ordinary descriptive word -
+        # makes the phrase specific regardless of its length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "hair oil")
+        # that many products share; keying on those would suppress real deals.
+        # It must not reject a SHORT but specific name. "Cello Box" is nine
+        # characters, yet "cello" is a brand - one product, and without an
+        # identity it could post twice, which is the defect the user reported.
+        # So a phrase that pairs a brand-like word with a descriptive one is
+        # specific enough at two words; only all-generic phrases need length.
+        # The floor rejects GENERIC phrases ("Men Cotton Shirt", "Running
+        # Shoes") that many products share; keying on those would suppress
+        # real deals. It must not reject a SHORT but specific name: "Cello
+        # Box" is nine characters, yet "cello" is a BRAND - one product - and
+        # with no identity it could post twice.
+        #
+        # A brand is recognised as a word that is neither descriptive nor a
+        # known product noun: "cello", "milton", "dabur", "nike". "Running
+        # Shoes" and "Shirt A" have no such word, so they keep the floor.
         basis = " ".join(sorted(set(words)))
-        return None if len(basis) < 16 else ("W", basis)
+        # A URL is never a brand. When a source writes the link on the same
+        # line as the name ("Shirt A 599 https://a.com/x"), "https" and the
+        # host would otherwise read as brand words and give a generic
+        # category phrase an identity it must not have.
+        # A single letter is a list marker or a size ("Shirt A", "Shirt B"),
+        # never a brand: treating it as one gave every row of a three-shirt
+        # roundup its own identity and broke the multi-product rule.
+        brandish = [w for w in words
+                    if len(w) > 1
+                    and w not in _SIG_GENERIC_WORDS and w not in _SIG_PRODUCT_NOUNS]
+        if brandish and len(words) >= 2:
+            return ("W", basis)
+        floor = 15 if brandish else 18
+        return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
     # the brand outright and wins over word order, so the reordered copy can
@@ -1123,8 +1676,19 @@ def product_signature(text: str) -> str | None:
         host = (urlparse(url).hostname or "").lower()
         if host and not in_domains(host, NON_STORE_DOMAINS):
             merchant_links += 1
-    if merchant_links == 0 or merchant_links >= 3:
+    if merchant_links == 0:
         return None
+    if merchant_links >= 3:
+        # A ROUNDUP. Until now these got no key at all, so the same list
+        # arriving again from a second source - different shortener, different
+        # banner - was invisible to the per-channel repeat guard and the channel
+        # carried it twice. That is the "multiple times" the user reported.
+        # A roundup's identity is the SET of products it lists: order-independent
+        # (sources shuffle the order), link-independent (shorteners differ),
+        # banner-independent. Two roundups that list the same items ARE the same
+        # post; a roundup that adds or drops an item is a different one and still
+        # goes out.
+        return _roundup_signature(text)
     headline = None
     for line in clean_source_text(text).splitlines():
         line = line.strip()
@@ -1134,6 +1698,13 @@ def product_signature(text: str) -> str | None:
             continue                       # a hype banner is not a product name
         if not re.search(r"[A-Za-z]", line):
             continue                       # a bare price / separator line
+        # USER RULE (2026-09-05): "Loot : X" and "Grab : X" are the SAME product
+        # wearing two different banner words, and the banner used to be read as
+        # the brand - so the identity differed and the same deal was published
+        # twice. The banner prefix is source decoration; strip it before the
+        # product's own words are read. (_SAFE_PREFIX_RE is the same list the
+        # programme-safe rewrite uses, so the two can never drift apart.)
+        line = _SAFE_PREFIX_RE.sub("", line).strip() or line
         identity = _product_identity(line)
         if identity:
             headline = identity
@@ -1142,6 +1713,35 @@ def product_signature(text: str) -> str | None:
         return None
     basis = "|".join(headline)
     return "SIG:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
+
+
+def _roundup_signature(text: str) -> str | None:
+    """Identity of a multi-product list: the set of products it names.
+
+    Built from the same _product_identity() the single-product path uses, so a
+    roundup and its repeat agree even when the two sources write different
+    banners, different prices formats and different short links.
+    """
+    items: set[str] = set()
+    for line in clean_source_text(text or "").splitlines():
+        line = line.strip()
+        if not line or URL_RE.fullmatch(line):
+            continue
+        line = URL_RE.sub(" ", line).strip()
+        if not line or TIME_OF_DAY_RE.search(line) or GENERIC_HEADLINE_RE.fullmatch(line.lower()):
+            continue
+        if not re.search(r"[A-Za-z]", line):
+            continue
+        line = _SAFE_PREFIX_RE.sub("", line).strip() or line
+        identity = _product_identity(line)
+        if identity:
+            items.add("|".join(identity))
+    # Two items is the floor: below that this is not a list, and a one-item
+    # match is too thin to justify dropping a live deal.
+    if len(items) < 2:
+        return None
+    basis = "\n".join(sorted(items))
+    return "LIST:" + hashlib.sha256(basis.encode()).hexdigest()[:32]
 
 
 def product_key(value: str) -> str:
@@ -1162,11 +1762,25 @@ def parse_price(text: str) -> int | None:
     # for the deal price. The deal-price labels below never say MRP.
     masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
                     " ", value)
+    # A DISCOUNT is not a price. "Save Rs.500", "Rs.99 off", "Flat 200 off" and
+    # "Rs.50 cashback" all name money the buyer does NOT pay; reading one as the
+    # price prints a figure the source never charged. Masked before the scan so
+    # no pattern below can reach them.
+    masked = re.sub(r"(?i)\b(?:save|flat|upto|up\s*to|extra|discount|off|cashback)\s*"
+                    r"(?:rs\.?|₹|inr)?\s*[\d,]+", " ", masked)
+    # Only the amount IMMEDIATELY before the word, with no space swallowed from
+    # a preceding price: "Rs.1,999 Discount: 66%" must keep the 1,999. So the
+    # currency mark is required, or the number must hug the word.
+    masked = re.sub(r"(?i)(?:rs\.?|₹|inr)\s*[\d,]+\s*(?:off|cashback)\b", " ", masked)
+    masked = re.sub(r"(?i)\b[\d,]+\s*%?\s*(?:off|cashback)\b", " ", masked)
     patterns = [
         r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
         r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
         r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)(?!\s*(?:off|coupon|cashback))",
+        # \b anchors the END of the number: without it "Rs.99 off" backtracked to
+        # "9" (the lookahead only had to fail for the SHORTER match) and printed
+        # a price of 9 rupees.
+        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)\b(?!\s*(?:off|coupon|cashback))",
         # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
         r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
         # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
@@ -1180,6 +1794,19 @@ def parse_price(text: str) -> int | None:
             price = int(match.group(1).replace(",", ""))
             if 1 <= price <= 1_000_000:
                 return price
+    # "899 (MRP 2990)" - the deal price written as a BARE number, with the MRP
+    # right after it. Nothing above matches (no currency mark, no @/only/at),
+    # so the MRP fallback below used to answer 2990: the post advertised a
+    # price the buyer does not pay, and price drives routing and dedup.
+    # A bare number immediately followed by an MRP is the deal price.
+    bare_before_mrp = re.search(
+        r"(?<![\d,.])([\d,]{2,})\s*[({\[]?\s*"
+        r"(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\b",
+        value, re.I)
+    if bare_before_mrp:
+        price = int(bare_before_mrp.group(1).replace(",", ""))
+        if 1 <= price <= 1_000_000:
+            return price
     # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
     # money on the post, so it is the best available answer (old behaviour).
     # The masking above only stops MRP from SHADOWING a real deal price.
@@ -1866,6 +2493,15 @@ def remove_orphan_url_fragment_lines(text: str) -> str:
     return "\n".join(kept)
 
 
+# Labels that are a call to action, not a product: dropping these keeps the
+# post clean, while any other label is the product name and must survive.
+_CTA_LABEL_RE = re.compile(
+    r"(?i)\s*(?:buy(?:\s*it)?(?:\s*now)?|shop(?:\s*now)?|order(?:\s*now)?|grab(?:\s*it)?(?:\s*now)?"
+    r"|click(?:\s*here)?|here|link|links|deal\s*link|buy\s*link|product\s*link"
+    r"|get\s*it(?:\s*now)?|check(?:\s*it)?(?:\s*out)?|view|see\s*more|more"
+    r"|amazon|flipkart|meesho|myntra|ajio|loot|offer|deal)\s*[\u2b07\U0001f447\U0001f449\u27a1\ufe0f\s:*-]*")
+
+
 def normalize_nested_link_markup(text: str) -> str:
     """Normalise a FORWARDED/malformed source whose links are wrapped in nested
     markdown and double HTML-escaping, e.g.
@@ -1886,10 +2522,68 @@ def normalize_nested_link_markup(text: str) -> str:
         prev = out
         out = re.sub(r"\[\s*(https?://[^\s\]\[]+?)\s*\]\s*\(\s*https?://[^\s)]+?\s*\)",
                      r"\1", out, flags=re.I)
-        out = re.sub(r"\[[^\]\[]*?\]\s*\(\s*(https?://[^\s)]+?)\s*\)",
-                     r"\1", out, flags=re.I)
+        # "[LABEL](URL)": the label is thrown away only when it is DEBRIS -
+        # a call to action ("Buy Now", "Click here", "Link"). When it is the
+        # PRODUCT NAME the post loses its product entirely and the reader is
+        # left with a bare URL, which is the "just names / no product" defect
+        # in reverse. So a substantial label is kept above its link.
+        def _unwrap_markdown_link(match: "re.Match[str]") -> str:
+            label = (match.group(1) or "").strip()
+            url = match.group(2)
+            # Emphasis debris around a nested wrapper ("++**[[url](url)++**]")
+            # is not a product name; strip it before judging the label, or the
+            # SAME url is emitted twice - once as its own "name" and once as
+            # the link, which is the duplicate the user forbids.
+            # Only RUNS of markers are debris. A single trailing "+" is part of
+            # the product ("boAt Rockerz 255 Pro+", "Redmi Note 13 Pro+").
+            label = re.sub(r"^[*_+~\s]{2,}|[*_+~\s]{2,}$", "", label)
+            label = re.sub(r"^[*_~]+|[*_~]+$", "", label).strip()
+            words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", label)
+            # A label that merely CONTAINS a url (or a url fragment left by an
+            # inner wrapper) is markup, never a product name.
+            if (not label
+                    or URL_RE.search(label)
+                    or "amazon." in label.lower() or "flipkart." in label.lower()
+                    or _CTA_LABEL_RE.fullmatch(label)
+                    or len(label) < 6
+                    or not words):
+                return url
+            # Anything the source wrote AFTER the link on that line (usually the
+            # price: "[Name](url) @ 899") belongs with the NAME, not stranded
+            # under the URL. The caller re-splits on newlines, so emit the
+            # label, then a placeholder the tail is folded into below.
+            return f"{label}\x00{url}"
+
+        out = re.sub(r"\[([^\]\[]*?)\]\s*\(\s*(https?://[^\s)]+?)\s*\)",
+                     _unwrap_markdown_link, out, flags=re.I)
         if out == prev:
             break
+    # Fold each unwrapped "LABEL \x00 URL rest-of-line" back into two tidy
+    # lines: "LABEL rest-of-line" then the URL underneath it. Repeat until the
+    # line holds no placeholder: a line can carry SEVERAL markdown links
+    # ("[A](u1) @99 [B](u2) @199"), and folding only the first one left the
+    # rest of the placeholders visible as NUL characters in the post.
+    for _ in range(8):
+        if "\x00" not in out:
+            break
+        folded: list[str] = []
+        for line in out.split("\n"):
+            if "\x00" not in line:
+                folded.append(line)
+                continue
+            head, _, remainder = line.partition("\x00")
+            url_match = URL_RE.match(remainder)
+            if not url_match:
+                folded.append(line.replace("\x00", " "))
+                continue
+            url = url_match.group(0)
+            tail = remainder[url_match.end():].strip()
+            label = head.strip()
+            folded.append(f"{label} {tail}".strip() if tail else label)
+            folded.append(url)
+        out = "\n".join(folded)
+    # Belt and braces: a placeholder must never reach a reader.
+    out = out.replace("\x00", " ")
     # Leftover stray square brackets are noise.
     out = re.sub(r"[\[\]]+", "", out)
     # Markdown emphasis debris (++, **, __ and lone */_) left around the
@@ -2215,6 +2909,11 @@ def sanitize_outbound_text(text: str) -> str:
 
 def clean_source_text(text: str) -> str:
     text = (text or "").replace("\x00", "")
+    # A source that wrote a whole list on ONE line ("name link name link") is
+    # split FIRST. Every later pass hoists URLs onto their own lines, which
+    # would leave the names bunched in one paragraph above a block of anonymous
+    # links - the reader could not tell which link belongs to which product.
+    text = split_inline_product_links(text)
     text = normalize_nested_link_markup(text)
     text = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", text)
     text = CK_FOOTER_RE.sub("\n", text)
@@ -2631,8 +3330,119 @@ def format_visible_source_product_pairs(raw_text: str,
     return "\n".join(output).strip()
 
 
+# A price the way these sources actually type it. "₹258" is only one of the
+# spellings: "at 258", "@167", "Rs 180", "220/-" are the same money, and the old
+# ₹-only test is why a four-product list ("Methi Dana 500 gms at 180") was
+# published as four naked labels followed by four naked links - the "neatga
+# ravali" complaint.
+PRICE_LABEL_RE = re.compile(
+    r"(?:₹|\brs\.?|\binr)\s*[\d,]{2,}"
+    r"|(?:\bat|@)\s*[\d,]{2,}"
+    r"|\b[\d,]{2,}\s*/-",
+    re.I,
+)
+
+
+def split_inline_product_links(text: str) -> str:
+    """Put each product on its own line with its link underneath it.
+
+    THE DEFECT (user, 2026-09-06): "list of products text paina and kinda
+    links". Some sources write a whole list on ONE line -
+
+        Boat Airdopes 141 @ 899 https://a Samsung M14 @ 9999 https://b
+
+    - which reads as a wall of text and gives no way to tell which link belongs
+    to which product. format_clustered_product_list() only handles the other
+    shape (all links grouped at the bottom), so this one went out untouched.
+
+    Every link here already ends a product, so the text is cut AFTER each URL
+    and the URL moved to its own line:
+
+        Boat Airdopes 141 @ 899
+        https://a
+
+        Samsung M14 @ 9999
+        https://b
+
+    Nothing is invented, dropped or reordered. A line with a single trailing
+    link is already correct and is left exactly as it is, so a neat source
+    stays neat.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        # A markdown list on one line ("[A](u1) @99 [B](u2) @199") is split on
+        # the markdown boundary, so each product keeps its own label and link;
+        # the unwrapping in normalize_nested_link_markup() then runs per line.
+        md = list(re.finditer(r"\[[^\]\[]*?\]\s*\(\s*https?://[^\s)]+?\s*\)", line))
+        if len(md) >= 2:
+            pieces, cursor = [], 0
+            for m in md:
+                lead = line[:m.start()].strip() if not pieces else line[cursor:m.start()].strip()
+                if lead and pieces:
+                    pieces[-1] = f"{pieces[-1]} {lead}".strip()
+                elif lead:
+                    pieces.append(lead)
+                pieces.append(m.group(0))
+                cursor = m.end()
+            tail = line[cursor:].strip()
+            if tail and pieces:
+                pieces[-1] = f"{pieces[-1]} {tail}".strip()
+            out.extend(p for p in pieces if p)
+            changed = True
+            continue
+        # A line still carrying markdown/bracket wrapping is NOT a plain inline
+        # list: the "links" are the same URL nested inside its own label
+        # ("[url](url](url))"), and splitting on them would emit the duplicate
+        # copies as separate products. normalize_nested_link_markup() collapses
+        # those first; this pass only ever handles already-plain text.
+        if "[" in line or "]" in line or "(" in line:
+            out.append(line)
+            continue
+        urls = list(URL_RE.finditer(line))
+        # Two or more links on one line, with text between them, is the defect.
+        if len(urls) < 2:
+            out.append(line)
+            continue
+        pieces: list[str] = []
+        cursor = 0
+        for match in urls:
+            label = line[cursor:match.start()].strip(" \t|-\u2013\u2014>*")
+            if label:
+                pieces.append(label)
+            pieces.append(match.group(0))
+            cursor = match.end()
+        tail = line[cursor:].strip(" \t|-\u2013\u2014>*")
+        if tail:
+            pieces.append(tail)
+        # Only rewrite when it actually separates products (a label before a
+        # link at least twice); two bare links in a row are left alone.
+        labelled = sum(1 for i, piece in enumerate(pieces)
+                       if URL_RE.fullmatch(piece) and i and not URL_RE.fullmatch(pieces[i - 1]))
+        if labelled < 2:
+            out.append(line)
+            continue
+        changed = True
+        for i, piece in enumerate(pieces):
+            out.append(piece)
+            # blank line after each link, so the products read as separate deals
+            if URL_RE.fullmatch(piece) and i != len(pieces) - 1:
+                out.append("")
+    return "\n".join(out) if changed else text
+
+
 def format_clustered_product_list(text: str) -> str:
-    """Pair 3+ product/price labels with a trailing block of generated URLs."""
+    """Pair 3+ product/price labels with a trailing block of generated URLs.
+
+    The source writes the list as "name + price" blocks (often with a note line
+    such as "Buy Max Quantity") and then dumps every link at the bottom. Read
+    that way it is unreadable: the reader cannot tell which link is which deal.
+    Here each block keeps its own note lines and gets its own link directly
+    under it, in the source's own order. Nothing is invented, nothing is
+    dropped, nothing is reordered.
+    """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     url_positions = [i for i, line in enumerate(lines) if URL_RE.fullmatch(line)]
     if len(url_positions) < 3:
@@ -2641,19 +3451,303 @@ def format_clustered_product_list(text: str) -> str:
     # Only fix posts whose generated URLs are all grouped at the bottom.
     if any(not URL_RE.fullmatch(line) for line in lines[first_url:]):
         return text
-    labels = [line for line in lines[:first_url] if re.search(r"₹\s*[\d,]+", line)]
-    if len(labels) < 3:
+    head = lines[:first_url]
+    # Split the head into blocks: a new block starts on every price-bearing
+    # label; anything after it (a note, an MRP line) belongs to that block.
+    preamble: list[str] = []
+    blocks: list[list[str]] = []
+    for line in head:
+        if PRICE_LABEL_RE.search(line):
+            blocks.append([line])
+        elif blocks:
+            blocks[-1].append(line)
+        else:
+            preamble.append(line)
+    if len(blocks) < 3:
         return text
     urls = [lines[i] for i in url_positions]
-    pair_count = min(len(labels), len(urls))
-    first_label_index = min(lines.index(label) for label in labels)
-    preamble = [line for line in lines[:first_label_index] if line not in labels]
+    pair_count = min(len(blocks), len(urls))
     output = list(preamble)
     for index in range(pair_count):
         if output:
             output.append("")
-        output.extend([labels[index], urls[index]])
+        output.extend(blocks[index])
+        output.append(urls[index])
+    # A list with more links than labels (variant links) keeps the extras rather
+    # than losing them: a dropped link is a dropped deal.
+    for extra in urls[pair_count:]:
+        output.append(extra)
+    for leftover in blocks[pair_count:]:
+        output.append("")
+        output.extend(leftover)
     return "\n".join(output).strip()
+
+
+# ---------------------------------------------------------------------------
+# Affiliate-programme safe copy (the shopping channel)
+# ---------------------------------------------------------------------------
+# USER RULE (2026-09-05): t.me/smartbuyhub11 is the channel submitted for Amazon
+# Associates approval. Amazon's review rejects "loot", urgency, buy-max-quantity
+# instructions and discount claims it cannot verify, so that channel receives the
+# SAME deal with a plain body: product name, price, link. Nothing is invented -
+# every word and every number still comes from the source post.
+_SAFE_DROP_LINE_RE = re.compile(
+    r"(?i)^\s*(?:\**\s*)?(?:"
+    r"buy\s+max(?:imum)?\s+quantity|max\s+quantity|buy\s+max|order\s+fast|"
+    # A banner line that is nothing BUT hype words ("MEGA LOOT", "🔥 SUPER LOOT 🔥",
+    # "DEAL OF THE DAY"). It carries no product and no price, so dropping the whole
+    # line loses nothing - and leaving it in is the single word most likely to fail
+    # the review. Emoji/punctuation around it are stripped by the caller.
+    r"(?:mega|super|big|huge|best|top|hot)?\s*loot\s*(?:zone|deal|alert|offer)?s?|"
+    r"hurry(?:\s*up)?|limited\s+stock|stock\s+limited|fast\s+selling|"
+    r"grab\s+(?:it\s+)?(?:now|fast)|buy\s+(?:it\s+)?now|shop\s+now|"
+    r"deal\s+of\s+the\s+day|price\s+may\s+change|#\w+"
+    r")\s*[!.:]*\s*$"
+)
+# A banner word in front of the product name ("Loot : X", "GRAB : X", and just
+# as often "Grab ₹298 (X)" with no colon at all). It is source decoration in
+# both the programme-safe rewrite and the duplicate signature, so the separator
+# is optional - otherwise the SAME deal signs differently depending on whether
+# that channel typed a colon.
+_SAFE_PREFIX_RE = re.compile(
+    r"(?i)^\s*(?:🔥|⚡|🚨|💥|🏃|👑|💰|🔔|✅|❗|‼️|👉|➡️|•|\*|-|~)*\s*"
+    r"(?:super\s*loot|mega\s*loot|price\s*drop|lowest\s*price|big\s*deal|"
+    r"hot\s*deal|best\s*deal|loot|grab|deal|steal|offer|alert)"
+    r"(?:\s*[:\-–]\s*|\s+(?=[₹@]|\d))"
+)
+_SAFE_CLAIM_RE = re.compile(
+    r"(?i)\b(?:#?\s*(?:uk|india|world)?\s*no\.?\s*1\s+brand|cheapest\s+ever|"
+    r"lowest\s+ever|all\s+time\s+low|biggest\s+sale|loot\s+price|"
+    r"steal\s+deal|must\s+buy)\b"
+)
+# Our own promo, in every shape it can reach a rendered post: the folder link,
+# the main-channel links, and the "All Loot Channels" caption that sits with them.
+_SAFE_OWN_PROMO_LINKS = (OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS, "t.me/")
+_SAFE_OWN_PROMO_TEXT_RE = re.compile(
+    r"(?i)\ball\s+loot\s+channels\b|\bloot\s+zone\b|\bsecret\s+loot\b|"
+    r"\bjoin\b.*\bchannel\b|\bone\s+tap\b")
+_EMOJI_RE = re.compile(
+    "[" "\U0001f300-\U0001faff" "\U00002190-\U000021ff" "\U00002600-\U000027bf"
+    "\U00002b00-\U00002bff" "\U0000fe0f" "\U00002122" "\U000024c2" "]+"
+)
+
+
+def affiliate_safe_text(text: str) -> str:
+    """The compliance-safe copy of a rendered deal: name, price, our link.
+
+    Used ONLY for the channel that is under Amazon Associates review. It removes
+    the promotional scaffolding a marketplace programme objects to (loot/hurry
+    banners, "buy max quantity", unverifiable superlatives, emoji shouting) and
+    keeps the product line, the price the source printed and the link.
+    """
+    out_lines: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            if out_lines and out_lines[-1] != "":
+                out_lines.append("")
+            continue
+        # Our own family/channel promo must never reach the reviewer: a card
+        # offer has the folder link appended into the stored copy, and a
+        # reviewer who taps it lands in "Loot Zone"/"Secret Loot" - exactly the
+        # wording this channel exists to avoid. It is OUR line, not the
+        # source's, so removing it loses no deal content.
+        if any(promo in line for promo in _SAFE_OWN_PROMO_LINKS):
+            continue
+        if _SAFE_OWN_PROMO_TEXT_RE.search(line):
+            continue
+        if URL_RE.fullmatch(line):
+            out_lines.append(line)
+            continue
+        # Emoji come off BEFORE the banner test: "🔥 MEGA LOOT 🔥" is the same
+        # pure-hype line as "MEGA LOOT", and testing the raw line let the
+        # decorated version straight through.
+        line = _EMOJI_RE.sub(" ", line).strip()
+        if not line:
+            continue
+        if _SAFE_DROP_LINE_RE.match(line):
+            continue
+        line = _SAFE_PREFIX_RE.sub("", line)
+        line = _SAFE_CLAIM_RE.sub(" ", line)
+        line = _EMOJI_RE.sub(" ", line)
+        line = re.sub(r"(?i)\b(?:buy\s+max(?:imum)?\s+quantity|hurry(?:\s*up)?|"
+                      r"limited\s+stock|grab\s+fast|buy\s+now|shop\s+now)\b[!.,]*", " ", line)
+        # USER RULE: "just name petti price pettu anthe". A discount percentage
+        # and a struck-through MRP are exactly the claims a marketplace reviewer
+        # asks us to prove, and the source's own price is enough on its own.
+        line = re.sub(r"(?i)\(?\s*(?:flat\s*|upto\s*|up\s*to\s*|save\s*)?\d{1,3}\s*%\s*"
+                      r"(?:off|discount)?\s*\)?", " ", line)
+        line = re.sub(r"(?i)^\s*(?:reg(?:ular)?|mrp|m\.r\.p\.?|list\s*price|was)\b\s*"
+                      r"[:.\-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+\s*/?-?\s*$", " ", line)
+        line = re.sub(r"[ \t]{2,}", " ", line).strip(" \t|-–—:•*~")
+        if not line:
+            continue
+        # A line with no product words left (a lone "!!!" or a bare hash tag) is
+        # scaffolding, not content.
+        if not re.search(r"[A-Za-z0-9₹]", line):
+            continue
+        out_lines.append(line)
+    body = "\n".join(out_lines)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if SAFE_STRICT_REBUILD:
+        body = _strict_review_copy(body)
+    return body
+
+
+# ---------------------------------------------------------------------------
+# STRICT review copy (EarnKaro / Amazon channel under review)
+# ---------------------------------------------------------------------------
+# USER RULE (2026-09-05): the new channel is submitted for review, so it must
+# follow the programme rules 100% - the other channels stay exactly as they are.
+# A blocklist ("remove the words we thought of") is the wrong tool for that: the
+# ONE hype word nobody listed is the one the reviewer sees. So the review copy is
+# REBUILT from an allowlist instead - only two kinds of line survive:
+#     1. a product line   -> the product's own words + the price the source printed
+#     2. the link
+# Anything else is dropped. Nothing is ever invented: every word and every digit
+# still comes from the source post.
+SAFE_STRICT_REBUILD = os.getenv(
+    "SAFE_STRICT_REBUILD", "true").strip().lower() not in ("0", "false", "no", "off")
+# Words that must never survive into the review copy, whatever shape the line has.
+# This is the LAST net, not the first: the allowlist above has already run.
+_STRICT_BANNED_RE = re.compile(
+    r"(?i)\b(?:loot|steal|jackpot|bumper|dhamaka|blast|crazy|insane|cheapest|"
+    r"lowest|biggest|hurry|fast|urgent|limited|stock|grab|max\s*quantity|"
+    r"free\s*money|guaranteed|must\s*buy|don'?t\s*miss|last\s*chance|"
+    r"hot|mega|super\s*deal|price\s*error|glitch|trick|cashback\s*trick)\b")
+
+
+# Lines that must never survive into the review copy, whatever else they say.
+# The 2026-09-06 rejection named "reviews" explicitly alongside trademarked
+# words and screenshots, and RATINGS/REVIEW COUNTS are Amazon-owned content we
+# are not licensed to republish. Everything else here is either an unverifiable
+# claim, a condition the reviewer reads as a catch, or pure decoration.
+_STRICT_DROP_LINE_RE = re.compile(
+    r"(?i)("
+    r"\b\d(?:\.\d)?\s*(?:\u2b50|stars?|/\s*5)\b"          # 4.2 stars, 4.2/5
+    r"|\brating[s]?\b|\breview[s]?\b|\bratings?\s*&\s*reviews?\b"
+    r"|\b\d[\d,]*\s*(?:reviews?|ratings?)\b"                 # 12,453 reviews
+    r"|\bbest\s*sell(?:er|ing)\b|\b#\d+\s*in\b"            # bestseller badges
+    r"|\bm\.?r\.?p\.?\b|\blist\s*price\b"                  # MRP anchor pricing
+    r"|\b\d{1,3}\s*%\s*(?:off|discount)?\b"                  # 70% OFF
+    r"|\bsave\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]+\b"
+    r"|\bcoupon\b|\bapply\b|\bclip\b|\bpromo\s*code\b|\bcode\s*[:\-]"
+    r"|\bcashback\b|\bbank\s*offer\b|\bemi\b|\bexchange\b"
+    r"|\bbuy\s*now\b|\bshop\s*now\b|\border\s*now\b|\bclick\b|\btap\b"
+    r"|\bjoin\b|\bshare\b|\bsubscribe\b|\bfollow\b"
+    r"|\bsold\s*out\b|\bout\s*of\s*stock\b|\bstock\s*(?:left|over)\b"
+    r"|\bqty\b|\bquantity\b|\bpieces?\s*left\b"
+    r"|\bstore\b\s*$"                                          # "Under 99 Store"
+    r")")
+
+
+def _salvage_price_only(line: str) -> str:
+    """Return "Price: <amount>" when a dropped line still carried the DEAL price.
+
+    The amount is copied verbatim from the source - never recomputed - and any
+    MRP/list-price anchor is masked out first so the higher number can never be
+    mistaken for the price we publish.
+    """
+    masked = re.sub(
+        r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*"
+        r"(?:rs\.?|\u20b9|inr)?\s*[\d,]+", " ", line or "")
+    # Only an explicitly-marked amount counts; a bare number is a model code.
+    match = re.search(r"(?:rs\.?|\u20b9|inr)\s*\.?\s*([\d,]+)|([\d,]+)\s*/-", masked, re.I)
+    if not match:
+        return ""
+    amount = (match.group(1) or match.group(2) or "").strip()
+    if not amount or not amount.replace(",", "").isdigit():
+        return ""
+    return f"Price: \u20b9{amount}"
+
+
+def _strict_review_copy(body: str) -> str:
+    """Rebuild a post from an allowlist: product line(s) + link. Nothing else.
+
+    The price is kept EXACTLY as the source printed it (₹298 / at 258 / @167),
+    because a price we re-format is a price we could get wrong, and a wrong price
+    is the one thing a marketplace programme will not forgive.
+    """
+    kept: list[str] = []
+    for line in (body or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if URL_RE.fullmatch(line):
+            kept.append(line)
+            continue
+        if _STRICT_BANNED_RE.search(line):
+            continue
+        # Amazon marks and Telegram pointers are the two things the 2026-09-06
+        # rejection actually named. Drop the line rather than try to reword it.
+        if has_amazon_trademark(line) or has_telegram_pointer(line):
+            continue
+        # Ratings/review counts are Amazon-owned content ("or reviews" in the
+        # rejection); MRP/percent-off/coupons are conditions and anchor claims a
+        # reviewer reads as a catch. None of it is needed to sell the product.
+        if _STRICT_DROP_LINE_RE.search(line):
+            # "Price - Rs.899 (MRP Rs.2990)" is dropped for the MRP anchor, but
+            # the DEAL price on it is the one fact the post cannot lose. Keep the
+            # price alone, exactly as the source printed it, and drop the rest.
+            salvaged = _salvage_price_only(line)
+            if salvaged:
+                kept.append(salvaged)
+            continue
+        # A product line has to read like a product: real words, and not a bare
+        # number or a lone symbol. Two letter-words is the floor ("Methi Dana").
+        words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", line)
+        if len(words) < 2:
+            # "Dustpan @ 55" is a real product line: ONE specific noun plus the
+            # price. Requiring two words threw the product name away and left the
+            # reviewer a post that was nothing but "Price: 55" - no product at
+            # all. A single word counts when it is specific enough (>=5 letters)
+            # and the line states a price; a bare "@ 299/-" still becomes a price
+            # line, and a lone short word is still dropped as decoration.
+            # A brand plus a model number ("boAt 141", "Redmi 13C") is one word
+            # by this count but is unmistakably a product; losing it left the
+            # reviewer a price with no product name at all.
+            # "Redmi 13C" / "WH-1000XM4" / "boAt 141": a word next to a number,
+            # with an optional letter suffix on the number.
+            has_model = bool(re.search(
+                r"[A-Za-z][A-Za-z'&.-]*\s*[-]?\s*\d{2,}[A-Za-z]{0,3}\b", line))
+            if (len(words) == 1 and (len(words[0]) >= 5 or has_model)
+                    and not _STRICT_DROP_LINE_RE.search(line)
+                    and (parse_price(line) is not None or has_model)):
+                cleaned = re.sub(r"\s{2,}", " ", line).strip(" \t|-–—:•*~,")
+                if cleaned:
+                    kept.append(cleaned)
+                    continue
+            salvaged = _salvage_price_only(line)
+            if salvaged:
+                kept.append(salvaged)
+            continue
+        # Trailing junk the earlier passes may have left on an otherwise good line.
+        line = re.sub(r"\s{2,}", " ", line).strip(" \t|-–—:•*~,")
+        if line:
+            kept.append(line)
+    # A shopper needs the price. If none of the surviving lines carries one, take
+    # it from the ORIGINAL post rather than publish a product with no price.
+    body_text = URL_RE.sub(" ", "\n".join(kept))
+    # "Pigeon Kettle 1.5L at 549" already states the price; adding "Price: 549"
+    # under it is the duplicate the user keeps reporting. So the check accepts
+    # ANY amount already visible - with a currency mark, the Indian "/-" suffix,
+    # or an "at/only/@" price phrase - not just a currency-marked one.
+    has_price = re.search(
+        r"(?i)(?:rs\.?|\u20b9|inr)\s*\.?\s*[\d,]+"
+        r"|[\d,]+\s*/-"
+        # "\b@" can never match after a space (@ is not a word character), so
+        # "Dustpan @ 55" looked price-less and gained a duplicate "Price: 55"
+        # line underneath. The word forms keep their boundary; @ does not need one.
+        r"|(?:\b(?:at|only|for)|@)\s*(?:rs\.?|\u20b9|inr)?\s*[\d,]{2,}\b",
+        body_text)
+    if kept and not has_price:
+        price = parse_price(body or "")
+        if price:
+            link_at = next((i for i, ln in enumerate(kept) if URL_RE.fullmatch(ln)), len(kept))
+            kept.insert(link_at, f"Price: \u20b9{price:,}")
+    # Never repeat the same line twice (two sources, one merged post).
+    deduped = list(dict.fromkeys(kept))
+    return "\n".join(deduped).strip()
 
 
 def _premium_windows(around: datetime) -> list[tuple[datetime, datetime, str]]:
@@ -2857,8 +3951,18 @@ class Store:
           claim_at REAL NOT NULL DEFAULT 0
         );
         INSERT OR IGNORE INTO premium_state(id) VALUES(1);
+        -- Daily send counter for the review channel (IST day key), so the
+        -- 20-30/day pace survives restarts instead of resetting to zero.
+        CREATE TABLE IF NOT EXISTS shopping_quota (
+          day_key TEXT PRIMARY KEY,
+          sent_count INTEGER NOT NULL DEFAULT 0,
+          last_sent_at REAL NOT NULL DEFAULT 0
+        );
         """)
         # Backward-compatible migrations.
+        quota_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(shopping_quota)")}
+        if "last_sent_at" not in quota_columns:
+            self.conn.execute("ALTER TABLE shopping_quota ADD COLUMN last_sent_at REAL NOT NULL DEFAULT 0")
         delivery_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(deliveries)")}
         if "chunks_sent" not in delivery_columns:
             self.conn.execute("ALTER TABLE deliveries ADD COLUMN chunks_sent INTEGER NOT NULL DEFAULT 0")
@@ -3403,6 +4507,16 @@ class Store:
                 # linkredirect.in is source wrapper never final, Myntra/myntr.it generic shop card is waste — photo okay but extend waste
                 if host_matches(host, "flipkart.com") or host_matches(host, "linkredirect.in") or host_matches(host, "myntra.com") or host_matches(host, "myntr.it"):
                     return False
+                # USER REPORT (2026-09-06): "shopsy ani kuda exted avuthundi
+                # alaga avoddu". A bitli.in link that is not in the cache yet
+                # resolved to nothing here, so the host read "bitli.in", passed
+                # every test above, and Telegram unfurled whatever the redirect
+                # landed on - the generic "Shopsy Store / A trusted network..."
+                # card under a pen-stand deal. An affiliate shortener hides its
+                # destination BY DESIGN, so it can never be judged safe: no
+                # preview unless we can see where it actually goes.
+                if resolved == url and in_domains(host, OUR_SHORTENER_DOMAINS | SHORTENER_HOSTS):
+                    return False
         return True
 
     async def reserve(self, queue_id: int, keys: list[str], price: int | None,
@@ -3615,6 +4729,67 @@ class Store:
                 "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
                 ("sent" if ok else "pending", error[:500], queue_id, target),
             )
+            self.conn.commit()
+
+    async def shopping_quota_left(self) -> int:
+        """How many more posts the review channel may take today (IST)."""
+        if SHOPPING_DAILY_CAP <= 0:
+            return 1_000_000
+        day_key = datetime.now(IST).strftime("%Y-%m-%d")
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT sent_count FROM shopping_quota WHERE day_key=?", (day_key,)
+            ).fetchone()
+        used = int(row["sent_count"]) if row else 0
+        return max(0, SHOPPING_DAILY_CAP - used)
+
+    async def shopping_pace_wait(self) -> float:
+        """Seconds to wait before this channel may post again, 0 when ready.
+
+        USER RULE (2026-09-06): "oka human laga daily oka 50 posts". A human
+        curator does not fire 50 posts in one burst at 3am and then vanish - and
+        a burst is exactly what a reviewer reads as an automated feed. So the
+        day's allowance is SPREAD: posting hours only, and a minimum gap between
+        posts derived from the cap, with a little jitter so the timing never
+        looks machine-regular.
+        """
+        if not SHOPPING_HUMAN_PACING:
+            return 0.0
+        now = datetime.now(IST)
+        # Outside posting hours nobody is shopping and nobody is curating.
+        if not (SHOPPING_ACTIVE_START <= now.hour < SHOPPING_ACTIVE_END):
+            tomorrow = now.replace(hour=SHOPPING_ACTIVE_START, minute=0, second=0, microsecond=0)
+            if now.hour >= SHOPPING_ACTIVE_END:
+                tomorrow += timedelta(days=1)
+            return max(60.0, (tomorrow - now).total_seconds())
+        day_key = now.strftime("%Y-%m-%d")
+        async with self.lock:
+            row = self.conn.execute(
+                "SELECT last_sent_at FROM shopping_quota WHERE day_key=?", (day_key,)
+            ).fetchone()
+        last = float(row["last_sent_at"]) if row and row["last_sent_at"] else 0.0
+        if not last:
+            return 0.0
+        active_seconds = (SHOPPING_ACTIVE_END - SHOPPING_ACTIVE_START) * 3600
+        cap = SHOPPING_DAILY_CAP if SHOPPING_DAILY_CAP > 0 else 50
+        # Spread the cap across the active window, then relax it slightly so a
+        # busy hour can still catch up rather than silently dropping deals.
+        gap = (active_seconds / max(1, cap)) * 0.7
+        gap += random.uniform(0, gap * 0.4)          # never machine-regular
+        waited = time.time() - last
+        return max(0.0, gap - waited)
+
+    async def note_shopping_sent(self) -> None:
+        day_key = datetime.now(IST).strftime("%Y-%m-%d")
+        async with self.lock:
+            self.conn.execute(
+                "INSERT INTO shopping_quota(day_key,sent_count,last_sent_at) VALUES(?,1,?) "
+                "ON CONFLICT(day_key) DO UPDATE SET sent_count=sent_count+1, last_sent_at=?",
+                (day_key, time.time(), time.time()),
+            )
+            # Keep the table tiny: yesterday's counters are of no further use.
+            self.conn.execute("DELETE FROM shopping_quota WHERE day_key < ?",
+                              ((datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"),))
             self.conn.commit()
 
     async def claim_premium(self, queue_id: int) -> tuple[bool, float]:
@@ -3849,6 +5024,12 @@ class AffiliateClient:
         self._health: dict[str, tuple[float, bool]] = {}
         # long_url -> short link, so a retry never re-calls the shortener.
         self._short_cache: dict[str, str] = {}
+        # USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
+        # cheyaku". A bit.ly/is.gd hop hides the destination, and a reviewer who
+        # cannot see amazon.in in the link cannot verify the post. So the review
+        # channel publishes the NATIVE store URL. Every short link we mint is
+        # recorded here so the delivery step can put the real URL back.
+        self._short_to_long: dict[str, str] = {}
 
     async def cache_link(self, source_url: str, affiliate: str, resolved: str, key: str) -> None:
         """Proxy to the global store's link cache so subclasses/tests can override."""
@@ -4005,9 +5186,21 @@ class AffiliateClient:
                      or self.valid_generated(cached_url))
             )
             if cache_is_safe:
-                # Old cache rows may predate the current "Amazon or 2+" Bitly
-                # policy. Upgrade them before returning; never leak a long link.
-                needs_short = should_use_bitly(cached_resolved, multi_link) or len(cached_url) > SHORTEN_MIN_LEN
+                # Old cache rows may predate the current policy. Upgrade them
+                # before returning; never leak a long link.
+                #
+                # A TAGGED AMAZON LINK IS NEVER SHORTENED (Round 24): hiding
+                # that a link goes to Amazon is link cloaking, a documented
+                # closure reason. That rule was applied on the fresh path only,
+                # so a cached row still got wrapped in bitli.in - which is why
+                # one product in a list came out shortened while the next two
+                # stayed native. The rule belongs on BOTH paths.
+                cached_is_amazon = in_domains(
+                    (urlparse(cached_url).hostname or "").lower(), AMAZON_DOMAINS)
+                needs_short = (
+                    not cached_is_amazon
+                    and (should_use_bitly(cached_resolved, multi_link)
+                         or len(cached_url) > SHORTEN_MIN_LEN))
                 if needs_short and not in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS):
                     shortened = await self.shorten(cached_url)
                     if shortened:
@@ -4029,12 +5222,41 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # USER RULE (2026-09-03, FINAL): the Amazon Associates account keeps
-        # getting rejected, so the old direct-Associates branch is GONE. Every
-        # Amazon link is monetized through EarnKaro below, exactly like every
-        # other store. If EarnKaro is briefly down the job retries, and the
-        # final attempt still posts the clean merchant link (passthrough) —
-        # a deal is never lost, it just never carries a dead Associates tag.
+        # USER RULE (2026-09-06): "channels anni mana new tag use chesi". The
+        # user owns mama086-21 and wants Amazon deals to earn on THEIR account
+        # rather than through EarnKaro's Amazon share. So an Amazon PRODUCT link
+        # is built natively here - /dp/ASIN?tag=OUR_TAG - and never sent to
+        # EarnKaro, which would hand the click to ekaro.in and drop the tag.
+        #
+        # This is gated on AMAZON_TAG_TARGETS so it can only affect channels the
+        # user has actually declared to Amazon; everywhere else the tag is
+        # stripped again at delivery by strip_amazon_tag_for_undeclared(), and
+        # those channels keep earning through EarnKaro as before.
+        #
+        # Amazon SEARCH/category links have no single ASIN, so they still go to
+        # EarnKaro below - a tag on a search page earns nothing anyway.
+        if OUR_TAG and in_domains(host, AMAZON_DOMAINS):
+            native = compact_amazon_product_link(clean)
+            asin = re.search(r"/dp/([A-Z0-9]{10})(?:[/?#]|$)", native, re.I)
+            if asin:
+                tagged = apply_amazon_tag(native)
+                affiliate = tagged
+                # NO SHORTENER ON A TAGGED AMAZON LINK. Amazon lists link
+                # cloaking - hiding that a link goes to Amazon - as a closure
+                # reason, and a bitli.in hop does exactly that. The native form
+                # is https://www.amazon.in/dp/ASIN?tag=... at roughly 50
+                # characters, so the post stays just as neat without hiding
+                # anything, and the Bitly quota is spent only where it helps.
+                # (Non-Amazon links below are unaffected and still shorten.)
+                if False:
+                    shortened = await self.shorten(tagged)
+                    if shortened:
+                        affiliate = shortened
+                    else:
+                        log.warning("BITLY unavailable; posting the native tagged Amazon link")
+                key = product_key(clean)
+                await store.cache_link(source_url, affiliate, clean, key)
+                return LinkResult(source_url, clean, affiliate, key)
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
@@ -4071,6 +5293,18 @@ class AffiliateClient:
                         # Single non-Amazon deal: preserve EarnKaro's own short link.
                         # Amazon always uses our Bitly; every 2+ link post uses Bitly
                         # for all generated links so the final post stays neat.
+                        # A Flipkart product URL that came back long is compacted
+                        # natively first (slug + item id + pid): free, no quota,
+                        # and it is what keeps "shortga ravali" true even when the
+                        # shortener is rate-limited.
+                        if len(affiliate) > SHORTEN_MIN_LEN:
+                            compact = compact_flipkart_product_link(affiliate)
+                            if compact != affiliate and len(compact) < len(affiliate):
+                                affiliate = result = compact
+                        # A LIST must look uniform: one link shortened and the
+                        # next left long reads like a mistake. Amazon products
+                        # in a list are already native (handled above), so this
+                        # only makes the remaining stores consistent.
                         if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
                             shortened = await self.shorten(result)
                             if shortened:
@@ -4100,6 +5334,7 @@ class AffiliateClient:
         shortened = await self.bitly(long_url)
         if shortened:
             self._short_cache[long_url] = shortened
+            self._short_to_long[shortened] = long_url
             return shortened
         if shortened:
             return shortened
@@ -4116,6 +5351,7 @@ class AffiliateClient:
                     if link.startswith("https://is.gd/"):
                         log.info("SHORTENER fallback=is.gd")
                         self._short_cache[long_url] = link
+                        self._short_to_long[link] = long_url
                         return link
         except Exception as exc:
             log.warning("is.gd failed: %s", exc)
@@ -4140,6 +5376,20 @@ class AffiliateClient:
             except Exception as exc:
                 log.warning("BITLY failed: %s", exc)
         return None
+
+    def expand_our_short_links(self, text: str) -> str:
+        """Put the NATIVE store URL back wherever we minted a short link.
+
+        Only links this process shortened are touched, so nothing is guessed and
+        a source's own short link is left exactly as it arrived. Used for the
+        Amazon-review channel, where a bit.ly hop hides the destination the
+        reviewer has to be able to see.
+        """
+        out = text or ""
+        for short, long_url in self._short_to_long.items():
+            if short in out:
+                out = out.replace(short, long_url)
+        return out
 
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
         """FINAL guarantee that no link leaves the post clumsy/long:
@@ -4169,6 +5419,21 @@ class AffiliateClient:
             if not in_domains(host, AMAZON_DOMAINS):
                 continue
             compact = compact_amazon_product_link(url)
+            if compact and compact != url and compact != raw:
+                out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
+                compacted += 1
+        # Pass 1b: native compaction of Flipkart product links (also free).
+        # A dl.flipkart.com product URL arrives ~177 chars because of lid /
+        # marketplace / srno session noise; slug + item id + pid is the same page
+        # at about a third of the length, and it costs no shortener quota. This
+        # runs BEFORE pass 2 so the shortener is only ever asked for the links
+        # that genuinely cannot be compacted.
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            url = clean_url(raw)
+            host = (urlparse(url).hostname or "").lower()
+            if host not in FLIPKART_HOSTS:
+                continue
+            compact = compact_flipkart_product_link(url)
             if compact and compact != url and compact != raw:
                 out = out.replace(raw, compact).replace(raw.replace("&", "&amp;"), compact)
                 compacted += 1
@@ -4322,7 +5587,8 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
 async def build_maps(client: TelegramClient):
     source_map: dict[int, tuple[str, list[str]]] = {}
     target_map: dict[str, Any] = {}
-    all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET])
+    all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET,
+                                      SHOPPING_TARGET])
     for targets in SOURCE_TO_TARGETS.values():
         all_targets.update(targets)
     for target in sorted(all_targets):
@@ -4815,9 +6081,19 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # qualifies. A caption with no price, no discount and no card/service offer is a
     # screenshot, not a deal - publishing that is exactly the "unwanted text" the user
     # forbids, so it keeps the skip it always had.
+    # USER REPORT (2026-09-06): "ilaga link pamplkudnaa just names vasthunndi" -
+    # posts like "Cello Feast Deluxe Kids Lunch Box @264 / Apply 31% Off Coupon"
+    # went out as a NAME AND A PRICE WITH NOTHING TO TAP. The link-free path was
+    # built for a photo whose picture IS the product; it was never meant to carry
+    # a shopping LIST. A post that names two or more priced products but offers
+    # no link is a broken post, not a deal - the reader cannot buy any of it. So
+    # the allowance is now limited to a SINGLE product; a multi-product list with
+    # no link is skipped and retried instead of published half-dead.
+    _priced_lines = [ln for ln in (text or "").splitlines()
+                     if parse_price(ln) is not None and re.search(r"[A-Za-z]{3}", ln)]
     link_free_candidate = (not source_urls or not has_merchant_candidate) and has_media_now and (
         parse_price(text) is not None or parse_discount(text) is not None
-        or has_card_offer(text) or has_service_offer(text))
+        or has_card_offer(text) or has_service_offer(text)) and len(_priced_lines) < 2
     had_social_promo = bool(TRICK_PROMO_LINK_RE.search(raw_text)) or any(
         in_domains((urlparse(url).hostname or "").lower(), NON_STORE_DOMAINS)
         for url in source_urls
@@ -4905,6 +6181,15 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         if not clean_resolved or clean_resolved in {clean_url(r) for _, r in passthrough}:
             return
         passthrough.append((source_url, clean_resolved))
+        # USER RULE (2026-09-05, "idi manvena?" / "mana links matharem"): a
+        # passthrough link is a CLEAN merchant link, not a monetized link of
+        # ours - the deal still goes out (that is the point), but it must be
+        # obvious in the log which posts earn nothing, instead of quietly
+        # looking like every other post. WARNING, not INFO, so an operator
+        # grepping the log can actually find them.
+        log.warning("UNMONETIZED LINK | queue=%s this deal posts a plain merchant "
+                    "link (the affiliate network had no campaign for it): %s",
+                    row["id"], clean_resolved[:70])
         log.info("PASSTHROUGH | queue=%s unmonetizable link kept clean: %s",
                  row["id"], clean_resolved[:70])
 
@@ -5020,6 +6305,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if row["source"] in TRICKS_SOURCES or (had_social_promo and ADD_OUR_CHANNEL_FOOTER):
         rendered = f"{rendered.rstrip()}\n\n{tricks_footer()}"
     rendered = tidy_post(rendered)
+    # A source that wrote the whole list on one line is split first, so the two
+    # list shapes (inline, and links grouped at the bottom) are both handled.
+    rendered = split_inline_product_links(rendered)
     multi_product_list = len(converted) >= 3
     if multi_product_list:
         rendered = format_clustered_product_list(rendered)
@@ -5175,6 +6463,18 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             base_targets = [target for target in base_targets if target != UNDER99_TARGET]
     if guaranteed not in base_targets:
         base_targets.append(guaranteed)
+    # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
+    # same PRODUCT deals every other channel takes, in the programme-safe form
+    # rendered at delivery time (name + price + link). A trick/recharge/app promo
+    # is not a shoppable product, and a post with no buyable link cannot be
+    # reviewed as one, so neither reaches it.
+    if (SHOPPING_TARGET_ENABLED
+            and row["source"] not in TRICKS_SOURCES
+            and not service_pairs
+            and URL_RE.search(rendered)
+            and (not SHOPPING_AMAZON_ONLY or is_amazon_only_post(rendered))
+            and SHOPPING_TARGET not in base_targets):
+        base_targets.append(SHOPPING_TARGET)
     if not base_targets:
         raise PermanentSkip("no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
@@ -5197,11 +6497,21 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         log.warning("PRICE FIDELITY check skipped (post kept as rendered): %s", exc)
     if not URL_RE.search(rendered):
         if link_free_post:
+            # The SOURCE never wrote a link and the post carries the product's own
+            # photo, so the reader can still see and search the deal. That post is
+            # published exactly as posted (round 13's rule) - nothing was lost here.
             log.warning("LINK-FREE POST | queue=%s the source posted this with no link at all "
                         "- publishing it exactly as posted", row["id"])
-        elif unresolvable:
+        elif unresolvable and not REQUIRE_LINK_IN_POST:
             log.warning("LINK-FREE POST | queue=%s every link the source wrote was a dead "
                         "short link - posting the deal complete, without a link", row["id"])
+        elif unresolvable:
+            # USER RULE (2026-09-05): "asalu link yeh ledu" - a text deal with no
+            # link at all is not a post our readers can use, and it earns nothing.
+            # The source DID write links here; every one of them was a dead
+            # shortener, so there is nothing to publish. It is skipped instead of
+            # going out as a linkless teaser.
+            raise PermanentSkip("every link the source wrote is dead - nothing buyable to post")
         else:
             raise PermanentSkip("rendered post has no affiliate URL after shorten pass")
     rendered = keep_source_spacing(rendered, raw_text)
@@ -5282,6 +6592,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     successes = 0
     price = None
     try:
+        # A channel we publish to is never a source. The user added the new
+        # channel's own link as a source; without this the bot re-reads its own
+        # post and publishes it again, forever.
+        if is_own_channel_source(row["source"]):
+            raise PermanentSkip(
+                f"@{row['source']} is our own channel - not a deal source")
         if row["rendered_text"]:
             # The post is already rendered and stored: this fetch only sharpens the
             # residue cleaning and re-attaches media. A source message that has since
@@ -5309,6 +6625,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                         rendered, extract_urls(msg), URL_RE.findall(rendered)
                     )
                 rendered = tidy_post(clean_source_text(rendered))
+                rendered = split_inline_product_links(rendered)
                 rendered = format_clustered_product_list(rendered)
                 rendered = strict_orphan_token_cleanup(rendered)
                 rendered = sanitize_outbound_text(rendered)
@@ -5419,6 +6736,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if not entity:
                 if premium_claimed:
                     await store.complete_premium(row["id"], False)
+                if target == SHOPPING_TARGET:
+                    # The review channel is an EXTRA destination. If the account
+                    # cannot see it yet (not created, not joined, renamed), that
+                    # is never a reason to hold a live deal back from the
+                    # channels that DO exist - the job would otherwise sit in
+                    # retry until the price went stale.
+                    log.warning("SHOPPING TARGET UNRESOLVED | @%s not reachable; the deal "
+                                "still goes to every other channel", target)
+                    await store.delivery(row["id"], target, True, "shopping target unresolved")
+                    continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
             # v17.8 one product, one channel, one post: the exact merchant id can
@@ -5453,17 +6780,131 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # (Toggling the knob between two chunks of ONE long post would shift the
             # boundaries, so it is an operator switch, not a per-post experiment.)
             target_text = rendered
+            if target == SHOPPING_TARGET:
+                # Amazon Associates review copy: product name, the source's own
+                # price, our link. The loot/urgency scaffolding is dropped here,
+                # at delivery, so the stored copy every other channel gets stays
+                # exactly the source's. A post that has nothing left but a link
+                # is not reviewable, so it is skipped for THIS channel only.
+                # No shortener hop on the reviewed channel: a bit.ly link hides
+                # the destination, and a reviewer who cannot see the store domain
+                # cannot verify the post. Our own short links are swapped back to
+                # the native store URL (a source's own short link is untouched).
+                if SHOPPING_NATIVE_LINKS:
+                    target_text = affiliate.expand_our_short_links(target_text)
+                # ALL conditions live here, on the review channel only.
+                # affiliate_safe_text() already rebuilds the copy as
+                # "product / price / link", but a rating written INSIDE the
+                # product line ("boAt Rockerz 255 4.2 star") would survive it,
+                # so the ratings strip runs here too - copied ratings and
+                # review counts are a documented closure reason.
+                # ONE PRODUCT ONLY on the reviewed channel. A roundup reads as
+                # a link dump and one weak item in it taints the whole sample;
+                # the other channels still get the full list.
+                safe_text = affiliate_safe_text(
+                    strip_amazon_ratings(pick_one_product_for_review(target_text)))
+                # "Price: 99" + a link is not a reviewable listing - there is no
+                # product on it. The old test only looked for three letters
+                # anywhere, and the word "Price" satisfied that, so nameless
+                # posts were published. Require a real product line: something
+                # that is neither the link nor the price line we generated.
+                _named = [ln for ln in (safe_text or "").splitlines()
+                          if ln.strip() and not URL_RE.fullmatch(ln.strip())
+                          and not re.fullmatch(r"(?i)price\s*[::]\s*[₹\d,.]+", ln.strip())
+                          and re.search(r"[A-Za-z]{3}", ln)]
+                if (not safe_text or not URL_RE.search(safe_text) or not _named):
+                    log.info("SHOPPING SKIP | queue=%s nothing reviewable left after the "
+                             "programme-safe rewrite", row["id"])
+                    await store.delivery(row["id"], target, True, "not programme-safe")
+                    continue
+                # Off-programme store on the channel submitted for the AMAZON
+                # programme: it belongs on the other channels, not here.
+                # A STRANGER'S Associates tag on the channel under review is
+                # worse than no tag: to Amazon it reads as our channel paying a
+                # third party, and it is unattributable traffic on a property we
+                # declared. It can only get here if a link skipped the shorten
+                # pass, so it is rewritten to OUR tag (never merely stripped -
+                # an untagged link on the declared channel earns nothing).
+                safe_text = retag_foreign_amazon_links(safe_text)
+                if SHOPPING_AMAZON_ONLY and not is_amazon_only_post(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s not an Amazon-only deal", row["id"])
+                    await store.delivery(row["id"], target, True, "not an amazon deal")
+                    continue
+                # A curated shop posts 20-30 times a day; a firehose reads as spam.
+                if await store.shopping_quota_left() <= 0:
+                    log.info("SHOPPING SKIP | queue=%s daily cap of %s reached",
+                             row["id"], SHOPPING_DAILY_CAP)
+                    await store.delivery(row["id"], target, True, "daily cap reached")
+                    continue
+                # Pace it like a person: the day's allowance is spread across
+                # posting hours instead of fired off in one burst. The deal is
+                # left PENDING (not closed), so it goes out on a later pass
+                # rather than being lost - and every other channel has already
+                # received it immediately, untouched by this gate.
+                pace_wait = await store.shopping_pace_wait()
+                if pace_wait > 0:
+                    log.info("SHOPPING PACE | queue=%s holding %s min so the channel "
+                             "posts like a human", row["id"], round(pace_wait / 60))
+                    continue
+                # REJECTION 2026-09-06: "unapproved use of Amazon trademarked
+                # words, images ... or reviews". Naming the marketplace in the
+                # copy is an unlicensed use of the mark; linking to it is not.
+                # A post that cannot say what it means without the word is
+                # simply withheld from this ONE channel.
+                if has_amazon_trademark(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s copy names an Amazon trademark",
+                             row["id"])
+                    await store.delivery(row["id"], target, True, "amazon trademark in copy")
+                    continue
+                # The same email named t.me/LootZoneIndia11 as its example, so a
+                # reviewer must find NO route from here to a loot channel.
+                if has_telegram_pointer(safe_text):
+                    log.info("SHOPPING SKIP | queue=%s copy points at another channel",
+                             row["id"])
+                    await store.delivery(row["id"], target, True, "telegram pointer in copy")
+                    continue
+                # Link-level disclosure is an Amazon/FTC requirement on EVERY post
+                # (the channel bio alone is not enough) and a common rejection
+                # reason. Added last so it can never be cleaned off again.
+                target_text = add_link_disclosure(safe_text)
+            # Associates compliance: our tag may only ride on the channels that
+            # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
+            # SAME deal posts with an untagged link.
+            # USER RULE (2026-09-06, FINAL): "only review channel lo anni
+            # conditions tho post cheyali". Every programme condition - the
+            # strict copy, the ratings strip, the disclosure, the Amazon-only
+            # filter, the daily cap and the human pacing - belongs to
+            # SHOPPING_TARGET and to nothing else. An ordinary channel receives
+            # the source copy as the source wrote it: hype, MRP, percentages,
+            # ratings, review counts, coupons, emoji and photos all intact.
+            # Round 23's ratings strip was applied to every tagged channel and
+            # is therefore removed here; it lives in the review branch only.
+            target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
             allow_preview = await store.preview_allowed(target_text)
-            if ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES:
+            if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
+                    and target != SHOPPING_TARGET):
+                # Never on the review channel: that header is a link into the
+                # loot-channel folder, which is precisely what a marketplace
+                # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
+            # A forwarded deal photo is nearly always a marketplace screenshot -
+            # the "images (screenshots/screen recordings)" the rejection cited.
+            # The review channel goes text-only; every other channel keeps its
+            # media, so no picture is lost anywhere else.
+            target_media = media_path
+            if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:
+                target_media = []
             ok, error = await deliver(
-                client, entity, target_text, media_path,
+                client, entity, target_text, target_media,
                 start_chunk=start_chunk, progress_callback=checkpoint,
                 link_preview=allow_preview, media_refs=media_refs,
             )
             if premium_claimed:
                 await store.complete_premium(row["id"], ok)
             await store.delivery(row["id"], target, ok, error)
+            if ok and target == SHOPPING_TARGET:
+                with contextlib.suppress(Exception):
+                    await store.note_shopping_sent()
             if ok and product_sig:
                 await store.mark_product_posted(target, product_sig, price, target_discount)
             successes += int(ok)
