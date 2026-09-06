@@ -1748,6 +1748,99 @@ def test_deep_audit_prices_foreign_tags_and_nameless_posts():
           "_named = [ln for ln in" in src, "guard missing")
 
 
+def test_every_review_post_carries_our_tag_and_nothing_else_does():
+    """USER QUESTION (2026-09-06): "mana kothaga vachina amazon tag add
+    chesthunnava and review channel lo perfectga post chesthunnava?"
+
+    The tag only earns if it is actually ON the link. Three ways it could be
+    missing, all closed here."""
+    if not bot.OUR_TAG:
+        return
+    check("the tag we own is the one configured", bot.OUR_TAG == "mama086-21", bot.OUR_TAG)
+
+    # 1. A link that reached delivery with NO tag used to stay untagged - a sale
+    # Amazon cannot attribute to us, on the one channel we are allowed to earn
+    # on, while the 3-qualifying-sales clock is running.
+    untagged = bot.retag_foreign_amazon_links("https://www.amazon.in/dp/B0X?psc=1")
+    check("an untagged link gains our tag", "tag=" + bot.OUR_TAG in untagged, untagged)
+    check("its other parameters survive", "psc=1" in untagged, untagged)
+
+    # 2. A stranger's tag is replaced, not merely stripped.
+    stranger = bot.retag_foreign_amazon_links("https://www.amazon.in/dp/B0X?tag=deals0911-21")
+    check("a stranger's tag is replaced with ours",
+          "tag=" + bot.OUR_TAG in stranger and "deals0911" not in stranger, stranger)
+
+    # 3. Ours is left exactly as it is, and non-Amazon links are never touched.
+    ours = "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    check("our own tag is untouched", bot.retag_foreign_amazon_links(ours) == ours)
+    check("a Flipkart link is never tagged",
+          bot.retag_foreign_amazon_links("https://www.flipkart.com/a/p/itmX")
+          == "https://www.flipkart.com/a/p/itmX")
+
+    # An .env carrying somebody else's tag must never be honoured.
+    check("only tags we own are accepted",
+          "deals0911-21" not in {t.lower() for t in bot.OUR_AMAZON_TAGS},
+          str(bot.OUR_AMAZON_TAGS))
+
+    # And the tag must NOT appear on any undeclared channel.
+    class NoShorteners:
+        _short_to_long = {}
+
+    tagged = "Deal\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    loot = bot.strip_amazon_tag_for_undeclared(tagged, "LootZoneIndia11", NoShorteners())
+    check("an undeclared channel carries no tag at all",
+          bot.OUR_TAG not in loot, loot)
+    check("but it still gets the working product link", "B0X" in loot, loot)
+    check("the declared channel keeps the tag",
+          bot.OUR_TAG in bot.strip_amazon_tag_for_undeclared(
+              tagged, bot.SHOPPING_TARGET, NoShorteners()))
+
+
+def test_the_finished_review_post_end_to_end():
+    """The whole delivery path for SHOPPING_TARGET, on the exact shapes the user
+    reported, asserting the finished post - not an intermediate value."""
+    import re as _re
+
+    def finished(raw):
+        safe = bot.retag_foreign_amazon_links(bot.affiliate_safe_text(raw))
+        named = [ln for ln in (safe or "").splitlines()
+                 if ln.strip() and not bot.URL_RE.fullmatch(ln.strip())
+                 and not _re.fullmatch(r"(?i)price\s*[::]\s*[\u20b9\d,.]+", ln.strip())
+                 and _re.search(r"[A-Za-z]{3}", ln)]
+        if not safe or not bot.URL_RE.search(safe) or not named:
+            return None
+        if bot.has_amazon_trademark(safe) or bot.has_telegram_pointer(safe):
+            return None
+        if bot.SHOPPING_AMAZON_ONLY and not bot.is_amazon_only_post(safe):
+            return None
+        return bot.add_link_disclosure(safe)
+
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\nboAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "Apply 10% coupon | Hurry limited stock!\n\nhttps://www.amazon.in/dp/B0X?psc=1\n\n@LootZoneIndia11")
+    out = finished(hype)
+    check("the product name is there", "boAt Rockerz 255 Pro+ Neckband" in out, repr(out))
+    check("the price is there", "899" in out, repr(out))
+    check("our tag is on the link", bot.OUR_TAG in out if bot.OUR_TAG else True, repr(out))
+    check("the disclosure closes the post", out.rstrip().endswith("#ad (paid link)"), repr(out))
+    for banned in ("LOOT", "2990", "70%", "4.2", "12,453", "review", "coupon",
+                   "Hurry", "LootZone", "\U0001f525"):
+        check("the post is free of %r" % banned, banned not in out, repr(out))
+    check("exactly one link", len(bot.URL_RE.findall(out)) == 1, repr(out))
+    check("no line repeats",
+          len(out.splitlines()) == len(dict.fromkeys(out.splitlines())), repr(out))
+
+    check("the twice-posted Dustpan now renders once, cleanly",
+          finished("\U0001f525 Ergonomic Dustpan @ \u20b955\nhttps://www.amazon.in/dp/B0C8JPD1KL")
+          .startswith("Ergonomic Dustpan @ \u20b955"))
+    check("a Flipkart deal never reaches the review channel",
+          finished("Dabur Gulabari Soap @208.\nhttps://www.flipkart.com/x/p/itmY") is None)
+    check("a nameless post never reaches it",
+          finished("\u20b9299\nhttps://www.amazon.in/dp/B0Z") is None)
+    check("a trick post never reaches it",
+          finished("Cashback trick\nhttps://www.amazon.in/dp/B0Q") is None)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1782,6 +1875,8 @@ def main() -> int:
     test_the_four_defects_the_user_photographed()
     test_only_the_review_channel_is_restricted()
     test_deep_audit_prices_foreign_tags_and_nameless_posts()
+    test_every_review_post_carries_our_tag_and_nothing_else_does()
+    test_the_finished_review_post_end_to_end()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

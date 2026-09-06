@@ -959,3 +959,61 @@ photos intact.
 
 Suite: 384 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 18 — final verification, and the last earning hole
+=================================================================
+
+USER QUESTION: "mana kothaga vachina amazon tag add chesthunnava and
+review channel lo perfectga post chesthunnava?"
+
+Answer, verified against the code rather than asserted:
+
+THE TAG
+  AMAZON_TAG=mama086-21 is applied on smartbuyhub11 and nowhere else.
+  Four cases, all now correct:
+    stranger's tag  -> replaced with ours
+    NO tag at all   -> ours is ADDED           <- fixed this round
+    already ours    -> untouched
+    non-Amazon link -> never touched
+  A tag that is not in OUR_AMAZON_TAGS is refused with a warning and the
+  bot posts tagless rather than pay a stranger.
+
+THE HOLE CLOSED THIS ROUND
+  retag_foreign_amazon_links() only replaced a FOREIGN tag. A link that
+  reached delivery carrying NO tag stayed untagged - so a sale from the
+  one channel we are allowed to earn on could not be attributed to us,
+  while the 3-qualifying-sales-in-180-days clock was running. It now
+  adds our tag when none is present.
+
+THE FINISHED REVIEW POST (asserted end to end, not intermediate values)
+
+  in : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / Price Rs.899
+       (MRP Rs.2990) / 70% OFF / Rating 4.2 / 12,453 reviews /
+       Apply 10% coupon / Hurry limited stock / @LootZoneIndia11 / photo
+
+  out: boAt Rockerz 255 Pro+ Neckband
+       Price: Rs.899
+       https://www.amazon.in/dp/B0X?psc=1&tag=mama086-21
+
+       #ad (paid link)
+
+  No hype, no MRP, no percentage, no rating, no review count, no coupon
+  condition, no urgency, no channel pointer, no emoji, no photo, one
+  link, no repeated line, disclosure last.
+
+  Refused for this channel (still posted to every other channel):
+    a Flipkart deal        - wrong programme
+    a post with no product - "Rs.299 + link" is not a listing
+    a trick/cashback post  - not a shoppable product
+    a post naming the mark - unlicensed trademark use
+
+THE OTHER CHANNELS
+  Re-verified mechanically: none of the review-only machinery appears in
+  render_job. A loot channel gets the source copy with its hype, MRP,
+  ratings, photos and emoji intact - and with NO tag on the link, which
+  is what keeps the account safe while the application is pending.
+
+Suite: 405 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green, py_compile ok.

@@ -473,13 +473,20 @@ def add_link_disclosure(text: str) -> str:
 
 
 def retag_foreign_amazon_links(text: str) -> str:
-    """Replace any Associates tag that is not ours with our own.
+    """Put OUR Associates tag on every Amazon link, replacing any other.
 
-    Only Amazon links are touched and only the `tag` parameter, so the product
-    and the price are untouched. With no tag configured the foreign tag is
-    removed outright rather than left to earn for somebody else.
+    Used for the DECLARED channel only. Three cases, one rule:
+      * a stranger's tag -> replaced with ours (that link would otherwise pay a
+        third party from the one property we are allowed to earn on);
+      * NO tag at all     -> ours is added. A link that skipped the tagging pass
+        earns nothing, and an untagged post on the reviewed channel is a sale
+        Amazon cannot attribute to us - the 3-qualifying-sales clock never moves;
+      * already ours       -> untouched.
+    Only the `tag` parameter changes, so the product and the price are intact.
     """
     out = text or ""
+    if not OUR_TAG:
+        return out
     for raw in dict.fromkeys(URL_RE.findall(out)):
         url = clean_url(raw)
         host = (urlparse(url).hostname or "").lower()
@@ -488,11 +495,10 @@ def retag_foreign_amazon_links(text: str) -> str:
         parsed = urlparse(url)
         pairs = parse_qsl(parsed.query, keep_blank_values=True)
         tag = next((v for k, v in pairs if k.lower() == "tag"), "")
-        if not tag or tag.lower() == (OUR_TAG or "").lower():
+        if tag.lower() == OUR_TAG.lower():
             continue
         query = [(k, v) for k, v in pairs if k.lower() != "tag"]
-        if OUR_TAG:
-            query.append(("tag", OUR_TAG))
+        query.append(("tag", OUR_TAG))
         fixed = parsed._replace(query=urlencode(query, doseq=True)).geturl()
         out = out.replace(raw, fixed)
     return out
