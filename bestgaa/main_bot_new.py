@@ -6624,7 +6624,13 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # the native store URL (a source's own short link is untouched).
                 if SHOPPING_NATIVE_LINKS:
                     target_text = affiliate.expand_our_short_links(target_text)
-                safe_text = affiliate_safe_text(target_text)
+                # ALL conditions live here, on the review channel only.
+                # affiliate_safe_text() already rebuilds the copy as
+                # "product / price / link", but a rating written INSIDE the
+                # product line ("boAt Rockerz 255 4.2 star") would survive it,
+                # so the ratings strip runs here too - copied ratings and
+                # review counts are a documented closure reason.
+                safe_text = affiliate_safe_text(strip_amazon_ratings(target_text))
                 # "Price: 99" + a link is not a reviewable listing - there is no
                 # product on it. The old test only looked for three letters
                 # anywhere, and the word "Price" satisfied that, so nameless
@@ -6692,16 +6698,15 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # Associates compliance: our tag may only ride on the channels that
             # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
             # SAME deal posts with an untagged link.
-            # AMAZON PROGRAMME RULE (verified 2026-09-06): copied star ratings
-            # and review counts are a documented account-closure reason - they
-            # go stale, and Amazon requires such data to update live via the
-            # Product API. They are harmless on a channel carrying no tag, but
-            # on a channel that DOES carry our tag Amazon can tie the post to
-            # the account. So they are removed only where the tag rides, and
-            # the link-level disclosure is added there for the same reason.
-            if target in AMAZON_TAG_TARGETS and target != SHOPPING_TARGET:
-                target_text = strip_amazon_ratings(target_text)
-                target_text = add_link_disclosure(target_text)
+            # USER RULE (2026-09-06, FINAL): "only review channel lo anni
+            # conditions tho post cheyali". Every programme condition - the
+            # strict copy, the ratings strip, the disclosure, the Amazon-only
+            # filter, the daily cap and the human pacing - belongs to
+            # SHOPPING_TARGET and to nothing else. An ordinary channel receives
+            # the source copy as the source wrote it: hype, MRP, percentages,
+            # ratings, review counts, coupons, emoji and photos all intact.
+            # Round 23's ratings strip was applied to every tagged channel and
+            # is therefore removed here; it lives in the review branch only.
             target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
             allow_preview = await store.preview_allowed(target_text)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES

@@ -1317,3 +1317,47 @@ THE ONE RISK THE USER ACCEPTED AND CODE CANNOT REMOVE
 
 Suite: 487 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 25 — every condition belongs to the review channel ONLY
+=================================================================
+
+USER RULE (FINAL): "only review channel lo anni conditions tho post
+cheyali."
+
+Round 23 had applied two programme conditions (the ratings strip and the
+"#ad" disclosure) to every channel that carried the tag. That is now
+REVERSED. The ordinary channels receive the source copy exactly as the
+source wrote it - hype, MRP, percentages, RATINGS, REVIEW COUNTS,
+coupons, emoji and photos all intact - even though they still carry our
+Associates tag.
+
+strip_amazon_ratings() is not deleted; it moved INTO the review branch,
+because a rating written inside a product line ("boAt Rockerz 255 4.2
+star") would otherwise survive affiliate_safe_text().
+
+MECHANICALLY ENFORCED, not asserted. The new test slices process_job at
+"if target == SHOPPING_TARGET:", takes exactly that branch, and requires
+each of these to appear INSIDE it and nowhere else:
+    affiliate_safe_text        has_amazon_trademark    SHOPPING_TEXT_ONLY
+    add_link_disclosure        has_telegram_pointer    SHOPPING_AMAZON_ONLY
+    strip_amazon_ratings       shopping_pace_wait      is_amazon_only_post
+    retag_foreign_amazon_links shopping_quota_left
+All eleven: inside the branch, zero leaks outside.
+
+SAME DEAL, TWO CHANNELS
+  loot   : LOOT DEAL / boAt Rockerz 255 Pro+ Neckband / Rs.899
+           (MRP Rs.2990) / 70% OFF / Rating 4.2 / 12,453 reviews /
+           Apply coupon / photo / tagged amazon.in link
+  review : boAt Rockerz 255 Pro+ Neckband
+           Price: Rs.899
+           https://www.amazon.in/dp/B09N3ZNHTY?tag=mama086-21
+
+           #ad (paid link)
+
+A/B against the pre-session code (ee434cb) confirms the loot-channel copy
+is byte-identical on every shape tested.
+
+Suite: 486 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

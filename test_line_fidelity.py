@@ -1997,58 +1997,67 @@ def test_our_tag_earns_on_amazon_and_lists_still_shorten():
         check("and its link still reaches the product", "B0X" in out, out)
 
 
-def test_amazon_ratings_are_stripped_only_where_the_tag_rides():
-    """USER BELIEF CORRECTED (2026-09-06): "remaining vi anni manam vallu
-    chudaru so manaku istam vachinattu pettochu okaynaa" - no. Amazon
-    identifies the traffic source FROM THE TAG, so a channel carrying the tag
-    is a channel Amazon reviews. Copied star ratings and review counts are a
-    documented closure reason, so they must not ride along with the tag.
+def test_all_conditions_live_on_the_review_channel_only():
+    """USER RULE (2026-09-06, FINAL): "only review channel lo anni conditions
+    tho post cheyali".
 
-    But a channel carrying NO tag is invisible to Amazon and keeps its copy
-    exactly as the source wrote it - the user's standing rule that the other
-    channels get no restrictions.
+    Every programme condition belongs to SHOPPING_TARGET and to nothing else.
+    An ordinary channel gets the source copy as the source wrote it - even
+    though it now carries our tag.
     """
     hype = ("\U0001f525 LOOT \U0001f525\nboAt Rockerz 255\n\u20b9899 (MRP \u20b92990)\n"
-            "70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\nhttps://amzn.to/x")
+            "70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\nApply coupon\n"
+            "https://www.amazon.in/dp/B0X")
 
-    stripped = bot.strip_amazon_ratings(hype)
-    check("the star rating is gone", "4.2" not in stripped, stripped)
-    check("the review count is gone", "12,453" not in stripped, stripped)
-    check("the word reviews is gone", "review" not in stripped.lower(), stripped)
-    # ...and the deal itself is untouched.
-    for keep in ("boAt Rockerz 255", "899", "2990", "70% OFF", "https://amzn.to/x", "LOOT"):
-        check("the deal keeps %r" % keep, keep in stripped, stripped)
+    # THE ORDINARY CHANNELS: nothing is taken away.
+    ordinary = bot.tidy_post(bot.clean_source_text(hype))
+    for keep in ("LOOT", "boAt Rockerz 255", "899", "2990", "70%",
+                 "Rating 4.2", "12,453", "coupon"):
+        check("a loot channel keeps %r" % keep, keep in ordinary, ordinary)
+    check("no disclosure is bolted onto a loot post",
+          "#ad" not in ordinary and "paid link" not in ordinary, ordinary)
 
-    for raw, gone in (("Sony XM4\n4.5\u2b50 | 8,231 ratings", "8,231"),
-                      ("Milton Bottle\nRating: 4.1/5", "4.1"),
-                      ("Kettle\n4.3 stars", "4.3"),
-                      ("Mixer\n2,104 ratings", "2,104")):
-        out = bot.strip_amazon_ratings(raw)
-        check("%r is removed" % gone, gone not in out, out)
+    # THE REVIEW CHANNEL: every condition applies.
+    strict = bot.add_link_disclosure(
+        bot.retag_foreign_amazon_links(bot.affiliate_safe_text(bot.strip_amazon_ratings(hype))))
+    check("the review copy names the product",
+          "boAt Rockerz 255" in strict, strict)
+    check("and states the price", "899" in strict, strict)
+    for banned in ("LOOT", "2990", "70%", "4.2", "12,453", "coupon", "\U0001f525"):
+        check("the review copy drops %r" % banned, banned not in strict, strict)
+    check("the review copy carries the disclosure",
+          strict.rstrip().endswith("#ad (paid link)"), strict)
 
-    # Numbers that are NOT ratings must survive - a product spec, a price, a
-    # percentage and a quantity all contain digits.
-    keepall = "Cello Bottle 1024 ml\n\u20b9899\n70% OFF\n4 pieces"
-    check("product specs and prices are never touched",
-          bot.strip_amazon_ratings(keepall) == keepall, bot.strip_amazon_ratings(keepall))
+    # strip_amazon_ratings itself still works, and is wired ONLY into the
+    # review branch - never into the shared delivery path.
+    check("a rating is removed",
+          "4.2" not in bot.strip_amazon_ratings("Kettle Rating 4.2 star"),
+          bot.strip_amazon_ratings("Kettle Rating 4.2 star"))
+    check("a product spec with digits is not touched",
+          bot.strip_amazon_ratings("Cello Bottle 1024 ml 4 pieces")
+          == "Cello Bottle 1024 ml 4 pieces")
 
-    # WIRING: this runs only for channels that carry the tag, and never for the
-    # review channel (which already builds its own strict copy).
     src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
     deliver = src[src.index("async def process_job"):]
-    check("ratings are stripped only where the tag rides",
-          "if target in AMAZON_TAG_TARGETS and target != SHOPPING_TARGET:" in deliver,
-          "not gated on AMAZON_TAG_TARGETS")
-    idx = deliver.index("if target in AMAZON_TAG_TARGETS and target != SHOPPING_TARGET:")
-    branch = deliver[idx:idx + 400]
-    check("the disclosure is added there too", "add_link_disclosure" in branch, branch[:200])
+    idx = deliver.index("if target == SHOPPING_TARGET:")
+    lines = deliver[idx:].split("\n")
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    branch = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        branch.append(line)
+    branch_src = "\n".join(branch)
+    outside = deliver[:idx] + deliver[idx + len(branch_src):]
 
-    # THE DEFAULT IS SAFE: with AMAZON_TAG_TARGETS unset only the review channel
-    # carries the tag, so no ordinary channel is altered at all.
-    check("by default only the review channel carries the tag",
-          bot.AMAZON_TAG_TARGETS == {bot.SHOPPING_TARGET}
-          or "AMAZON_TAG_TARGETS" in os.environ,
-          str(bot.AMAZON_TAG_TARGETS))
+    for condition in ("affiliate_safe_text", "add_link_disclosure", "strip_amazon_ratings",
+                      "has_amazon_trademark", "has_telegram_pointer", "shopping_pace_wait",
+                      "shopping_quota_left", "SHOPPING_TEXT_ONLY", "SHOPPING_AMAZON_ONLY",
+                      "is_amazon_only_post", "retag_foreign_amazon_links"):
+        check("%s runs on the review channel" % condition,
+              condition in branch_src, "missing from the review branch")
+        check("%s never runs anywhere else" % condition,
+              condition not in outside, "LEAKED into the shared path")
 
 
 def test_every_list_shape_reads_name_above_its_own_link():
@@ -2384,7 +2393,7 @@ def main() -> int:
     test_the_finished_review_post_end_to_end()
     test_no_regression_for_the_ordinary_channels()
     test_our_tag_earns_on_amazon_and_lists_still_shorten()
-    test_amazon_ratings_are_stripped_only_where_the_tag_rides()
+    test_all_conditions_live_on_the_review_channel_only()
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
     test_tag_on_every_owned_channel_when_switched_on()
