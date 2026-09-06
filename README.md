@@ -761,15 +761,15 @@ printing exactly what the older build was coded to print):
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `c788b7abc51d1dda08ea135992b3ec900d72d2e330c5024238a7cd39fe9eeac9` |
-| `tg-wa-bridge/bridge.js` | `b9631bb68a37ed8dc0c775085820ee88739c07a0b952af2ccd602e5dc0330a1e` |
-| `ops/coverage_audit.py` | `38e7d3973b1f693aac46653306b35eec0fd2ff7335ee442c3a7298115bf78e9c` |
-| `ops/quality_audit.py` | `cbba8f1676887b97b27b4701603952639beee4199e7e3565bccfc0107b447acc` |
+| `bestgaa/main_bot_new.py` | `e89f0de5093aaabdba16f3f048d43c537fcd7165df1669966add127876064c6b` |
+| `tg-wa-bridge/bridge.js` | `66493afec26a757b63278be044dc89f7c96a23417c9f5747bfb179ba74e93527` |
+| `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
+| `ops/quality_audit.py` | `62f8caf572c1ee166eaef7386c3fad4163a4b691eb0577c4da05abfbd04795b2` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `730942c20894e9bb80c9c751ff5dd56f1585f0f629a51e9bca9b3181b7b11ed4` |
+| `test_line_fidelity.py` | `a224be7b73fa7a25ce70764f24c43955d500456b81255614cd1811d99de52509` |
 | `test_pipeline_fixes.py` | `c80c0bfacd400e9caf9358c84414f3c5a6d6ac8e855d9651e55097c26fd4b96c` |
-| `test_duplicate_sim.py` | `0035da8805d6ed0b5d3e39f44e56914d4894eb149c81ecd00523111eb0d57615` |
+| `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `3b50c60f79e0b51f2949917092be3f880927b8479fc0f1aaab4a14de98833807` |
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:

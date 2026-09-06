@@ -911,6 +911,16 @@ NON_STORE_DOMAINS = {
     "twitter.com", "x.com", "reddit.com", "whatsapp.com", "discord.com", "pinterest.com",
     "linkedin.com", "github.com", "google.com", "drive.google.com", "imgur.com",
 }
+# USER RULE (2026-09-06): a deal blog or an app-deep-link wrapper is NOT a shop.
+# indiadesire.com is a coupons/deals aggregator that says, in its own words, "we
+# do not sell any products"; *.urlgeni.us is URLgenius's Amazon app-deep-link
+# domain. Neither is a product page EarnKaro has a campaign for, and each used to
+# burn the whole job retry budget (JOB_MAX_ATTEMPTS) and then drop the post - a
+# source deal vanished for a link that was never a shop in the first place. They
+# are cut from the copy like a dead short link, and the deal still goes out.
+NON_SHOP_DOMAINS = {
+    "indiadesire.com", "urlgeni.us",
+}
 # A share/forward/invite link is not a destination: nothing is bought at
 # "wa.me/?text=..." or "t.me/share/url", and a link to another channel's post is
 # that channel's promotion, not our reader's deal. These hosts are still excluded from
@@ -1062,6 +1072,29 @@ def compact_amazon_product_link(link: str) -> str:
         return f"https://{netloc}/dp/{asin}"
     except Exception:
         return clean_url(link)
+
+
+def is_amazon_search_or_browse_link(link: str) -> bool:
+    """True for an Amazon SEARCH / category / browse URL, which has no single ASIN.
+
+    The three shapes the user named: /s?k= (search), /s?hidden-keywords= (a
+    search list) and /b?node= (a browse node). Product pages (/dp/, /gp/product/)
+    are handled by compact_amazon_product_link() and are NOT search links.
+    """
+    try:
+        parsed = urlparse(clean_url(link))
+        host = (parsed.hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            return False
+        path = (parsed.path or "").rstrip("/")
+        if path in ("/s", "/gp/search", "/gp/aw/s"):
+            return True
+        if path == "/b":
+            query = {str(k).lower() for k in parse_qs(parsed.query).keys()}
+            return "node" in query
+        return False
+    except Exception:
+        return False
 
 
 # A Flipkart product URL is "slug + /p/ + item id + pid": lid, marketplace, srno,
@@ -5213,7 +5246,7 @@ class AffiliateClient:
                                   cached["deal_key"] or product_key(source_url))
         resolved = resolved_hint or await self.resolve(source_url)
         host = (urlparse(resolved).hostname or "").lower()
-        if in_domains(host, NON_STORE_DOMAINS):
+        if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, NON_SHOP_DOMAINS):
             return None
         # Preserve meaningful category/filter parameters (for example Men vs
         # Women) while removing only source attribution/tracking parameters.
@@ -5233,8 +5266,11 @@ class AffiliateClient:
         # stripped again at delivery by strip_amazon_tag_for_undeclared(), and
         # those channels keep earning through EarnKaro as before.
         #
-        # Amazon SEARCH/category links have no single ASIN, so they still go to
-        # EarnKaro below - a tag on a search page earns nothing anyway.
+        # Amazon SEARCH / hidden-keywords / browse-node links have no single ASIN
+        # either, but they still earn: OUR tag rides natively on the URL, which
+        # EarnKaro never did - it has no campaign for a search page, so the click
+        # earned zero and the deal risked the retry loop. They are built natively
+        # here exactly like product links and never sent to EarnKaro.
         if OUR_TAG and in_domains(host, AMAZON_DOMAINS):
             native = compact_amazon_product_link(clean)
             asin = re.search(r"/dp/([A-Z0-9]{10})(?:[/?#]|$)", native, re.I)
@@ -5257,6 +5293,13 @@ class AffiliateClient:
                 key = product_key(clean)
                 await store.cache_link(source_url, affiliate, clean, key)
                 return LinkResult(source_url, clean, affiliate, key)
+            if is_amazon_search_or_browse_link(clean):
+                # No cache entry: canonical_url() collapses every /s? search link to
+                # one key (the query carries no pid/asin/node), so caching here would
+                # hand the FIRST search link back for every later one. The tag on the
+                # URL is self-proving at the provenance gate, so no cache is needed.
+                tagged = apply_amazon_tag(clean)
+                return LinkResult(source_url, clean, tagged, product_key(clean))
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
@@ -6206,14 +6249,16 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             keep_passthrough(source_url, resolved)
             if len(passthrough) > before:
                 continue
-            if (is_unresolvable_short_link(resolved_host, source_url)
-                    and clean_url(source_url) == clean_url(str(resolved or ""))):
-                # Nothing resolved: the ONLY reason the whole deal used to disappear for
-                # a "₹85 https://bit.ly/xxxx" post. A dead short link is permanent, so
-                # neither retry nor skip is right - cut the link, keep the post.
+            if (in_domains(resolved_host, NON_SHOP_DOMAINS)
+                    or (is_unresolvable_short_link(resolved_host, source_url)
+                        and clean_url(source_url) == clean_url(str(resolved or "")))):
+                # Nothing to monetize and nothing to retry: a non-shop (a deal blog or
+                # an app-deep-link wrapper) or a short link that never resolved. The
+                # ONLY reason the whole deal used to disappear for a "₹85 https://…"
+                # post was the retry loop. Cut the link, keep the post.
                 unresolvable.append(source_url)
-                log.warning("LINK DROPPED | queue=%s short link never resolves, posting the "
-                            "deal without it: %s", row["id"], source_url[:70])
+                log.warning("LINK DROPPED | queue=%s link never monetizes (%s), posting "
+                            "the deal without it: %s", row["id"], resolved_host, source_url[:70])
                 continue
             # Unknown destination: never publish an unvetted domain, retry.
             transient_errors.append(
