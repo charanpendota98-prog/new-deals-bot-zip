@@ -1475,3 +1475,53 @@ the copy the reader sees, and it is the list pairing the user asked for.
 
 Suite: 520 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 28 — the review channel publishes ONE product, never a list
+=================================================================
+
+USER RULE: "list of products mana review channello cheyaku, okkoti edo
+random cheyu - mana review success avvali."
+
+A roundup is a poor review sample: it reads as a link dump, and one weak
+item in it taints the whole post. So the reviewed channel now reduces any
+multi-product post to a SINGLE product. Every other channel still
+receives the complete list, unchanged.
+
+WHICH ITEM - the two traps avoided
+  * NOT always the first. The lead row of a source list is often the
+    weakest, and always taking it would make the channel repetitive.
+  * NOT random by chance either. random.choice() would pick a DIFFERENT
+    product on a retry or a re-render, and the channel would publish a
+    second item from the same source as if it were a new deal.
+  So the choice is deterministic-but-spread: a SHA-1 of the post selects
+  the index. Same post -> same product, always. Different posts spread
+  across the list. Both properties are asserted in the test.
+
+HEADINGS
+  A list heading must not become part of the product name. Two shapes
+  are handled: the heading on its own line above the first product
+  ("Loot of the day", "Mega Deals") and the heading glued to the front
+  of the first product because the source wrote the list inline
+  ("Deals Boat 141 @899 <link>"). A single-product post is never touched.
+
+SAME SOURCE, TWO CHANNELS
+  loot   : Boat 141 @ 899        + link
+           Samsung M14 @ 9999    + link
+           Milton @ 89           + link
+  review : Samsung M14 @ 9999
+           https://www.amazon.in/dp/B0BZCPVWQ4?tag=mama086-21
+
+           #ad (paid link)
+
+MECHANICALLY ENFORCED
+  The test slices process_job at "if target == SHOPPING_TARGET:" and
+  requires pick_one_product_for_review to appear inside that branch and
+  NOWHERE else, so the reduction can never leak onto a loot channel.
+
+A/B against the pre-session code is still one single difference in the
+copy the reader sees - the list pairing the user asked for.
+
+Suite: 524 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

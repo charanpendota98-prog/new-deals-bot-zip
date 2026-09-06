@@ -2545,6 +2545,79 @@ asyncio.run(main())
           not failures, " | ".join(failures)[:900])
 
 
+def test_the_review_channel_publishes_one_product_never_a_list():
+    """USER RULE (2026-09-06): "list of products mana review channello cheyaku,
+    okkoti edo random cheyu - mana review success avvali."
+
+    A roundup is a poor review sample: it reads as a link dump, and one weak
+    item taints the whole post. The reviewed channel gets ONE product; every
+    other channel still gets the full list.
+    """
+    lst = ("Boat 141 @ 899\nhttps://www.amazon.in/dp/B09N3ZNHTY\n"
+           "Samsung M14 @ 9999\nhttps://www.amazon.in/dp/B0BZCPVWQ4\n"
+           "Milton @ 89\nhttps://www.amazon.in/dp/B07XY12345")
+
+    one = bot.pick_one_product_for_review(lst)
+    check("exactly one link survives", len(bot.URL_RE.findall(one)) == 1, one)
+    check("exactly two lines survive", len(one.splitlines()) == 2, repr(one))
+    check("the product keeps its own link",
+          any(asin in one for asin in ("B09N3ZNHTY", "B0BZCPVWQ4", "B07XY12345")), one)
+    check("the chosen product keeps its price",
+          any(p in one for p in ("899", "9999", "89")), one)
+
+    # STABLE: a retry or a re-render must choose the SAME item, or the channel
+    # would publish a second product from the same source as a "new" deal.
+    check("the choice is stable across calls",
+          bot.pick_one_product_for_review(lst) == one, "unstable")
+
+    # SPREAD: different posts must not all collapse to their first row, or the
+    # channel becomes repetitive and only ever shows one source's lead item.
+    picks = set()
+    for n in range(12):
+        variant = lst.replace("Boat 141", "Boat 14%d" % n)
+        picks.add(bot.pick_one_product_for_review(variant).splitlines()[0])
+    check("different posts do not all pick the same row", len(picks) > 1, str(picks))
+
+    # A SINGLE deal is never touched.
+    single = "Ergonomic Dustpan @ 55\nhttps://amzn.to/d"
+    check("a single deal is untouched",
+          bot.pick_one_product_for_review(single) == single,
+          bot.pick_one_product_for_review(single))
+
+    # The list HEADING must not become part of the product name.
+    for headed in ("Loot of the day\nBoat 141 @899\nhttps://amzn.to/a\n"
+                   "Samsung M14 @9999\nhttps://amzn.to/b",
+                   "\U0001f525 Mega Deals \U0001f525\nBoat 141 @899\nhttps://amzn.to/a\n"
+                   "Samsung @9999\nhttps://amzn.to/b",
+                   "Deals\U0001f525 Boat 141 @899\nhttps://amzn.to/a\n\n"
+                   "Samsung M14 @9999\nhttps://amzn.to/b"):
+        got = bot.pick_one_product_for_review(headed)
+        first = got.splitlines()[0].lower()
+        for word in ("deals", "loot of the day", "mega deals"):
+            check("the heading %r is not glued to the product" % word,
+                  not first.startswith(word), repr(got))
+        check("the headed list still yields one link",
+              len(bot.URL_RE.findall(got)) == 1, repr(got))
+
+    # THE OTHER CHANNELS KEEP THE WHOLE LIST - this reduction is review-only.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    idx = deliver.index("if target == SHOPPING_TARGET:")
+    lines = deliver[idx:].split("\n")
+    indent = len(lines[0]) - len(lines[0].lstrip())
+    branch = [lines[0]]
+    for line in lines[1:]:
+        if line.strip() and (len(line) - len(line.lstrip())) <= indent:
+            break
+        branch.append(line)
+    branch_src = "\n".join(branch)
+    outside = deliver[:idx] + deliver[idx + len(branch_src):]
+    check("the one-product rule runs on the review channel",
+          "pick_one_product_for_review" in branch_src, "not wired")
+    check("and never anywhere else",
+          "pick_one_product_for_review" not in outside, "LEAKED to other channels")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2589,6 +2662,7 @@ def main() -> int:
     test_tag_on_every_owned_channel_when_switched_on()
     test_a_tagged_amazon_link_is_never_hidden_behind_a_shortener()
     test_the_whole_delivery_path_end_to_end()
+    test_the_review_channel_publishes_one_product_never_a_list()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

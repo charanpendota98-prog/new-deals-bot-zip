@@ -511,6 +511,72 @@ def retag_foreign_amazon_links(text: str) -> str:
 AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
 
 
+def pick_one_product_for_review(text: str) -> str:
+    """Reduce a multi-product post to ONE product for the review channel.
+
+    USER RULE (2026-09-06): "list of products mana review channello cheyaku,
+    okkoti edo random cheyu - mana review success avvali."
+
+    A roundup is a worse review sample than a single listing: it reads as a
+    link dump, and one bad item in it taints the whole post. The other channels
+    keep the full list; only this one is reduced.
+
+    Which item? Not the first - the first row of a source list is often the
+    weakest, and always picking it would make the channel repetitive. Not
+    random-by-chance either: the SAME post must reduce to the SAME product on a
+    retry, or a re-render would publish a second item as a duplicate. So the
+    choice is deterministic-but-spread: a hash of the post picks the index.
+    """
+    lines = [ln for ln in (text or "").splitlines()]
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        current.append(line)
+        if URL_RE.fullmatch(line.strip()):
+            blocks.append(current)
+            current = []
+    # Trailing text with no link of its own is not a product block.
+    if len(blocks) < 2:
+        return text
+    # Keep only blocks that actually name something (a link with no label is a
+    # stray, not a product).
+    named = [blk for blk in blocks
+             if any(not URL_RE.fullmatch(ln.strip()) and re.search(r"[A-Za-z]{3}", ln)
+                    for ln in blk)]
+    if len(named) < 2:
+        return text
+    seed = hashlib.sha1((text or "").encode("utf-8", "ignore")).hexdigest()
+    chosen = named[int(seed[:8], 16) % len(named)]
+    out = [ln.strip() for ln in chosen]
+    # The list's own heading may sit on its own line above the first product
+    # ("Loot of the day" / "Deals") - carrying it into a single-product post
+    # would read as part of the product name.
+    _HEADING_ONLY = re.compile(
+        r"(?i)^\s*(?:\U0001f525|\u26a1|\u2b50|\U0001f381|\U0001f6d2|\s)*"
+        r"(?:top\s+|mega\s+|super\s+)?(?:deals?|loots?|offers?|sale|dhamaka|steals?)"
+        r"\s*(?:of\s+the\s+day|today|zone|store)?\s*"
+        r"[:\-\u2013\u2014|]?\s*(?:\U0001f525|\u26a1|\u2b50|\s)*$")
+    if len(out) > 2:
+        head = out[0]
+        if (parse_price(head) is None and not URL_RE.search(head)
+                and (_HEADING_ONLY.match(head) or is_promo_noise_line(head))):
+            out = out[1:]
+    # ...or it may be glued to the FRONT of the first product's line, because
+    # the source wrote the whole list inline ("Deals Boat 141 @899 <link>").
+    # Strip a leading heading word only when the rest still names a product.
+    if out:
+        stripped = re.sub(
+            r"(?i)^\s*(?:\U0001f525|\u26a1|\u2b50|\U0001f381|\U0001f6d2|\s)*"
+            r"(?:top\s+)?(?:deals?|loots?|offers?|sale|dhamaka|steals?)\s*"
+            r"(?:of\s+the\s+day|today)?\s*[:\-\u2013\u2014|]?\s*",
+            "", out[0])
+        if stripped.strip() and re.search(r"[A-Za-z]{3}", stripped):
+            out[0] = stripped.strip()
+    return "\n".join(out)
+
+
 def is_amazon_only_post(text: str) -> bool:
     """True when every link in the post is an Amazon link (and there is one)."""
     urls = [clean_url(u) for u in dict.fromkeys(URL_RE.findall(text or ""))]
@@ -6723,7 +6789,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # product line ("boAt Rockerz 255 4.2 star") would survive it,
                 # so the ratings strip runs here too - copied ratings and
                 # review counts are a documented closure reason.
-                safe_text = affiliate_safe_text(strip_amazon_ratings(target_text))
+                # ONE PRODUCT ONLY on the reviewed channel. A roundup reads as
+                # a link dump and one weak item in it taints the whole sample;
+                # the other channels still get the full list.
+                safe_text = affiliate_safe_text(
+                    strip_amazon_ratings(pick_one_product_for_review(target_text)))
                 # "Price: 99" + a link is not a reviewable listing - there is no
                 # product on it. The old test only looked for three letters
                 # anywhere, and the word "Price" satisfied that, so nameless
