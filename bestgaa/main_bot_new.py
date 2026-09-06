@@ -1020,7 +1020,9 @@ def should_use_bitly(resolved_url: str, multi_link: bool) -> bool:
     """USER RULE: Bitly ONLY for lists (2+ links) and very long links —
     normal single Amazon links post with our Associates tag directly, so the
     Bitly monthly quota never runs out on ordinary product deals. (The very
-    long single links are caught by the caller's length check.)"""
+    long single links are caught by the caller's length check.) An Amazon link
+    INSIDE a list is shortened with the rest of the list (2026-09-06); the
+    review channel expands our short links back to the native tagged URL."""
     return multi_link
 
 
@@ -3342,19 +3344,44 @@ def _product_label(line: str) -> str:
 
 
 def format_visible_source_product_pairs(raw_text: str,
-                                        mapping: dict[str, str]) -> str | None:
-    """Rebuild visible product-list posts by source order, not fragile entity spans."""
+                                        mapping: dict[str, str],
+                                        drop_urls: frozenset[str] = frozenset()) -> str | None:
+    """Rebuild visible product-list posts by source order, not fragile entity spans.
+
+    drop_urls lists the source URLs whose product was ALREADY posted: those
+    items drop WHOLE - the link line and the label line that names it leave
+    the post together (USER RULE 2026-09-06), instead of the label staying
+    above a raw source link no one can buy through.
+    """
     lines = clean_source_text(raw_text).splitlines()
     used_label_lines: set[int] = set()
     pairs: list[tuple[str, str]] = []
     used_affiliates: set[str] = set()
+    # Lines that belong to an already-posted item (its link line and the label
+    # line naming it) - the whole item leaves the post.
+    dropped_lines: set[int] = set()
 
     for index, line in enumerate(lines):
         raw_urls = URL_RE.findall(line)
         if not raw_urls:
             continue
         for raw_url in raw_urls:
-            affiliate = mapping.get(clean_url(raw_url))
+            url_key = clean_url(raw_url)
+            if url_key in drop_urls:
+                # Mark this item's own label line the same way the fresh walk
+                # finds one - but never claim a label another item already
+                # uses: the neighbour keeps its label, only the link leaves.
+                dropped_lines.add(index)
+                if not _product_label(line.split(raw_url, 1)[0]):
+                    for previous in range(index - 1, -1, -1):
+                        if previous in used_label_lines:
+                            continue
+                        if _product_label(lines[previous]):
+                            dropped_lines.add(previous)
+                            used_label_lines.add(previous)
+                            break
+                continue
+            affiliate = mapping.get(url_key)
             if not affiliate or affiliate in used_affiliates:
                 continue
             prefix = line.split(raw_url, 1)[0]
@@ -3382,8 +3409,11 @@ def format_visible_source_product_pairs(raw_text: str,
 
     # Only a genuine multi-product list may be rebuilt this way. (Fewer than 3
     # real labels means one product with several variant links: keep the source
-    # layout, which already carries the name, the price and every link.)
-    if len(pairs) < 3:
+    # layout, which already carries the name, the price and every link.) An
+    # already-posted item changes that: rebuilding is exactly what removes it
+    # whole, so any list with a drop and at least one fresh, labelled item is
+    # rebuilt too.
+    if len(pairs) < 3 and not (drop_urls and len(pairs) >= 1):
         return None
     # Rebuild in SOURCE ORDER instead of emitting only the pairs: the old pair
     # dump silently dropped every line that was not a label (a second header
@@ -3392,9 +3422,12 @@ def format_visible_source_product_pairs(raw_text: str,
     # own label, and no link is ever reordered or pooled.
     output: list[str] = []
     emitted: set[str] = set()
-    for line in lines:
+    for index, line in enumerate(lines):
         raw_urls = URL_RE.findall(line)
         if not raw_urls:
+            if index in dropped_lines:
+                # The label line of an already-posted item: dropped whole.
+                continue
             # Any text line prints where it stood in the source - a label keeps
             # its place above its link, a second header or an MRP note keeps its
             # own place too.
@@ -3402,11 +3435,18 @@ def format_visible_source_product_pairs(raw_text: str,
             if kept:
                 output.append(kept)
             continue
+        if index in dropped_lines and all(clean_url(u) in drop_urls for u in raw_urls):
+            # Every link on the line belongs to already-posted items: the item
+            # drops whole, its head label with it.
+            continue
         head = tidy_post(_product_label(line.split(raw_urls[0], 1)[0]))
         if head:
             output.append(head)
         for raw_url in raw_urls:
-            affiliate = mapping.get(clean_url(raw_url))
+            url_key = clean_url(raw_url)
+            if url_key in drop_urls:
+                continue
+            affiliate = mapping.get(url_key)
             if affiliate:
                 if affiliate in emitted:
                     continue
@@ -4515,6 +4555,22 @@ class Store:
                 "SELECT * FROM link_cache WHERE source_url=?", (canonical_url(source_url),)
             ).fetchone()
 
+    async def affiliate_destination(self, short_url: str) -> str | None:
+        """The native URL behind a short link WE minted, from the persistent
+        link cache. expand_our_short_links() uses this when the in-memory map
+        cannot know the link (it was minted by an earlier process - the render
+        ran, then the bot restarted before delivery)."""
+        try:
+            async with self.lock:
+                row = self.conn.execute(
+                    "SELECT resolved_url FROM link_cache WHERE affiliate_url=?",
+                    (canonical_url(short_url),),
+                ).fetchone()
+            resolved = (row["resolved_url"] if row else "") or ""
+            return resolved or None
+        except Exception:
+            return None
+
     async def cache_link(self, source_url: str, affiliate: str, resolved: str, key: str) -> None:
         async with self.lock:
             self.conn.execute(
@@ -5278,19 +5334,22 @@ class AffiliateClient:
                 # Old cache rows may predate the current policy. Upgrade them
                 # before returning; never leak a long link.
                 #
-                # A TAGGED AMAZON LINK IS NEVER SHORTENED (Round 24): hiding
-                # that a link goes to Amazon is link cloaking, a documented
-                # closure reason. That rule was applied on the fresh path only,
-                # so a cached row still got wrapped in bitli.in - which is why
-                # one product in a list came out shortened while the next two
-                # stayed native. The rule belongs on BOTH paths.
+                # A TAGGED AMAZON LINK IS NEVER SHORTENED ON THE REVIEW
+                # CHANNEL (Round 24): hiding that a link goes to Amazon is
+                # link cloaking, a documented closure reason. Since 2026-09-06
+                # the rule is per-shape, not per-store: a LIST is Bitly'd (its
+                # links are expanded back to the native tagged URL when the
+                # review channel receives the post), a single tagged Amazon
+                # link stays native. So a list shortens BOTH stores now; a
+                # single Amazon row still posts native and only a long
+                # non-Amazon single link pays for a shortener.
                 cached_is_amazon = in_domains(
                     (urlparse(cached_url).hostname or "").lower(), AMAZON_DOMAINS)
                 needs_short = (
-                    not cached_is_amazon
-                    and (should_use_bitly(cached_resolved, multi_link)
-                         or len(cached_url) > SHORTEN_MIN_LEN))
-                if needs_short and not in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS):
+                    should_use_bitly(cached_resolved, multi_link)
+                    or (not cached_is_amazon and len(cached_url) > SHORTEN_MIN_LEN))
+                if needs_short and not (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                                        or in_domains(cached_host, OUR_SHORTENER_DOMAINS)):
                     shortened = await self.shorten(cached_url)
                     if shortened:
                         cached_url = shortened
@@ -5333,18 +5392,23 @@ class AffiliateClient:
             if asin:
                 tagged = apply_amazon_tag(native)
                 affiliate = tagged
-                # NO SHORTENER ON A TAGGED AMAZON LINK. Amazon lists link
-                # cloaking - hiding that a link goes to Amazon - as a closure
-                # reason, and a bitli.in hop does exactly that. The native form
-                # is https://www.amazon.in/dp/ASIN?tag=... at roughly 50
-                # characters, so the post stays just as neat without hiding
-                # anything, and the Bitly quota is spent only where it helps.
-                # (Non-Amazon links below are unaffected and still shorten.)
-                if False:
+                # USER RULE (2026-09-06): "list lo unna amazon links bitly tho
+                # ivvachu, review channel tappa". A LIST (2+ store links) goes
+                # out as Bitly short links - one uniform link style, a neat
+                # post, our key pays for it. The review channel still gets the
+                # DIRECT tagged Amazon link: every link minted here is recorded
+                # in _short_to_long, and delivery to t.me/smartbuyhub11 expands
+                # our short links back to exactly the URL that was shortened -
+                # https://www.amazon.in/dp/ASIN?tag=mama086-21, the link a
+                # reviewer must be able to see. A SINGLE Amazon link is already
+                # short and stays native everywhere: no quota spent on it.
+                if should_use_bitly(resolved, multi_link):
                     shortened = await self.shorten(tagged)
                     if shortened:
                         affiliate = shortened
                     else:
+                        # Never lose a valid commission link merely because
+                        # the cosmetic shortener is unavailable/rate-limited.
                         log.warning("BITLY unavailable; posting the native tagged Amazon link")
                 key = product_key(clean)
                 await store.cache_link(source_url, affiliate, clean, key)
@@ -5476,18 +5540,30 @@ class AffiliateClient:
                 log.warning("BITLY failed: %s", exc)
         return None
 
-    def expand_our_short_links(self, text: str) -> str:
+    async def expand_our_short_links(self, text: str) -> str:
         """Put the NATIVE store URL back wherever we minted a short link.
 
-        Only links this process shortened are touched, so nothing is guessed and
-        a source's own short link is left exactly as it arrived. Used for the
-        Amazon-review channel, where a bit.ly hop hides the destination the
-        reviewer has to be able to see.
+        Only links WE minted are touched, so nothing is guessed and a source's
+        own short link is left exactly as it arrived. Used for the Amazon-review
+        channel, where a bit.ly hop hides the destination the reviewer has to
+        be able to see. A short link minted by an earlier process is resolved
+        through the persistent link cache - the reviewer must never meet a bare
+        hop just because the bot restarted between render and delivery.
         """
         out = text or ""
         for short, long_url in self._short_to_long.items():
             if short in out:
                 out = out.replace(short, long_url)
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            if raw not in out:
+                continue
+            host = (urlparse(clean_url(raw)).hostname or "").lower()
+            if not (in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                    or in_domains(host, OUR_SHORTENER_DOMAINS)):
+                continue
+            native = await store.affiliate_destination(raw)
+            if native:
+                out = out.replace(raw, native)
         return out
 
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
@@ -6358,6 +6434,15 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if not ok:
         raise DuplicateDeal("duplicate deal")
     allowed = {key for key in new_keys}
+    # USER RULE (2026-09-06): an item of a list whose product was already
+    # posted DROPS WHOLE - name, price and link together. The old behaviour
+    # kept the item's label line and emitted its raw source link, so the
+    # "fresh" list still advertised a deal the channels had already seen,
+    # with an unmonetized link under it.
+    dedup_dropped = [r for r in converted if r.deal_key not in allowed]
+    for dropped in dedup_dropped:
+        log.warning("DEDUP DROP | queue=%s list item already posted, dropped whole: %s",
+                    row["id"], clean_url(dropped.source)[:70])
     converted = [r for r in converted if r.deal_key in allowed]
     passthrough = [(s, r) for s, r in passthrough if product_key(r) in allowed]
     # Service-only posts have an empty `converted` by design (their links are
@@ -6370,12 +6455,18 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     mapping = {clean_url(r.source): r.affiliate for r in converted}
     # Visible product lists are rebuilt directly by source order so each label
     # keeps its own link. Fall back to entity-aware replacement for mixed/hidden posts.
-    rendered = format_visible_source_product_pairs(raw_text, mapping)
+    # The already-posted items' source URLs ride along as drop_urls, so the
+    # rebuild removes those items whole instead of printing their raw link.
+    drop_urls = frozenset(clean_url(r.source) for r in dedup_dropped)
+    rendered = format_visible_source_product_pairs(raw_text, mapping, drop_urls)
     if rendered is None:
         rendered = rebuild_text(raw_text, getattr(msg, "entities", None), mapping)
         rendered = remove_source_url_residue(
             rendered, source_urls, [result.affiliate for result in converted]
         )
+        if drop_urls:
+            for dropped_url in drop_urls:
+                rendered = rendered.replace(dropped_url, "")
         rendered = clean_source_text(rendered)
 
     # Reply-only / hidden entity / inline-button links may not be literal in the
@@ -6892,7 +6983,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # cannot verify the post. Our own short links are swapped back to
                 # the native store URL (a source's own short link is untouched).
                 if SHOPPING_NATIVE_LINKS:
-                    target_text = affiliate.expand_our_short_links(target_text)
+                    target_text = await affiliate.expand_our_short_links(target_text)
                 # ALL conditions live here, on the review channel only.
                 # affiliate_safe_text() already rebuilds the copy as
                 # "product / price / link", but a rating written INSIDE the
