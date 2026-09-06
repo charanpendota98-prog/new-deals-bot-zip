@@ -1005,7 +1005,7 @@ def test_our_amazon_tag_only_rides_on_declared_channels():
     src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
     deliver = src[src.index("async def process_job"):]
     check("the strip runs on the delivery path, per target",
-          "strip_amazon_tag_for_undeclared(target_text, target)" in deliver, "not wired in")
+          "strip_amazon_tag_for_undeclared(target_text, target" in deliver, "not wired in")
 
 
 def test_the_review_channel_copy_is_built_from_an_allowlist():
@@ -1476,6 +1476,66 @@ def test_our_tag_is_live_now_on_the_review_channel():
           and "B0FPDD9WKP" in bot.strip_amazon_tag_for_undeclared("x\n" + compact, "LootZoneIndia11"))
 
 
+def test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link():
+    """THE ACTUAL REJECTION CAUSE, found by the user on 2026-09-06:
+
+        "LootZoneIndia11 adi nenu source ga ichnau danni check chesanu so andulo
+         anni photos antha anni tags tho post ayyayi so reject chesaru"
+
+    Links are SHORTENED in render_job, BEFORE the tag-strip runs at delivery. So
+    the strip saw "https://bit.ly/3xYz" - no amazon.in hostname to match, nothing
+    stripped - and our Associates tag rode into an undeclared loot channel inside
+    the redirect. Amazon reads the referrer on every click, which is exactly how
+    the application was failed.
+    """
+    if not bot.OUR_TAG:
+        return
+
+    class FakeAffiliate:
+        _short_to_long = {
+            "https://bit.ly/3xYz": "https://www.amazon.in/dp/B0FPDD9WKP?tag=" + bot.OUR_TAG,
+            "https://bit.ly/flip": "https://www.flipkart.com/x/p/itm1",
+        }
+
+    affiliate = FakeAffiliate()
+    post = "boAt 141\nhttps://bit.ly/3xYz"
+
+    loot = bot.strip_amazon_tag_for_undeclared(post, "LootZoneIndia11", affiliate)
+    check("the tag no longer hides behind a shortener on a loot channel",
+          bot.OUR_TAG not in loot and "bit.ly" not in loot, repr(loot))
+    check("the loot channel still gets a working product link",
+          "B0FPDD9WKP" in loot and "amazon.in" in loot, repr(loot))
+
+    review = bot.strip_amazon_tag_for_undeclared(post, bot.SHOPPING_TARGET, affiliate)
+    check("the DECLARED channel is untouched", review == post, repr(review))
+
+    check("a non-Amazon short link of ours is left alone",
+          "bit.ly/flip" in bot.strip_amazon_tag_for_undeclared(
+              "x\nhttps://bit.ly/flip", "LootZoneIndia11", affiliate))
+    check("a SOURCE's own short link is never rewritten",
+          "fkrt.co/own" in bot.strip_amazon_tag_for_undeclared(
+              "x\nhttps://fkrt.co/own", "LootZoneIndia11", affiliate))
+
+    # A plainly visible tagged URL must still be stripped (the original path).
+    visible = "boAt 141\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG
+    check("a visible tagged link is still stripped for a loot channel",
+          bot.OUR_TAG not in bot.strip_amazon_tag_for_undeclared(
+              visible, "LootZoneIndia11", affiliate))
+
+    # The strip must be wired WITH the affiliate client, or pass 1 is dead code.
+    src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    deliver = src[src.index("async def process_job"):]
+    check("delivery passes the affiliate client so short links can be resolved",
+          "strip_amazon_tag_for_undeclared(target_text, target, affiliate)" in deliver,
+          "affiliate not passed - the shortener hole is still open")
+
+    # The other half of the user's finding: the photos.
+    check("the review channel sends no images at all", bot.SHOPPING_TEXT_ONLY is True)
+    check("media is dropped for the review channel only",
+          "target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY" in deliver
+          and "target_media = media_path" in deliver, "text-only not wired")
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1506,6 +1566,7 @@ def main() -> int:
     test_the_whatsapp_bridge_cannot_go_quiet()
     test_the_review_channel_posts_at_a_human_pace()
     test_our_tag_is_live_now_on_the_review_channel()
+    test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

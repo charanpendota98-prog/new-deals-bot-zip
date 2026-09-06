@@ -481,17 +481,43 @@ def is_amazon_only_post(text: str) -> bool:
                for u in urls)
 
 
-def strip_amazon_tag_for_undeclared(text: str, target: str) -> str:
+def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
     """Remove OUR Associates tag from Amazon links bound for an undeclared channel.
 
-    Only our own tag is touched, and only the `tag` parameter: the product, the
-    price and the link itself are untouched, so the reader of that channel still
-    gets the same working deal.
+    THE BUG THIS FIXES (found by the user, 2026-09-06): "LootZoneIndia11 ... anni
+    tags tho post ayyayi so reject chesaru". Links are SHORTENED in render_job
+    before this runs at delivery, so by the time we got here the post read
+    "https://bit.ly/3xYz" - no amazon.in hostname to match, nothing stripped, and
+    our tag rode into an undeclared loot channel INSIDE the redirect. Amazon sees
+    the referrer, and that is the violation that killed the application.
+
+    So a short link WE minted is resolved back to its destination first; if that
+    destination is a tagged Amazon URL, the untagged native URL is published
+    instead. A source's own short link is left alone - we cannot know where it
+    goes, and it was never carrying our tag anyway.
+
+    Only our own tag is touched. The product, the price and the link still work,
+    so the reader of that channel loses nothing.
     """
     if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
         return text
     out = text
-    for raw in dict.fromkeys(URL_RE.findall(text)):
+    # Pass 1: our tag hidden behind a shortener we created.
+    reverse = dict(getattr(affiliate, "_short_to_long", {}) or {})
+    for short, long_url in reverse.items():
+        if short not in out:
+            continue
+        host = (urlparse(clean_url(long_url)).hostname or "").lower()
+        if not in_domains(host, AMAZON_DOMAINS):
+            continue
+        if OUR_TAG.lower() not in long_url.lower():
+            continue
+        parsed = urlparse(clean_url(long_url))
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                 if k.lower() != "tag"]
+        out = out.replace(short, parsed._replace(query=urlencode(query, doseq=True)).geturl())
+    # Pass 2: the plainly visible amazon.in links.
+    for raw in dict.fromkeys(URL_RE.findall(out)):
         url = clean_url(raw)
         host = (urlparse(url).hostname or "").lower()
         if not in_domains(host, AMAZON_DOMAINS):
@@ -6297,7 +6323,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # Associates compliance: our tag may only ride on the channels that
             # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
             # SAME deal posts with an untagged link.
-            target_text = strip_amazon_tag_for_undeclared(target_text, target)
+            target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
             allow_preview = await store.preview_allowed(target_text)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):

@@ -744,3 +744,56 @@ cheyu".
    further channel in Associates Central -> only then
    AMAZON_TAG_TARGETS=all. Until then the other channels lose nothing:
    EarnKaro pays the Amazon commission on them today.
+
+
+=================================================================
+Round 14 — THE ACTUAL REJECTION CAUSE (found by the user)
+=================================================================
+
+USER, 2026-09-06:
+  "LootZoneIndia11 adi nenu source ga ichnau danni check chesanu so
+   andulo anni photos antha anni tags tho post ayyayi so reject chesaru"
+
+The user opened the loot channel and found the posts carrying OUR
+Associates tag. That is the violation, and it was a real bug, not a
+misconfiguration.
+
+WHY THE TAG GOT THERE DESPITE THE GUARD
+  The ordering was wrong, and the guard was blind to it:
+
+    render_job   L5936  shorten_long_urls_in_text()  -> link becomes
+                                                        https://bit.ly/3xYz
+    delivery     L6300  strip_amazon_tag_for_undeclared()
+
+  The strip only rewrote URLs whose HOSTNAME was an Amazon domain. By the
+  time it ran, the post said "bit.ly" - no hostname to match, nothing
+  stripped - and the tag went out inside the redirect, invisible in the
+  post but perfectly visible to Amazon, which attributes every click to
+  its referring page. So an UNDECLARED loot channel was sending tagged
+  traffic to Amazon. That is precisely the Operating Agreement breach
+  that fails an application, and it explains why the rejection email
+  pointed at t.me/LootZoneIndia11.
+
+  Rounds 6-13 all assumed the strip worked. It never did for any post
+  whose link had been shortened - which is most of them.
+
+THE FIX
+  strip_amazon_tag_for_undeclared() now takes the affiliate client and
+  resolves OUR short links back to their destination first:
+
+    loot channel  : https://bit.ly/3xYz -> https://www.amazon.in/dp/B0FPDD9WKP
+                    (tag removed, product intact, link still works)
+    review channel: https://bit.ly/3xYz  (unchanged - it IS declared)
+
+  A source's own short link is never rewritten (we cannot know where it
+  goes, and it was never carrying our tag). A non-Amazon short link of
+  ours is left alone.
+
+THE PHOTOS, THE OTHER HALF OF THE FINDING
+  Already closed in round 7: SHOPPING_TEXT_ONLY=true, so the review
+  channel posts no images at all. The loot channels keep theirs - they
+  are not the channel under review, and once the tag is gone they are
+  not sending tagged traffic either.
+
+Full suite green: 311 checks in test_line_fidelity, 225 and 160 in the
+others, sync_identity ok.
