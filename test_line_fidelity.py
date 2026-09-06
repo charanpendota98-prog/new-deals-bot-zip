@@ -1841,6 +1841,62 @@ def test_the_finished_review_post_end_to_end():
           finished("Cashback trick\nhttps://www.amazon.in/dp/B0Q") is None)
 
 
+def test_no_regression_for_the_ordinary_channels():
+    """USER QUESTION (2026-09-06): "vere channels lo perfectga as previous ga
+    chesthadi kada?"
+
+    Answered by diffing the shared pipeline against the pre-session code
+    (commit ee434cb) on real post shapes. Every difference must be an
+    improvement; anything a loot channel used to get right must still be right.
+    """
+    # A three-word product name must always have an identity. "Cello Lunch Box"
+    # is 15 characters, and an 18-char floor briefly took its identity away -
+    # which would have let the same lunch box post twice, the very bug the user
+    # reported for the Dustpan.
+    for name in ("Cello Lunch Box", "Milton Bottle 1L", "Dabur Gulabari Soap",
+                 "Boat Airdopes 141", "Ergonomic Dustpan"):
+        check("%r has a dedup identity" % name,
+              bot._product_identity(name) is not None, name)
+    for phrase in ("hair oil", "phone case", "free gift", "Milton Bottle",
+                   "Men Cotton Shirt", "lunch box set"):
+        check("the category phrase %r is still refused" % phrase,
+              bot._product_identity(phrase) is None, phrase)
+
+    # A price stated as a discount must not be read as the price. The old code
+    # returned 15 for "Rs.150 off on Rs.299" - it backtracked off "150 off".
+    check("'150 off on 299' reads 299, the amount actually paid",
+          bot.parse_price("Zomato \u20b9150 off on \u20b9299") == 299,
+          str(bot.parse_price("Zomato \u20b9150 off on \u20b9299")))
+
+    # The ordinary channels keep the SOURCE copy: nothing is stripped from it.
+    hype = ("\U0001f525\U0001f525 LOOT DEAL \U0001f525\U0001f525\n\nboAt Rockerz 255 Pro+ Neckband\n\n"
+            "\U0001f4b0 Price - \u20b9899 (MRP \u20b92990)\n70% OFF \u2705 Rating 4.2 \u2b50 | 12,453 reviews\n\n"
+            "https://amzn.to/aaa")
+    tidied = bot.tidy_post(hype)
+    for keep in ("boAt Rockerz 255 Pro+ Neckband", "899", "2990", "70%", "4.2", "12,453"):
+        check("a loot channel still keeps %r" % keep, keep in tidied, repr(tidied))
+    check("the price parses to the DEAL price, not the MRP",
+          bot.parse_price(hype) == 899, str(bot.parse_price(hype)))
+
+    # And the deal still routes to the ordinary channels by price band.
+    check("a 899 deal is not mistaken for an under-99 deal",
+          bot.parse_price(hype) > 499)
+    check("an under-99 product still parses inside the band",
+          bot.parse_price("Milton Bottle 1L @ 89\nhttps://amzn.to/c1") == 89)
+
+    # Our tag must never appear on an undeclared channel, with or without a
+    # shortener in the way.
+    if bot.OUR_TAG:
+        class Aff:
+            _short_to_long = {"https://bit.ly/z":
+                              "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+        for post in ("Deal\nhttps://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
+                     "Deal\nhttps://bit.ly/z"):
+            out = bot.strip_amazon_tag_for_undeclared(post, "LootZoneIndia11", Aff())
+            check("no tag reaches the loot channel", bot.OUR_TAG not in out, repr(out))
+            check("but the product link still works", "B0X" in out, repr(out))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1877,6 +1933,7 @@ def main() -> int:
     test_deep_audit_prices_foreign_tags_and_nameless_posts()
     test_every_review_post_carries_our_tag_and_nothing_else_does()
     test_the_finished_review_post_end_to_end()
+    test_no_regression_for_the_ordinary_channels()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 

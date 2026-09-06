@@ -1017,3 +1017,57 @@ THE OTHER CHANNELS
 
 Suite: 405 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green, py_compile ok.
+
+
+=================================================================
+Round 19 — A/B against the pre-session code, and one REGRESSION
+=================================================================
+
+USER QUESTION: "vere channels lo perfectga as previous ga chesthadi
+kada?"
+
+Rather than assert it, the shared pipeline was diffed against commit
+ee434cb (the code before this session) by running 9 real post shapes
+through 14 shared functions in both versions and comparing every output.
+
+A REGRESSION WAS FOUND AND FIXED
+  "Cello Lunch Box" is three real product words but only 15 characters.
+  Round 15 had set an 18-character floor for names with no model number,
+  so this product lost its identity entirely - the same lunch box could
+  post twice, which is exactly the Dustpan bug the user reported.
+
+  The floor exists to reject GENERIC phrases ("Men Cotton Shirt",
+  "lunch box set") that many products share; keying on those would
+  suppress real deals. It must not reject a short but SPECIFIC name.
+  So _SIG_GENERIC_WORDS now lists ordinary descriptive words, and a
+  phrase containing anything outside that list is treated as specific
+  (floor 15); a phrase built only from generic words keeps the 18-char
+  floor.
+
+    Cello Lunch Box     -> keyed      Men Cotton Shirt -> not keyed
+    Dabur Gulabari Soap -> keyed      lunch box set    -> not keyed
+    Ergonomic Dustpan   -> keyed      hair oil         -> not keyed
+
+  ops/quality_audit.py re-synced.
+
+EVERY OTHER DIFFERENCE IS A FIX, NOT A CHANGE IN BEHAVIOUR
+  parse_price("Rs.150 off on Rs.299")
+      old 15   <- backtracked off "150 off"; a price the source never
+                  charged, and price drives routing and dedup
+      new 299  <- what the buyer actually pays
+  product_signature for short-named products and for roundups
+      old None <- no identity meant the repeat guard never ran, so the
+                  same product/list could post twice
+      new keyed
+  compact_flipkart_product_link
+      new function; /p/item links 112 chars -> 61
+
+  The copy itself is untouched on the ordinary channels: clean_source_text,
+  tidy_post, sanitize_outbound_text, normalize_nested_link_markup,
+  strip_url_residue and remove_source_url_residue return byte-identical
+  output to the pre-session code on all 9 shapes. A loot channel still
+  gets its hype, MRP, percentages, ratings, emoji and photos, and still
+  gets no Associates tag on the link.
+
+Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

@@ -261,6 +261,22 @@ def _audit_sig_tokens(line: str) -> list[str]:
     return out
 
 
+# Ordinary descriptive words. A phrase built ONLY from these ("Men Cotton
+# Shirt", "hair oil set") describes a category, not a product, so it needs the
+# longer floor before it may be used to skip a repeat.
+_AUDIT_SIG_GENERIC_WORDS = frozenset("""
+men mens women womens kids boys girls baby unisex adult
+cotton silk leather steel plastic glass wooden metal rubber silicone
+shirt tshirt pant jeans saree kurti dress top jacket shoes sandals slippers
+oil soap cream powder shampoo lotion gel wash paste
+bottle box case cover bag pouch set combo pack piece pieces
+watch band strap cable charger adapter holder stand mat mop broom
+kitchen home office travel sports gaming
+small medium large xl xxl free size regular fit slim
+new best top premium quality original genuine
+""".split())
+
+
 def _product_identity(line: str) -> tuple[str, ...] | None:
     """The few tokens that decide WHICH product a headline names, as a SET.
 
@@ -338,8 +354,23 @@ def _product_identity(line: str) -> tuple[str, ...] | None:
         # ("hair oil", "phone case" stay un-keyed via the length test below).
         if len(words) < 2:
             return None                    # a category phrase is not an identity
+        # REGRESSION GUARD (2026-09-06): "Cello Lunch Box" is three real product
+        # words but only 15 characters, so an 18-char floor gave it no identity
+        # and the same lunch box could post twice. THREE words are already
+        # specific enough - the floor exists to reject two-word category phrases
+        # ("hair oil"), not to reject short real names. Four+ words are always
+        # specific. Only the two-word case still needs the length test.
+        # The floor exists to reject GENERIC phrases ("Men Cotton Shirt",
+        # "hair oil") that many different products share - keying on those
+        # would suppress real deals. It must not reject a short but SPECIFIC
+        # name: "Cello Lunch Box" is 15 characters and names one product, and
+        # an 18-char floor left it un-dedupable, which is how the same lunch
+        # box could post twice.
+        # A brand-like word - one that is not an ordinary descriptive word -
+        # makes the phrase specific regardless of its length.
         basis = " ".join(sorted(set(words)))
-        floor = 18 if len(words) >= 3 else 15
+        specific = any(w not in _AUDIT_SIG_GENERIC_WORDS for w in words)
+        floor = 15 if specific else 18
         return None if len(basis) < floor else ("W", basis)
     # The brand is normally the first product word, but "Airdopes 141 by boAt"
     # and "boAt Airdopes 141" are ONE product: an explicit "by <maker>" names
