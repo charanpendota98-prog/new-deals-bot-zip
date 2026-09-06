@@ -1167,3 +1167,67 @@ WHAT CHANGED
 
 Suite: 445 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 22 — list shapes, and a product name that was deleted
+=================================================================
+
+USER: "list of products text paina and kinda links ... sources lo entha
+neatga vundo same alage antha neatga post cheyali ... asalu mistake
+cheyoddu". Also confirmed LootZoneIndia11 was previously declared as the
+source, so that channel is not the undeclared-traffic risk.
+
+DEFECT 1 - THE PRODUCT NAME WAS DELETED BY THE LINK CLEANER (serious)
+  normalize_nested_link_markup() collapsed EVERY "[label](url)" to the
+  bare url. When the label was the PRODUCT NAME the post lost its
+  product:
+
+    in : [Boat Airdopes 141](https://amzn.to/a) @ 899
+    out: https://amzn.to/a @ 899        <- no product at all
+
+  Now a substantial label is kept ABOVE its link, with anything written
+  after the link (usually the price) folded back onto the name line:
+
+    out: Boat Airdopes 141 @ 899
+         https://amzn.to/a
+
+  Call-to-action labels are still dropped ("Buy Now", "Click here",
+  "Link", "Amazon", "Shop Now", "Grab it now", ...), as are labels that
+  are themselves a URL or a nested wrapper. Emphasis debris is stripped
+  before judging the label - but only RUNS of markers, so
+  "boAt Rockerz 255 Pro+" keeps its "+".
+
+DEFECT 2 - INLINE LISTS WERE PUBLISHED AS A WALL OF TEXT
+  A source that writes the whole list on ONE line -
+    Boat 141 @899 https://a Samsung M14 @9999 https://b Milton @89 https://c
+  - was left as-is, because format_clustered_product_list() only handles
+  the other shape (all links grouped at the bottom). The reader could
+  not tell which link belonged to which product.
+
+  NEW split_inline_product_links() cuts after each URL and puts every
+  product above its own link. It runs FIRST in clean_source_text(),
+  before the passes that hoist URLs onto their own lines. Markdown lists
+  on one line are split on the markdown boundary instead.
+
+  All three list shapes now read the same way:
+      product name + price
+      its own link
+
+REGRESSIONS CAUGHT AND FIXED DURING THIS ROUND (6 in test_render_job)
+  The user's real forwarded posts wrap the SAME url 2-7 times
+  ("++**[[url](url)++**]([url](url))**"). The new splitter ran inside
+  that markup and emitted the duplicate copies as separate products.
+  Fixed twice over: the plain-text splitter skips any line still holding
+  brackets, and a label that CONTAINS a url (or "amazon."/"flipkart.")
+  is treated as markup, never as a product name.
+
+VERIFIED NOT CHANGED
+  A neat source is byte-identical to the pre-session code (commit
+  ee434cb) on every neat shape tested - we never "fix" what is already
+  right. A single deal is untouched. Duplicate links still collapse to
+  one. Dedup still recognises the same product across different wording
+  and different prices.
+
+Suite: 471 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

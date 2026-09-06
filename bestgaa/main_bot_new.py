@@ -2341,6 +2341,15 @@ def remove_orphan_url_fragment_lines(text: str) -> str:
     return "\n".join(kept)
 
 
+# Labels that are a call to action, not a product: dropping these keeps the
+# post clean, while any other label is the product name and must survive.
+_CTA_LABEL_RE = re.compile(
+    r"(?i)\s*(?:buy(?:\s*it)?(?:\s*now)?|shop(?:\s*now)?|order(?:\s*now)?|grab(?:\s*it)?(?:\s*now)?"
+    r"|click(?:\s*here)?|here|link|links|deal\s*link|buy\s*link|product\s*link"
+    r"|get\s*it(?:\s*now)?|check(?:\s*it)?(?:\s*out)?|view|see\s*more|more"
+    r"|amazon|flipkart|meesho|myntra|ajio|loot|offer|deal)\s*[\u2b07\U0001f447\U0001f449\u27a1\ufe0f\s:*-]*")
+
+
 def normalize_nested_link_markup(text: str) -> str:
     """Normalise a FORWARDED/malformed source whose links are wrapped in nested
     markdown and double HTML-escaping, e.g.
@@ -2361,10 +2370,68 @@ def normalize_nested_link_markup(text: str) -> str:
         prev = out
         out = re.sub(r"\[\s*(https?://[^\s\]\[]+?)\s*\]\s*\(\s*https?://[^\s)]+?\s*\)",
                      r"\1", out, flags=re.I)
-        out = re.sub(r"\[[^\]\[]*?\]\s*\(\s*(https?://[^\s)]+?)\s*\)",
-                     r"\1", out, flags=re.I)
+        # "[LABEL](URL)": the label is thrown away only when it is DEBRIS -
+        # a call to action ("Buy Now", "Click here", "Link"). When it is the
+        # PRODUCT NAME the post loses its product entirely and the reader is
+        # left with a bare URL, which is the "just names / no product" defect
+        # in reverse. So a substantial label is kept above its link.
+        def _unwrap_markdown_link(match: "re.Match[str]") -> str:
+            label = (match.group(1) or "").strip()
+            url = match.group(2)
+            # Emphasis debris around a nested wrapper ("++**[[url](url)++**]")
+            # is not a product name; strip it before judging the label, or the
+            # SAME url is emitted twice - once as its own "name" and once as
+            # the link, which is the duplicate the user forbids.
+            # Only RUNS of markers are debris. A single trailing "+" is part of
+            # the product ("boAt Rockerz 255 Pro+", "Redmi Note 13 Pro+").
+            label = re.sub(r"^[*_+~\s]{2,}|[*_+~\s]{2,}$", "", label)
+            label = re.sub(r"^[*_~]+|[*_~]+$", "", label).strip()
+            words = re.findall(r"[A-Za-z][A-Za-z'&.-]+", label)
+            # A label that merely CONTAINS a url (or a url fragment left by an
+            # inner wrapper) is markup, never a product name.
+            if (not label
+                    or URL_RE.search(label)
+                    or "amazon." in label.lower() or "flipkart." in label.lower()
+                    or _CTA_LABEL_RE.fullmatch(label)
+                    or len(label) < 6
+                    or not words):
+                return url
+            # Anything the source wrote AFTER the link on that line (usually the
+            # price: "[Name](url) @ 899") belongs with the NAME, not stranded
+            # under the URL. The caller re-splits on newlines, so emit the
+            # label, then a placeholder the tail is folded into below.
+            return f"{label}\x00{url}"
+
+        out = re.sub(r"\[([^\]\[]*?)\]\s*\(\s*(https?://[^\s)]+?)\s*\)",
+                     _unwrap_markdown_link, out, flags=re.I)
         if out == prev:
             break
+    # Fold each unwrapped "LABEL \x00 URL rest-of-line" back into two tidy
+    # lines: "LABEL rest-of-line" then the URL underneath it. Repeat until the
+    # line holds no placeholder: a line can carry SEVERAL markdown links
+    # ("[A](u1) @99 [B](u2) @199"), and folding only the first one left the
+    # rest of the placeholders visible as NUL characters in the post.
+    for _ in range(8):
+        if "\x00" not in out:
+            break
+        folded: list[str] = []
+        for line in out.split("\n"):
+            if "\x00" not in line:
+                folded.append(line)
+                continue
+            head, _, remainder = line.partition("\x00")
+            url_match = URL_RE.match(remainder)
+            if not url_match:
+                folded.append(line.replace("\x00", " "))
+                continue
+            url = url_match.group(0)
+            tail = remainder[url_match.end():].strip()
+            label = head.strip()
+            folded.append(f"{label} {tail}".strip() if tail else label)
+            folded.append(url)
+        out = "\n".join(folded)
+    # Belt and braces: a placeholder must never reach a reader.
+    out = out.replace("\x00", " ")
     # Leftover stray square brackets are noise.
     out = re.sub(r"[\[\]]+", "", out)
     # Markdown emphasis debris (++, **, __ and lone */_) left around the
@@ -2690,6 +2757,11 @@ def sanitize_outbound_text(text: str) -> str:
 
 def clean_source_text(text: str) -> str:
     text = (text or "").replace("\x00", "")
+    # A source that wrote a whole list on ONE line ("name link name link") is
+    # split FIRST. Every later pass hoists URLs onto their own lines, which
+    # would leave the names bunched in one paragraph above a block of anonymous
+    # links - the reader could not tell which link belongs to which product.
+    text = split_inline_product_links(text)
     text = normalize_nested_link_markup(text)
     text = re.sub(r"[\u200b-\u200f\u2060\ufeff]", "", text)
     text = CK_FOOTER_RE.sub("\n", text)
@@ -3117,6 +3189,96 @@ PRICE_LABEL_RE = re.compile(
     r"|\b[\d,]{2,}\s*/-",
     re.I,
 )
+
+
+def split_inline_product_links(text: str) -> str:
+    """Put each product on its own line with its link underneath it.
+
+    THE DEFECT (user, 2026-09-06): "list of products text paina and kinda
+    links". Some sources write a whole list on ONE line -
+
+        Boat Airdopes 141 @ 899 https://a Samsung M14 @ 9999 https://b
+
+    - which reads as a wall of text and gives no way to tell which link belongs
+    to which product. format_clustered_product_list() only handles the other
+    shape (all links grouped at the bottom), so this one went out untouched.
+
+    Every link here already ends a product, so the text is cut AFTER each URL
+    and the URL moved to its own line:
+
+        Boat Airdopes 141 @ 899
+        https://a
+
+        Samsung M14 @ 9999
+        https://b
+
+    Nothing is invented, dropped or reordered. A line with a single trailing
+    link is already correct and is left exactly as it is, so a neat source
+    stays neat.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    changed = False
+    for line in text.splitlines():
+        # A markdown list on one line ("[A](u1) @99 [B](u2) @199") is split on
+        # the markdown boundary, so each product keeps its own label and link;
+        # the unwrapping in normalize_nested_link_markup() then runs per line.
+        md = list(re.finditer(r"\[[^\]\[]*?\]\s*\(\s*https?://[^\s)]+?\s*\)", line))
+        if len(md) >= 2:
+            pieces, cursor = [], 0
+            for m in md:
+                lead = line[:m.start()].strip() if not pieces else line[cursor:m.start()].strip()
+                if lead and pieces:
+                    pieces[-1] = f"{pieces[-1]} {lead}".strip()
+                elif lead:
+                    pieces.append(lead)
+                pieces.append(m.group(0))
+                cursor = m.end()
+            tail = line[cursor:].strip()
+            if tail and pieces:
+                pieces[-1] = f"{pieces[-1]} {tail}".strip()
+            out.extend(p for p in pieces if p)
+            changed = True
+            continue
+        # A line still carrying markdown/bracket wrapping is NOT a plain inline
+        # list: the "links" are the same URL nested inside its own label
+        # ("[url](url](url))"), and splitting on them would emit the duplicate
+        # copies as separate products. normalize_nested_link_markup() collapses
+        # those first; this pass only ever handles already-plain text.
+        if "[" in line or "]" in line or "(" in line:
+            out.append(line)
+            continue
+        urls = list(URL_RE.finditer(line))
+        # Two or more links on one line, with text between them, is the defect.
+        if len(urls) < 2:
+            out.append(line)
+            continue
+        pieces: list[str] = []
+        cursor = 0
+        for match in urls:
+            label = line[cursor:match.start()].strip(" \t|-\u2013\u2014>*")
+            if label:
+                pieces.append(label)
+            pieces.append(match.group(0))
+            cursor = match.end()
+        tail = line[cursor:].strip(" \t|-\u2013\u2014>*")
+        if tail:
+            pieces.append(tail)
+        # Only rewrite when it actually separates products (a label before a
+        # link at least twice); two bare links in a row are left alone.
+        labelled = sum(1 for i, piece in enumerate(pieces)
+                       if URL_RE.fullmatch(piece) and i and not URL_RE.fullmatch(pieces[i - 1]))
+        if labelled < 2:
+            out.append(line)
+            continue
+        changed = True
+        for i, piece in enumerate(pieces):
+            out.append(piece)
+            # blank line after each link, so the products read as separate deals
+            if URL_RE.fullmatch(piece) and i != len(pieces) - 1:
+                out.append("")
+    return "\n".join(out) if changed else text
 
 
 def format_clustered_product_list(text: str) -> str:
@@ -5971,6 +6133,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if row["source"] in TRICKS_SOURCES or (had_social_promo and ADD_OUR_CHANNEL_FOOTER):
         rendered = f"{rendered.rstrip()}\n\n{tricks_footer()}"
     rendered = tidy_post(rendered)
+    # A source that wrote the whole list on one line is split first, so the two
+    # list shapes (inline, and links grouped at the bottom) are both handled.
+    rendered = split_inline_product_links(rendered)
     multi_product_list = len(converted) >= 3
     if multi_product_list:
         rendered = format_clustered_product_list(rendered)
@@ -6288,6 +6453,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                         rendered, extract_urls(msg), URL_RE.findall(rendered)
                     )
                 rendered = tidy_post(clean_source_text(rendered))
+                rendered = split_inline_product_links(rendered)
                 rendered = format_clustered_product_list(rendered)
                 rendered = strict_orphan_token_cleanup(rendered)
                 rendered = sanitize_outbound_text(rendered)

@@ -2051,6 +2051,102 @@ def test_amazon_ratings_are_stripped_only_where_the_tag_rides():
           str(bot.AMAZON_TAG_TARGETS))
 
 
+def test_every_list_shape_reads_name_above_its_own_link():
+    """USER RULE (2026-09-06): "list of products text paina and kinda links ...
+    sources lo entha neatga vundo same alage antha neatga post cheyali".
+
+    Sources write a list in three shapes. All three must come out as
+    "product name (with its price) on one line, its own link underneath".
+    """
+    def pipeline(src):
+        out = bot.tidy_post(bot.clean_source_text(src))
+        out = bot.split_inline_product_links(out)
+        out = bot.format_clustered_product_list(out)
+        return bot.strict_orphan_token_cleanup(out)
+
+    def pairs(rendered):
+        """[(label, url)] read straight off the finished post."""
+        found, lines = [], [l.strip() for l in rendered.splitlines()]
+        for i, line in enumerate(lines):
+            if bot.URL_RE.fullmatch(line):
+                label = next((lines[j] for j in range(i - 1, -1, -1)
+                              if lines[j] and not bot.URL_RE.fullmatch(lines[j])), "")
+                found.append((label, line))
+        return found
+
+    # SHAPE 1 - the whole list written on ONE line.
+    inline = ("Deals Boat 141 @899 https://amzn.to/a "
+              "Samsung M14 @9999 https://amzn.to/b Milton @89 https://amzn.to/c")
+    got = pairs(pipeline(inline))
+    check("an inline list yields three pairs", len(got) == 3, str(got))
+    check("Boat keeps its own link", got and "Boat 141" in got[0][0] and got[0][1].endswith("/a"), str(got))
+    check("Samsung keeps its own link", len(got) > 1 and "Samsung M14" in got[1][0] and got[1][1].endswith("/b"), str(got))
+    check("Milton keeps its own link", len(got) > 2 and "Milton" in got[2][0] and got[2][1].endswith("/c"), str(got))
+
+    # SHAPE 2 - markdown links written inline.
+    md = "[Boat 141](https://amzn.to/a) @899 [Samsung M14](https://amzn.to/b) @9999"
+    got = pairs(pipeline(md))
+    check("an inline markdown list yields two pairs", len(got) == 2, str(got))
+    check("the markdown labels survive as product names",
+          got and "Boat 141" in got[0][0] and "Samsung M14" in got[1][0], str(got))
+    check("no NUL placeholder ever reaches the reader",
+          "\x00" not in pipeline(md), repr(pipeline(md)))
+
+    # SHAPE 3 - links dumped at the bottom.
+    bottom = ("Boat 141 @ 899\nSamsung M14 @ 9999\nMilton @ 89\n"
+              "https://amzn.to/a\nhttps://amzn.to/b\nhttps://amzn.to/c")
+    got = pairs(pipeline(bottom))
+    check("a bottom-dumped list is paired up", len(got) == 3, str(got))
+    check("each product sits above its own link",
+          got == [(g[0], g[1]) for g in got] and "Boat" in got[0][0]
+          and "Samsung" in got[1][0] and "Milton" in got[2][0], str(got))
+
+    # A NEAT SOURCE MUST COME OUT UNCHANGED - we never "fix" what is already right.
+    neat = ("\U0001f525 Deals\n\n1) Boat 141 @ 899\nhttps://amzn.to/a\n\n"
+            "2) Samsung M14 @ 9999\nhttps://amzn.to/b")
+    check("a neat source is left alone", pipeline(neat).strip() == neat.strip(),
+          repr(pipeline(neat)))
+
+    # A SINGLE deal is never reshaped either.
+    one = "Ergonomic Dustpan @ 55\nhttps://amzn.to/d"
+    check("a single deal is untouched", pipeline(one).strip() == one, repr(pipeline(one)))
+
+
+def test_a_markdown_product_name_is_never_thrown_away():
+    """THE DEFECT: "[Boat Airdopes 141](url) @ 899" published as "url @ 899".
+
+    normalize_nested_link_markup() collapsed EVERY "[label](url)" to the bare
+    url, so when the label was the PRODUCT NAME the post lost its product and
+    the reader saw a naked link - the user's "just names / no product" rule in
+    reverse.
+    """
+    out = bot.normalize_nested_link_markup("[Boat Airdopes 141](https://amzn.to/a) @ 899")
+    check("the product name survives", "Boat Airdopes 141" in out, repr(out))
+    check("its price stays with the name", "Boat Airdopes 141 @ 899" in out, repr(out))
+    check("the link sits on its own line underneath",
+          out.splitlines()[-1].strip() == "https://amzn.to/a", repr(out))
+
+    # Call-to-action labels are debris and must still be dropped.
+    for cta in ("Buy Now", "Click here", "Shop Now", "Link", "Amazon", "Grab it now",
+                "BUY LINK", "Order Now", "check it out"):
+        got = bot.normalize_nested_link_markup("[%s](https://amzn.to/a)" % cta)
+        check("the CTA label %r is dropped" % cta, got.strip() == "https://amzn.to/a", repr(got))
+
+    # A label that is itself a URL, and nested wrappers, still collapse.
+    check("a URL label collapses",
+          bot.normalize_nested_link_markup("[https://amzn.to/a](https://amzn.to/a)").strip()
+          == "https://amzn.to/a")
+    check("nested wrappers collapse",
+          bot.normalize_nested_link_markup("[[https://x](https://x)](https://amzn.to/a)").strip()
+          == "https://amzn.to/a")
+
+    # Real product names of every shape survive.
+    for name in ("Sony WH-1000XM4", "Cello Feast Deluxe Kids Lunch Box",
+                 "Milton Thermosteel Flask 1L", "boAt Rockerz 255 Pro+"):
+        got = bot.normalize_nested_link_markup("[%s](https://amzn.to/x)" % name)
+        check("the product name %r survives" % name, name in got, repr(got))
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -2090,6 +2186,8 @@ def main() -> int:
     test_no_regression_for_the_ordinary_channels()
     test_our_tag_earns_on_amazon_and_lists_still_shorten()
     test_amazon_ratings_are_stripped_only_where_the_tag_rides()
+    test_every_list_shape_reads_name_above_its_own_link()
+    test_a_markdown_product_name_is_never_thrown_away()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
