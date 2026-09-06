@@ -1121,3 +1121,49 @@ THE TWO LAYERS
 
 Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 21 — "vallu chudaru" is not true, and what follows from it
+=================================================================
+
+USER BELIEF: we gave Amazon one source channel, so the others are
+private and we can do as we like on them.
+
+THIS IS FALSE, AND IT IS WHY THE LAST APPLICATION WAS REJECTED.
+Amazon identifies the traffic source from the TAG, not from the channel
+list. Every click on a mama086-21 link reaches amazon.in with the
+referring channel attached. Their closure notice reads: "traffic coming
+to Amazon from one or more site/social media handle ... not included in
+your Associates account". The user already lived this: "LootZoneIndia11
+... anni tags tho post ayyayi so reject chesaru."
+
+USER DECISION: declare all eight channels first, THEN turn the tag on.
+
+WHAT CHANGED
+  * AMAZON_TAG_TARGETS=all is commented OUT again in
+    ops/install_bestgaa.sh. The tag rides on smartbuyhub11 only until
+    the user has listed the channels. Every other channel is byte-for-
+    byte unchanged and keeps earning through EarnKaro.
+  * ops/AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt written: the eight
+    full channel URLs to paste into Associates Central, and the one line
+    to change afterwards.
+  * NEW strip_amazon_ratings(). Copied star ratings and review counts
+    are a documented closure reason (they go stale; Amazon requires live
+    Product API data). They are harmless on a tagless channel, so they
+    are removed ONLY on channels that carry the tag, together with the
+    "#ad (paid link)" disclosure. Product name, price, MRP, percentage,
+    emoji and photos are untouched.
+
+      in : boAt Rockerz 255 / Rs.899 (MRP Rs.2990) / 70% OFF /
+           Rating 4.2 * | 12,453 reviews
+      out: boAt Rockerz 255 / Rs.899 (MRP Rs.2990) / 70% OFF
+
+    Verified that specs and prices with digits survive: "1024 ml",
+    "4 pieces", "70% OFF", "Rs.899" are all kept.
+
+  With the tag unset (today's state) NONE of this runs, so the ordinary
+  channels have no restrictions at all - the user's standing rule.
+
+Suite: 445 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

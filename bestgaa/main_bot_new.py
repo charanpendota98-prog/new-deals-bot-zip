@@ -513,6 +513,34 @@ def is_amazon_only_post(text: str) -> bool:
                for u in urls)
 
 
+_AMAZON_RATING_RE = re.compile(
+    r"(?:\u2b50\s*)?\b(?:rating|rated|stars?)\s*[:\-]?\s*[0-5](?:[.,]\d)?\s*(?:/\s*5)?\s*(?:\u2b50|stars?)?"
+    r"|\b[0-5][.,]\d\s*(?:\u2b50|/\s*5|stars?)"
+    r"|\b[\d,]+\s*(?:\+\s*)?(?:ratings?|reviews?)\b",
+    re.IGNORECASE)
+
+
+def strip_amazon_ratings(text: str) -> str:
+    """Remove copied Amazon star ratings and review counts.
+
+    Amazon lists republished ratings/reviews as an account-closure reason: the
+    numbers go stale, and the programme requires them to refresh live through
+    the Product API. The product name, the price and the link are untouched, so
+    the deal itself reads exactly as before.
+    """
+    out = []
+    for line in (text or "").splitlines():
+        cleaned = _AMAZON_RATING_RE.sub(" ", line)
+        # tidy the separators the removal leaves behind ("899 |  | 70% OFF")
+        cleaned = re.sub(r"\s*\|\s*(?=\||$)", "", cleaned)
+        cleaned = re.sub(r"^\s*[|,\-\u2013\u2014]\s*", "", cleaned)
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).rstrip(" |,-\u2013\u2014")
+        # a line that was ONLY a rating disappears; one that had other words stays
+        if cleaned.strip() or not line.strip():
+            out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
+    return "\n".join(out)
+
+
 def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
     """Remove OUR Associates tag from Amazon links bound for an undeclared channel.
 
@@ -6494,6 +6522,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # Associates compliance: our tag may only ride on the channels that
             # are declared to Amazon (see AMAZON_TAG_TARGETS). Everywhere else the
             # SAME deal posts with an untagged link.
+            # AMAZON PROGRAMME RULE (verified 2026-09-06): copied star ratings
+            # and review counts are a documented account-closure reason - they
+            # go stale, and Amazon requires such data to update live via the
+            # Product API. They are harmless on a channel carrying no tag, but
+            # on a channel that DOES carry our tag Amazon can tie the post to
+            # the account. So they are removed only where the tag rides, and
+            # the link-level disclosure is added there for the same reason.
+            if target in AMAZON_TAG_TARGETS and target != SHOPPING_TARGET:
+                target_text = strip_amazon_ratings(target_text)
+                target_text = add_link_disclosure(target_text)
             target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
             allow_preview = await store.preview_allowed(target_text)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES

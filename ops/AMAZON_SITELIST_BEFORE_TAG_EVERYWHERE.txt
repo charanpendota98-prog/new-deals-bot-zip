@@ -1,0 +1,63 @@
+BEFORE TURNING THE TAG ON FOR EVERY CHANNEL
+===========================================
+Written 2026-09-06.
+
+WHY THIS FILE EXISTS
+  The user asked: "remaining vi anni manam, vallu chudaru, so manaku istam
+  vachinattu pettochu okaynaa?" - we only gave Amazon ONE channel as the
+  source, so surely they only look at that one?
+
+  No. Amazon identifies the traffic source FROM THE TAG. Every click on a
+  link carrying mama086-21 arrives at amazon.in with the referring channel
+  attached. The tag IS the report. This is the exact wording Amazon uses
+  when closing such accounts:
+
+    "we noticed traffic coming to Amazon from one or more site/social media
+     handle/mobile application that are currently not included in your
+     Associates account"
+
+  This is what happened last time - the user's own words: "LootZoneIndia11
+  ... anni tags tho post ayyayi so reject chesaru."
+
+CURRENT STATE (safe)
+  AMAZON_TAG_TARGETS is NOT set, so the tag rides on smartbuyhub11 only.
+  Every other channel posts exactly as before: no tag, no restrictions,
+  full hype, and it keeps earning through EarnKaro.
+
+STEP 1 - DECLARE ALL EIGHT CHANNELS
+  https://affiliate-program.amazon.in/home/account/profile/sitelist
+  Add the FULL URL of each, not the bare platform name (listing
+  "t.me" instead of "t.me/LootZoneIndia11" is itself a closure reason):
+
+    https://t.me/smartbuyhub11
+    https://t.me/LootZoneIndia11
+    https://t.me/LootzoneTricks
+    https://t.me/PowerLoots1
+    https://t.me/Premiumlootsdeals
+    https://t.me/SecretLootIndia1
+    https://t.me/Under99Deals11
+    https://t.me/under499loots
+
+  Every channel must be PUBLIC - viewable without joining.
+
+STEP 2 - TURN IT ON
+  In the .env:  AMAZON_TAG_TARGETS=all      then redeploy.
+
+WHAT THE BOT DOES AUTOMATICALLY ONCE IT IS ON
+  Any channel carrying the tag becomes a channel Amazon reviews, so on
+  those channels only, the bot now:
+    * removes copied star ratings and review counts (a documented
+      closure reason: the numbers go stale, and Amazon requires them to
+      refresh live through the Product API);
+    * appends the link-level disclosure "#ad (paid link)".
+  The product name, price, MRP, percentage, emoji, photos and the source
+  wording are all left exactly as they are - the deal reads the same.
+
+  A channel NOT in the list keeps carrying no tag and is not altered in
+  any way.
+
+STILL WORTH KNOWING
+  Shortened links (bitli.in) are link cloaking, which Amazon lists as a
+  closure reason. The review channel already posts native amazon.in URLs.
+  If Amazon ever queries the loot channels, switching those to native
+  /dp/ASIN links is the next step - the code already builds them.

@@ -105,12 +105,16 @@ EARNKARO_API_KEY=$EK_KEY
 EARNKARO_API_URL=https://ekaro-api.affiliaters.in/api/converter/public
 EARNKARO_PUBLISHER_ID=$EK_PUB
 AMAZON_TAG=$AMZ_TAG
-# USER DECISION (2026-09-06): "channels anni mana new tag use chesi" - the tag
-# earns on every owned channel, not only the one under review.
-# WARNING: Amazon requires every channel carrying the tag to be listed in
-# Associates Central. Add them all there, or set this back to unset (review
-# channel only) while the application is pending.
-AMAZON_TAG_TARGETS=all
+# USER DECISION (2026-09-06, revised): the tag WILL go on every channel, but
+# only AFTER all eight are listed in Associates Central. Amazon identifies the
+# traffic source from the tag itself, so an undeclared channel carrying it is
+# the exact violation that caused the previous rejection.
+#
+# TO TURN IT ON: list all eight channels at
+#   https://affiliate-program.amazon.in/home/account/profile/sitelist
+# then change the line below to  AMAZON_TAG_TARGETS=all  and redeploy.
+# AMAZON_TAG_TARGETS=all
+
 BITLY_TOKENS=$BITLY
 BOT_DB_PATH=$APP/bestgaa.sqlite3
 PRODUCT_DEDUP_SECONDS=36000
