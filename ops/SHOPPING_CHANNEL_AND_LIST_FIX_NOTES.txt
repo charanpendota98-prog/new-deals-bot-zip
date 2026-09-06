@@ -1071,3 +1071,53 @@ EVERY OTHER DIFFERENCE IS A FIX, NOT A CHANGE IN BEHAVIOUR
 
 Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
 sync_identity ok, bridge probe green.
+
+
+=================================================================
+Round 20 — our tag now EARNS on every channel; lists still Bitly
+=================================================================
+
+USER QUESTION: "channels anni perfectga amazon mana new tag use chesi
+and list of products vachinappudu bitly use chesi chesthada?"
+
+AUDIT FINDING (the tag was NOT earning anywhere)
+  Round 18 verified strip_amazon_tag_for_undeclared(), which is only the
+  delivery-time guard. The real link path is AffiliateClient.convert(),
+  and a 2026-09-03 rule had removed the direct-Associates branch: EVERY
+  Amazon link was sent to EarnKaro, which returns its own ekaro.in link.
+  apply_amazon_tag() then had no amazon.in URL left to tag. So the tag
+  reached NO channel - not even the review channel - and the Amazon
+  commission went to EarnKaro's account rather than mama086-21.
+
+FIX (user chose "tag_everywhere" + "bitly for lists only", 2026-09-06)
+  An Amazon PRODUCT link (one with an ASIN) is now built natively in
+  convert():  https://www.amazon.in/dp/ASIN?tag=mama086-21
+  and never sent to EarnKaro. Everything else is unchanged:
+    Amazon SEARCH/category  -> EarnKaro (no ASIN; a tag there earns
+                               nothing anyway)
+    Flipkart and all others -> EarnKaro exactly as before
+  AMAZON_TAG_TARGETS=all is now written by ops/install_bestgaa.sh.
+
+BITLY - unchanged, and confirmed correct
+    list (2+ links) -> every link shortened, post stays neat
+    single product  -> native ~48-char /dp/ASIN?tag= link, no quota spent
+  A 3-product list posts as three bitli.in links whose destinations each
+  carry our tag.
+
+THE TWO LAYERS
+  1. convert()  decides whether the tag goes ON the link.
+  2. strip_amazon_tag_for_undeclared() is still the last word at
+     delivery: any channel NOT in AMAZON_TAG_TARGETS has the tag removed,
+     including when it is hidden behind a short link we minted.
+  With AMAZON_TAG_TARGETS=all every owned channel is declared, so layer 2
+  now passes the tag through - but the guard remains, so removing a
+  channel from the list instantly stops the tag reaching it.
+
+!! ACCOUNT RISK THE USER ACCEPTED
+  Amazon requires every channel carrying the tag to be listed in
+  Associates Central. All eight owned channels must be added there, or
+  set AMAZON_TAG_TARGETS back to unset (review channel only) until the
+  account is approved.
+
+Suite: 425 checks green in test_line_fidelity, 225 and 160 elsewhere,
+sync_identity ok, bridge probe green.

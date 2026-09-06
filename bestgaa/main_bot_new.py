@@ -4868,12 +4868,37 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # USER RULE (2026-09-03, FINAL): the Amazon Associates account keeps
-        # getting rejected, so the old direct-Associates branch is GONE. Every
-        # Amazon link is monetized through EarnKaro below, exactly like every
-        # other store. If EarnKaro is briefly down the job retries, and the
-        # final attempt still posts the clean merchant link (passthrough) —
-        # a deal is never lost, it just never carries a dead Associates tag.
+        # USER RULE (2026-09-06): "channels anni mana new tag use chesi". The
+        # user owns mama086-21 and wants Amazon deals to earn on THEIR account
+        # rather than through EarnKaro's Amazon share. So an Amazon PRODUCT link
+        # is built natively here - /dp/ASIN?tag=OUR_TAG - and never sent to
+        # EarnKaro, which would hand the click to ekaro.in and drop the tag.
+        #
+        # This is gated on AMAZON_TAG_TARGETS so it can only affect channels the
+        # user has actually declared to Amazon; everywhere else the tag is
+        # stripped again at delivery by strip_amazon_tag_for_undeclared(), and
+        # those channels keep earning through EarnKaro as before.
+        #
+        # Amazon SEARCH/category links have no single ASIN, so they still go to
+        # EarnKaro below - a tag on a search page earns nothing anyway.
+        if OUR_TAG and in_domains(host, AMAZON_DOMAINS):
+            native = compact_amazon_product_link(clean)
+            asin = re.search(r"/dp/([A-Z0-9]{10})(?:[/?#]|$)", native, re.I)
+            if asin:
+                tagged = apply_amazon_tag(native)
+                affiliate = tagged
+                # Lists still shorten, exactly as before, so a 3-product post
+                # stays neat; a single ~48-char /dp/ link needs no shortener and
+                # spends no Bitly quota.
+                if should_use_bitly(clean, multi_link) or len(tagged) > SHORTEN_MIN_LEN:
+                    shortened = await self.shorten(tagged)
+                    if shortened:
+                        affiliate = shortened
+                    else:
+                        log.warning("BITLY unavailable; posting the native tagged Amazon link")
+                key = product_key(clean)
+                await store.cache_link(source_url, affiliate, clean, key)
+                return LinkResult(source_url, clean, affiliate, key)
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:

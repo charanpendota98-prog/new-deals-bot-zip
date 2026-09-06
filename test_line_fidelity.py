@@ -1897,6 +1897,106 @@ def test_no_regression_for_the_ordinary_channels():
             check("but the product link still works", "B0X" in out, repr(out))
 
 
+def test_our_tag_earns_on_amazon_and_lists_still_shorten():
+    """USER DECISION (2026-09-06): "channels anni mana new tag use chesi ... list
+    of products vachinappudu bitly use chesi".
+
+    Amazon PRODUCT links must be built natively with OUR tag instead of being
+    handed to EarnKaro (which returns an ekaro.in link and drops the tag, so the
+    commission goes to EarnKaro's Amazon account, not ours). Lists must still
+    shorten so a multi-product post stays neat.
+    """
+    import asyncio, json, random
+
+    if not bot.OUR_TAG:
+        return
+
+    class Resp:
+        status = 200
+
+        def __init__(self, body):
+            self._b = body
+
+        async def text(self):
+            return self._b
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    class Session:
+        def post(self, url, **kw):
+            return Resp(json.dumps(
+                {"success": 1, "data": "https://ekaro.in/ek%d" % random.randint(10 ** 5, 9 * 10 ** 5)}))
+
+    class Aff(bot.AffiliateClient):
+        def __init__(self):
+            self._health, self._short_cache, self._short_to_long = {}, {}, {}
+            self.calls, self.session = [], Session()
+
+        async def cache_link(self, *a):
+            pass
+
+        async def resolve(self, u):
+            return u
+
+        async def link_not_broken(self, u):
+            return True
+
+        async def shorten(self, u):
+            self.calls.append(u)
+            short = "https://bitli.in/S%d" % len(self.calls)
+            self._short_to_long[short] = u
+            return short
+
+    async def convert(url, multi):
+        aff = Aff()
+        res = await aff.convert(url, multi)
+        link = res.affiliate if res else ""
+        return link, aff._short_to_long.get(link, link), len(aff.calls)
+
+    # A single Amazon product: our tag, posted natively, no Bitly quota spent.
+    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/dp/B0TAGTEST1", False))
+    check("a single Amazon deal carries OUR tag", bot.OUR_TAG in dest, dest)
+    check("it is not handed to EarnKaro", "ekaro.in" not in dest, dest)
+    check("it is the native product URL", "/dp/B0TAGTEST1" in dest, dest)
+    check("a single short link spends no Bitly quota", shortened == 0, str(shortened))
+
+    # A LIST still shortens, and the tag survives behind the short link.
+    link, dest, shortened = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/dp/B0TAGTEST2", True))
+    check("a list link is shortened", link.startswith("https://bitli.in/"), link)
+    check("the shortened list link still carries our tag", bot.OUR_TAG in dest, dest)
+
+    # An Amazon SEARCH page has no ASIN, so it still goes through EarnKaro -
+    # a tag on a search page earns nothing anyway.
+    link, dest, _ = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.amazon.in/s?k=headphones", False))
+    check("an Amazon search link still uses EarnKaro", "ekaro.in" in link, link)
+
+    # Other stores are untouched: they keep earning through EarnKaro.
+    link, dest, _ = asyncio.get_event_loop().run_until_complete(
+        convert("https://www.flipkart.com/x/p/itmzzz", False))
+    check("Flipkart still goes through EarnKaro", "ekaro.in" in link, link)
+    check("Flipkart never carries an Amazon tag", bot.OUR_TAG not in link, link)
+
+    # The delivery-time guard is still the last word: a channel the user has NOT
+    # declared to Amazon must never show the tag, shortened or not.
+    class Rev:
+        _short_to_long = {"https://bitli.in/S1":
+                          "https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG}
+
+    undeclared = "Zzz" + "NotDeclared11"
+    for text in ("Deal https://www.amazon.in/dp/B0X?tag=" + bot.OUR_TAG,
+                 "Deal https://bitli.in/S1"):
+        out = bot.strip_amazon_tag_for_undeclared(text, undeclared, Rev())
+        check("an undeclared channel never shows the tag", bot.OUR_TAG not in out, out)
+        check("and its link still reaches the product", "B0X" in out, out)
+
+
 def main() -> int:
     for name, text in CORPUS.items():
         run_case(name, text)
@@ -1934,6 +2034,7 @@ def main() -> int:
     test_every_review_post_carries_our_tag_and_nothing_else_does()
     test_the_finished_review_post_end_to_end()
     test_no_regression_for_the_ordinary_channels()
+    test_our_tag_earns_on_amazon_and_lists_still_shorten()
     print("\n" + ("LINE FIDELITY: FAILURES: " + ", ".join(FAILS) if FAILS else "test_line_fidelity: all checks PASS"))
     return 1 if FAILS else 0
 
