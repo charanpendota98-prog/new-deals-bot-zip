@@ -1,0 +1,57 @@
+WHATSAPP RECONNECT STORM FIX — 2026-09-11
+==========================================
+
+REPORTED PROBLEM ("channel agipoindi")
+--------------------------------------
+Live server logs showed `"status":408` firing 4 times in 3 seconds, then the
+WhatsApp channel went completely silent until a manual restart. Same class of
+incident as the earlier "channel agipoindi" report: the bridge reconnects in
+a storm, WhatsApp keeps answering 408 (handshake timeout) / 440 (connection
+replaced), and the channel stays dead for days.
+
+ROOT CAUSE
+----------
+Every Baileys connection 'close' event scheduled ANOTHER raw
+setTimeout(connectWhatsApp), and the silent-death watchdog stacked its own
+cold retries on the same cycle:
+  - idle refresh (empty queue >90 min):        setTimeout(connectWhatsApp, 5s)
+  - forced reconnect (deals pending >25 min):  setTimeout(connectWhatsApp, 5s)
+  - 10-minute cold retry (every 60s watchdog): direct connectWhatsApp()
+So one disconnect could leave several timers pending at once; when they all
+fired, several sockets connected simultaneously. WhatsApp replaces the older
+session (440) and/or times out the handshake (408), which fires 'close'
+again, which schedules yet another timer — a stacking storm that never
+converges until a human restarts the process.
+
+FIX (tg-wa-bridge/bridge.js)
+----------------------------
+1. Next to `let reconnectAttempt = 0`: `let connecting = false`,
+   `let reconnectTimer = null`, and `scheduleReconnect(delayMs, failLabel)` —
+   clears any pending timer and sets ONE new timer that calls
+   connectWhatsApp(). A newer schedule REPLACES an older one; reconnects
+   never stack.
+2. The old connect body is renamed connectWhatsAppInner(). connectWhatsApp()
+   is now a guard wrapper:
+     if (connecting || waReady || shuttingDown) return
+     connecting = true
+     try { await connectWhatsAppInner() }
+     catch (error) { log; scheduleReconnect(30_000) }
+     finally { connecting = false }
+   At most ONE connect can be in flight at any time.
+3. Connection 'open': reconnectAttempt = 0 AND cancel the pending
+   reconnectTimer (clearTimeout + null) so a stale timer can never fire
+   against a connection that is already up.
+4. Connection 'close': connecting = false (the dead socket frees the slot)
+   and the raw setTimeout is replaced by scheduleReconnect(delay,
+   'reconnect failed').
+5. Watchdog: the idle refresh (5s) and the forced reconnect (5s) use
+   scheduleReconnect(...) instead of raw setTimeout; the 10-minute cold
+   retry now ALSO requires !connecting && !reconnectTimer before firing and
+   uses scheduleReconnect(1000, ...) — it never stacks on a pending
+   reconnect.
+
+VERIFY
+------
+  node --check tg-wa-bridge/bridge.js            # syntax
+  TELEGRAM_BOT_TOKEN=... WA_PHONE=... WA_CHANNEL=... \
+    node tg-wa-bridge/bridge.js --self-test      # PASS
