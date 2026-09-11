@@ -3703,8 +3703,23 @@ async function worker() {
 }
 
 let reconnectAttempt = 0
+let connecting = false
+let reconnectTimer = null
 let lastConnectionOpenAt = 0
 let lastProgressAt = Date.now()
+
+// ONE pending reconnect at a time. The old code let every 'close' event and
+// every watchdog branch stack its own raw setTimeout, so several sockets
+// connected at once and WhatsApp answered 408 (handshake timeout) / 440
+// (connection replaced) in a loop for days until a manual restart. A newer
+// schedule replaces an older one - reconnects never stack.
+function scheduleReconnect(delayMs, failLabel = 'reconnect failed') {
+  if (reconnectTimer) clearTimeout(reconnectTimer)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectWhatsApp().catch(error => log.error({ err: error.message }, failLabel))
+  }, delayMs)
+}
 
 // Silent-death watchdog. A Baileys socket can stay "open" while the underlying
 // websocket is dead, which is how a channel goes quiet after one late-night
@@ -3728,20 +3743,22 @@ async function connectionWatchdog() {
         lastProgressAt = now
         waReady = false
         try { wa?.end?.(new Error('idle refresh')) } catch {}
-        setTimeout(() => connectWhatsApp().catch(error => log.error({ err: error.message }, 'idle refresh failed')), 5000)
+        scheduleReconnect(5000, 'idle refresh failed')
       }
       if (waReady && readyCount >= 1 && idleFor > 25 * 60_000) {
         log.error({ readyCount, idleMinutes: Math.round(idleFor / 60_000) }, 'WhatsApp idle with pending deals; forcing reconnect')
         lastProgressAt = now
         waReady = false
         try { wa?.end?.(new Error('watchdog reconnect')) } catch {}
-        setTimeout(() => connectWhatsApp().catch(error => log.error({ err: error.message }, 'watchdog reconnect failed')), 5000)
+        scheduleReconnect(5000, 'watchdog reconnect failed')
       }
       // Not ready, and no reconnect in flight (the close handler schedules one,
-      // but a connectWhatsApp() that threw before registering leaves nothing).
-      if (!waReady && now - lastConnectionOpenAt > 10 * 60_000 && !shuttingDown) {
+      // a connectWhatsApp() that threw before registering schedules one too) and
+      // none pending on a timer: the cold retry must never stack on a reconnect
+      // that is already on its way.
+      if (!waReady && now - lastConnectionOpenAt > 10 * 60_000 && !shuttingDown && !connecting && !reconnectTimer) {
         log.warn('WhatsApp not ready and no connection for 10 minutes; retrying');
-        connectWhatsApp().catch(error => log.error({ err: error.message }, 'watchdog cold retry failed'))
+        scheduleReconnect(1000, 'watchdog cold retry failed')
       }
       if (readyCount > 0) {
         log.info({
@@ -3805,6 +3822,23 @@ function secondaryChannelRetryLoop() {
 }
 
 async function connectWhatsApp() {
+  // Guard wrapper: at most ONE connect in flight, and none while the socket is
+  // already ready or the process is shutting down. The dead socket's 'close'
+  // event frees `connecting` for the reconnect path, and a setup that throws
+  // before a socket exists schedules a single 30s retry.
+  if (connecting || waReady || shuttingDown) return
+  connecting = true
+  try {
+    await connectWhatsAppInner()
+  } catch (error) {
+    log.error({ err: error.message }, 'connect failed; retry scheduled')
+    scheduleReconnect(30_000)
+  } finally {
+    connecting = false
+  }
+}
+
+async function connectWhatsAppInner() {
   const { state: auth, saveCreds } = await useMultiFileAuthState(AUTH_DIR)
   const { version } = await fetchLatestBaileysVersion()
   const sock = makeWASocket({
@@ -3827,6 +3861,12 @@ async function connectWhatsApp() {
     }
     if (update.connection === 'open') {
       reconnectAttempt = 0
+      // A live socket: cancel whatever reconnect was pending, so a stale timer
+      // can never fire against a connection that is already up.
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
       lastConnectionOpenAt = Date.now()
       try {
         targetJid = await resolveTargetJid(sock)
@@ -3873,6 +3913,7 @@ async function connectWhatsApp() {
     }
     if (update.connection === 'close') {
       waReady = false
+      connecting = false // the dead socket frees the connect slot
       const status = update.lastDisconnect?.error?.output?.statusCode
       if (status === DisconnectReason.loggedOut) {
         // A real logout needs a human to re-pair - but going silent is how the
@@ -3889,7 +3930,7 @@ async function connectWhatsApp() {
       reconnectAttempt += 1
       const delay = Math.min(300_000, 4000 * 2 ** Math.min(reconnectAttempt - 1, 7)) + randomMs(1, 12)
       log.warn({ status, delay }, 'WhatsApp disconnected; reconnect scheduled')
-      setTimeout(() => connectWhatsApp().catch(error => log.error({ err: error.message }, 'reconnect failed')), delay)
+      scheduleReconnect(delay, 'reconnect failed')
     }
   })
 }
