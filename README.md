@@ -172,7 +172,7 @@ attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
 account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
 commission away. It is a **final, monetized link** and is treated like one.
 
-Behaviour (pinned by `test_hypd_links.py`, 39 checks, green):
+Behaviour (pinned by `test_hypd_links.py`, 53 checks, green):
 
 | Situation | What the bot does |
 |---|---|

@@ -42,7 +42,7 @@ info "bridge dir  : $BRIDGE_DIR"
 if [[ "$DO_TESTS" == "1" ]]; then
   echo "==== 0.5 THE REPO PROVES ITSELF (suites must be green before shipping) ===="
   for suite in test_pipeline_fixes test_render_job test_best_copy test_duplicate_sim \
-               test_line_fidelity test_rescan; do
+               test_line_fidelity test_rescan test_earnkaro_conversion test_hypd_links; do
     if [[ ! -f "$REPO/$suite.py" ]]; then
       warn "$suite.py is missing from $REPO"
       continue

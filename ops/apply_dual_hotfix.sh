@@ -46,6 +46,15 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
          # User-supplied Bitly token: best shortening for long links.
          'BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+         # OUR HYPD creator store (USER RULE 2026-09-24): hypd.store share
+         # links of this store ARE our monetized links - never unwrapped, never
+         # parameter-stripped, ALWAYS Bitly-shortened - and the Meesho/Shopsy
+         # products we curated there earn on them instead of posting untagged.
+         # Defaults in main_bot_new.py are the same; pinning them here makes the
+         # live config explicit. Train the links with: python3 ops/hypd_links.py
+         'HYPD_STORE_ID':'93944','HYPD_STORE_SLUG':'smartdeals',
+         'HYPD_ALWAYS_BITLY':'true',
+         'HYPD_MERCHANT_DOMAINS':'meesho.com,shopsy.in',
          # Highest commission wins: Amazon always direct Associates tag
          # (EarnKaro takes a cut in the middle; 0.0 = never route via EK).
          'AMAZON_EARNKARO_RATIO':'0.0'}
@@ -110,6 +119,9 @@ if [[ -f .env ]]; then
 from pathlib import Path
 p=Path('.env')
 updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'mama086-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45','WA_BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+ # OUR HYPD store ids/slugs (same rule as the bot side): a hypd.store link of
+ # another store is somebody else's commission and is never republished as ours.
+ 'HYPD_STORES':'93944,smartdeals',
  # Channel-only for now: groups are skipped (no group join/invite calls) so a
  # flaky group can never trigger WhatsApp disconnects. Set to 'false' and re-run
  # this script to turn group fan-out back on.

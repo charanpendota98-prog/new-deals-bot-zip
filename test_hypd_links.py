@@ -291,6 +291,44 @@ def test_config_defaults():
           < source.index('raise RuntimeError("EarnKaro circuit open")'), "ordering changed")
 
 
+def test_deploy_wiring():
+    """The server scripts must SHIP and SHOW this config, not just the code."""
+    repo = Path(__file__).parent
+    hotfix = (repo / "ops" / "apply_dual_hotfix.sh").read_text(encoding="utf-8")
+    for needle, what in (
+        ("'HYPD_STORE_ID':'93944'", "bot .env gets our store id"),
+        ("'HYPD_ALWAYS_BITLY':'true'", "bot .env gets always-Bitly"),
+        ("'HYPD_MERCHANT_DOMAINS':'meesho.com,shopsy.in'", "bot .env gets the merchant list"),
+        ("'HYPD_STORES':'93944,smartdeals'", "bridge .env gets our store ids"),
+    ):
+        check(what, needle in hotfix, needle)
+
+    diagnose = (repo / "ops" / "diagnose.sh").read_text(encoding="utf-8")
+    check("diagnose.sh shows the live HYPD config",
+          "HYPD_STORE_ID:$BESTGAA_DIR/.env" in diagnose
+          and "HYPD_STORES:$BRIDGE_DIR/.env" in diagnose, "")
+
+    deploy = (repo / "ops" / "deploy_and_verify.sh").read_text(encoding="utf-8")
+    check("the deploy gate runs this suite before shipping",
+          "test_hypd_links" in deploy, "")
+    check("and the EarnKaro suite too",
+          "test_earnkaro_conversion" in deploy, "")
+
+    tool = repo / "ops" / "hypd_links.py"
+    check("the ops tool exists", tool.exists(), str(tool))
+    source = tool.read_text(encoding="utf-8")
+    check("the ops tool learns links through the bot's own client",
+          "bot.AffiliateClient" in source and "remember_hypd_link" in source, "")
+    check("and never stores a foreign creator's store as ours",
+          "NEVER used as ours" in source, "")
+
+    runbook = (repo / "ops" / "HYPD_OUR_LINKS_2026-09-24.txt").read_text(encoding="utf-8")
+    for link in (OUR_LINK, OUR_LINK_2, OUR_LINK_3):
+        check(f"the runbook lists {link.rsplit('/', 1)[-1]}", link in runbook, "")
+    check("the runbook names the Meesho source channel",
+          "t.me/+6LA1ljXGlbNmMjA1" in runbook, "")
+
+
 def main():
     test_recognition()
     test_resolve_never_unwraps_our_link()
@@ -301,6 +339,7 @@ def main():
     test_shorten_pass_covers_hypd_links()
     test_destination_from_page_markup()
     test_config_defaults()
+    test_deploy_wiring()
     print(f"\nHYPD LINK TESTS PASS ({PASS} checks)")
 
 

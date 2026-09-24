@@ -99,7 +99,7 @@ fi
 
 echo ""
 echo "==== 4. KEY .ENV VALUES PRESENT? ===="
-for pair in "BITLY_TOKENS:$BESTGAA_DIR/.env" "AMAZON_TAG:$BESTGAA_DIR/.env" "EARNKARO_API_KEY:$BESTGAA_DIR/.env" "TELEGRAM_API_ID:$BESTGAA_DIR/.env" "TELEGRAM_API_HASH:$BESTGAA_DIR/.env" "WA_BITLY_TOKENS:$BRIDGE_DIR/.env" "QUIET_START:$BRIDGE_DIR/.env" "POST_QUIET_START:$BESTGAA_DIR/.env"; do
+for pair in "BITLY_TOKENS:$BESTGAA_DIR/.env" "AMAZON_TAG:$BESTGAA_DIR/.env" "EARNKARO_API_KEY:$BESTGAA_DIR/.env" "TELEGRAM_API_ID:$BESTGAA_DIR/.env" "TELEGRAM_API_HASH:$BESTGAA_DIR/.env" "WA_BITLY_TOKENS:$BRIDGE_DIR/.env" "QUIET_START:$BRIDGE_DIR/.env" "POST_QUIET_START:$BESTGAA_DIR/.env" "HYPD_STORE_ID:$BESTGAA_DIR/.env" "HYPD_ALWAYS_BITLY:$BESTGAA_DIR/.env" "HYPD_STORES:$BRIDGE_DIR/.env"; do
   key="${pair%%:*}"; file="${pair#*:}"
   if grep -qE "^${key}=.+" "$file" 2>/dev/null; then ok "$key set in $(basename "$(dirname "$file")")/.env"
   else warn "$key missing/empty in $file"; fi
