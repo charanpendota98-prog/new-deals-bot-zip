@@ -31,9 +31,22 @@ import tempfile
 from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="earnkaro-test-")
+
+# The WORKING SHAPE of the converter token (a JWT whose payload names the
+# publisher that gets paid) with a deliberately fake signature: the real token is
+# a secret and never belongs in the repository. The claims are the ones the live
+# token carries. The suite SUPPLIES it as EARNKARO_API_KEY on purpose: a test
+# must not depend on whichever .env happens to sit next to it (a fresh clone has
+# no .env at all, and a developer machine has a real one).
+TOKEN = (
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+    "eyJfaWQiOiI2YTZmOTA0OTZkZmY5NjY1Njk2ZmM2MjQiLCJlYXJua2FybyI6IjU0NzgzMjIiLCJpYXQiOjE3OTAyNzM3MTB9."
+    "not-a-real-signature-only-the-claims-matter"
+)
+
 os.environ.update(
     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
-    EARNKARO_API_KEY="k", AMAZON_TAG="",
+    EARNKARO_API_KEY=TOKEN, AMAZON_TAG="",
     # A private DB: the link cache is durable, and a cached row from another
     # suite would be returned instead of the link this test's fake API minted.
     BOT_DB_PATH=str(Path(_TMP) / "test.sqlite3"),
@@ -196,18 +209,13 @@ def test_echo_and_foreign_links_are_refused():
 # ---------------------------------------------------------------------------
 # 3. The API key: account it pays, and the guards built on it
 # ---------------------------------------------------------------------------
-TOKEN = (
-    # The WORKING SHAPE of the converter token (a JWT whose payload names the
-    # publisher that gets paid) with a deliberately fake signature: the real
-    # token is a secret and never belongs in the repository. The claims below
-    # are the ones the live token carries, so the parsing test is real.
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
-    "eyJfaWQiOiI2YTZmOTA0OTZkZmY5NjY1Njk2ZmM2MjQiLCJlYXJua2FybyI6IjU0NzgzMjIiLCJpYXQiOjE3OTAyNzM3MTB9."
-    "not-a-real-signature-only-the-claims-matter"
-)
-
-
 def test_token_claims():
+    # The token literal lives next to the env block at the top: the suite must not
+    # read a real .env, so it hands the bot its own token.
+    check("the suite supplies its own token (no real .env is read)",
+          bot.EK_KEY == TOKEN, "the suite is reading a real .env")
+    check("and the bot derives OUR publisher from it", bot.OUR_EK_ID == "5478322",
+          bot.OUR_EK_ID)
     claims = bot.earnkaro_token_claims(TOKEN)
     check("the token's publisher is read", claims.get("earnkaro") == "5478322", str(claims))
     check("the token's issue date is read", claims.get("iat") == 1790273710, str(claims))
