@@ -1,0 +1,186 @@
+WHAT CHANGED (2026-09-24) — three new sources, EarnKaro conversion, the API key
+===============================================================================
+
+USER REQUEST
+  "e three channel source ga pettu 1st preference ivvu and perfectgaa convert
+   avvatleu earnkaro na links check chesvaa apikey isthunnanu perefctgaa set cheyu"
+
+
+IS THE KEY SET UP - AND DOES IT CONVERT INTO **OUR** LINKS?
+========================================================================
+
+One command answers it on the server (needs internet):
+
+    python3 ops/earnkaro_check.py
+
+What a good run looks like:
+
+    token shape       : JWT, issued 2026-09-24 18:15 UTC
+    EarnKaro publisher: 5478322   <- every converted link pays THIS account
+    endpoint          : https://ekaro-api.affiliaters.in/api/converter/public
+    convert_option    : convert_only
+    [Flipkart product]
+      http      : 200   MONETIZED - PAYS US (5478322)
+      link      : https://ekaro.in/...
+      attribution: affExtParam2=5478322 -> https://www.flipkart.com/...?affExtParam2=5478322
+
+    RESULT: the key is live and N converted link(s) were expanded and PROVED to
+            pay OUR EarnKaro account 5478322. Nothing else to fix.
+            HYPD: 3 of 3 of OUR share links resolved and came back to our store
+            through Bitly.
+
+THE WHOLE PICTURE IN ONE COMMAND (run it any time, also from cron):
+
+    python3 ops/conversion_report.py
+
+    CONFIG
+      EarnKaro : key=YES  publisher=5478322 (issued 2026-09-24 18:15)
+                 endpoint=https://ekaro-api.affiliaters.in/api/converter/public  convert_option=convert_only
+      Amazon   : tag=mama086-21  via EarnKaro=true
+      HYPD     : store=93944 (smartdeals)  always Bitly=true  merchants=meesho.com,shopsy.in
+      Bitly    : 1 token(s)
+    ROUTES (last 24h, from the bot's own database)
+      earnkaro         37        amazon         9        hypd         4
+      passthrough      1   <- earns NOTHING (no campaign anywhere)
+    VERDICT
+      EarnKaro : WORKING - 37 converted link(s), 0 auth failures (pays 5478322)
+      Amazon   : WORKING - tag mama086-21; via EarnKaro=true with the native tag as fallback
+      HYPD     : WORKING - 3 link(s) learned, 4 post(s) on OUR link
+                 K product(s) WAITING for curation (earn nothing until then)
+      Bitly    : PRESENT - 1 token(s); our hypd links are shortened
+    NEEDS ATTENTION  (exit code 1, so cron can alert)
+      - ... the exact item + the command that fixes it
+
+The same command also proves the OTHER half (Meesho/Shopsy). It resolves the
+three hypd.store share links, shortens them with Bitly exactly like the bot, and
+follows the short link back to prove it is still OUR store:
+
+    python3 ops/earnkaro_check.py --hypd-only     # just that part, faster
+    python3 ops/earnkaro_check.py --skip-hypd     # just the EarnKaro part
+
+Reading it:
+
+  * "PAYS US (5478322)"     the returned short link was EXPANDED and its visible
+                            attribution is our publisher -> the link is OURS.
+  * "MONETIZED (whose account not visible)"
+                            the store redirected somewhere unreadable; the token
+                            claims above are still the proof of the account.
+  * "WRONG ACCOUNT"         the API answered a link that pays somebody ELSE
+                            (or a HYPD-attributed page) - replace EARNKARO_API_KEY.
+  * "no link" with HTTP 200 a store with no EarnKaro campaign (normal for some
+                            marketplaces and for search pages) - that link is
+                            posted clean, and OUR HYPD link covers Meesho/Shopsy.
+  * "TOKEN REFUSED" (401/403)
+                            the token was rejected - regenerate it and re-run
+                            ops/set_earnkaro_key.sh.
+
+If the endpoint cannot be reached at all (transport error, exit 0 in the HTTP
+column), the network - not the key - is the problem; re-run from the server.
+
+In THIS workspace the same command only reaches the token-claims half: the sandbox
+has no outbound internet (TLS is reset for every host), so "http: 0" here is the
+sandbox, not the key. The live conversion proof has to come from the server.
+
+1. THE THREE NEW SOURCES (first preference)
+   ------------------------------------------
+     https://t.me/+O3j4ghbtJzhjZjJl
+     https://t.me/+8KzU3P58MJ9jN2M1
+     https://t.me/+6LA1ljXGlbNmMjA1
+
+   * They feed every non-Tricks main target (LootZoneIndia11, SecretLootIndia1,
+     PowerLoots1); the Under-99 / Under-499 / card / Premium / Amazon-review
+     routes layer on by price and content exactly as for every other source.
+   * FIRST PREFERENCE: their jobs are claimed from the queue ahead of every
+     other source and get the +1 priority tier, so an equivalent deal from one
+     of them is rendered and delivered first. DealsUnder99_com keeps its own
+     first-preference seat (nothing was taken away from it).
+   * Invite hashes carry UPPERCASE letters, so source matching is normalised
+     (normalize_source_name) - that is what makes the priority/claim lookups
+     agree with the claim SQL, which compares lower(source).
+   * A brand-new first-preference source recovers only a 12-post tail on its
+     first connect (FIRST_PREFERENCE_BACKFILL_LIMIT), instead of firing ~50
+     posts x 3 channels ahead of every ordinary deal.
+
+   The bot joins the channels itself on startup (resolve_entity -> ImportChat
+   Invite), so no manual join is needed. WhatsApp gets the same deals through
+   our own Telegram channels, which the bridge already mirrors.
+
+2. EARNKARO LINKS ("perfectgaa convert avvatleu")
+   -----------------------------------------------
+   The converter call is now exactly the documented contract:
+
+     POST https://ekaro-api.affiliaters.in/api/converter/public
+     Authorization: Bearer <token>
+     Content-Type: application/json
+     {"deal": "<clean merchant url>", "convert_option": "convert_only"}
+
+   * `convert_option` was missing. Without it the account-level default decides
+     the RESPONSE shape, and a shape the bot could not read meant a post that
+     went out unmonetized.
+   * Every shape is now read: the bare link, the whole deal text with the link
+     inside it, a list, an object of link fields - and failures
+     ("Url not found in post!", "could not locate ...") are logged in the API's
+     own words. An unreadable answer is a LOST COMMISSION; it must never be
+     invisible.
+   * HTTP 401/403 is logged as `EK AUTH` with the exact fix, instead of looking
+     like "this store has no campaign".
+   * Each monetized link logs one line: `EK CONVERT | <store> -> <link>`, so
+     "are the EarnKaro links actually being generated?" is answerable from the
+     log alone. `UNMONETIZED LINK` still marks posts that earn nothing.
+
+3. THE API KEY (isset perfectly)
+   -----------------------------
+   The token is a JWT whose payload names the account that gets paid
+   (`earnkaro` = the EarnKaro publisher id). The bot now decodes it at startup,
+   logs which account earns, pins the foreign-publisher guard to it, and warns
+   when the key is not a converter token at all (that warning is the difference
+   between "conversion is broken" and hours of guessing).
+
+   Set or rotate it on the server with ONE command (the token is never printed
+   and never committed - see the Security section of the README):
+
+     cd ~/bestgaa-bot/bestgaa-bot      # the directory that holds this ops/ folder on the server
+     ./set_earnkaro_key.sh '<the token from the Affiliaters/EarnKaro API page>'
+
+   It backs up .env, writes EARNKARO_API_KEY + the publisher id it read out of
+   the token, chmod 600, restarts bestgaa and verifies against the live API.
+
+   Check any time:
+     python3 ops/earnkaro_check.py --offline     # decode the token, no network
+     python3 ops/earnkaro_check.py               # live conversion probes + raw bodies
+     bash ops/diagnose.sh                        # section 4b prints which account earns
+
+   Watch the first converted deals:
+     journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+
+4. AMAZON POLICY (AMAZON_VIA_EARNKARO, default true)
+   -------------------------------------------------
+   Amazon Associates is still rejecting the account, so a native
+   ?tag=mama086-21 link earns nothing while an EarnKaro conversion pays. Amazon
+   product links therefore convert through EarnKaro like every other store:
+
+     * the native tagged link is the FALLBACK when the network answers "no link"
+       (search / hidden-keywords / browse pages included - EarnKaro has no
+       campaign for those, and the tag path still monetizes them);
+     * the channel submitted for Amazon review still shows the DIRECT tagged
+       product page (our Earned links are expanded back to
+       amazon.in/dp/ASIN?tag=mama086-21 at delivery);
+     * a link cached while Amazon was tagged natively is re-converted instead of
+       being served for its 14-day life.
+
+   Want the pure native-tag behaviour back (2026-09-06 policy)? Put
+   AMAZON_VIA_EARNKARO=false in the bot's .env and restart bestgaa.
+
+DEPLOY
+  ops/repack_bundles.sh  ->  ops/apply_dual_hotfix.sh   (as usual)
+  The hotfix carries the EarnKaro knobs; pass the key with the deploy, or set it
+  with set_earnkaro_key.sh afterwards:
+      EARNKARO_API_KEY='<token>' ./apply_dual_hotfix.sh
+      # or place the token in ops/.earnkaro_key (gitignored) before deploying
+
+TESTS (all green)
+  python3 test_earnkaro_conversion.py   # 95 checks: converter contract, key,
+                                        # Amazon policy, the three new sources
+  python3 test_render_job.py            # 160 checks
+  python3 test_pipeline_fixes.py        # 229 checks
+  python3 test_line_fidelity.py test_best_copy.py test_duplicate_sim.py test_rescan.py

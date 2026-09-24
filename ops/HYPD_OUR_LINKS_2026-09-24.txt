@@ -1,0 +1,112 @@
+WHAT CHANGED (2026-09-24) — OUR HYPD links monetize the Meesho products
+========================================================================
+
+USER REQUEST
+  "hypd idi meesho products ni mana link tho convert cheyu okaynaa and e channel
+   lo meesho vasthai productss https://t.me/+6LA1ljXGlbNmMjA1"
+  "perefctgaa cheyu okayanaaa paina links ni perefctga manam links ga chesi
+   cheyu bestg aokaynaaa and bitly tho shorten ga chesi cheyu convert chesi
+   shorten chesi"
+
+THE THREE LINKS (OUR store 93944 / "smartdeals")
+  https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg
+  https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg
+  https://hypd.store/93944/afflink/daol52dtm6mc5h7k1ejg
+
+  (The first one resolves to a Shopsy duffle; the other two are client-side
+   redirect pages whose destination only appears in the browser. The bot reads
+   both kinds — see _hypd_destination in bestgaa/main_bot_new.py.)
+
+WHY IT WAS BROKEN
+  A hypd.store afflink is a FINAL, MONETIZED link: the store, the token and
+  HYPD's attribution (affid=infhypd, affExtParam1=<our HYPD account>,
+  affExtParam2=<token>) live in it. The pipeline used to
+    * resolve() the redirect, then
+    * strip those parameters as "tracking noise",
+  so the post went out as a clean, UNTAGGED merchant page that pays nothing —
+  the opposite of what the user asked for.
+
+WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 61 checks, all green)
+  * OUR hypd.store/<store>/afflink/<token> link is treated as OUR link:
+    never unwrapped, never parameter-stripped, never sent to EarnKaro.
+  * It is ALWAYS Bitly-shortened (HYPD_ALWAYS_BITLY=true) — even though the
+    URL is short — exactly as the user asked ("bitly tho shorten ga chesi").
+  * If Bitly/is.gd is down the RAW HYPD link is posted instead: the commission
+    link is never lost, the post is never left unmonetized.
+  * The merchant page behind each link is recorded (hypd_links table) and the
+    product identity is taken from it, so the same product is still deduped.
+  * A BARE Meesho/Shopsy link (no EarnKaro campaign — EarnKaro answers
+    "no campaign" for the whole Meesho family) now earns on OUR HYPD link when
+    we already have one for that product, instead of posting untagged.
+  * Another creator's hypd.store link (store != 93944/smartdeals) is NEVER
+    published as ours — it would pay them.
+
+SERVER STEPS — THE SHORT VERSION (one command)
+  git pull && ./ops/deploy_fresh.sh
+    # tests -> bundles -> deploy bot+bridge -> restart -> learn OUR three links
+    # -> live proof (key pays us, hypd links round-trip) -> per-route status.
+    # --dry-run to see the plan, --verify-only to prove without deploying.
+
+SERVER STEPS (step by step, if you prefer to see each one)
+  # 1. Deploy the code (bot + bridge) as usual:
+      ./ops/deploy_and_verify.sh --with-tests
+
+  # 2. TEACH THE BOT THE THREE LINKS (live resolve + remember). HYPD has no
+  #    public link-creation API, so links are minted in the HYPD creator app and
+  #    the bot learns the product behind each one:
+      python3 ops/hypd_links.py \
+        'https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg' \
+        'https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg' \
+        'https://hypd.store/93944/afflink/daol52dtm6mc5h7k1ejg'
+      #   -> prints the merchant page + product key for each, and stores it
+      # To check first without writing:  add --dry-run
+      # Which product is covered:        python3 ops/hypd_links.py --lookup '<product url>'
+      # What the bot knows:              python3 ops/hypd_links.py --list
+      # WHAT THE CHANNEL POSTED UNMONETIZED (curate these next):
+      #                                  python3 ops/hypd_links.py --wanted
+
+  # 2b. WHAT STILL EARNS NOTHING, AND THE ONE-COMMAND PROOF
+      Every Meesho/Shopsy product the bot had no HYPD link for is logged once
+      (HYPD MISSING with the product URL and the exact fix) and listed by
+      --wanted. Curating one link removes the product from the list and every
+      later post of it earns on OUR link.
+
+      python3 ops/conversion_report.py          # everything, per route, from live data
+      python3 ops/earnkaro_check.py --hypd-only
+        # resolves each of OUR share links, Bitly-shortens them the way the bot
+        # does, follows the short link BACK and proves it lands on our store:
+        #   bitly     : https://bit.ly/xxxx
+        #   verdict   : OUR LINK, shortened and still ours
+
+  # 3. VERIFY ON THE LIVE LOG
+      grep -E 'HYPD LINK|HYPD MAP|BITLY unavailable' logs/bot.log | tail -20
+      # "HYPD LINK | https://hypd.store/93944/afflink/<token> -> https://bit.ly/..."
+      # is the proof: our link in, a Bitly short link out, the merchant page
+      # behind it for identity.
+
+  # The three links are ALSO learned automatically the first time the source
+  # channel posts one (a HYPD link in a post IS converted by the bot), so
+  # step 2 is for the "product arrived as a bare Meesho link before we ever saw
+  # the HYPD link" case.
+
+ENV KNOBS (all optional; defaults are ours)
+  HYPD_STORE_ID=93944              our HYPD store id
+  HYPD_STORE_SLUG=smartdeals       and its slug (either form is accepted)
+  OUR_HYPD_STORES=                 extra store ids/slugs to trust as ours
+  HYPD_ALWAYS_BITLY=true           always Bitly our hypd links
+  HYPD_MERCHANT_DOMAINS=meesho.com,shopsy.in   merchants this covers
+  HYPD_API_URL / HYPD_API_TOKEN    reserved; unused until HYPD ships a link API
+  (bridge) HYPD_STORES=93944,smartdeals
+
+TESTS
+  python3 test_hypd_links.py            # 61 checks: recognition, no-unwrap,
+                                        # Bitly publish, outage fallback,
+                                        # learned Meesho mapping, foreign-store
+                                        # refusal, JS-redirect destination
+  cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x \
+      node bridge.js --self-test        # includes the 4 HYPD assertions
+
+RELATED
+  ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt — the EarnKaro/source round that
+  this builds on (the third channel, t.me/+6LA1ljXGlbNmMjA1, is the Meesho
+  source mentioned in this request).

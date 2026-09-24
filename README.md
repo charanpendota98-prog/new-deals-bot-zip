@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), routing + media-fix notes |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -55,6 +55,13 @@ python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
+python3 test_earnkaro_conversion.py  # 95 checks: EarnKaro request/response contract,
+                                     # the API key's publisher, Amazon-via-EarnKaro,
+                                     # the three first-preference sources, the
+                                     # whose-link-attribution verdicts and the
+                                     # conversion report
+python3 test_hypd_links.py        # 61 checks: OUR hypd.store links: no unwrap, always Bitly,
+                                     # Meesho->our-link map, foreign-store refusal
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
 # Prove the guarantees on a real (or copied) database — read-only, exit 1 with
@@ -67,7 +74,26 @@ The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 `Missing required environment variable` until a real `.env` exists. That is
 expected on a dev machine; see deployment below.
 
-## Deploying to the server
+## Deploying to the server (one command, fresh)
+
+```bash
+git pull                       # main has everything now
+./ops/deploy_fresh.sh          # tests -> bundles -> deploy -> restart -> teach -> prove -> report
+./ops/deploy_fresh.sh --dry-run      # print that plan, change nothing
+./ops/deploy_fresh.sh --verify-only  # deploy nothing; only prove + report
+./ops/deploy_fresh.sh --no-tests     # skip the pre-ship suites (faster)
+```
+
+It chains, in order: `ops/deploy_and_verify.sh --with-tests` (suites → repack →
+deploy both services → restart → sha256 + boot-version proof), then
+`ops/hypd_links.py` with OUR three share links (teaches the bot which product
+each one covers), then `ops/earnkaro_check.py` (live: the EarnKaro key pays US,
+and our hypd links round-trip through Bitly), then `ops/conversion_report.py`
+(per-route verdict from the live DB + log). Every line it prints is `OK` or
+`CHECK`, and every `CHECK` names its own fix; exit code 1 if anything needs
+attention. Re-running it is always safe.
+
+## Deploying to the server (manual steps)
 
 The dual-hotfix deployer expects the two inner bundles next to itself and
 applies both services in one shot (extract → migrate `.env` → compile →
@@ -86,6 +112,172 @@ Individual deploys:
 - **Bridge only:** upload `tg-wa-bridge/` contents to `~/tg-wa-bridge/`, then `./install_bridge.sh` (prompts locally for BotFather token, WhatsApp number, Channel invite, and optional WhatsApp groups for fan-out; installs Node 20 + Tesseract if missing; pairs; starts `tg-wa-bridge.service`).
 - **New WhatsApp number, same Channel:** `./switch_whatsapp_number.sh` (stops only the bridge, backs up auth, preserves queue + state).
 - **First-time `.env` from legacy hardcoded creds:** `python3 migrate_legacy_env.py /path/to/old_main_bot.py`.
+
+## EarnKaro conversion, the API key, and the Amazon policy (2026-09-24)
+
+The user reported that links were **not converting perfectly** and supplied a
+fresh EarnKaro/Affiliaters API token. Three things were wrong or missing, and
+all three are now covered by `test_earnkaro_conversion.py`:
+
+1. **The request was incomplete.** The public converter is called as
+   `POST https://ekaro-api.affiliaters.in/api/converter/public` with
+   `Authorization: Bearer <token>` and a body of
+   `{"deal": "<clean merchant url>", "convert_option": "convert_only"}`.
+   `convert_option` was omitted, which let the account-level default decide the
+   *response shape*; the bot then failed to read answers that were not a bare
+   URL. It is now sent explicitly (and is itself configurable through
+   `EARNKARO_CONVERT_OPTION`).
+2. **Every response shape is read.** `data` arrives as the link, as the whole
+   deal text with the link inside it, as a list, or as an object of link
+   fields; failures carry a sentence (`"Url not found in post!"`) with
+   `success: 0`. `parse_earnkaro_response()` accepts all of them and, when it
+   cannot, logs the API's own words — an unreadable answer is a **lost
+   commission**, never a lost post.
+3. **The key is set up properly.** The token is a JWT whose payload names the
+   account that gets paid (`earnkaro: 5478322`). The bot decodes it at startup,
+   pins `OUR_EK_ID` to that publisher (the foreign-publisher guard that rejects
+   a converted Flipkart link carrying `affExtParam2` of somebody else), logs
+   which account earns, and refuses to pretend: a token that is not a JWT, or
+   one whose publisher disagrees with `.env`, is reported loudly. A refused
+   token (HTTP 401/403) is logged as `EK AUTH` with the fix, instead of being
+   mistaken for "this store has no campaign".
+
+```bash
+# On the server — set or rotate the key in one command (token never printed):
+cd ~/bestgaa-bot/bestgaa-bot   # or wherever ops/ lives
+./set_earnkaro_key.sh 'eyJhbGciOiJIUzI1NiIs...'     # writes .env, restarts, verifies
+python3 ops/earnkaro_check.py --offline             # decode the token only
+python3 ops/earnkaro_check.py                       # live conversion probes
+journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+```
+
+Every successful conversion logs one `EK CONVERT | <store> -> <link>` line, so
+"are the EarnKaro links actually being generated?" is answerable from the log
+alone; `UNMONETIZED LINK` still marks the posts that earn nothing. A link cached
+while Amazon was still tagged natively is re-converted rather than served for
+its 14-day life, so the switch takes effect immediately.
+
+`ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` is the same thing as a runbook
+(what to run on the server, in order).
+
+**Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
+through EarnKaro like every other store: Amazon Associates is still rejecting
+the account, so a native `?tag=mama086-21` link earns nothing while an EarnKaro
+conversion pays. The native tagged link stays as the **fallback** when the
+network answers "no link" (search/browse pages included, which EarnKaro has no
+campaign for), and the channel under Amazon review still shows the direct
+tagged product page — our earned links are expanded back to
+`amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
+to restore the pure native-tag behaviour of 2026-09-06.
+
+**"Anni perfectga convert chesthunnava ledaa?" — answer it from DATA**:**
+
+```bash
+python3 ops/conversion_report.py            # last 24h: config, routes, log markers, verdict
+python3 ops/conversion_report.py --hours 72
+python3 ops/conversion_report.py --json     # for cron/alerting
+```
+
+It reads the bot's own database and log and prints one verdict line per route —
+`EarnKaro WORKING (pays 5478322)`, `Amazon WORKING (tag mama086-21, via
+EarnKaro, native fallback)`, `HYPD WORKING (N learned, M posts on our link,
+K waiting for curation)`, `Bitly PRESENT/MISSING` — lists every link produced in
+the window classified by route (`passthrough` = posted UNMONETIZED), and ends
+with `NEEDS ATTENTION` + the exact command for each item. Exit code 1 when
+something needs attention, so a cron job can alert on it.
+
+**Prove it in one command** (on the server, which has internet):
+
+```bash
+python3 ops/earnkaro_check.py            # token claims + live probes
+python3 ops/earnkaro_check.py --offline  # token only, no network
+```
+
+A healthy run prints `EarnKaro publisher: 5478322 <- every converted link pays
+THIS account` and then `MONETIZED - PAYS US (5478322)` per store: the returned
+short link is **expanded** and its visible attribution checked, so "HTTP 200" is
+never mistaken for "our link". The same command then proves the OTHER route too —
+it resolves OUR hypd share links, Bitly-shortens them exactly like the bot, and
+follows the short link back to our store (`--hypd-only` runs just that part). `WRONG ACCOUNT` means the token belongs to
+somebody else (or the response echoed someone else's attribution) - replace the
+key with `./ops/set_earnkaro_key.sh '<token>'`. A store with no campaign is
+normal and posts a clean link; Meesho/Shopsy are covered by OUR HYPD link (see
+the next section).
+
+**Three new first-preference sources** (2026-09-24, "e three channel source ga
+pettu 1st preference ivvu"): `t.me/+O3j4ghbtJzhjZjJl`,
+`t.me/+8KzU3P58MJ9jN2M1`, `t.me/+6LA1ljXGlbNmMjA1`. They fan out to every
+non-Tricks main target (Under-99 / Under-499 / card / Premium / review routes
+layer on by price as for every other source) and are FIRST PREFERENCE: claimed
+from the queue ahead of everything else and given the +1 priority boost, so an
+equivalent deal from one of them is rendered and delivered first. Invite hashes
+carry uppercase characters, so source matching is normalised
+(`normalize_source_name()`), which is also what the claim SQL's `lower(source)`
+already did.
+
+## OUR HYPD links: Meesho/Shopsy products earn on our own link (2026-09-24)
+
+The user supplied three of **our own** HYPD creator-store share links
+(`hypd.store/93944/afflink/…` — store `93944`, slug `smartdeals`) and said: the
+Meesho products arriving in the third source channel (`t.me/+6LA1ljXGlbNmMjA1`)
+must convert **through our link**, and that link must always be Bitly-shortened.
+
+**What a HYPD share link is.** It is not a wrapper to be unwrapped: the
+attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
+account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
+commission away. It is a **final, monetized link** and is treated like one.
+
+Behaviour (pinned by `test_hypd_links.py`, 61 checks, green):
+
+| Situation | What the bot does |
+|---|---|
+| A source (or bridge) posts OUR `hypd.store/93944/afflink/…` link | Published as **our** link: never unwrapped, never stripped, no EarnKaro call, and **always Bitly-shortened** (`HYPD_ALWAYS_BITLY=true`, even though the URL is short) |
+| The same link arrives again in a text dump | `shorten()` pass keeps it short whether it is raw (converted) or already `bit.ly` |
+| Bitly/is.gd is down | The **raw HYPD link is posted** — the commission link is never lost or left unmonetized |
+| A bare Meesho/Shopsy **product** link (no EarnKaro campaign) | The bot resolves it, finds the product identity, and swaps in **our HYPD link already minted for that product** (`store.hypd_link_for`), then Bitly-shortens it |
+| A bare Meesho/Shopsy link with **no** known HYPD link | Falls through to the normal path, posts UNMONETIZED, and is recorded on the curation to-do list (`HYPD MISSING` + `HYPD WANTED` in the log); nothing is ever invented |
+| Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours (that would pay them); it goes down the normal path |
+| A HYPD link rediscovered later | `resolve()` returns it untouched with **no network call** (nothing to unwrap) |
+
+**Teaching the bot your HYPD links** (HYPD has no public link-creation API —
+links are minted in the HYPD creator app for a curated product, then the bot
+learns the product behind each one):
+
+```bash
+python3 ops/hypd_links.py                                   # what the bot knows
+python3 ops/hypd_links.py 'https://hypd.store/93944/afflink/<token>' ...  # learn these live
+python3 ops/hypd_links.py --wanted                          # products still earning NOTHING (curate these)
+python3 ops/hypd_links.py --lookup 'https://www.meesho.com/.../p/...'     # is this product covered?
+python3 ops/hypd_links.py --dry-run 'https://hypd.store/...'              # resolve, store nothing
+
+# and the live end-to-end proof of the whole route (ours -> Bitly -> back to ours):
+python3 ops/earnkaro_check.py --hypd-only
+```
+
+Learning one link maps the **product** (`hypd_links` table: token → afflink,
+merchant page, product key), so every later post of that product — however the
+source spells the URL (with or without HYPD's tracking parameters) — earns on
+our link. Merchant pages are stored clean (tracking stripped) so a bare link
+matches.
+
+Knobs (`.env`, all optional): `HYPD_STORE_ID=93944` (default, ours),
+`HYPD_STORE_SLUG=smartdeals`, `OUR_HYPD_STORES` (extra store ids to trust),
+`HYPD_ALWAYS_BITLY=true`, `HYPD_MERCHANT_DOMAINS=meesho.com,shopsy.in`
+(merchants this covers), and reserved `HYPD_API_URL`/`HYPD_API_TOKEN` (unused
+until HYPD ships a link API). The bridge mirrors the store ids via `HYPD_STORES`
+(`93944,smartdeals`) and its self-test asserts our link counts as ours, a
+foreign store (`999999`) does not, and our link is always shortened.
+
+Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
+
+**Nothing earns nothing silently.** A Meesho/Shopsy product we have no HYPD
+link for is counted and listed (`HYPD MISSING`, `HYPD WANTED`, then
+`ops/hypd_links.py --wanted`), so the fix — curate it once in the HYPD app — is
+one command away. Learning a link removes it from that list automatically.
+
+Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
+`HYPD MISSING` / `HYPD WANTED` (product needs a HYPD link; on the to-do list),
+`BITLY unavailable; posting OUR HYPD link as it is` (outage fallback).
 
 ## Key behaviour (see `ops/` notes for full detail)
 

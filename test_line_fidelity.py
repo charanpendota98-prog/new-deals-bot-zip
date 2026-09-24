@@ -1460,7 +1460,15 @@ def test_the_review_channel_posts_at_a_human_pace():
     active_hours = bot.SHOPPING_ACTIVE_END - bot.SHOPPING_ACTIVE_START
     ideal_gap = active_hours * 3600 / max(1, bot.SHOPPING_DAILY_CAP)
 
-    check("the first post of the day goes out immediately", first == 0.0, str(first))
+    # The pace can only be read inside the posting window: out of hours the
+    # channel is deliberately held until the window opens (that IS the human
+    # pacing), so the "first post goes out immediately" rule is checked inside
+    # it and the hold itself is checked outside it.
+    if bot.SHOPPING_ACTIVE_START <= bot.datetime.now(bot.IST).hour < bot.SHOPPING_ACTIVE_END:
+        check("the first post of the day goes out immediately", first == 0.0, str(first))
+    else:
+        check("outside the posting window the channel waits for it to open",
+              first >= 60.0, str(first))
     if bot.SHOPPING_ACTIVE_START <= bot.datetime.now(bot.IST).hour < bot.SHOPPING_ACTIVE_END:
         check("a second post is held back so the two are not a burst",
               second > 0, str(second))
@@ -2259,6 +2267,10 @@ def test_tag_on_every_owned_channel_when_switched_on():
     strip and the disclosure apply there too. A channel we do NOT own still
     gets a clean, working, untagged link.
 
+    Runs with AMAZON_VIA_EARNKARO=false: this is the NATIVE tagging mode (the
+    2026-09-06 behaviour, now opt-in). The default mode converts Amazon through
+    EarnKaro and keeps the native tagged link as the fallback.
+
     Run in a SUBPROCESS: AMAZON_TAG_TARGETS is read at import time, and
     reloading the module in-process tears down its event loop.
     """
@@ -2334,7 +2346,12 @@ print(json.dumps(fail))
         # A private DB: the link cache persists across runs, and a cached
         # ekaro.in entry from an earlier test would be returned instead of the
         # freshly built native link.
+        # AMAZON_VIA_EARNKARO=false is set EXPLICITLY: these two probes pin the
+        # NATIVE tagging path (the 2026-09-06 policy), which is now the opt-in
+        # mode - by default Amazon converts through EarnKaro and the native
+        # tagged link is the fallback (see test_earnkaro_conversion.py).
         env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   AMAZON_VIA_EARNKARO="false",
                    TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
                    BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
         proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
@@ -2445,7 +2462,12 @@ asyncio.run(main())
 """
 
     with tempfile.TemporaryDirectory() as tmp:
+        # AMAZON_VIA_EARNKARO=false is set EXPLICITLY: these two probes pin the
+        # NATIVE tagging path (the 2026-09-06 policy), which is now the opt-in
+        # mode - by default Amazon converts through EarnKaro and the native
+        # tagged link is the fallback (see test_earnkaro_conversion.py).
         env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   AMAZON_VIA_EARNKARO="false",
                    TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
                    BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"))
         proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
@@ -2646,7 +2668,12 @@ asyncio.run(main())
 """
 
     with tempfile.TemporaryDirectory() as tmp:
+        # AMAZON_VIA_EARNKARO=false is set EXPLICITLY: these two probes pin the
+        # NATIVE tagging path (the 2026-09-06 policy), which is now the opt-in
+        # mode - by default Amazon converts through EarnKaro and the native
+        # tagged link is the fallback (see test_earnkaro_conversion.py).
         env = dict(os.environ, AMAZON_TAG_TARGETS="all", AMAZON_TAG="mama086-21",
+                   AMAZON_VIA_EARNKARO="false",
                    TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
                    BOT_DB_PATH=str(Path(tmp) / "e2e.sqlite3"))
         proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
@@ -3073,7 +3100,9 @@ def test_non_shop_links_never_burn_the_retry_budget():
 def test_amazon_search_and_browse_links_are_taggable():
     """USER RULE (2026-09-06): Amazon search links (/s?k=, /s?hidden-keywords=,
     /b?node=) used to go to EarnKaro, where there is no campaign for a search page
-    and the click earned zero. They are now tagged natively with mama086-21."""
+    and the click earned zero. They are now tagged natively with mama086-21 -
+    directly when AMAZON_VIA_EARNKARO=false, and as the fallback when the
+    EarnKaro API answers "no link" for them."""
     for url in ("https://www.amazon.in/s?k=headphones",
                 "https://www.amazon.in/s?hidden-keywords=B0X+%7C+B0Y",
                 "https://www.amazon.in/s?k=sonata&rh=n%3A1&s=price-asc-rank",
@@ -3087,15 +3116,19 @@ def test_amazon_search_and_browse_links_are_taggable():
         check("the non-search link %r is not misclassified" % url,
               not bot.is_amazon_search_or_browse_link(url), url)
 
-    # The conversion path builds the tagged search link natively and never calls
-    # EarnKaro - the same branch that builds /dp/ product links.
+    # The conversion path builds the tagged search link natively - the same
+    # branch that builds /dp/ product links. Since the 2026-09-24 Amazon
+    # policy switch that branch is _native_amazon_link(), used directly when
+    # AMAZON_VIA_EARNKARO=false and as the fallback otherwise, so the search
+    # page is ALWAYS taggable and is never lost to a network with no campaign
+    # for it.
     src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
-    convert = src[src.index("async def convert"):]
-    amazon_branch = convert[convert.index("if OUR_TAG and in_domains(host, AMAZON_DOMAINS):"):]
+    native = src[src.index("async def _native_amazon_link"):]
+    native = native[:native.index("async def _earnkaro_link")]
     check("the conversion path recognises a search/browse link",
-          "is_amazon_search_or_browse_link(clean)" in amazon_branch, "not wired")
+          "is_amazon_search_or_browse_link(clean)" in native, "not wired")
     check("a search/browse link is tagged with OUR tag in that branch",
-          "apply_amazon_tag(clean)" in amazon_branch, "not tagged")
+          "apply_amazon_tag(clean)" in native, "not tagged")
 
 
 def test_flipkart_share_title_wrapper_is_stripped():

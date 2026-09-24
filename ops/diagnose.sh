@@ -99,11 +99,41 @@ fi
 
 echo ""
 echo "==== 4. KEY .ENV VALUES PRESENT? ===="
-for pair in "BITLY_TOKENS:$BESTGAA_DIR/.env" "AMAZON_TAG:$BESTGAA_DIR/.env" "EARNKARO_API_KEY:$BESTGAA_DIR/.env" "TELEGRAM_API_ID:$BESTGAA_DIR/.env" "TELEGRAM_API_HASH:$BESTGAA_DIR/.env" "WA_BITLY_TOKENS:$BRIDGE_DIR/.env" "QUIET_START:$BRIDGE_DIR/.env" "POST_QUIET_START:$BESTGAA_DIR/.env"; do
+for pair in "BITLY_TOKENS:$BESTGAA_DIR/.env" "AMAZON_TAG:$BESTGAA_DIR/.env" "EARNKARO_API_KEY:$BESTGAA_DIR/.env" "TELEGRAM_API_ID:$BESTGAA_DIR/.env" "TELEGRAM_API_HASH:$BESTGAA_DIR/.env" "WA_BITLY_TOKENS:$BRIDGE_DIR/.env" "QUIET_START:$BRIDGE_DIR/.env" "POST_QUIET_START:$BESTGAA_DIR/.env" "HYPD_STORE_ID:$BESTGAA_DIR/.env" "HYPD_ALWAYS_BITLY:$BESTGAA_DIR/.env" "HYPD_STORES:$BRIDGE_DIR/.env"; do
   key="${pair%%:*}"; file="${pair#*:}"
   if grep -qE "^${key}=.+" "$file" 2>/dev/null; then ok "$key set in $(basename "$(dirname "$file")")/.env"
   else warn "$key missing/empty in $file"; fi
 done
+
+echo ""
+echo "==== 4b. EARNKARO TOKEN: WHICH ACCOUNT EARNS? ===="
+EK_TOKEN_LINE="$(grep -E '^EARNKARO_API_KEY=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+EK_PUB_LINE="$(grep -E '^EARNKARO_PUBLISHER_ID=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]')"
+if [[ -z "$EK_TOKEN_LINE" ]]; then
+  bad "EARNKARO_API_KEY is empty -> every conversion answers 401 and the deals go out with UNTAGGED merchant links (zero commission). Fix: ./set_earnkaro_key.sh '<token>'"
+else
+  read -r EK_PUB CLAIMED < <(python3 - "$EK_TOKEN_LINE" <<'PY' 2>/dev/null || true
+import base64, json, sys
+try:
+    payload = sys.argv[1].split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    print(f"{claims.get('earnkaro') or 'NONE'} {int(claims.get('iat') or 0)}")
+except Exception:
+    print("NOT_A_JWT 0")
+PY
+)
+  if [[ "${EK_PUB:-}" == "NOT_A_JWT" ]]; then
+    bad "EARNKARO_API_KEY is not a JWT carrying a publisher id -> the API will refuse it (401). Fix: ./set_earnkaro_key.sh '<token>'"
+  else
+    ok "token is a JWT; EarnKaro publisher ${EK_PUB} earns every converted link (issued $(date -u -d "@${CLAIMED:-0}" +%Y-%m-%d 2>/dev/null || echo unknown))"
+    if [[ -n "$EK_PUB_LINE" && "$EK_PUB_LINE" != "$EK_PUB" ]]; then
+      warn "EARNKARO_PUBLISHER_ID=$EK_PUB_LINE in .env disagrees with the token ($EK_PUB) - the token wins; the foreign-publisher guard should be pinned from it"
+    fi
+  fi
+fi
+echo "  AMAZON_VIA_EARNKARO=$(grep -E '^AMAZON_VIA_EARNKARO=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || echo '<unset: EarnKaro default>')  (true = Amazon converts via EarnKaro with the native tag as fallback)"
+echo "  live conversion proof: python3 ops/earnkaro_check.py --env-file $BESTGAA_DIR/.env"
 
 echo ""
 echo "==== 5. NIGHT QUIET WINDOW ACTIVE RIGHT NOW? ===="

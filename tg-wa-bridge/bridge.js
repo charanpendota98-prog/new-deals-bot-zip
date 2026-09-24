@@ -315,6 +315,36 @@ const OUR_LINK_HOSTS = new Set([
   'bit.ly', 'is.gd',
 ])
 // ---------------------------------------------------------------------------
+// HYPD creator-store share links (USER RULE 2026-09-24). Our store curates a
+// product and gets https://hypd.store/<store>/afflink/<token>, which redirects
+// to the merchant page carrying HYPD's own attribution. That link IS our
+// monetized link: it must never be resolved (that hands over the merchant page
+// and HYPD's parameters, and the publishable link is lost) and it is always
+// Bitly-shortened. A hypd.store link from ANOTHER creator's store pays them, so
+// it is NOT ours (it resolves and posts like any raw source link).
+//   HYPD_STORES: comma list of our store ids/usernames (default our store).
+const HYPD_STORES = new Set((process.env.HYPD_STORES || '93944,smartdeals')
+  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
+const HYPD_HOSTS = new Set(['hypd.store'])
+function isHypdHost(host) {
+  return [...HYPD_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))
+}
+function hypdStoreOf(url) {
+  try {
+    const u = new URL(url)
+    if (!isHypdHost(u.hostname.toLowerCase())) return ''
+    const parts = u.pathname.split('/').filter(Boolean)
+    if (parts.length >= 2 && parts[1].toLowerCase() === 'afflink') return parts[0].toLowerCase()
+    return ''
+  } catch {
+    return ''
+  }
+}
+function isOurHypdLink(url) {
+  const store = hypdStoreOf(url)
+  return Boolean(store) && HYPD_STORES.has(store)
+}
+// ---------------------------------------------------------------------------
 // Service / lifestyle offers: Zomato, Swiggy, Zepto, movie tickets, quick
 // commerce, payment-app and card offers. They are not EarnKaro-monetized
 // store products, so their links pass through without affiliate provenance
@@ -1331,6 +1361,10 @@ function isOurGeneratedLink(url) {
   try {
     const u = new URL(url)
     const host = u.hostname.toLowerCase()
+    // Ours only when the share link belongs to OUR store: another creator's
+    // hypd link earns for them, so it goes through the normal resolve-and-post
+    // path like any other raw source link.
+    if (isHypdHost(host)) return isOurHypdLink(url)
     if (OUR_LINK_HOSTS.has(host)) return true
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
       // Tag era: an amazon link is ours only when it carries OUR Associates
@@ -2210,6 +2244,10 @@ function needsShortening(url, isList = false) {
   if (isServiceUrl(url)) return false
   const host = hostOf(url)
   if ([...ALREADY_SHORT_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return false
+  // USER RULE (2026-09-24): "bitly tho shorten ga chesi cheyu" - OUR HYPD share
+  // links are always shortened, however short they look, so nothing after the
+  // domain tells the reader which store or product it is.
+  if (isOurHypdLink(url)) return true
   // USER RULE: Bitly quota is precious — spend it ONLY where raw links look
   // ugly: product LISTS (2+ links) and genuinely long links. A normal single
   // short amazon dp link posts as-is with our Associates tag.
@@ -4999,6 +5037,21 @@ https://fktr.in/MANY${i}`,
   if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('foreign-tagged amazon link is not ours')
   if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('ex-our tag deals0911-21 is also foreign')
   if (isOurGeneratedLink('https://amzn.to/x')) throw new Error('raw amazon shortener is not ours')
+  // USER RULE (2026-09-24): OUR HYPD creator-store share link is our monetized
+  // link - recognised as ours (never resolved, so HYPD's own attribution
+  // survives) and always Bitly-shortened; another store's hypd link is not ours.
+  if (!isOurGeneratedLink('https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg')) {
+    throw new Error('our hypd share link must count as ours')
+  }
+  if (isOurGeneratedLink('https://hypd.store/999999/afflink/daoli7dtm6mc5h7k1ffg')) {
+    throw new Error("another creator's hypd link is not ours")
+  }
+  if (!needsShortening('https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg')) {
+    throw new Error('our hypd share link must always be shortened')
+  }
+  if (needsShortening('https://hypd.store/999999/afflink/daoli7dtm6mc5h7k1ffg')) {
+    throw new Error('another store hypd link is shortened by the normal length rule only')
+  }
   // Our-tag Amazon links are self-proving and must NEVER reach the link_cache
   // DB check (provenance leak fix): the tag only exists on links WE tagged, the
   // cache stores conversion-API output only, so a DB row may legitimately be

@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+# EarnKaro/Affiliaters converter token for the deploy scripts (see ops/.earnkaro_key)
+ops/.earnkaro_key
 auth/
 *.session
 *.session-journal

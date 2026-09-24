@@ -53,6 +53,7 @@ immediately, exactly once, clean":
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import html
@@ -83,13 +84,40 @@ from telethon.errors import (
 )
 from telethon.tl.functions.messages import ImportChatInviteRequest
 from telethon.tl.types import (
-    KeyboardButtonUrl,
     MessageEntityTextUrl,
     MessageEntityUrl,
     MessageMediaInvoice,
     MessageMediaWebPage,
     ReplyInlineMarkup,
 )
+
+# The inline URL-button type was renamed in Telethon 1.45 (KeyboardButtonUrl ->
+# KeyboardButton.button = InlineButtonTypeUrl). requirements.txt allows every
+# 1.x, so a fresh `pip install -r requirements.txt` used to install a Telethon
+# that made this module fail at IMPORT time - the bot could not even start. The
+# symbol is therefore optional, and button URLs are read by SHAPE (below), which
+# works on both generations of the library.
+try:
+    from telethon.tl.types import KeyboardButtonUrl  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover - depends on the installed Telethon
+    KeyboardButtonUrl = None  # type: ignore[assignment]
+
+
+def button_url(button) -> str:
+    """The URL an inline-keyboard button carries, on ANY Telethon version.
+
+    Sources that paste their deal as a BUTTON (very common for private deal
+    channels) put the link in the keyboard, not in the text. Telethon <1.45
+    gives us a `KeyboardButtonUrl` with `.url`; from 1.45 the row holds a
+    `KeyboardButton` whose `.button` is an `InlineButtonTypeUrl` with `.url`.
+    Reading both shapes means such a post still yields its link instead of being
+    skipped as "no URL in this message".
+    """
+    for candidate in (button, getattr(button, "button", None)):
+        url = getattr(candidate, "url", "") or ""
+        if isinstance(url, str) and url.startswith("http"):
+            return url
+    return ""
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -131,6 +159,65 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
+# The public converter accepts {"deal": <url or whole post>} plus an optional
+# `convert_option`. "convert_only" is the documented value - convert the link(s)
+# and NOTHING else: never post, never share, never apply an account-level
+# default. It is sent on every call (it used to be omitted, which let the
+# account default decide the RESPONSE SHAPE, and a shape we could not read is a
+# lost commission).
+EARNKARO_CONVERT_OPTION = os.getenv("EARNKARO_CONVERT_OPTION", "convert_only").strip() or "convert_only"
+
+
+def earnkaro_token_claims(token: str) -> dict[str, Any]:
+    """Decode the payload of an EarnKaro/Affiliaters API token.
+
+    The token is a JWT whose payload names the account it earns for:
+    `earnkaro` = the EarnKaro publisher id, `_id` = the Affiliaters account,
+    `iat` = when it was issued. Reading it is what lets the bot (a) pin the
+    publisher id `valid_generated()` uses to reject a converted link that pays
+    SOMEBODY ELSE, and (b) say out loud at startup WHICH account is earning -
+    instead of failing at every conversion with a silent 401.
+    """
+    try:
+        parts = (token or "").split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+        return claims if isinstance(claims, dict) else {}
+    except Exception:
+        return {}
+
+
+EK_TOKEN_CLAIMS = earnkaro_token_claims(EK_KEY)
+EK_TOKEN_PUBLISHER = str(EK_TOKEN_CLAIMS.get("earnkaro") or "").strip()
+_env_ek_id = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
+# The TOKEN is the truth: it is the credential the API answers to, so the
+# publisher id it carries is the one every generated link will pay. The .env
+# value is only a fallback (and a cross-check).
+OUR_EK_ID = EK_TOKEN_PUBLISHER or _env_ek_id
+try:
+    EK_TOKEN_ISSUED_AT = datetime.fromtimestamp(
+        float(EK_TOKEN_CLAIMS.get("iat")), timezone.utc).strftime("%Y-%m-%d")
+except (TypeError, ValueError, OverflowError, OSError):
+    EK_TOKEN_ISSUED_AT = "unknown"
+if EK_TOKEN_PUBLISHER:
+    logging.getLogger("bestgaa").info(
+        "EarnKaro token OK | publisher=%s (token issued %s) - every converted link pays this account",
+        EK_TOKEN_PUBLISHER, EK_TOKEN_ISSUED_AT)
+else:
+    logging.getLogger("bestgaa").warning(
+        "EARNKARO_API_KEY does not look like the EarnKaro/Affiliaters API token "
+        "(a JWT carrying the 'earnkaro' publisher id). Conversion will answer 401/403 "
+        "and the bot will fall back to untagged links (zero commission). Get the token "
+        "from the Affiliaters/EarnKaro API page and re-run ops/set_earnkaro_key.sh.")
+if EK_TOKEN_PUBLISHER and _env_ek_id and EK_TOKEN_PUBLISHER != _env_ek_id:
+    logging.getLogger("bestgaa").warning(
+        "EARNKARO_PUBLISHER_ID=%s in .env disagrees with the token's publisher %s - "
+        "the TOKEN wins (it is what the API answers to); fix the .env line so the "
+        "foreign-publisher guard checks the right account",
+        _env_ek_id, EK_TOKEN_PUBLISHER)
 # USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The
 # previously seen tag (deals0911-21) belonged to a SOURCE, so it was pinned
 # empty to stop a stale .env re-enabling somebody else's tag. We now own
@@ -147,13 +234,62 @@ if _configured_tag and _configured_tag.lower() not in {t.lower() for t in OUR_AM
         _configured_tag, sorted(OUR_AMAZON_TAGS))
     _configured_tag = ""
 OUR_TAG = _configured_tag
-OUR_EK_ID = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
 # USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
 # so direct-tagging pays nothing. EVERY Amazon link goes through EarnKaro like
 # every other store — no ratio, no env knob, no direct-Associates branch. A
 # stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
 AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
+# USER RULE (2026-09-24): the user pasted a fresh EarnKaro/Affiliaters API
+# token and asked for the EarnKaro links to convert properly on the channels.
+# Amazon Associates is STILL rejecting the account, so a native ?tag=mama086-21
+# link earns nothing while an EarnKaro conversion pays - Amazon product links
+# therefore go to EarnKaro like every other store. The native tagged link stays
+# as the FALLBACK when the network has no campaign for the link, and the review
+# channel still sees the native tagged product page (our short/Ekaro links are
+# expanded back to it at delivery, which is what keeps that channel compliant).
+# Set AMAZON_VIA_EARNKARO=false to restore pure native tagging.
+AMAZON_VIA_EARNKARO = os.getenv(
+    "AMAZON_VIA_EARNKARO", "true").strip().lower() not in ("0", "false", "no", "off")
+
+# --- HYPD creator-store affiliate links (USER RULE 2026-09-24) -------------
+# "hypd idi meesho products ni mana link tho convert cheyu ... paina links ni
+# perefctga manam links ga chesi cheyu ... bitly tho shorten ga chesi cheyu,
+# convert chesi shorten chesi"
+#
+# HYPD (hypd.store) is a creator-store platform: our store is 93944
+# ("smartdeals") and every product we curate there gets a share link
+#
+#     https://hypd.store/<store>/afflink/<token>
+#
+# which redirects to the merchant page carrying HYPD's OWN affiliate
+# attribution (affid=infhypd&affExtParam1=<account>&affExtParam2=<token>).
+# Those links ARE our monetized links - and the old pipeline destroyed them:
+# resolve() followed the redirect, merchant_url() stripped affid/affExtParam1/
+# affExtParam2 as "tracking noise", EarnKaro had no campaign for the merchant
+# and the post went out with a clean, UNTAGGED page (zero commission). Now:
+#   * our store's afflink is treated exactly like EarnKaro output - never
+#     unwrapped, never re-converted, never stripped;
+#   * it is ALWAYS Bitly-shortened (the user asked for it by name);
+#   * the merchant page behind it is recorded, so the same product arriving
+#     later as a bare Meesho/Shopsy link earns on the same HYPD link.
+# A hypd.store link belonging to ANOTHER store is somebody else's commission,
+# so it is treated like any foreign affiliate wrapper (never republished).
+HYPD_DOMAINS = {"hypd.store"}
+HYPD_STORE_ID = os.getenv("HYPD_STORE_ID", "93944").strip().lstrip("@").lower()
+HYPD_STORE_SLUG = os.getenv("HYPD_STORE_SLUG", "smartdeals").strip().lstrip("@").lower()
+OUR_HYPD_STORES = {s for s in (HYPD_STORE_ID, HYPD_STORE_SLUG) if s}
+HYPD_ALWAYS_BITLY = os.getenv(
+    "HYPD_ALWAYS_BITLY", "true").strip().lower() not in ("0", "false", "no", "off")
+# Merchants EarnKaro cannot monetize (no campaign) but HYPD can - the Meesho
+# family. A bare link to one of these earns nothing on its own; when we already
+# know OUR HYPD afflink for the same product, that link is what the post carries.
+HYPD_MERCHANT_DOMAINS = {
+    d.strip().lower() for d in os.getenv(
+        "HYPD_MERCHANT_DOMAINS", "meesho.com,shopsy.in").split(",") if d.strip()
+}
+HYPD_API_URL = os.getenv("HYPD_API_URL", "").strip()
+HYPD_API_TOKEN = os.getenv("HYPD_API_TOKEN", "").strip()
 
 PRODUCT_DEDUP_SECONDS = 24 * 3600  # STRICT 24h: same product never reposts within 24h — pinned, env override blocked (user rule 2026-09-04)
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
@@ -327,6 +463,39 @@ MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TA
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
 TRICKS_SOURCES = {"TrickXpert", "Offerzone_deals", "offers_deals_xyz"}
+
+
+def normalize_source_name(source: str) -> str:
+    """One spelling per source, whatever shape it arrives in.
+
+    A source key is a public username (`DealsUnder99_com`), an @-prefixed
+    handle, or a PRIVATE INVITE LINK (`https://t.me/+O3j4ghbtJzhjZjJl`, whose
+    hash carries uppercase characters). Preference/priority sets are matched
+    against the queue's `source` column and the SQL side compares
+    `lower(source)`, so the Python side must normalise exactly the same way -
+    otherwise a first-preference source silently loses its turn (or, worse,
+    is never recognised as preferred at all).
+    """
+    name = (source or "").strip()
+    name = re.sub(r"[?#].*$", "", name).rstrip("/")   # drop ?query / trailing /
+    return name.lstrip("@").lower()
+
+
+def is_priority_source(source: str) -> bool:
+    """True when a queue job came from a first-preference source."""
+    return normalize_source_name(source) in PRIORITY_SOURCES
+
+
+# USER RULE (2026-09-24): "e three channel source ga pettu 1st preference
+# ivvu" - three more channels (all private invite links) join the feed as
+# FIRST-PREFERENCE sources. Their posts are claimed from the queue ahead of
+# every other source AND carry the +1 priority boost, so on every non-Tricks
+# channel an equivalent deal from one of them is rendered and delivered first.
+FIRST_PREFERENCE_SOURCES = (
+    "https://t.me/+O3j4ghbtJzhjZjJl",
+    "https://t.me/+8KzU3P58MJ9jN2M1",
+    "https://t.me/+6LA1ljXGlbNmMjA1",
+)
 # Sources the user wants posted FIRST on every non-Tricks channel. Their queue
 # jobs get a +1 priority boost (capped at the top tier) so an equivalent deal
 # from one of these sources renders/delivers ahead of the same tier from any
@@ -336,6 +505,9 @@ PRIORITY_SOURCES = {"pricehistory"}
 # source for the price channels - its posts go out ahead of the same tier from
 # any other source; the rest follow when it has nothing new.
 PRIORITY_SOURCES.add("under_99_loot_deals")
+# The three new channels are first preference too (normalised, because an
+# invite hash is case-sensitive to Telegram but not to the queue lookup).
+PRIORITY_SOURCES.update(normalize_source_name(s) for s in FIRST_PREFERENCE_SOURCES)
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
 # Every channel owner controls. Card/bank-offer posts fan out across all of
 # these so a bank/card deal is never missed, and get the folder link appended.
@@ -826,15 +998,28 @@ SOURCE_TO_TARGETS[OZ_SOURCE] = list(NO_TRICKS_TARGETS)
 # claims its posts from the queue ahead of every other source.
 SOURCE_TO_TARGETS["DealsUnder99_com"] = list(NO_TRICKS_TARGETS)
 
+# USER RULE (2026-09-24): "e three channel source ga pettu 1st preference
+# ivvu". The three new first-preference channels fan out to every non-Tricks
+# main target (LootZone, Secret, PowerLoots). The Under-99 / Under-499 price
+# channels, the card/bank fan-out, Premiumlootsdeals and the Amazon review
+# channel layer on automatically by price/content exactly as they do for every
+# other source, and dedup still means one copy per channel.
+for _source in FIRST_PREFERENCE_SOURCES:
+    SOURCE_TO_TARGETS[_source] = list(NO_TRICKS_TARGETS)
+
 # USER RULE (2026-09-07): the queue is claimed in this order -
 #   (1) posts from the PREFERRED source(s)      - DealsUnder99_com first
 #   (2) every other single/top deal, by priority
 #   (3) product LISTS last ("then list of products")
 # Within a tier the QUEUE_ORDER knob (newest/oldest) still decides. Env-
 # extensible; matched case-insensitively against the queue's source column.
-PREFERRED_SOURCES = {s.strip().lstrip("@").lower()
+PREFERRED_SOURCES = {normalize_source_name(s)
                      for s in os.getenv("PREFERRED_SOURCES", "DealsUnder99_com").split(",")
                      if s.strip()}
+# USER RULE (2026-09-24): the three new channels are first preference as well.
+# The env knob EXTENDS the preferred tier; it can never shrink it back below
+# the sources the user asked for by name.
+PREFERRED_SOURCES.update(normalize_source_name(s) for s in FIRST_PREFERENCE_SOURCES)
 
 # These sources must contain true sub-₹99 deals; valid posts go to both price targets.
 UNDER99_SOURCES = {
@@ -1027,6 +1212,69 @@ def in_domains(host: str, domains: Iterable[str]) -> bool:
     return any(host_matches(host, d) for d in domains)
 
 
+def hypd_store_of(url: str) -> str:
+    """The store segment of a HYPD share link ("" when the URL is not one).
+
+    https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg -> "93944"
+    """
+    try:
+        parsed = urlparse(clean_url(url))
+        if not in_domains((parsed.hostname or "").lower(), HYPD_DOMAINS):
+            return ""
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[1].lower() == "afflink":
+            return parts[0].lower()
+        return ""
+    except Exception:
+        return ""
+
+
+def hypd_afflink_token(url: str) -> str:
+    """The (store, token) pair a HYPD share link identifies."""
+    try:
+        parsed = urlparse(clean_url(url))
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 3 and parts[1].lower() == "afflink":
+            return f"{parts[0].lower()}:{parts[2]}"
+    except Exception:
+        pass
+    return ""
+
+
+def is_hypd_link(url: str) -> bool:
+    """True for any hypd.store share link, ours or another creator's."""
+    return bool(hypd_store_of(url))
+
+
+def hypd_product_keys(value: str) -> list[str]:
+    """Every spelling of ONE product page the HYPD map matches on.
+
+    A source writes the same product page as a bare link, with HYPD's own
+    tracking still on it, or with session parameters - all three must find the
+    same HYPD share link, otherwise the deal posts unmonetized while we already
+    hold a commission link for it.
+    """
+    url = clean_url(value or "")
+    if not url:
+        return []
+    keys: list[str] = []
+    for candidate in (url, merchant_url(url), canonical_url(url)):
+        candidate = clean_url(candidate)
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+    return keys
+
+
+def is_our_hypd_link(url: str) -> bool:
+    """True when the HYPD link earns on OUR store (93944 / smartdeals).
+
+    Only our own share links are ours: another creator's hypd.store link pays
+    THEM, so it is treated like any foreign affiliate wrapper.
+    """
+    store = hypd_store_of(url)
+    return bool(store) and store in OUR_HYPD_STORES
+
+
 # Long-link threshold for shortening: anything longer than this (a messy
 # merchant URL with filters/tracking) gets a Bitly/is.gd short link so Telegram
 # posts stay clean. A tidy Amazon /dp link with our tag (~52 chars) is under it
@@ -1042,6 +1290,24 @@ def should_use_bitly(resolved_url: str, multi_link: bool) -> bool:
     INSIDE a list is shortened with the rest of the list (2026-09-06); the
     review channel expands our short links back to the native tagged URL."""
     return multi_link
+
+
+def tag_native_amazon(url: str) -> str:
+    """Put OUR Associates tag on a native Amazon URL; no-op for anything else.
+
+    Used wherever the bot restores a NATIVE store page from one of our earned
+    links (the reviewed channel must show amazon.in/dp/ASIN?tag=mama086-21 -
+    an untagged link on a declared channel earns nothing). Delivery strips the
+    tag again on every channel that is not declared to Amazon.
+    """
+    if not OUR_TAG:
+        return url
+    try:
+        if in_domains((urlparse(clean_url(url)).hostname or "").lower(), AMAZON_DOMAINS):
+            return apply_amazon_tag(url)
+    except Exception:
+        pass
+    return url
 
 
 def apply_amazon_tag(link: str) -> str:
@@ -2127,8 +2393,9 @@ def extract_urls(msg) -> list[str]:
     if isinstance(markup, ReplyInlineMarkup):
         for row in markup.rows:
             for button in row.buttons:
-                if isinstance(button, KeyboardButtonUrl) and button.url:
-                    values.append(button.url)
+                url = button_url(button)
+                if url:
+                    values.append(url)
     seen, result = set(), []
     for value in values:
         value = clean_url(value)
@@ -4110,6 +4377,26 @@ class Store:
           deal_key TEXT,
           created_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS hypd_links (
+            token TEXT PRIMARY KEY,
+            store TEXT NOT NULL,
+            afflink_url TEXT NOT NULL,
+            resolved_url TEXT,
+            product_key TEXT,
+            created_at REAL NOT NULL
+        );
+        -- Products that had to post UNMONETIZED because no HYPD share link has
+        -- been curated for them yet (EarnKaro has no Meesho/Shopsy campaign at
+        -- all). This is the operator's to-do list: create the link in the HYPD
+        -- app, learn it once with ops/hypd_links.py, and every later post of
+        -- that product earns on it.
+        CREATE TABLE IF NOT EXISTS hypd_wanted (
+            product_url TEXT PRIMARY KEY,
+            product_key TEXT,
+            times INTEGER NOT NULL DEFAULT 1,
+            first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS premium_state (
           id INTEGER PRIMARY KEY CHECK(id=1),
           night_key TEXT,
@@ -4178,6 +4465,17 @@ class Store:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_queue_status "
             "ON queue(status, priority, created_at)"
+        )
+        # HYPD share links: lookups are "which of OUR links is this product"
+        # (product_key) and "where does this link go" (resolved_url).
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_product ON hypd_links(product_key)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_resolved ON hypd_links(resolved_url)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_wanted_last ON hypd_wanted(last_seen)"
         )
         # A previous crash must not leave work permanently stuck.
         self.conn.execute("UPDATE queue SET status='pending' WHERE status='processing'")
@@ -4369,9 +4667,12 @@ class Store:
         # Best-lists first, then super discounts, then photos - so the highest
         # value Telegram post is rendered/delivered ahead of ordinary ones.
         priority = classify_priority(text, has_media)
-        # User rule: first-preference sources (e.g. pricehistory) post ahead of
-        # the same content tier from other sources on every non-Tricks channel.
-        if source in PRIORITY_SOURCES:
+        # User rule: first-preference sources (pricehistory, the three channels
+        # added 2026-09-24, ...) post ahead of the same content tier from other
+        # sources on every non-Tricks channel. Matched through
+        # is_priority_source() so an invite-link source is recognised whatever
+        # case the queue stored it in.
+        if is_priority_source(source):
             priority = min(priority + 1, 5)
         # Layer 1 of the zero-duplicate guarantee: a campaign whose fingerprint
         # was already posted (or is already waiting in the queue) is never even
@@ -4611,6 +4912,110 @@ class Store:
             return self.conn.execute(
                 "SELECT * FROM link_cache WHERE source_url=?", (canonical_url(source_url),)
             ).fetchone()
+
+    async def remember_hypd_link(self, afflink_url: str, resolved_url: str,
+                                 product_key_value: str) -> None:
+        """Record OUR HYPD share link and the merchant page behind it.
+
+        This is what lets the same product earn later even when the source
+        posts a bare Meesho/Shopsy URL instead of the HYPD link (Meesho has no
+        EarnKaro campaign, so a bare Meesho link otherwise pays nothing).
+        """
+        token = hypd_afflink_token(afflink_url)
+        if not token:
+            return
+        # The CLEAN merchant page is what a later bare Meesho/Shopsy link looks
+        # like too, so HYPD's own parameters are stripped before storing.
+        page = clean_url(merchant_url(resolved_url)) if resolved_url else ""
+        async with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO hypd_links(token, store, afflink_url, resolved_url,"
+                " product_key, created_at) VALUES (?,?,?,?,?,?)",
+                (token, hypd_store_of(afflink_url), clean_url(afflink_url),
+                 page, product_key_value or "", time.time()),
+            )
+            self.conn.commit()
+        # This product is no longer "missing our link".
+        with contextlib.suppress(Exception):
+            await self.forget_hypd_wanted(page, product_key_value or "", afflink_url)
+
+    async def hypd_link_for(self, *keys: str) -> str | None:
+        """OUR HYPD share link for a product we have already curated, if any.
+
+        Looked up by the merchant page URL and by the product key, so a Meesho
+        link and the shopsy/meesho page behind the HYPD link match each other.
+        """
+        wanted: list[str] = []
+        for key in keys:
+            for variant in hypd_product_keys(key):
+                if variant not in wanted:
+                    wanted.append(variant)
+            if key and key not in wanted:
+                wanted.append(key)          # an identity key such as "PID:..."
+        if not wanted:
+            return None
+        async with self.lock:
+            for key in wanted:
+                row = self.conn.execute(
+                    "SELECT afflink_url FROM hypd_links WHERE product_key=? OR resolved_url=? "
+                    "OR afflink_url=? ORDER BY created_at DESC LIMIT 1",
+                    (key, key, key)).fetchone()
+                if row and row["afflink_url"]:
+                    return row["afflink_url"]
+        return None
+
+    async def remember_hypd_wanted(self, product_url: str, product_key_value: str) -> bool:
+        """A Meesho/Shopsy product we have NO HYPD link for: commission leaking.
+
+        Returns True the first time this product is seen (so the caller can log
+        it once, with the action to take) and False on every repeat.
+        """
+        url = clean_url(product_url)
+        if not url:
+            return False
+        now = time.time()
+        async with self.lock:
+            existing = self.conn.execute(
+                "SELECT times FROM hypd_wanted WHERE product_url=?", (url,)).fetchone()
+            self.conn.execute(
+                "INSERT INTO hypd_wanted(product_url, product_key, times, first_seen, last_seen)"
+                " VALUES (?,?,1,?,?) ON CONFLICT(product_url) DO UPDATE SET"
+                " times=times+1, last_seen=excluded.last_seen,"
+                " product_key=COALESCE(excluded.product_key, product_key)",
+                (url, product_key_value or "", now, now),
+            )
+            self.conn.commit()
+        return existing is None
+
+    def recent_hypd_wanted(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Products still missing OUR HYPD link, most-wanted first."""
+        rows = self.conn.execute(
+            "SELECT product_url, product_key, times, last_seen FROM hypd_wanted"
+            " ORDER BY times DESC, last_seen DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    async def forget_hypd_wanted(self, *keys: str) -> int:
+        """Drop a product from the to-do list once OUR HYPD link is learned."""
+        wanted = [k for k in keys if k]
+        if not wanted:
+            return 0
+        async with self.lock:
+            removed = 0
+            for key in wanted:
+                for variant in (key, canonical_url(key)):
+                    cursor = self.conn.execute(
+                        "DELETE FROM hypd_wanted WHERE product_url=? OR product_key=?",
+                        (variant, key))
+                    removed += max(cursor.rowcount or 0, 0)
+            self.conn.commit()
+        return removed
+
+    def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
+        """(afflink_url, resolved_url) pairs — used by ops/hypd_links.py."""
+        rows = self.conn.execute(
+            "SELECT afflink_url, resolved_url FROM hypd_links ORDER BY created_at DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [(row["afflink_url"], row["resolved_url"] or "") for row in rows]
 
     def recent_shortened_amazon_links(self, limit: int = 2000) -> list[tuple[str, str]]:
         """Durable (short link -> amazon URL) pairs for the restart gap.
@@ -5224,6 +5629,81 @@ store = Store(DB_PATH)
 # ---------------------------------------------------------------------------
 # External clients
 # ---------------------------------------------------------------------------
+# The public converter answers {"success": 1, "data": <our converted link>} -
+# but `data` has also been seen as the WHOLE deal text with the links swapped
+# inside it, as a LIST, and as an OBJECT of link fields; and on failure as a
+# sentence ("Url not found in post!", "... could not locate ...") with success
+# 0. Every shape has to be read, because an unreadable answer is not a lost
+# post (the deal still goes out) - it is a LOST COMMISSION, silently.
+EARNKARO_NO_LINK_MARKERS = (
+    "could not locate", "url not found", "not found in post", "no url",
+    "invalid url", "unable to convert", "no deal", "not a valid", "cannot convert",
+)
+EARNKARO_LINK_KEYS = (
+    "converted_url", "converted_link", "convertedlink", "affiliate_url",
+    "affiliate_link", "ekaro_url", "ekarourl", "short_url", "shortlink",
+    "shorten_url", "profit_link", "link", "url", "deal", "deeplink", "deep_link",
+)
+
+
+def first_http_url(value: Any, depth: int = 0) -> str | None:
+    """The first usable http(s) URL inside an API payload, whatever its shape."""
+    if value is None or depth > 4:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        if any(marker in text.lower() for marker in EARNKARO_NO_LINK_MARKERS):
+            return None
+        match = re.search(r"https?://[^\s<>\[\](){}\"'|]+", text)
+        return clean_url(match.group(0)) if match else None
+    if isinstance(value, dict):
+        lowered = {str(k).lower(): v for k, v in value.items()}
+        for key in EARNKARO_LINK_KEYS:
+            if key in lowered:
+                found = first_http_url(lowered[key], depth + 1)
+                if found:
+                    return found
+        for item in value.values():
+            found = first_http_url(item, depth + 1)
+            if found:
+                return found
+        return None
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            found = first_http_url(item, depth + 1)
+            if found:
+                return found
+    return None
+
+
+def parse_earnkaro_response(body: str) -> tuple[str | None, str]:
+    """(our converted link | None, a one-line reason for the log).
+
+    Never raises: a converter answer the bot cannot read is reported in the
+    API's own words, so "the EarnKaro links are not converting" can be
+    diagnosed from the log instead of guessed at.
+    """
+    text = (body or "").strip()
+    if not text:
+        return None, "empty response body"
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return None, f"non-JSON response (proxy/HTML error page?): {text[:140]!r}"
+    if not isinstance(payload, dict):
+        found = first_http_url(payload)
+        return (found, "ok") if found else (None, f"unexpected shape: {text[:140]!r}")
+    message = str(payload.get("message") or payload.get("error") or "").strip()
+    success = payload.get("success", payload.get("status"))
+    data = payload.get("data", payload.get("result"))
+    found = first_http_url(data)
+    if found:
+        return found, message or "ok"
+    if message:
+        return None, f"success={success!r} message={message[:140]!r}"
+    return None, f"success={success!r} no link in data: {str(data)[:140]!r}"
+
+
 class CircuitBreaker:
     def __init__(self, threshold: int = 5, recovery: float = 60):
         self.threshold, self.recovery = threshold, recovery
@@ -5287,6 +5767,14 @@ class AffiliateClient:
             try:
                 p = urlparse(current)
                 host = (p.hostname or "").lower()
+                # OUR HYPD share link is a FINAL link, not a wrapper to unwrap.
+                # Following it hands us the merchant page with HYPD's
+                # attribution in the query, and the next cleaning pass strips
+                # exactly those parameters - the user's own commission link
+                # became an untagged page that pays nothing. It is returned
+                # untouched; the destination is read separately, for identity.
+                if is_our_hypd_link(current):
+                    break
                 if host_matches(host, "linkredirect.in"):
                     dl = parse_qs(p.query).get("dl", [None])[0]
                     if dl:
@@ -5431,7 +5919,15 @@ class AffiliateClient:
                 and (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
                      or self.valid_generated(cached_url))
             )
-            if cache_is_safe:
+            # POLICY SWITCH SAFETY (2026-09-24). link_cache rows live for
+            # LINK_CACHE_DAYS (14) and a row cached while Amazon was tagged
+            # natively would keep pinning the OLD policy - a link that earns
+            # nothing - long after AMAZON_VIA_EARNKARO was turned on. A native
+            # Amazon row is therefore treated as stale and re-converted;
+            # EarnKaro rows (ekaro.in/bitli.in) are still served from cache, so
+            # the API is not called twice for the same deal.
+            cached_is_amazon_native = in_domains(cached_host, AMAZON_DOMAINS)
+            if cache_is_safe and not (AMAZON_VIA_EARNKARO and cached_is_amazon_native):
                 # Old cache rows may predate the current policy. Upgrade them
                 # before returning; never leak a long link.
                 #
@@ -5467,60 +5963,193 @@ class AffiliateClient:
         # Preserve meaningful category/filter parameters (for example Men vs
         # Women) while removing only source attribution/tracking parameters.
         clean = merchant_url(resolved)
+        # OUR HYPD (creator-store) SHARE LINK. It IS our monetized link: the
+        # store, the token and HYPD's attribution live in it, and unwrapping it
+        # (or stripping its parameters) is exactly how the user's own link
+        # became an untagged page that paid nothing. Published as it is, always
+        # Bitly-shortened ("convert chesi shorten chesi"), and recorded together
+        # with the merchant page behind it so the same product earns again later.
+        if is_our_hypd_link(source_url) or is_our_hypd_link(resolved):
+            return await self._hypd_affiliate_link(
+                source_url if is_our_hypd_link(source_url) else resolved, source_url, multi_link)
+
+        # MEESHO FAMILY (Meesho / Shopsy): EarnKaro has no campaign for these, so
+        # a bare link used to post clean and untagged - zero commission. When the
+        # same product already has OUR HYPD share link (curated once in the HYPD
+        # app, or seen earlier in a source post), that link is what the post
+        # carries, so the deal earns instead of leaking.
+        if in_domains(host, HYPD_MERCHANT_DOMAINS):
+            learned = await store.hypd_link_for(
+                clean_url(resolved), canonical_url(resolved), product_key(resolved))
+            if learned:
+                return await self._hypd_affiliate_link(learned, source_url, multi_link,
+                                                       destination_hint=clean_url(resolved))
+            # Nothing curated for this product yet, and EarnKaro has no
+            # Meesho/Shopsy campaign, so this post goes out UNMONETIZED. Record
+            # it as a to-do (ops/hypd_links.py --wanted) and say so ONCE per
+            # product, with the exact action that fixes it.
+            first_time = False
+            with contextlib.suppress(Exception):
+                first_time = await store.remember_hypd_wanted(
+                    clean_url(resolved), product_key(resolved))
+            if first_time:
+                log.warning(
+                    "HYPD MISSING | no curated HYPD link for this Meesho/Shopsy product yet, "
+                    "so it posts UNMONETIZED: %s | fix: create the link in the HYPD app, then "
+                    "run: python3 ops/hypd_links.py '<that link>'",
+                    clean_url(resolved)[:90])
+                log.info("HYPD WANTED | added to the curation list (%s product(s) pending)",
+                         len(store.recent_hypd_wanted(limit=1000)))
+
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # USER RULE (2026-09-06): "channels anni mana new tag use chesi". The
-        # user owns mama086-21 and wants Amazon deals to earn on THEIR account
-        # rather than through EarnKaro's Amazon share. So an Amazon PRODUCT link
-        # is built natively here - /dp/ASIN?tag=OUR_TAG - and never sent to
-        # EarnKaro, which would hand the click to ekaro.in and drop the tag.
-        #
-        # This is gated on AMAZON_TAG_TARGETS so it can only affect channels the
-        # user has actually declared to Amazon; everywhere else the tag is
-        # stripped again at delivery by strip_amazon_tag_for_undeclared(), and
-        # those channels keep earning through EarnKaro as before.
-        #
+        # AMAZON. Two policies, one switch:
+        #   AMAZON_VIA_EARNKARO=true (user rule 2026-09-24, default) - Amazon
+        #   goes through EarnKaro like every other store, because a native
+        #   ?tag=mama086-21 link earns nothing while Associates keeps rejecting
+        #   the account. The native tagged link is the FALLBACK when the network
+        #   has no campaign for the URL.
+        #   AMAZON_VIA_EARNKARO=false - the 2026-09-06 behaviour: the native
+        #   tagged product URL, never sent to EarnKaro.
         # Amazon SEARCH / hidden-keywords / browse-node links have no single ASIN
-        # either, but they still earn: OUR tag rides natively on the URL, which
-        # EarnKaro never did - it has no campaign for a search page, so the click
-        # earned zero and the deal risked the retry loop. They are built natively
-        # here exactly like product links and never sent to EarnKaro.
-        if OUR_TAG and in_domains(host, AMAZON_DOMAINS):
-            native = compact_amazon_product_link(clean)
-            asin = re.search(r"/dp/([A-Z0-9]{10})(?:[/?#]|$)", native, re.I)
-            if asin:
-                tagged = apply_amazon_tag(native)
-                affiliate = tagged
-                # USER RULE (2026-09-06): "list lo unna amazon links bitly tho
-                # ivvachu, review channel tappa". A LIST (2+ store links) goes
-                # out as Bitly short links - one uniform link style, a neat
-                # post, our key pays for it. The review channel still gets the
-                # DIRECT tagged Amazon link: every link minted here is recorded
-                # in _short_to_long, and delivery to t.me/smartbuyhub11 expands
-                # our short links back to exactly the URL that was shortened -
-                # https://www.amazon.in/dp/ASIN?tag=mama086-21, the link a
-                # reviewer must be able to see. A SINGLE Amazon link is already
-                # short and stays native everywhere: no quota spent on it.
-                if should_use_bitly(resolved, multi_link):
-                    shortened = await self.shorten(tagged)
-                    if shortened:
-                        affiliate = shortened
-                    else:
-                        # Never lose a valid commission link merely because
-                        # the cosmetic shortener is unavailable/rate-limited.
-                        log.warning("BITLY unavailable; posting the native tagged Amazon link")
-                key = product_key(clean)
-                await store.cache_link(source_url, affiliate, clean, key)
-                return LinkResult(source_url, clean, affiliate, key)
-            if is_amazon_search_or_browse_link(clean):
-                # No cache entry: canonical_url() collapses every /s? search link to
-                # one key (the query carries no pid/asin/node), so caching here would
-                # hand the FIRST search link back for every later one. The tag on the
-                # URL is self-proving at the provenance gate, so no cache is needed.
-                tagged = apply_amazon_tag(clean)
-                return LinkResult(source_url, clean, tagged, product_key(clean))
+        # but still earn on the tag path, so the native fallback covers them too.
+        is_amazon = in_domains(host, AMAZON_DOMAINS)
+        native_amazon_possible = bool(OUR_TAG) and is_amazon
+        if native_amazon_possible and not AMAZON_VIA_EARNKARO:
+            return await self._native_amazon_link(source_url, clean, resolved, multi_link)
+        earned: "LinkResult | None" = None
+        try:
+            earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
+        except Exception:
+            # A temporary API/network failure keeps the job retryable, exactly as
+            # before - unless a native Amazon link is available right now, in
+            # which case the deal is published instead of being retried.
+            if not native_amazon_possible:
+                raise
+            log.warning("EARNKARO unavailable for %s - posting the native tagged Amazon link",
+                        (urlparse(clean).hostname or clean)[:60])
+        if earned is not None:
+            return earned
+        if native_amazon_possible:
+            # The network could not monetize this Amazon link. Dropping it would
+            # lose the deal and posting it untagged would earn nothing, so publish
+            # the native tagged product URL; delivery strips the tag on every
+            # channel that is not declared to Amazon.
+            log.warning("EARNKARO has no campaign for %s - falling back to the native tagged Amazon link "
+                        "(AMAZON_VIA_EARNKARO=%s)", (urlparse(clean).hostname or clean)[:60],
+                        AMAZON_VIA_EARNKARO)
+            return await self._native_amazon_link(source_url, clean, resolved, multi_link)
+        return None
+
+    async def _hypd_destination(self, afflink: str) -> str:
+        """The merchant page OUR HYPD share link points at (identity only).
+
+        NEVER published - the post carries the HYPD (or Bitly) link. The page is
+        used for the product identity (so the same product never posts twice)
+        and for the product -> HYPD-link map that later monetizes a bare Meesho
+        link. HYPD answers with a redirect page, so the destination is read from
+        the redirect, and failing that from the page's own markup.
+        """
+        try:
+            async with self.session.get(
+                afflink, allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+            ) as response:
+                final = str(response.url)
+                if final and clean_url(final) != clean_url(afflink):
+                    return clean_url(final)
+                raw = await response.content.read(200_000)
+                body = raw.decode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+            for candidate in URL_RE.findall(body):
+                url = clean_url(candidate).replace("\\/", "/")
+                host = (urlparse(url).hostname or "").lower()
+                if not host or in_domains(host, HYPD_DOMAINS):
+                    continue
+                if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, {"googletagmanager.com"}):
+                    continue
+                if in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, HYPD_MERCHANT_DOMAINS):
+                    return url
+        except Exception as exc:
+            log.warning("HYPD destination unresolved for %s: %s", afflink[:60], exc)
+        return ""
+
+    async def _hypd_affiliate_link(self, afflink: str, source_url: str, multi_link: bool,
+                                   destination_hint: str = "") -> "LinkResult":
+        """Publish OUR HYPD share link (Bitly-shortened) and learn its product.
+
+        USER RULE (2026-09-24): "paina links ni perefctga manam links ga chesi
+        cheyu ... bitly tho shorten ga chesi cheyu, convert chesi shorten chesi".
+        """
+        destination = destination_hint or await self._hypd_destination(afflink)
+        key = product_key(destination) if destination else ""
+        if not key:
+            key = "HYPD:" + (hypd_afflink_token(afflink) or canonical_url(afflink))
+        affiliate = afflink
+        if HYPD_ALWAYS_BITLY or len(afflink) > SHORTEN_MIN_LEN:
+            shortened = await self.shorten(afflink)
+            if shortened:
+                affiliate = shortened
+            else:
+                # Never lose the user's own commission link to a shortener
+                # outage: the HYPD link itself is short and always works.
+                log.warning("BITLY unavailable; posting OUR HYPD link as it is")
+        await store.cache_link(source_url, affiliate, destination or afflink, key)
+        with contextlib.suppress(Exception):
+            await store.remember_hypd_link(afflink, destination, key)
+        log.info("HYPD LINK | %s -> %s%s", afflink[:70], affiliate[:70],
+                 f" | behind it: {destination[:60]}" if destination else " | destination unknown")
+        return LinkResult(source_url, destination or afflink, affiliate, key)
+
+    async def _native_amazon_link(self, source_url: str, clean: str, resolved: str,
+                                  multi_link: bool) -> "LinkResult | None":
+        """OUR Associates tag on a native Amazon URL (product, search or browse).
+
+        USER RULE (2026-09-06): "channels anni mana new tag use chesi". A LIST
+        (2+ store links) goes out as Bitly short links - one uniform link style,
+        our key pays for it - while a SINGLE Amazon link is already short and
+        stays native (no quota spent). Every link minted here is recorded in
+        _short_to_long, and delivery to t.me/smartbuyhub11 expands our short
+        links back to exactly the URL that was shortened, so the reviewer always
+        sees https://www.amazon.in/dp/ASIN?tag=OUR_TAG.
+        """
+        native = compact_amazon_product_link(clean)
+        asin = re.search(r"/dp/([A-Z0-9]{10})(?:[/?#]|$)", native, re.I)
+        if asin:
+            tagged = apply_amazon_tag(native)
+            affiliate = tagged
+            if should_use_bitly(resolved, multi_link):
+                shortened = await self.shorten(tagged)
+                if shortened:
+                    affiliate = shortened
+                else:
+                    # Never lose a valid commission link merely because the
+                    # cosmetic shortener is unavailable/rate-limited.
+                    log.warning("BITLY unavailable; posting the native tagged Amazon link")
+            key = product_key(clean)
+            await store.cache_link(source_url, affiliate, clean, key)
+            return LinkResult(source_url, clean, affiliate, key)
+        if is_amazon_search_or_browse_link(clean):
+            # No cache entry: canonical_url() collapses every /s? search link to
+            # one key (the query carries no pid/asin/node), so caching here would
+            # hand the FIRST search link back for every later one. The tag on the
+            # URL is self-proving at the provenance gate, so no cache is needed.
+            tagged = apply_amazon_tag(clean)
+            return LinkResult(source_url, clean, tagged, product_key(clean))
+        return None
+
+    async def _earnkaro_link(self, source_url: str, clean: str, resolved: str,
+                             multi_link: bool) -> "LinkResult | None":
+        """Convert ONE merchant URL through the EarnKaro/Affiliaters API.
+
+        Returns our converted link, or None when the network has nothing for
+        this URL (the caller then picks the fallback). Raises when the API is
+        unreachable/rate-limited so the JOB can retry: a temporary outage must
+        not silently cost a commission.
+        """
         if not EK_BREAKER.allow():
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
@@ -5529,21 +6158,39 @@ class AffiliateClient:
                 try:
                     async with self.session.post(
                         EK_API,
-                        json={"deal": clean},
+                        # `convert_option: convert_only` is the documented contract:
+                        # convert the link and do nothing else (no posting, no
+                        # account-default formatting). Sending it explicitly is what
+                        # makes the RESPONSE shape predictable.
+                        json={"deal": clean, "convert_option": EARNKARO_CONVERT_OPTION},
                         headers={"Authorization": f"Bearer {EK_KEY}", "Content-Type": "application/json"},
                         timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2)),
                     ) as response:
                         body = await response.text()
+                        if response.status in (401, 403):
+                            # The TOKEN is refused. Retrying cannot help, and a
+                            # fallback link earns nothing, so say exactly what is
+                            # wrong and where the fix is - a silent 401 is
+                            # indistinguishable from "this store has no campaign"
+                            # in the log, which is how "conversion is not working"
+                            # stayed invisible.
+                            log.error("EK AUTH | the EarnKaro API refused our token "
+                                      "(HTTP %s at %s). Regenerate EARNKARO_API_KEY and re-run "
+                                      "ops/set_earnkaro_key.sh - every link falls back to "
+                                      "unmonetized until then.", response.status, EK_API)
+                            EK_BREAKER.failure()
+                            return None
                         if response.status in (429, 500, 502, 503, 504):
                             raise RuntimeError(f"EarnKaro HTTP {response.status}")
-                        data = json.loads(body)
-                        result = data.get("data") if data.get("success") == 1 else None
-                        if isinstance(result, list):
-                            result = next((x for x in result if isinstance(x, str) and x.startswith("http")), None)
-                        if not isinstance(result, str):
+                        result, reason = parse_earnkaro_response(body)
+                        if not result:
+                            log.warning("EK CONVERT | no link for %s | API said: %s",
+                                        (urlparse(clean).hostname or clean)[:60], reason[:200])
                             return None
                         result = apply_amazon_tag(result)
                         if not self.valid_generated(result):
+                            log.warning("EK REJECT | the API answered a link we must not publish "
+                                        "(foreign attribution or echoed source link): %s", result[:100])
                             return None
                         result = clean_url(result)
                         # An authenticated endpoint must return a newly generated
@@ -5566,9 +6213,10 @@ class AffiliateClient:
                             if compact != affiliate and len(compact) < len(affiliate):
                                 affiliate = result = compact
                         # A LIST must look uniform: one link shortened and the
-                        # next left long reads like a mistake. Amazon products
-                        # in a list are already native (handled above), so this
-                        # only makes the remaining stores consistent.
+                        # next left long reads like a mistake. (On the pure native
+                        # Amazon path an Amazon product link is already short and
+                        # never reaches here; on the EarnKaro path every store is
+                        # treated the same, which is the whole point.)
                         if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
                             shortened = await self.shorten(result)
                             if shortened:
@@ -5580,6 +6228,11 @@ class AffiliateClient:
                         key = product_key(resolved)
                         await store.cache_link(source_url, affiliate, resolved, key)
                         EK_BREAKER.success()
+                        # One line per monetized link: this is how an operator
+                        # answers "are the EarnKaro links actually converting?"
+                        # from the log alone.
+                        log.info("EK CONVERT | %s -> %s",
+                                 (urlparse(resolved).hostname or resolved)[:45], affiliate[:90])
                         return LinkResult(source_url, resolved, affiliate, key)
                 except Exception as exc:
                     last = exc
@@ -5652,7 +6305,7 @@ class AffiliateClient:
         out = text or ""
         for short, long_url in self._short_to_long.items():
             if short in out:
-                out = out.replace(short, long_url)
+                out = out.replace(short, tag_native_amazon(long_url))
         for raw in dict.fromkeys(URL_RE.findall(out)):
             if raw not in out:
                 continue
@@ -5662,7 +6315,7 @@ class AffiliateClient:
                 continue
             native = await store.affiliate_destination(raw)
             if native:
-                out = out.replace(raw, native)
+                out = out.replace(raw, tag_native_amazon(native))
         return out
 
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
@@ -5719,7 +6372,11 @@ class AffiliateClient:
         for raw in dict.fromkeys(URL_RE.findall(out)):
             url = clean_url(raw)
             host = (urlparse(url).hostname or "").lower()
-            if len(url) <= SHORTEN_MIN_LEN:
+            # USER RULE (2026-09-24): "bitly tho shorten ga chesi cheyu" — OUR
+            # HYPD share links are always shortened, however short they look, so
+            # nothing after the domain announces our store or the product.
+            hypd_ours = is_our_hypd_link(url) and HYPD_ALWAYS_BITLY
+            if len(url) <= SHORTEN_MIN_LEN and not hypd_ours:
                 continue
             if in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS) or in_domains(host, OUR_SHORTENER_DOMAINS):
                 continue
@@ -5812,6 +6469,15 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
         source_hours, source_limit = 60 * 24, 5
     elif source == OZ_SOURCE:
         source_hours, source_limit = 48, max(BACKFILL_LIMIT, 50)
+    elif normalize_source_name(source) in {
+            normalize_source_name(s) for s in FIRST_PREFERENCE_SOURCES}:
+        # A first-preference source is claimed from the queue ahead of
+        # everything else, so a first connect that recovered its whole backfill
+        # (50 posts x 3 channels) would fire a burst at our channels before
+        # anything else could post. They are on the hot path: recover only the
+        # recent tail and let live events carry the feed.
+        source_hours, source_limit = BACKFILL_HOURS, max(1, int(os.getenv(
+            "FIRST_PREFERENCE_BACKFILL_LIMIT", "12")))
     else:
         source_hours, source_limit = BACKFILL_HOURS, BACKFILL_LIMIT
     cutoff = datetime.now(timezone.utc).timestamp() - source_hours * 3600
@@ -6829,8 +7495,9 @@ def extract_urls_from_buttons(msg) -> list[str]:
     if isinstance(markup, ReplyInlineMarkup):
         for row in markup.rows:
             for button in row.buttons:
-                if isinstance(button, KeyboardButtonUrl) and button.url:
-                    result.append(clean_url(button.url))
+                url = button_url(button)
+                if url:
+                    result.append(clean_url(url))
     return result
 
 

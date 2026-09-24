@@ -24,10 +24,37 @@ if [[ -f .env ]]; then
 from pathlib import Path
 p=Path('.env'); lines=p.read_text().splitlines(); out=[]; seen=set()
 updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
+         # EarnKaro / Affiliaters converter token. Without a VALID token every
+         # conversion answers 401 and the bot posts clean, UNTAGGED merchant
+         # links (zero commission) - exactly what "the EarnKaro links are not
+         # converting" looks like. The token is a SECRET (see the Security
+         # section of the README), so it is never committed here: it is read
+         # from $EARNKARO_API_KEY or from ops/.earnkaro_key (gitignored) when
+         # one of them exists, and the server's existing value is left alone
+         # otherwise. Rotate it with:  ./set_earnkaro_key.sh '<token>'
+         'EARNKARO_API_URL':'https://ekaro-api.affiliaters.in/api/converter/public',
+         'EARNKARO_PUBLISHER_ID':'5478322',
+         # The documented converter mode: convert the link, do nothing else.
+         'EARNKARO_CONVERT_OPTION':'convert_only',
+         # USER RULE (2026-09-24): Amazon converts through EarnKaro like every
+         # other store (Associates is still rejecting the account, so the native
+         # ?tag= link earns nothing). The native tagged link stays the fallback,
+         # and the reviewed channel still shows the native tagged product page.
+         # Set to 'false' to restore pure native tagging.
+         'AMAZON_VIA_EARNKARO':'true',
          # Night quiet 02:00-06:00 IST: posting pauses, deals queue, 06:00 flush.
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
          # User-supplied Bitly token: best shortening for long links.
          'BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+         # OUR HYPD creator store (USER RULE 2026-09-24): hypd.store share
+         # links of this store ARE our monetized links - never unwrapped, never
+         # parameter-stripped, ALWAYS Bitly-shortened - and the Meesho/Shopsy
+         # products we curated there earn on them instead of posting untagged.
+         # Defaults in main_bot_new.py are the same; pinning them here makes the
+         # live config explicit. Train the links with: python3 ops/hypd_links.py
+         'HYPD_STORE_ID':'93944','HYPD_STORE_SLUG':'smartdeals',
+         'HYPD_ALWAYS_BITLY':'true',
+         'HYPD_MERCHANT_DOMAINS':'meesho.com,shopsy.in',
          # Highest commission wins: Amazon always direct Associates tag
          # (EarnKaro takes a cut in the middle; 0.0 = never route via EK).
          'AMAZON_EARNKARO_RATIO':'0.0'}
@@ -40,6 +67,25 @@ for key,value in updates.items():
     if key not in seen: out.append(f'{key}={value}')
 p.write_text('\n'.join(out)+'\n')
 PY
+  # The EarnKaro token, when the operator has provided one: from the
+  # environment, or from ops/.earnkaro_key (gitignored) so a local checkout can
+  # carry it to the server without ever committing it. With neither present the
+  # server keeps the token it already has, and the line below says so.
+  EK_TOKEN="${EARNKARO_API_KEY:-}"
+  if [[ -z "$EK_TOKEN" && -f "$HERE/.earnkaro_key" ]]; then
+    EK_TOKEN="$(tr -d '[:space:]' < "$HERE/.earnkaro_key")"
+  fi
+  if [[ -n "$EK_TOKEN" ]]; then
+    if grep -qE '^EARNKARO_API_KEY=' "$ENV_FILE"; then
+      sed -i "s|^EARNKARO_API_KEY=.*|EARNKARO_API_KEY=$EK_TOKEN|" "$ENV_FILE"
+    else
+      echo "EARNKARO_API_KEY=$EK_TOKEN" >> "$ENV_FILE"
+    fi
+    echo "      EarnKaro API key: updated from the deploy environment"
+  else
+    echo "      EarnKaro API key: unchanged (not in the environment, no ops/.earnkaro_key)."
+    echo "      If conversion is failing, run:  ./set_earnkaro_key.sh '<token>'"
+  fi
   chmod 600 .env
 fi
 # Old Amazon Bitly links conceal the previous tag, so invalidate Amazon cache
@@ -73,6 +119,9 @@ if [[ -f .env ]]; then
 from pathlib import Path
 p=Path('.env')
 updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'mama086-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45','WA_BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+ # OUR HYPD store ids/slugs (same rule as the bot side): a hypd.store link of
+ # another store is somebody else's commission and is never republished as ours.
+ 'HYPD_STORES':'93944,smartdeals',
  # Channel-only for now: groups are skipped (no group join/invite calls) so a
  # flaky group can never trigger WhatsApp disconnects. Set to 'false' and re-run
  # this script to turn group fan-out back on.
