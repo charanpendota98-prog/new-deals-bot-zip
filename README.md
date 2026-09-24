@@ -55,12 +55,12 @@ python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
-python3 test_earnkaro_conversion.py  # 95 checks: EarnKaro request/response contract,
+python3 test_earnkaro_conversion.py  # 97 checks: EarnKaro request/response contract,
                                      # the API key's publisher, Amazon-via-EarnKaro,
                                      # the three first-preference sources, the
                                      # whose-link-attribution verdicts and the
                                      # conversion report
-python3 test_hypd_links.py        # 61 checks: OUR hypd.store links: no unwrap, always Bitly,
+python3 test_hypd_links.py        # 72 checks: OUR hypd.store links: no unwrap, always Bitly,
                                      # Meesho->our-link map, foreign-store refusal
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
@@ -227,7 +227,7 @@ attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
 account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
 commission away. It is a **final, monetized link** and is treated like one.
 
-Behaviour (pinned by `test_hypd_links.py`, 61 checks, green):
+Behaviour (pinned by `test_hypd_links.py`, 72 checks, green):
 
 | Situation | What the bot does |
 |---|---|

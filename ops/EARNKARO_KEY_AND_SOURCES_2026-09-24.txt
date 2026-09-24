@@ -179,7 +179,7 @@ DEPLOY
       # or place the token in ops/.earnkaro_key (gitignored) before deploying
 
 TESTS (all green)
-  python3 test_earnkaro_conversion.py   # 95 checks: converter contract, key,
+  python3 test_earnkaro_conversion.py   # 97 checks: converter contract, key,
                                         # Amazon policy, the three new sources
   python3 test_render_job.py            # 160 checks
   python3 test_pipeline_fixes.py        # 229 checks

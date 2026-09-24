@@ -26,7 +26,7 @@ WHY IT WAS BROKEN
   so the post went out as a clean, UNTAGGED merchant page that pays nothing —
   the opposite of what the user asked for.
 
-WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 61 checks, all green)
+WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 72 checks, all green)
   * OUR hypd.store/<store>/afflink/<token> link is treated as OUR link:
     never unwrapped, never parameter-stripped, never sent to EarnKaro.
   * It is ALWAYS Bitly-shortened (HYPD_ALWAYS_BITLY=true) — even though the
@@ -99,7 +99,7 @@ ENV KNOBS (all optional; defaults are ours)
   (bridge) HYPD_STORES=93944,smartdeals
 
 TESTS
-  python3 test_hypd_links.py            # 61 checks: recognition, no-unwrap,
+  python3 test_hypd_links.py            # 72 checks: recognition, no-unwrap,
                                         # Bitly publish, outage fallback,
                                         # learned Meesho mapping, foreign-store
                                         # refusal, JS-redirect destination
