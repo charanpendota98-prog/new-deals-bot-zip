@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), routing + media-fix notes |
+| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -58,6 +58,8 @@ python3 test_duplicate_sim.py     # real worker path: one copy per channel, alwa
 python3 test_earnkaro_conversion.py  # EarnKaro request/response contract, the
                                      # API key's publisher, Amazon-via-EarnKaro,
                                      # the three first-preference sources
+python3 test_hypd_links.py        # OUR hypd.store links: no unwrap, always Bitly,
+                                     # Meesho->our-link map, foreign-store refusal
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
 # Prove the guarantees on a real (or copied) database — read-only, exit 1 with
@@ -157,6 +159,61 @@ equivalent deal from one of them is rendered and delivered first. Invite hashes
 carry uppercase characters, so source matching is normalised
 (`normalize_source_name()`), which is also what the claim SQL's `lower(source)`
 already did.
+
+## OUR HYPD links: Meesho/Shopsy products earn on our own link (2026-09-24)
+
+The user supplied three of **our own** HYPD creator-store share links
+(`hypd.store/93944/afflink/…` — store `93944`, slug `smartdeals`) and said: the
+Meesho products arriving in the third source channel (`t.me/+6LA1ljXGlbNmMjA1`)
+must convert **through our link**, and that link must always be Bitly-shortened.
+
+**What a HYPD share link is.** It is not a wrapper to be unwrapped: the
+attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
+account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
+commission away. It is a **final, monetized link** and is treated like one.
+
+Behaviour (pinned by `test_hypd_links.py`, 39 checks, green):
+
+| Situation | What the bot does |
+|---|---|
+| A source (or bridge) posts OUR `hypd.store/93944/afflink/…` link | Published as **our** link: never unwrapped, never stripped, no EarnKaro call, and **always Bitly-shortened** (`HYPD_ALWAYS_BITLY=true`, even though the URL is short) |
+| The same link arrives again in a text dump | `shorten()` pass keeps it short whether it is raw (converted) or already `bit.ly` |
+| Bitly/is.gd is down | The **raw HYPD link is posted** — the commission link is never lost or left unmonetized |
+| A bare Meesho/Shopsy **product** link (no EarnKaro campaign) | The bot resolves it, finds the product identity, and swaps in **our HYPD link already minted for that product** (`store.hypd_link_for`), then Bitly-shortens it |
+| A bare Meesho/Shopsy link with **no** known HYPD link | Falls through to the normal EarnKaro path; nothing is invented |
+| Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours (that would pay them); it goes down the normal path |
+| A HYPD link rediscovered later | `resolve()` returns it untouched with **no network call** (nothing to unwrap) |
+
+**Teaching the bot your HYPD links** (HYPD has no public link-creation API —
+links are minted in the HYPD creator app for a curated product, then the bot
+learns the product behind each one):
+
+```bash
+python3 ops/hypd_links.py                                   # what the bot knows
+python3 ops/hypd_links.py 'https://hypd.store/93944/afflink/<token>' ...  # learn these live
+python3 ops/hypd_links.py --lookup 'https://www.meesho.com/.../p/...'     # is this product covered?
+python3 ops/hypd_links.py --dry-run 'https://hypd.store/...'              # resolve, store nothing
+```
+
+Learning one link maps the **product** (`hypd_links` table: token → afflink,
+merchant page, product key), so every later post of that product — however the
+source spells the URL (with or without HYPD's tracking parameters) — earns on
+our link. Merchant pages are stored clean (tracking stripped) so a bare link
+matches.
+
+Knobs (`.env`, all optional): `HYPD_STORE_ID=93944` (default, ours),
+`HYPD_STORE_SLUG=smartdeals`, `OUR_HYPD_STORES` (extra store ids to trust),
+`HYPD_ALWAYS_BITLY=true`, `HYPD_MERCHANT_DOMAINS=meesho.com,shopsy.in`
+(merchants this covers), and reserved `HYPD_API_URL`/`HYPD_API_TOKEN` (unused
+until HYPD ships a link API). The bridge mirrors the store ids via `HYPD_STORES`
+(`93944,smartdeals`) and its self-test asserts our link counts as ours, a
+foreign store (`999999`) does not, and our link is always shortened.
+
+Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
+
+Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
+`HYPD MAP` (learned), `BITLY unavailable; posting OUR HYPD link as it is`
+(outage fallback).
 
 ## Key behaviour (see `ops/` notes for full detail)
 

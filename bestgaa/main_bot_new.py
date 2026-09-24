@@ -252,6 +252,45 @@ AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "al
 AMAZON_VIA_EARNKARO = os.getenv(
     "AMAZON_VIA_EARNKARO", "true").strip().lower() not in ("0", "false", "no", "off")
 
+# --- HYPD creator-store affiliate links (USER RULE 2026-09-24) -------------
+# "hypd idi meesho products ni mana link tho convert cheyu ... paina links ni
+# perefctga manam links ga chesi cheyu ... bitly tho shorten ga chesi cheyu,
+# convert chesi shorten chesi"
+#
+# HYPD (hypd.store) is a creator-store platform: our store is 93944
+# ("smartdeals") and every product we curate there gets a share link
+#
+#     https://hypd.store/<store>/afflink/<token>
+#
+# which redirects to the merchant page carrying HYPD's OWN affiliate
+# attribution (affid=infhypd&affExtParam1=<account>&affExtParam2=<token>).
+# Those links ARE our monetized links - and the old pipeline destroyed them:
+# resolve() followed the redirect, merchant_url() stripped affid/affExtParam1/
+# affExtParam2 as "tracking noise", EarnKaro had no campaign for the merchant
+# and the post went out with a clean, UNTAGGED page (zero commission). Now:
+#   * our store's afflink is treated exactly like EarnKaro output - never
+#     unwrapped, never re-converted, never stripped;
+#   * it is ALWAYS Bitly-shortened (the user asked for it by name);
+#   * the merchant page behind it is recorded, so the same product arriving
+#     later as a bare Meesho/Shopsy link earns on the same HYPD link.
+# A hypd.store link belonging to ANOTHER store is somebody else's commission,
+# so it is treated like any foreign affiliate wrapper (never republished).
+HYPD_DOMAINS = {"hypd.store"}
+HYPD_STORE_ID = os.getenv("HYPD_STORE_ID", "93944").strip().lstrip("@").lower()
+HYPD_STORE_SLUG = os.getenv("HYPD_STORE_SLUG", "smartdeals").strip().lstrip("@").lower()
+OUR_HYPD_STORES = {s for s in (HYPD_STORE_ID, HYPD_STORE_SLUG) if s}
+HYPD_ALWAYS_BITLY = os.getenv(
+    "HYPD_ALWAYS_BITLY", "true").strip().lower() not in ("0", "false", "no", "off")
+# Merchants EarnKaro cannot monetize (no campaign) but HYPD can - the Meesho
+# family. A bare link to one of these earns nothing on its own; when we already
+# know OUR HYPD afflink for the same product, that link is what the post carries.
+HYPD_MERCHANT_DOMAINS = {
+    d.strip().lower() for d in os.getenv(
+        "HYPD_MERCHANT_DOMAINS", "meesho.com,shopsy.in").split(",") if d.strip()
+}
+HYPD_API_URL = os.getenv("HYPD_API_URL", "").strip()
+HYPD_API_TOKEN = os.getenv("HYPD_API_TOKEN", "").strip()
+
 PRODUCT_DEDUP_SECONDS = 24 * 3600  # STRICT 24h: same product never reposts within 24h — pinned, env override blocked (user rule 2026-09-04)
 # v17.8 SAME PRODUCT, ONE CHANNEL, ONE TIME. `posted_deals` keys on a merchant
 # product id, which is exact but blind while a short link has not been resolved
@@ -1171,6 +1210,69 @@ def host_matches(host: str, domain: str) -> bool:
 
 def in_domains(host: str, domains: Iterable[str]) -> bool:
     return any(host_matches(host, d) for d in domains)
+
+
+def hypd_store_of(url: str) -> str:
+    """The store segment of a HYPD share link ("" when the URL is not one).
+
+    https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg -> "93944"
+    """
+    try:
+        parsed = urlparse(clean_url(url))
+        if not in_domains((parsed.hostname or "").lower(), HYPD_DOMAINS):
+            return ""
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 2 and parts[1].lower() == "afflink":
+            return parts[0].lower()
+        return ""
+    except Exception:
+        return ""
+
+
+def hypd_afflink_token(url: str) -> str:
+    """The (store, token) pair a HYPD share link identifies."""
+    try:
+        parsed = urlparse(clean_url(url))
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) >= 3 and parts[1].lower() == "afflink":
+            return f"{parts[0].lower()}:{parts[2]}"
+    except Exception:
+        pass
+    return ""
+
+
+def is_hypd_link(url: str) -> bool:
+    """True for any hypd.store share link, ours or another creator's."""
+    return bool(hypd_store_of(url))
+
+
+def hypd_product_keys(value: str) -> list[str]:
+    """Every spelling of ONE product page the HYPD map matches on.
+
+    A source writes the same product page as a bare link, with HYPD's own
+    tracking still on it, or with session parameters - all three must find the
+    same HYPD share link, otherwise the deal posts unmonetized while we already
+    hold a commission link for it.
+    """
+    url = clean_url(value or "")
+    if not url:
+        return []
+    keys: list[str] = []
+    for candidate in (url, merchant_url(url), canonical_url(url)):
+        candidate = clean_url(candidate)
+        if candidate and candidate not in keys:
+            keys.append(candidate)
+    return keys
+
+
+def is_our_hypd_link(url: str) -> bool:
+    """True when the HYPD link earns on OUR store (93944 / smartdeals).
+
+    Only our own share links are ours: another creator's hypd.store link pays
+    THEM, so it is treated like any foreign affiliate wrapper.
+    """
+    store = hypd_store_of(url)
+    return bool(store) and store in OUR_HYPD_STORES
 
 
 # Long-link threshold for shortening: anything longer than this (a messy
@@ -4275,6 +4377,14 @@ class Store:
           deal_key TEXT,
           created_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS hypd_links (
+            token TEXT PRIMARY KEY,
+            store TEXT NOT NULL,
+            afflink_url TEXT NOT NULL,
+            resolved_url TEXT,
+            product_key TEXT,
+            created_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS premium_state (
           id INTEGER PRIMARY KEY CHECK(id=1),
           night_key TEXT,
@@ -4343,6 +4453,14 @@ class Store:
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS ix_queue_status "
             "ON queue(status, priority, created_at)"
+        )
+        # HYPD share links: lookups are "which of OUR links is this product"
+        # (product_key) and "where does this link go" (resolved_url).
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_product ON hypd_links(product_key)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_resolved ON hypd_links(resolved_url)"
         )
         # A previous crash must not leave work permanently stuck.
         self.conn.execute("UPDATE queue SET status='pending' WHERE status='processing'")
@@ -4779,6 +4897,61 @@ class Store:
             return self.conn.execute(
                 "SELECT * FROM link_cache WHERE source_url=?", (canonical_url(source_url),)
             ).fetchone()
+
+    async def remember_hypd_link(self, afflink_url: str, resolved_url: str,
+                                 product_key_value: str) -> None:
+        """Record OUR HYPD share link and the merchant page behind it.
+
+        This is what lets the same product earn later even when the source
+        posts a bare Meesho/Shopsy URL instead of the HYPD link (Meesho has no
+        EarnKaro campaign, so a bare Meesho link otherwise pays nothing).
+        """
+        token = hypd_afflink_token(afflink_url)
+        if not token:
+            return
+        # The CLEAN merchant page is what a later bare Meesho/Shopsy link looks
+        # like too, so HYPD's own parameters are stripped before storing.
+        page = clean_url(merchant_url(resolved_url)) if resolved_url else ""
+        async with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO hypd_links(token, store, afflink_url, resolved_url,"
+                " product_key, created_at) VALUES (?,?,?,?,?,?)",
+                (token, hypd_store_of(afflink_url), clean_url(afflink_url),
+                 page, product_key_value or "", time.time()),
+            )
+            self.conn.commit()
+
+    async def hypd_link_for(self, *keys: str) -> str | None:
+        """OUR HYPD share link for a product we have already curated, if any.
+
+        Looked up by the merchant page URL and by the product key, so a Meesho
+        link and the shopsy/meesho page behind the HYPD link match each other.
+        """
+        wanted: list[str] = []
+        for key in keys:
+            for variant in hypd_product_keys(key):
+                if variant not in wanted:
+                    wanted.append(variant)
+            if key and key not in wanted:
+                wanted.append(key)          # an identity key such as "PID:..."
+        if not wanted:
+            return None
+        async with self.lock:
+            for key in wanted:
+                row = self.conn.execute(
+                    "SELECT afflink_url FROM hypd_links WHERE product_key=? OR resolved_url=? "
+                    "OR afflink_url=? ORDER BY created_at DESC LIMIT 1",
+                    (key, key, key)).fetchone()
+                if row and row["afflink_url"]:
+                    return row["afflink_url"]
+        return None
+
+    def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
+        """(afflink_url, resolved_url) pairs — used by ops/hypd_links.py."""
+        rows = self.conn.execute(
+            "SELECT afflink_url, resolved_url FROM hypd_links ORDER BY created_at DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [(row["afflink_url"], row["resolved_url"] or "") for row in rows]
 
     def recent_shortened_amazon_links(self, limit: int = 2000) -> list[tuple[str, str]]:
         """Durable (short link -> amazon URL) pairs for the restart gap.
@@ -5530,6 +5703,14 @@ class AffiliateClient:
             try:
                 p = urlparse(current)
                 host = (p.hostname or "").lower()
+                # OUR HYPD share link is a FINAL link, not a wrapper to unwrap.
+                # Following it hands us the merchant page with HYPD's
+                # attribution in the query, and the next cleaning pass strips
+                # exactly those parameters - the user's own commission link
+                # became an untagged page that pays nothing. It is returned
+                # untouched; the destination is read separately, for identity.
+                if is_our_hypd_link(current):
+                    break
                 if host_matches(host, "linkredirect.in"):
                     dl = parse_qs(p.query).get("dl", [None])[0]
                     if dl:
@@ -5718,6 +5899,28 @@ class AffiliateClient:
         # Preserve meaningful category/filter parameters (for example Men vs
         # Women) while removing only source attribution/tracking parameters.
         clean = merchant_url(resolved)
+        # OUR HYPD (creator-store) SHARE LINK. It IS our monetized link: the
+        # store, the token and HYPD's attribution live in it, and unwrapping it
+        # (or stripping its parameters) is exactly how the user's own link
+        # became an untagged page that paid nothing. Published as it is, always
+        # Bitly-shortened ("convert chesi shorten chesi"), and recorded together
+        # with the merchant page behind it so the same product earns again later.
+        if is_our_hypd_link(source_url) or is_our_hypd_link(resolved):
+            return await self._hypd_affiliate_link(
+                source_url if is_our_hypd_link(source_url) else resolved, source_url, multi_link)
+
+        # MEESHO FAMILY (Meesho / Shopsy): EarnKaro has no campaign for these, so
+        # a bare link used to post clean and untagged - zero commission. When the
+        # same product already has OUR HYPD share link (curated once in the HYPD
+        # app, or seen earlier in a source post), that link is what the post
+        # carries, so the deal earns instead of leaking.
+        if in_domains(host, HYPD_MERCHANT_DOMAINS):
+            learned = await store.hypd_link_for(
+                clean_url(resolved), canonical_url(resolved), product_key(resolved))
+            if learned:
+                return await self._hypd_affiliate_link(learned, source_url, multi_link,
+                                                       destination_hint=clean_url(resolved))
+
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
@@ -5759,6 +5962,67 @@ class AffiliateClient:
                         AMAZON_VIA_EARNKARO)
             return await self._native_amazon_link(source_url, clean, resolved, multi_link)
         return None
+
+    async def _hypd_destination(self, afflink: str) -> str:
+        """The merchant page OUR HYPD share link points at (identity only).
+
+        NEVER published - the post carries the HYPD (or Bitly) link. The page is
+        used for the product identity (so the same product never posts twice)
+        and for the product -> HYPD-link map that later monetizes a bare Meesho
+        link. HYPD answers with a redirect page, so the destination is read from
+        the redirect, and failing that from the page's own markup.
+        """
+        try:
+            async with self.session.get(
+                afflink, allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+            ) as response:
+                final = str(response.url)
+                if final and clean_url(final) != clean_url(afflink):
+                    return clean_url(final)
+                raw = await response.content.read(200_000)
+                body = raw.decode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+            for candidate in URL_RE.findall(body):
+                url = clean_url(candidate).replace("\\/", "/")
+                host = (urlparse(url).hostname or "").lower()
+                if not host or in_domains(host, HYPD_DOMAINS):
+                    continue
+                if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, {"googletagmanager.com"}):
+                    continue
+                if in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, HYPD_MERCHANT_DOMAINS):
+                    return url
+        except Exception as exc:
+            log.warning("HYPD destination unresolved for %s: %s", afflink[:60], exc)
+        return ""
+
+    async def _hypd_affiliate_link(self, afflink: str, source_url: str, multi_link: bool,
+                                   destination_hint: str = "") -> "LinkResult":
+        """Publish OUR HYPD share link (Bitly-shortened) and learn its product.
+
+        USER RULE (2026-09-24): "paina links ni perefctga manam links ga chesi
+        cheyu ... bitly tho shorten ga chesi cheyu, convert chesi shorten chesi".
+        """
+        destination = destination_hint or await self._hypd_destination(afflink)
+        key = product_key(destination) if destination else ""
+        if not key:
+            key = "HYPD:" + (hypd_afflink_token(afflink) or canonical_url(afflink))
+        affiliate = afflink
+        if HYPD_ALWAYS_BITLY or len(afflink) > SHORTEN_MIN_LEN:
+            shortened = await self.shorten(afflink)
+            if shortened:
+                affiliate = shortened
+            else:
+                # Never lose the user's own commission link to a shortener
+                # outage: the HYPD link itself is short and always works.
+                log.warning("BITLY unavailable; posting OUR HYPD link as it is")
+        await store.cache_link(source_url, affiliate, destination or afflink, key)
+        with contextlib.suppress(Exception):
+            await store.remember_hypd_link(afflink, destination, key)
+        log.info("HYPD LINK | %s -> %s%s", afflink[:70], affiliate[:70],
+                 f" | behind it: {destination[:60]}" if destination else " | destination unknown")
+        return LinkResult(source_url, destination or afflink, affiliate, key)
 
     async def _native_amazon_link(self, source_url: str, clean: str, resolved: str,
                                   multi_link: bool) -> "LinkResult | None":
@@ -6028,7 +6292,11 @@ class AffiliateClient:
         for raw in dict.fromkeys(URL_RE.findall(out)):
             url = clean_url(raw)
             host = (urlparse(url).hostname or "").lower()
-            if len(url) <= SHORTEN_MIN_LEN:
+            # USER RULE (2026-09-24): "bitly tho shorten ga chesi cheyu" — OUR
+            # HYPD share links are always shortened, however short they look, so
+            # nothing after the domain announces our store or the product.
+            hypd_ours = is_our_hypd_link(url) and HYPD_ALWAYS_BITLY
+            if len(url) <= SHORTEN_MIN_LEN and not hypd_ours:
                 continue
             if in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS) or in_domains(host, OUR_SHORTENER_DOMAINS):
                 continue
