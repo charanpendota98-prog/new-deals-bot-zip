@@ -26,7 +26,7 @@ WHY IT WAS BROKEN
   so the post went out as a clean, UNTAGGED merchant page that pays nothing —
   the opposite of what the user asked for.
 
-WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 53 checks, all green)
+WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 61 checks, all green)
   * OUR hypd.store/<store>/afflink/<token> link is treated as OUR link:
     never unwrapped, never parameter-stripped, never sent to EarnKaro.
   * It is ALWAYS Bitly-shortened (HYPD_ALWAYS_BITLY=true) — even though the
@@ -56,6 +56,20 @@ SERVER STEPS (after pulling this branch)
       # To check first without writing:  add --dry-run
       # Which product is covered:        python3 ops/hypd_links.py --lookup '<product url>'
       # What the bot knows:              python3 ops/hypd_links.py --list
+      # WHAT THE CHANNEL POSTED UNMONETIZED (curate these next):
+      #                                  python3 ops/hypd_links.py --wanted
+
+  # 2b. WHAT STILL EARNS NOTHING, AND THE ONE-COMMAND PROOF
+      Every Meesho/Shopsy product the bot had no HYPD link for is logged once
+      (HYPD MISSING with the product URL and the exact fix) and listed by
+      --wanted. Curating one link removes the product from the list and every
+      later post of it earns on OUR link.
+
+      python3 ops/earnkaro_check.py --hypd-only
+        # resolves each of OUR share links, Bitly-shortens them the way the bot
+        # does, follows the short link BACK and proves it lands on our store:
+        #   bitly     : https://bit.ly/xxxx
+        #   verdict   : OUR LINK, shortened and still ours
 
   # 3. VERIFY ON THE LIVE LOG
       grep -E 'HYPD LINK|HYPD MAP|BITLY unavailable' logs/bot.log | tail -20
@@ -78,7 +92,7 @@ ENV KNOBS (all optional; defaults are ours)
   (bridge) HYPD_STORES=93944,smartdeals
 
 TESTS
-  python3 test_hypd_links.py            # 53 checks: recognition, no-unwrap,
+  python3 test_hypd_links.py            # 61 checks: recognition, no-unwrap,
                                         # Bitly publish, outage fallback,
                                         # learned Meesho mapping, foreign-store
                                         # refusal, JS-redirect destination

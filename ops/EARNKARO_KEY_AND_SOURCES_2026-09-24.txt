@@ -26,6 +26,15 @@ What a good run looks like:
 
     RESULT: the key is live and N converted link(s) were expanded and PROVED to
             pay OUR EarnKaro account 5478322. Nothing else to fix.
+            HYPD: 3 of 3 of OUR share links resolved and came back to our store
+            through Bitly.
+
+The same command also proves the OTHER half (Meesho/Shopsy). It resolves the
+three hypd.store share links, shortens them with Bitly exactly like the bot, and
+follows the short link back to prove it is still OUR store:
+
+    python3 ops/earnkaro_check.py --hypd-only     # just that part, faster
+    python3 ops/earnkaro_check.py --skip-hypd     # just the EarnKaro part
 
 Reading it:
 
@@ -148,7 +157,7 @@ DEPLOY
       # or place the token in ops/.earnkaro_key (gitignored) before deploying
 
 TESTS (all green)
-  python3 test_earnkaro_conversion.py   # 77 checks: converter contract, key,
+  python3 test_earnkaro_conversion.py   # 84 checks: converter contract, key,
                                         # Amazon policy, the three new sources
   python3 test_render_job.py            # 160 checks
   python3 test_pipeline_fixes.py        # 229 checks

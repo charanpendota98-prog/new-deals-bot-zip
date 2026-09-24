@@ -512,6 +512,21 @@ def test_checker_proves_whose_link():
           "def expand(" in source and "is_short_link" in source, "")
 
 
+def test_checker_proves_our_hypd_links_too():
+    """One command must answer BOTH questions: EarnKaro key AND our hypd links."""
+    source = (Path(__file__).parent / "ops" / "earnkaro_check.py").read_text(encoding="utf-8")
+    for token in ("daoli7dtm6mc5h7k1ffg", "daol5bac45l0tc0oo5rg", "daol52dtm6mc5h7k1ejg"):
+        check(f"the checker probes our hypd link {token}", token in source, "")
+    check("it shorts our hypd link the way the bot does (Bitly v4)",
+          "api-ssl.bitly.com/v4/shorten" in source, "")
+    check("and proves the short link comes back to OUR store",
+          "lands_on_ours" in source and "OURS" in source, "")
+    check("it can be run alone (--hypd-only) and skipped (--skip-hypd)",
+          "--hypd-only" in source and "--skip-hypd" in source, "")
+    check("a network-less box is not reported as a broken link",
+          'status.startswith("unreachable")' in source, "")
+
+
 def main():
     test_response_shapes()
     test_request_contract()
@@ -525,6 +540,7 @@ def main():
     test_first_preference_backfill_is_bounded()
     test_priority_boost_is_applied()
     test_checker_proves_whose_link()
+    test_checker_proves_our_hypd_links_too()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")
 
 

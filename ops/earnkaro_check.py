@@ -246,6 +246,140 @@ def whose_link(url: str, publisher: str, our_tag: str, timeout: float) -> tuple[
     return "hidden", (detail.strip() or "attribution not visible (short link)")
 
 
+# OUR HYPD creator-store share links (store 93944 / "smartdeals"). They are OUR
+# monetized links: never unwrapped, always Bitly-shortened (USER RULE 2026-09-24).
+OUR_HYPD_LINKS = (
+    "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg",
+    "https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg",
+    "https://hypd.store/93944/afflink/daol52dtm6mc5h7k1ejg",
+)
+OUR_HYPD_STORES = ("93944", "smartdeals")
+BITLY_ENDPOINT = "https://api-ssl.bitly.com/v4/shorten"
+
+
+def bitly_tokens(timeout: float) -> list[str]:
+    """The tokens the bot itself would use (env first, then .env files)."""
+    import os as _os
+    tokens = [t.strip() for t in _os.getenv("BITLY_TOKENS", "").split(",") if t.strip()]
+    for path in (REPO_ROOT / "bestgaa" / ".env",
+                 Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"),
+                 REPO_ROOT / "tg-wa-bridge" / ".env",
+                 Path.cwd() / ".env"):
+        values = load_env_file(path)
+        if not values:
+            continue
+        tokens += [t.strip() for t in values.get("BITLY_TOKENS", "").split(",") if t.strip()]
+        tokens += [t.strip() for t in values.get("WA_BITLY_TOKENS", "").split(",") if t.strip()]
+    out: list[str] = []
+    for token in tokens:
+        if token and token not in out:
+            out.append(token)
+    return out
+
+
+def bitly_shorten(long_url: str, tokens: list[str], timeout: float) -> tuple[str, str]:
+    """POST the way the bot does. ('', reason) when it did not work."""
+    import urllib.request
+    if not tokens:
+        return "", "no BITLY_TOKENS configured (the bot falls back to is.gd)"
+    body = json.dumps({"long_url": long_url}).encode("utf-8")
+    for token in tokens:
+        request = urllib.request.Request(
+            BITLY_ENDPOINT, data=body, method="POST",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8", "replace"))
+            link = payload.get("link")
+            if isinstance(link, str) and link.startswith("http"):
+                return link, ""
+            return "", f"Bitly answered without a link: {str(payload)[:120]}"
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:160]
+            if exc.code in (401, 403):
+                return "", f"Bitly refused the token (HTTP {exc.code}): {detail}"
+            if exc.code == 429:
+                continue          # rate limited: try the next token, like the bot
+            return "", f"Bitly HTTP {exc.code}: {detail}"
+        except Exception as exc:
+            return "", f"Bitly unreachable: {exc}"
+    return "", "every Bitly token was rate limited (HTTP 429)"
+
+
+def resolve_once(url: str, timeout: float) -> tuple[str, str]:
+    """('final-url', status) — follows redirects; the JS pages do not redirect."""
+    import urllib.request
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "Chrome/131 Safari/537.36"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return (response.url or url), str(response.status)
+    except urllib.error.HTTPError as exc:
+        return getattr(exc, "url", url) or url, f"HTTP {exc.code}"
+    except Exception as exc:
+        return "", f"unreachable ({exc})"
+
+
+def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
+    """(failures, ok) — OUR hypd link resolves and Bitly gives a link back to it."""
+    print("\n" + "-" * 78)
+    print("OUR HYPD LINKS (Meesho/Shopsy products: OUR link, Bitly-shortened)")
+    print("-" * 78)
+    tokens = bitly_tokens(timeout)
+    print(f"Bitly tokens found : {len(tokens) or 'NONE (is.gd fallback would be used)'}")
+    failures = 0
+    ok = 0
+    for url in OUR_HYPD_LINKS:
+        store = url.split("/")[3] if url.count("/") >= 3 else "?"
+        final, status = resolve_once(url, timeout)
+        behind = ""
+        if final and final != url and "hypd.store" not in final:
+            behind = final
+        print(f"\n[{url[:70]}]")
+        print(f"  store     : {store}  ({'OURS' if store in OUR_HYPD_STORES else 'NOT OURS'})")
+        print(f"  resolve   : {status}   "
+              + (f"-> {behind[:110]}" if behind else "JS redirect page (read at post time)"))
+        if not final:
+            if status.startswith("unreachable"):
+                # This machine has no route to the site - that says nothing about
+                # the link, and the bot publishes OUR link untouched (there is no
+                # health gate on our own link: dropping the deal would be worse).
+                print("  -> could not be checked from HERE (network); the bot still "
+                      "publishes OUR link as it is")
+            else:
+                print(f"  -> the link answered {status}: check it in the HYPD app "
+                      f"(a dead share link should be re-curated)")
+            continue
+        if status.startswith("HTTP 4") or status.startswith("HTTP 5"):
+            print(f"  -> the link answered {status}: check it in the HYPD app before "
+                  f"trusting the post")
+            failures += 1
+            continue
+        short, why = bitly_shorten(url, tokens, timeout)
+        if short:
+            back, back_status = resolve_once(short, timeout)
+            lands_on_ours = "hypd.store" in back and any(f"/{s}/" in back for s in OUR_HYPD_STORES)
+            print(f"  bitly     : {short}")
+            print(f"  bitly ->  : {back_status} {back[:110]}")
+            print("  verdict   : " + ("OUR LINK, shortened and still ours" if lands_on_ours
+                                     else "shortened, but it did not come back to OUR store - CHECK"))
+            if lands_on_ours:
+                ok += 1
+            else:
+                failures += 1
+        else:
+            print(f"  bitly     : NOT shortened -> {why}")
+            print("  verdict   : the RAW hypd link would be posted (still OUR link, "
+                  "never unmonetized) - fix the Bitly token to get the short link")
+            failures += 1
+        if verbose and behind:
+            print(f"  note      : the merchant page behind it is used for product "
+                  f"identity only, never for the post itself.")
+    return failures, ok
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the EarnKaro API key end to end.")
     parser.add_argument("--key", help="API token to check (default: env or bestgaa/.env)")
@@ -259,6 +393,10 @@ def main() -> int:
                         help="do not follow short links (skip the 'does it pay US?' step)")
     parser.add_argument("--amazon-tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
                         help="our Amazon Associates tag, for Amazon probes")
+    parser.add_argument("--skip-hypd", action="store_true",
+                        help="do not run the OUR-HYPD-link + Bitly live proof")
+    parser.add_argument("--hypd-only", action="store_true",
+                        help="skip the EarnKaro probes; only prove OUR hypd links + Bitly")
     args = parser.parse_args()
 
     key, source = find_key(args.key, args.env_file)
@@ -274,7 +412,16 @@ def main() -> int:
     print(f"convert_option    : {args.convert_option}")
     if args.offline:
         print("\n--offline: token inspected, no API call made.")
+        if not args.skip_hypd:
+            check_our_hypd_links(args.timeout, verbose=False)
         return 0 if token_ok else 1
+    if args.hypd_only:
+        hypd_failures, hypd_ok = check_our_hypd_links(args.timeout, verbose=True)
+        print("\n" + "=" * 78)
+        print(f"RESULT: {hypd_ok} of {len(OUR_HYPD_LINKS)} of OUR HYPD share links "
+              f"proved OUR link through Bitly"
+              + (f"; {hypd_failures} to fix." if hypd_failures else "."))
+        return 1 if hypd_failures else 0
     if not token_ok:
         print("\nRefusing to call the API with a key that is not a converter token.\n"
               "Get the token from the Affiliaters/EarnKaro API page and re-run "
@@ -326,15 +473,22 @@ def main() -> int:
         if status == 429:
             print("  -> rate limited: wait a minute and re-run, the key is fine.")
 
+    hypd_failures = hypd_ok = 0
+    if not args.skip_hypd:
+        hypd_failures, hypd_ok = check_our_hypd_links(args.timeout, verbose=True)
+
     print("\n" + "=" * 78)
     if failures:
-        print(f"RESULT: {failures} of {len(PROBES)} probes failed (no link, or a link")
+        print(f"RESULT: {failures} of {len(PROBES)} EarnKaro probes failed (no link, or a link")
         print("that pays a DIFFERENT account). A store with no EarnKaro campaign is")
         print("normal (Amazon search pages, some marketplaces). A NO-LINK on the")
         print("Flipkart/Myntra probes with HTTP 200 means the token is valid but the")
         print("request/response contract changed - the raw body above is what the bot")
         print("logs as 'EK CONVERT | no link'. A WRONG ACCOUNT line means the token")
         print("belongs to somebody else's EarnKaro account: replace EARNKARO_API_KEY.")
+        if not args.skip_hypd:
+            print(f"        (HYPD: {hypd_ok} of {len(OUR_HYPD_LINKS)} link(s) proved OUR link "
+                  f"+ Bitly; {hypd_failures} to fix.)")
         return 1
     if ours:
         print(f"RESULT: the key is live and {ours} converted link(s) were expanded and")
@@ -347,7 +501,11 @@ def main() -> int:
     if hidden:
         print(f"        {hidden} probe(s) could not be attributed (short link whose")
         print("        destination refused to be read); the token claims remain the proof.")
-    return 0
+    if not args.skip_hypd:
+        print(f"        HYPD: {hypd_ok} of {len(OUR_HYPD_LINKS)} of OUR share links "
+              f"resolved and came back to our store through Bitly"
+              + (f"; {hypd_failures} to fix (see above)." if hypd_failures else "."))
+    return 1 if (failures or hypd_failures) else 0
 
 
 if __name__ == "__main__":

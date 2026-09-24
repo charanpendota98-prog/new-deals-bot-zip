@@ -58,7 +58,7 @@ python3 test_duplicate_sim.py     # real worker path: one copy per channel, alwa
 python3 test_earnkaro_conversion.py  # EarnKaro request/response contract, the
                                      # API key's publisher, Amazon-via-EarnKaro,
                                      # the three first-preference sources
-python3 test_hypd_links.py        # OUR hypd.store links: no unwrap, always Bitly,
+python3 test_hypd_links.py        # 61 checks: OUR hypd.store links: no unwrap, always Bitly,
                                      # Meesho->our-link map, foreign-store refusal
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
@@ -159,7 +159,9 @@ python3 ops/earnkaro_check.py --offline  # token only, no network
 A healthy run prints `EarnKaro publisher: 5478322 <- every converted link pays
 THIS account` and then `MONETIZED - PAYS US (5478322)` per store: the returned
 short link is **expanded** and its visible attribution checked, so "HTTP 200" is
-never mistaken for "our link". `WRONG ACCOUNT` means the token belongs to
+never mistaken for "our link". The same command then proves the OTHER route too —
+it resolves OUR hypd share links, Bitly-shortens them exactly like the bot, and
+follows the short link back to our store (`--hypd-only` runs just that part). `WRONG ACCOUNT` means the token belongs to
 somebody else (or the response echoed someone else's attribution) - replace the
 key with `./ops/set_earnkaro_key.sh '<token>'`. A store with no campaign is
 normal and posts a clean link; Meesho/Shopsy are covered by OUR HYPD link (see
@@ -188,7 +190,7 @@ attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
 account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
 commission away. It is a **final, monetized link** and is treated like one.
 
-Behaviour (pinned by `test_hypd_links.py`, 53 checks, green):
+Behaviour (pinned by `test_hypd_links.py`, 61 checks, green):
 
 | Situation | What the bot does |
 |---|---|
@@ -196,7 +198,7 @@ Behaviour (pinned by `test_hypd_links.py`, 53 checks, green):
 | The same link arrives again in a text dump | `shorten()` pass keeps it short whether it is raw (converted) or already `bit.ly` |
 | Bitly/is.gd is down | The **raw HYPD link is posted** — the commission link is never lost or left unmonetized |
 | A bare Meesho/Shopsy **product** link (no EarnKaro campaign) | The bot resolves it, finds the product identity, and swaps in **our HYPD link already minted for that product** (`store.hypd_link_for`), then Bitly-shortens it |
-| A bare Meesho/Shopsy link with **no** known HYPD link | Falls through to the normal EarnKaro path; nothing is invented |
+| A bare Meesho/Shopsy link with **no** known HYPD link | Falls through to the normal path, posts UNMONETIZED, and is recorded on the curation to-do list (`HYPD MISSING` + `HYPD WANTED` in the log); nothing is ever invented |
 | Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours (that would pay them); it goes down the normal path |
 | A HYPD link rediscovered later | `resolve()` returns it untouched with **no network call** (nothing to unwrap) |
 
@@ -207,8 +209,12 @@ learns the product behind each one):
 ```bash
 python3 ops/hypd_links.py                                   # what the bot knows
 python3 ops/hypd_links.py 'https://hypd.store/93944/afflink/<token>' ...  # learn these live
+python3 ops/hypd_links.py --wanted                          # products still earning NOTHING (curate these)
 python3 ops/hypd_links.py --lookup 'https://www.meesho.com/.../p/...'     # is this product covered?
 python3 ops/hypd_links.py --dry-run 'https://hypd.store/...'              # resolve, store nothing
+
+# and the live end-to-end proof of the whole route (ours -> Bitly -> back to ours):
+python3 ops/earnkaro_check.py --hypd-only
 ```
 
 Learning one link maps the **product** (`hypd_links` table: token → afflink,
@@ -227,9 +233,14 @@ foreign store (`999999`) does not, and our link is always shortened.
 
 Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
 
+**Nothing earns nothing silently.** A Meesho/Shopsy product we have no HYPD
+link for is counted and listed (`HYPD MISSING`, `HYPD WANTED`, then
+`ops/hypd_links.py --wanted`), so the fix — curate it once in the HYPD app — is
+one command away. Learning a link removes it from that list automatically.
+
 Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
-`HYPD MAP` (learned), `BITLY unavailable; posting OUR HYPD link as it is`
-(outage fallback).
+`HYPD MISSING` / `HYPD WANTED` (product needs a HYPD link; on the to-do list),
+`BITLY unavailable; posting OUR HYPD link as it is` (outage fallback).
 
 ## Key behaviour (see `ops/` notes for full detail)
 

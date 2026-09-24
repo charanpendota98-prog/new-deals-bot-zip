@@ -291,6 +291,58 @@ def test_config_defaults():
           < source.index('raise RuntimeError("EarnKaro circuit open")'), "ordering changed")
 
 
+def test_the_curation_queue_records_what_cannot_earn_yet():
+    """A Meesho product with no curated HYPD link must NOT fail silently.
+
+    EarnKaro has no Meesho/Shopsy campaign at all, so without a curated HYPD
+    link that post earns nothing. The bot records it as a to-do
+    (ops/hypd_links.py --wanted) and says so once, with the exact fix.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        original = bot.store
+        bot.store = bot.Store(Path(td) / "hypd6.sqlite3")
+        try:
+            meesho = "https://www.meesho.com/cotton-saree/p/none99999"
+            aff = Aff(FakeSession(bitly="https://bit.ly/x"))
+            result = asyncio.run(aff.convert(meesho, False))
+            wanted = bot.store.recent_hypd_wanted(limit=10)
+            check("a bare Meesho link with NO curated HYPD link earns nothing (yet)",
+                  result is None or "hypd.store" not in str(result.affiliate), repr(result))
+            check("and the product lands on the curation to-do list",
+                  any(w["product_url"] == meesho for w in wanted), str(wanted))
+            check("the to-do entry carries the product identity",
+                  any(w["product_key"] for w in wanted), str(wanted))
+
+            # Learning the link clears the to-do and monetizes from now on.
+            asyncio.run(bot.store.remember_hypd_link(
+                "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg", meesho,
+                "PID:www.meesho.com:none99999"))
+            check("learning the HYPD link clears the to-do entry",
+                  not bot.store.recent_hypd_wanted(limit=10), str(bot.store.recent_hypd_wanted()))
+            session = FakeSession(bitly="https://bit.ly/nowours")
+            result = asyncio.run(Aff(session).convert(meesho, False))
+            # The post carries the Bitly link; Bitly was asked to shorten OUR
+            # hypd link - that is the proof the commission link is ours.
+            shortened_urls = [p.get("json", {}).get("long_url") for p in session.posts
+                              if "bitly" in str(p.get("url"))]
+            check("and the same product now earns on OUR link",
+                  bool(result) and result.affiliate == "https://bit.ly/nowours"
+                  and OUR_LINK in shortened_urls, repr(result) + str(shortened_urls))
+        finally:
+            bot.store = original
+
+
+def test_the_ops_tool_shows_the_to_do_list():
+    source = (Path(__file__).parent / "ops" / "hypd_links.py").read_text(encoding="utf-8")
+    check("ops/hypd_links.py has a --wanted listing",
+          '"--wanted"' in source and "recent_hypd_wanted" in source, "")
+    check("and it tells the operator exactly what to do about it",
+          "curate the product" in source and "copy its share link" in source, "")
+    # The deploy gate must run this suite.
+    deploy = (Path(__file__).parent / "ops" / "deploy_and_verify.sh").read_text(encoding="utf-8")
+    check("the deploy gate runs the hypd suite", "test_hypd_links" in deploy, "")
+
+
 def test_deploy_wiring():
     """The server scripts must SHIP and SHOW this config, not just the code."""
     repo = Path(__file__).parent
@@ -340,6 +392,8 @@ def main():
     test_destination_from_page_markup()
     test_config_defaults()
     test_deploy_wiring()
+    test_the_curation_queue_records_what_cannot_earn_yet()
+    test_the_ops_tool_shows_the_to_do_list()
     print(f"\nHYPD LINK TESTS PASS ({PASS} checks)")
 
 

@@ -17,6 +17,12 @@ Run on the server (or anywhere with internet) from the bot directory:
     python3 ops/hypd_links.py --lookup <product-url>
         Which of OUR HYPD links (if any) covers this product page?
 
+    python3 ops/hypd_links.py --wanted
+        Products the bot had to post UNMONETIZED because no HYPD link exists for
+        them yet (Meesho/Shopsy: EarnKaro has no campaign at all). Create the link
+        for one of them in the HYPD app, learn it with this tool, and every later
+        post of that product earns on it.
+
     python3 ops/hypd_links.py --dry-run <hypd-link>
         Resolve and report, change nothing.
 
@@ -90,6 +96,8 @@ async def main() -> int:
     parser.add_argument("links", nargs="*", help="hypd.store share links you created")
     parser.add_argument("--list", action="store_true", help="list what the bot already knows")
     parser.add_argument("--lookup", help="which of OUR links covers this product page?")
+    parser.add_argument("--wanted", action="store_true",
+                        help="products still missing OUR HYPD link (the curation to-do list)")
     parser.add_argument("--dry-run", action="store_true", help="resolve and report, change nothing")
     args = parser.parse_args()
 
@@ -99,6 +107,21 @@ async def main() -> int:
     print(f"Meesho family     : {sorted(bot.HYPD_MERCHANT_DOMAINS)}")
     print(f"database          : {bot.DB_PATH}")
     print("=" * 78)
+
+    if args.wanted:
+        rows = bot.store.recent_hypd_wanted(limit=200)
+        if not rows:
+            print("Every Meesho/Shopsy product seen so far has OUR HYPD link. Nothing pending.")
+            return 0
+        print(f"{len(rows)} product(s) posted UNMONETIZED - no HYPD link curated yet:\n")
+        for row in rows:
+            print(f"  {row['product_url']}")
+            print(f"    seen {row['times']}x   product key: {row['product_key'] or '(unknown)'}")
+        print("\nHow to fix one:")
+        print("  1. open the HYPD app, curate the product, copy its share link")
+        print("  2. python3 ops/hypd_links.py '<https://hypd.store/93944/afflink/...>'")
+        print("  3. that product now earns on OUR link, and it leaves this list.")
+        return 0
 
     if args.list or (not args.links and not args.lookup):
         rows = bot.store.recent_hypd_links(limit=200)

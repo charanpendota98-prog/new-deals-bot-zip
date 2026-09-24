@@ -4385,6 +4385,18 @@ class Store:
             product_key TEXT,
             created_at REAL NOT NULL
         );
+        -- Products that had to post UNMONETIZED because no HYPD share link has
+        -- been curated for them yet (EarnKaro has no Meesho/Shopsy campaign at
+        -- all). This is the operator's to-do list: create the link in the HYPD
+        -- app, learn it once with ops/hypd_links.py, and every later post of
+        -- that product earns on it.
+        CREATE TABLE IF NOT EXISTS hypd_wanted (
+            product_url TEXT PRIMARY KEY,
+            product_key TEXT,
+            times INTEGER NOT NULL DEFAULT 1,
+            first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS premium_state (
           id INTEGER PRIMARY KEY CHECK(id=1),
           night_key TEXT,
@@ -4461,6 +4473,9 @@ class Store:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_hypd_resolved ON hypd_links(resolved_url)"
+        )
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hypd_wanted_last ON hypd_wanted(last_seen)"
         )
         # A previous crash must not leave work permanently stuck.
         self.conn.execute("UPDATE queue SET status='pending' WHERE status='processing'")
@@ -4920,6 +4935,9 @@ class Store:
                  page, product_key_value or "", time.time()),
             )
             self.conn.commit()
+        # This product is no longer "missing our link".
+        with contextlib.suppress(Exception):
+            await self.forget_hypd_wanted(page, product_key_value or "", afflink_url)
 
     async def hypd_link_for(self, *keys: str) -> str | None:
         """OUR HYPD share link for a product we have already curated, if any.
@@ -4945,6 +4963,52 @@ class Store:
                 if row and row["afflink_url"]:
                     return row["afflink_url"]
         return None
+
+    async def remember_hypd_wanted(self, product_url: str, product_key_value: str) -> bool:
+        """A Meesho/Shopsy product we have NO HYPD link for: commission leaking.
+
+        Returns True the first time this product is seen (so the caller can log
+        it once, with the action to take) and False on every repeat.
+        """
+        url = clean_url(product_url)
+        if not url:
+            return False
+        now = time.time()
+        async with self.lock:
+            existing = self.conn.execute(
+                "SELECT times FROM hypd_wanted WHERE product_url=?", (url,)).fetchone()
+            self.conn.execute(
+                "INSERT INTO hypd_wanted(product_url, product_key, times, first_seen, last_seen)"
+                " VALUES (?,?,1,?,?) ON CONFLICT(product_url) DO UPDATE SET"
+                " times=times+1, last_seen=excluded.last_seen,"
+                " product_key=COALESCE(excluded.product_key, product_key)",
+                (url, product_key_value or "", now, now),
+            )
+            self.conn.commit()
+        return existing is None
+
+    def recent_hypd_wanted(self, limit: int = 200) -> list[dict[str, Any]]:
+        """Products still missing OUR HYPD link, most-wanted first."""
+        rows = self.conn.execute(
+            "SELECT product_url, product_key, times, last_seen FROM hypd_wanted"
+            " ORDER BY times DESC, last_seen DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    async def forget_hypd_wanted(self, *keys: str) -> int:
+        """Drop a product from the to-do list once OUR HYPD link is learned."""
+        wanted = [k for k in keys if k]
+        if not wanted:
+            return 0
+        async with self.lock:
+            removed = 0
+            for key in wanted:
+                for variant in (key, canonical_url(key)):
+                    cursor = self.conn.execute(
+                        "DELETE FROM hypd_wanted WHERE product_url=? OR product_key=?",
+                        (variant, key))
+                    removed += max(cursor.rowcount or 0, 0)
+            self.conn.commit()
+        return removed
 
     def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
         """(afflink_url, resolved_url) pairs — used by ops/hypd_links.py."""
@@ -5920,6 +5984,22 @@ class AffiliateClient:
             if learned:
                 return await self._hypd_affiliate_link(learned, source_url, multi_link,
                                                        destination_hint=clean_url(resolved))
+            # Nothing curated for this product yet, and EarnKaro has no
+            # Meesho/Shopsy campaign, so this post goes out UNMONETIZED. Record
+            # it as a to-do (ops/hypd_links.py --wanted) and say so ONCE per
+            # product, with the exact action that fixes it.
+            first_time = False
+            with contextlib.suppress(Exception):
+                first_time = await store.remember_hypd_wanted(
+                    clean_url(resolved), product_key(resolved))
+            if first_time:
+                log.warning(
+                    "HYPD MISSING | no curated HYPD link for this Meesho/Shopsy product yet, "
+                    "so it posts UNMONETIZED: %s | fix: create the link in the HYPD app, then "
+                    "run: python3 ops/hypd_links.py '<that link>'",
+                    clean_url(resolved)[:90])
+                log.info("HYPD WANTED | added to the curation list (%s product(s) pending)",
+                         len(store.recent_hypd_wanted(limit=1000)))
 
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
