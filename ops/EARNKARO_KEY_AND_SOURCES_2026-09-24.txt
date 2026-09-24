@@ -1,0 +1,110 @@
+WHAT CHANGED (2026-09-24) — three new sources, EarnKaro conversion, the API key
+===============================================================================
+
+USER REQUEST
+  "e three channel source ga pettu 1st preference ivvu and perfectgaa convert
+   avvatleu earnkaro na links check chesvaa apikey isthunnanu perefctgaa set cheyu"
+
+1. THE THREE NEW SOURCES (first preference)
+   ------------------------------------------
+     https://t.me/+O3j4ghbtJzhjZjJl
+     https://t.me/+8KzU3P58MJ9jN2M1
+     https://t.me/+6LA1ljXGlbNmMjA1
+
+   * They feed every non-Tricks main target (LootZoneIndia11, SecretLootIndia1,
+     PowerLoots1); the Under-99 / Under-499 / card / Premium / Amazon-review
+     routes layer on by price and content exactly as for every other source.
+   * FIRST PREFERENCE: their jobs are claimed from the queue ahead of every
+     other source and get the +1 priority tier, so an equivalent deal from one
+     of them is rendered and delivered first. DealsUnder99_com keeps its own
+     first-preference seat (nothing was taken away from it).
+   * Invite hashes carry UPPERCASE letters, so source matching is normalised
+     (normalize_source_name) - that is what makes the priority/claim lookups
+     agree with the claim SQL, which compares lower(source).
+   * A brand-new first-preference source recovers only a 12-post tail on its
+     first connect (FIRST_PREFERENCE_BACKFILL_LIMIT), instead of firing ~50
+     posts x 3 channels ahead of every ordinary deal.
+
+   The bot joins the channels itself on startup (resolve_entity -> ImportChat
+   Invite), so no manual join is needed. WhatsApp gets the same deals through
+   our own Telegram channels, which the bridge already mirrors.
+
+2. EARNKARO LINKS ("perfectgaa convert avvatleu")
+   -----------------------------------------------
+   The converter call is now exactly the documented contract:
+
+     POST https://ekaro-api.affiliaters.in/api/converter/public
+     Authorization: Bearer <token>
+     Content-Type: application/json
+     {"deal": "<clean merchant url>", "convert_option": "convert_only"}
+
+   * `convert_option` was missing. Without it the account-level default decides
+     the RESPONSE shape, and a shape the bot could not read meant a post that
+     went out unmonetized.
+   * Every shape is now read: the bare link, the whole deal text with the link
+     inside it, a list, an object of link fields - and failures
+     ("Url not found in post!", "could not locate ...") are logged in the API's
+     own words. An unreadable answer is a LOST COMMISSION; it must never be
+     invisible.
+   * HTTP 401/403 is logged as `EK AUTH` with the exact fix, instead of looking
+     like "this store has no campaign".
+   * Each monetized link logs one line: `EK CONVERT | <store> -> <link>`, so
+     "are the EarnKaro links actually being generated?" is answerable from the
+     log alone. `UNMONETIZED LINK` still marks posts that earn nothing.
+
+3. THE API KEY (isset perfectly)
+   -----------------------------
+   The token is a JWT whose payload names the account that gets paid
+   (`earnkaro` = the EarnKaro publisher id). The bot now decodes it at startup,
+   logs which account earns, pins the foreign-publisher guard to it, and warns
+   when the key is not a converter token at all (that warning is the difference
+   between "conversion is broken" and hours of guessing).
+
+   Set or rotate it on the server with ONE command (the token is never printed
+   and never committed - see the Security section of the README):
+
+     cd ~/bestgaa-bot/bestgaa-bot      # the directory that holds this ops/ folder on the server
+     ./set_earnkaro_key.sh '<the token from the Affiliaters/EarnKaro API page>'
+
+   It backs up .env, writes EARNKARO_API_KEY + the publisher id it read out of
+   the token, chmod 600, restarts bestgaa and verifies against the live API.
+
+   Check any time:
+     python3 ops/earnkaro_check.py --offline     # decode the token, no network
+     python3 ops/earnkaro_check.py               # live conversion probes + raw bodies
+     bash ops/diagnose.sh                        # section 4b prints which account earns
+
+   Watch the first converted deals:
+     journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+
+4. AMAZON POLICY (AMAZON_VIA_EARNKARO, default true)
+   -------------------------------------------------
+   Amazon Associates is still rejecting the account, so a native
+   ?tag=mama086-21 link earns nothing while an EarnKaro conversion pays. Amazon
+   product links therefore convert through EarnKaro like every other store:
+
+     * the native tagged link is the FALLBACK when the network answers "no link"
+       (search / hidden-keywords / browse pages included - EarnKaro has no
+       campaign for those, and the tag path still monetizes them);
+     * the channel submitted for Amazon review still shows the DIRECT tagged
+       product page (our Earned links are expanded back to
+       amazon.in/dp/ASIN?tag=mama086-21 at delivery);
+     * a link cached while Amazon was tagged natively is re-converted instead of
+       being served for its 14-day life.
+
+   Want the pure native-tag behaviour back (2026-09-06 policy)? Put
+   AMAZON_VIA_EARNKARO=false in the bot's .env and restart bestgaa.
+
+DEPLOY
+  ops/repack_bundles.sh  ->  ops/apply_dual_hotfix.sh   (as usual)
+  The hotfix carries the EarnKaro knobs; pass the key with the deploy, or set it
+  with set_earnkaro_key.sh afterwards:
+      EARNKARO_API_KEY='<token>' ./apply_dual_hotfix.sh
+      # or place the token in ops/.earnkaro_key (gitignored) before deploying
+
+TESTS (all green)
+  python3 test_earnkaro_conversion.py   # 68 checks: converter contract, key,
+                                        # Amazon policy, the three new sources
+  python3 test_render_job.py            # 160 checks
+  python3 test_pipeline_fixes.py        # 229 checks
+  python3 test_line_fidelity.py test_best_copy.py test_duplicate_sim.py test_rescan.py

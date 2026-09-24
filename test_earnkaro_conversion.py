@@ -267,6 +267,36 @@ def test_amazon_policy():
         bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
 
 
+def test_stale_native_amazon_cache_rows_are_reconverted():
+    """Turning AMAZON_VIA_EARNKARO on must not be defeated by the link cache.
+
+    A row cached while Amazon was tagged natively lives for LINK_CACHE_DAYS
+    (14), so without this the channel would keep posting a link that earns
+    nothing for a fortnight.
+    """
+    old_tag, old_switch = bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO
+    try:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = "mama086-21", True
+        source = "https://www.amazon.in/dp/B0CACHE0001?psc=1"
+        asyncio.run(bot.store.cache_link(
+            source, "https://www.amazon.in/dp/B0CACHE0001?tag=mama086-21",
+            "https://www.amazon.in/dp/B0CACHE0001", "ASIN:B0CACHE0001"))
+        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkrcache1"})])
+        result = asyncio.run(Aff(session).convert(source, False))
+        check("a cached NATIVE Amazon row is re-converted, not served",
+              bool(result) and "ekaro.in" in result.affiliate, repr(result))
+        check("the re-conversion really asked the API", len(session.posts) == 1, str(session.posts))
+
+        # An EarnKaro row is served from cache: no second API call for the same deal.
+        session2 = FakeSession([])
+        again = asyncio.run(Aff(session2).convert(source, False))
+        check("the freshly cached EarnKaro row is reused",
+              bool(again) and "ekaro.in" in again.affiliate, repr(again))
+        check("no API call was made for the cached row", not session2.posts, str(session2.posts))
+    finally:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
+
+
 def test_review_channel_expansion_keeps_our_tag():
     """The reviewed channel must show the DIRECT tagged Amazon link."""
     old_tag = bot.OUR_TAG
@@ -431,6 +461,7 @@ def main():
     test_echo_and_foreign_links_are_refused()
     test_token_claims()
     test_amazon_policy()
+    test_stale_native_amazon_cache_rows_are_reconverted()
     test_review_channel_expansion_keeps_our_tag()
     test_new_first_preference_sources()
     test_first_preference_wins_the_claim()

@@ -5674,7 +5674,15 @@ class AffiliateClient:
                 and (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
                      or self.valid_generated(cached_url))
             )
-            if cache_is_safe:
+            # POLICY SWITCH SAFETY (2026-09-24). link_cache rows live for
+            # LINK_CACHE_DAYS (14) and a row cached while Amazon was tagged
+            # natively would keep pinning the OLD policy - a link that earns
+            # nothing - long after AMAZON_VIA_EARNKARO was turned on. A native
+            # Amazon row is therefore treated as stale and re-converted;
+            # EarnKaro rows (ekaro.in/bitli.in) are still served from cache, so
+            # the API is not called twice for the same deal.
+            cached_is_amazon_native = in_domains(cached_host, AMAZON_DOMAINS)
+            if cache_is_safe and not (AMAZON_VIA_EARNKARO and cached_is_amazon_native):
                 # Old cache rows may predate the current policy. Upgrade them
                 # before returning; never leak a long link.
                 #

@@ -130,7 +130,12 @@ journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
 
 Every successful conversion logs one `EK CONVERT | <store> -> <link>` line, so
 "are the EarnKaro links actually being generated?" is answerable from the log
-alone; `UNMONETIZED LINK` still marks the posts that earn nothing.
+alone; `UNMONETIZED LINK` still marks the posts that earn nothing. A link cached
+while Amazon was still tagged natively is re-converted rather than served for
+its 14-day life, so the switch takes effect immediately.
+
+`ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` is the same thing as a runbook
+(what to run on the server, in order).
 
 **Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
 through EarnKaro like every other store: Amazon Associates is still rejecting
