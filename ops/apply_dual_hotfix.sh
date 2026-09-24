@@ -24,6 +24,24 @@ if [[ -f .env ]]; then
 from pathlib import Path
 p=Path('.env'); lines=p.read_text().splitlines(); out=[]; seen=set()
 updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
+         # EarnKaro / Affiliaters converter token. Without a VALID token every
+         # conversion answers 401 and the bot posts clean, UNTAGGED merchant
+         # links (zero commission) - exactly what "the EarnKaro links are not
+         # converting" looks like. The token is a SECRET (see the Security
+         # section of the README), so it is never committed here: it is read
+         # from $EARNKARO_API_KEY or from ops/.earnkaro_key (gitignored) when
+         # one of them exists, and the server's existing value is left alone
+         # otherwise. Rotate it with:  ./set_earnkaro_key.sh '<token>'
+         'EARNKARO_API_URL':'https://ekaro-api.affiliaters.in/api/converter/public',
+         'EARNKARO_PUBLISHER_ID':'5478322',
+         # The documented converter mode: convert the link, do nothing else.
+         'EARNKARO_CONVERT_OPTION':'convert_only',
+         # USER RULE (2026-09-24): Amazon converts through EarnKaro like every
+         # other store (Associates is still rejecting the account, so the native
+         # ?tag= link earns nothing). The native tagged link stays the fallback,
+         # and the reviewed channel still shows the native tagged product page.
+         # Set to 'false' to restore pure native tagging.
+         'AMAZON_VIA_EARNKARO':'true',
          # Night quiet 02:00-06:00 IST: posting pauses, deals queue, 06:00 flush.
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
          # User-supplied Bitly token: best shortening for long links.
@@ -40,6 +58,25 @@ for key,value in updates.items():
     if key not in seen: out.append(f'{key}={value}')
 p.write_text('\n'.join(out)+'\n')
 PY
+  # The EarnKaro token, when the operator has provided one: from the
+  # environment, or from ops/.earnkaro_key (gitignored) so a local checkout can
+  # carry it to the server without ever committing it. With neither present the
+  # server keeps the token it already has, and the line below says so.
+  EK_TOKEN="${EARNKARO_API_KEY:-}"
+  if [[ -z "$EK_TOKEN" && -f "$HERE/.earnkaro_key" ]]; then
+    EK_TOKEN="$(tr -d '[:space:]' < "$HERE/.earnkaro_key")"
+  fi
+  if [[ -n "$EK_TOKEN" ]]; then
+    if grep -qE '^EARNKARO_API_KEY=' "$ENV_FILE"; then
+      sed -i "s|^EARNKARO_API_KEY=.*|EARNKARO_API_KEY=$EK_TOKEN|" "$ENV_FILE"
+    else
+      echo "EARNKARO_API_KEY=$EK_TOKEN" >> "$ENV_FILE"
+    fi
+    echo "      EarnKaro API key: updated from the deploy environment"
+  else
+    echo "      EarnKaro API key: unchanged (not in the environment, no ops/.earnkaro_key)."
+    echo "      If conversion is failing, run:  ./set_earnkaro_key.sh '<token>'"
+  fi
   chmod 600 .env
 fi
 # Old Amazon Bitly links conceal the previous tag, so invalidate Amazon cache

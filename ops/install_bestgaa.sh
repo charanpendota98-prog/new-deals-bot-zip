@@ -87,7 +87,15 @@ if (( NEED_CREDS )); then
     [[ -t 0 ]] || { echo "ERROR: interactive terminal required for credential prompts (or pass a legacy bot path as argument 1)" >&2; exit 1; }
     read -rp "Telegram API_ID (my.telegram.org): " TG_API_ID
     read -rsp "Telegram API_HASH: " TG_API_HASH; echo
-    read -rsp "EarnKaro API key: " EK_KEY
+    # The deploy tooling hands the key in through the environment
+    # (EARNKARO_API_KEY=... ./install_bestgaa.sh); interactively it is asked for.
+    # Either way the value is validated below by decoding it.
+    if [[ -n "${EARNKARO_API_KEY:-}" ]]; then
+      EK_KEY="$EARNKARO_API_KEY"
+      echo "EarnKaro API key: using EARNKARO_API_KEY from the environment"
+    else
+      read -rsp "EarnKaro API key: " EK_KEY; echo
+    fi
     # USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The old
     # default here was deals0911-21 - the SOURCE's tag - so a fresh install used
     # to write a stranger's tag into .env, and the very next deploy_bestgaa.sh
@@ -99,7 +107,30 @@ if (( NEED_CREDS )); then
       echo "ERROR: '$AMZ_TAG' is not one of ours (${OUR_AMAZON_TAGS}) - a source's tag would credit them for our sales." >&2
       read -rp "Amazon associate tag [mama086-21]: " AMZ_TAG; AMZ_TAG="${AMZ_TAG:-mama086-21}"
     done
-    read -rp "EarnKaro publisher ID [5478322]: " EK_PUB; EK_PUB="${EK_PUB:-5478322}"
+    # The account that earns is named INSIDE the token, so the publisher id is
+    # read from it instead of being typed: a fresh install can no longer write a
+    # publisher id that disagrees with the key (which silently disabled the
+    # bot's foreign-publisher guard, and pointed the Flipkart affExtParam2 check
+    # at the wrong account).
+    TOKEN_PUBLISHER="$(python3 - "$EK_KEY" <<'PY2' 2>/dev/null || true
+import base64, json, sys
+try:
+    payload = sys.argv[1].split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    print(json.loads(base64.urlsafe_b64decode(payload.encode("ascii"))).get("earnkaro") or "")
+except Exception:
+    print("")
+PY2
+)"
+    if [[ -z "${TOKEN_PUBLISHER//[[:space:]]/}" ]]; then
+      echo "WARNING: the EarnKaro key is not a JWT carrying a publisher id - the bot" >&2
+      echo "         will refuse to publish a converted link that carries a foreign" >&2
+      echo "         Flipkart publisher. Get the token from the Affiliaters/EarnKaro" >&2
+      echo "         API page (see ops/set_earnkaro_key.sh)." >&2
+    fi
+    EK_PUB="${TOKEN_PUBLISHER:-}"
+    read -rp "EarnKaro publisher ID [${EK_PUB:-5478322}]: " EK_PUB_ANSWER
+    EK_PUB="${EK_PUB_ANSWER:-${EK_PUB:-5478322}}"
     read -rp "Session name [bestgaa_fresh]: " SESSION_NAME; SESSION_NAME="${SESSION_NAME:-bestgaa_fresh}"
     read -rp "Bitly tokens, comma separated (optional): " BITLY
     if [[ -z "$TG_API_ID" || -z "$TG_API_HASH" || -z "$EK_KEY" || -z "$AMZ_TAG" ]]; then
@@ -114,6 +145,16 @@ TELEGRAM_SESSION=$SESSION_NAME
 EARNKARO_API_KEY=$EK_KEY
 EARNKARO_API_URL=https://ekaro-api.affiliaters.in/api/converter/public
 EARNKARO_PUBLISHER_ID=$EK_PUB
+# The documented converter mode: convert the link and do nothing else. Sending
+# it explicitly keeps the RESPONSE shape predictable (an unreadable response is
+# a post that goes out unmonetized, not a lost post).
+EARNKARO_CONVERT_OPTION=convert_only
+# USER RULE (2026-09-24): Amazon converts through EarnKaro like every other
+# store - Associates is still rejecting the account, so a native ?tag= link
+# earns nothing. The native tagged link remains the fallback, and the reviewed
+# channel still shows the native tagged product page. Set 'false' for the old
+# pure-native behaviour.
+AMAZON_VIA_EARNKARO=true
 AMAZON_TAG=$AMZ_TAG
 # USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu, not
 # only review channel". The tag earns on every owned channel.

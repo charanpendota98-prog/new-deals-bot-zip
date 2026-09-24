@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), routing + media-fix notes |
+| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -55,6 +55,9 @@ python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
+python3 test_earnkaro_conversion.py  # EarnKaro request/response contract, the
+                                     # API key's publisher, Amazon-via-EarnKaro,
+                                     # the three first-preference sources
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
 
 # Prove the guarantees on a real (or copied) database — read-only, exit 1 with
@@ -86,6 +89,69 @@ Individual deploys:
 - **Bridge only:** upload `tg-wa-bridge/` contents to `~/tg-wa-bridge/`, then `./install_bridge.sh` (prompts locally for BotFather token, WhatsApp number, Channel invite, and optional WhatsApp groups for fan-out; installs Node 20 + Tesseract if missing; pairs; starts `tg-wa-bridge.service`).
 - **New WhatsApp number, same Channel:** `./switch_whatsapp_number.sh` (stops only the bridge, backs up auth, preserves queue + state).
 - **First-time `.env` from legacy hardcoded creds:** `python3 migrate_legacy_env.py /path/to/old_main_bot.py`.
+
+## EarnKaro conversion, the API key, and the Amazon policy (2026-09-24)
+
+The user reported that links were **not converting perfectly** and supplied a
+fresh EarnKaro/Affiliaters API token. Three things were wrong or missing, and
+all three are now covered by `test_earnkaro_conversion.py`:
+
+1. **The request was incomplete.** The public converter is called as
+   `POST https://ekaro-api.affiliaters.in/api/converter/public` with
+   `Authorization: Bearer <token>` and a body of
+   `{"deal": "<clean merchant url>", "convert_option": "convert_only"}`.
+   `convert_option` was omitted, which let the account-level default decide the
+   *response shape*; the bot then failed to read answers that were not a bare
+   URL. It is now sent explicitly (and is itself configurable through
+   `EARNKARO_CONVERT_OPTION`).
+2. **Every response shape is read.** `data` arrives as the link, as the whole
+   deal text with the link inside it, as a list, or as an object of link
+   fields; failures carry a sentence (`"Url not found in post!"`) with
+   `success: 0`. `parse_earnkaro_response()` accepts all of them and, when it
+   cannot, logs the API's own words — an unreadable answer is a **lost
+   commission**, never a lost post.
+3. **The key is set up properly.** The token is a JWT whose payload names the
+   account that gets paid (`earnkaro: 5478322`). The bot decodes it at startup,
+   pins `OUR_EK_ID` to that publisher (the foreign-publisher guard that rejects
+   a converted Flipkart link carrying `affExtParam2` of somebody else), logs
+   which account earns, and refuses to pretend: a token that is not a JWT, or
+   one whose publisher disagrees with `.env`, is reported loudly. A refused
+   token (HTTP 401/403) is logged as `EK AUTH` with the fix, instead of being
+   mistaken for "this store has no campaign".
+
+```bash
+# On the server — set or rotate the key in one command (token never printed):
+cd ~/bestgaa-bot/bestgaa-bot   # or wherever ops/ lives
+./set_earnkaro_key.sh 'eyJhbGciOiJIUzI1NiIs...'     # writes .env, restarts, verifies
+python3 ops/earnkaro_check.py --offline             # decode the token only
+python3 ops/earnkaro_check.py                       # live conversion probes
+journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+```
+
+Every successful conversion logs one `EK CONVERT | <store> -> <link>` line, so
+"are the EarnKaro links actually being generated?" is answerable from the log
+alone; `UNMONETIZED LINK` still marks the posts that earn nothing.
+
+**Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
+through EarnKaro like every other store: Amazon Associates is still rejecting
+the account, so a native `?tag=mama086-21` link earns nothing while an EarnKaro
+conversion pays. The native tagged link stays as the **fallback** when the
+network answers "no link" (search/browse pages included, which EarnKaro has no
+campaign for), and the channel under Amazon review still shows the direct
+tagged product page — our earned links are expanded back to
+`amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
+to restore the pure native-tag behaviour of 2026-09-06.
+
+**Three new first-preference sources** (2026-09-24, "e three channel source ga
+pettu 1st preference ivvu"): `t.me/+O3j4ghbtJzhjZjJl`,
+`t.me/+8KzU3P58MJ9jN2M1`, `t.me/+6LA1ljXGlbNmMjA1`. They fan out to every
+non-Tricks main target (Under-99 / Under-499 / card / Premium / review routes
+layer on by price as for every other source) and are FIRST PREFERENCE: claimed
+from the queue ahead of everything else and given the +1 priority boost, so an
+equivalent deal from one of them is rendered and delivered first. Invite hashes
+carry uppercase characters, so source matching is normalised
+(`normalize_source_name()`), which is also what the claim SQL's `lower(source)`
+already did.
 
 ## Key behaviour (see `ops/` notes for full detail)
 
