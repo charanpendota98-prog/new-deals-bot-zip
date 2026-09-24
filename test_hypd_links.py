@@ -374,6 +374,23 @@ def test_deploy_wiring():
     check("and never stores a foreign creator's store as ours",
           "NEVER used as ours" in source, "")
 
+    fresh = repo / "ops" / "deploy_fresh.sh"
+    check("ops/deploy_fresh.sh exists (the one-command fresh deploy)", fresh.exists(), str(fresh))
+    fresh_src = fresh.read_text(encoding="utf-8") if fresh.exists() else ""
+    for needle, what in (
+        ("./ops/deploy_and_verify.sh", "it ships through deploy_and_verify.sh"),
+        ("ops/earnkaro_check.py", "it proves the EarnKaro key live"),
+        ("ops/hypd_links.py", "it teaches OUR hypd links"),
+        ("ops/conversion_report.py", "it prints the per-route status"),
+        ("--dry-run", "it can show the plan without changing anything"),
+        ("--verify-only", "it can verify without deploying"),
+    ):
+        check(what, needle in fresh_src, needle)
+    for token in ("daoli7dtm6mc5h7k1ffg", "daol5bac45l0tc0oo5rg", "daol52dtm6mc5h7k1ejg"):
+        check(f"the fresh deploy learns our link {token}", token in fresh_src, "")
+    check("and it never unwraps our links (no resolver is called on them)",
+          "resolve_our" not in fresh_src, "")
+
     runbook = (repo / "ops" / "HYPD_OUR_LINKS_2026-09-24.txt").read_text(encoding="utf-8")
     for link in (OUR_LINK, OUR_LINK_2, OUR_LINK_3):
         check(f"the runbook lists {link.rsplit('/', 1)[-1]}", link in runbook, "")

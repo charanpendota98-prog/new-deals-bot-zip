@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -74,7 +74,26 @@ The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 `Missing required environment variable` until a real `.env` exists. That is
 expected on a dev machine; see deployment below.
 
-## Deploying to the server
+## Deploying to the server (one command, fresh)
+
+```bash
+git pull                       # main has everything now
+./ops/deploy_fresh.sh          # tests -> bundles -> deploy -> restart -> teach -> prove -> report
+./ops/deploy_fresh.sh --dry-run      # print that plan, change nothing
+./ops/deploy_fresh.sh --verify-only  # deploy nothing; only prove + report
+./ops/deploy_fresh.sh --no-tests     # skip the pre-ship suites (faster)
+```
+
+It chains, in order: `ops/deploy_and_verify.sh --with-tests` (suites → repack →
+deploy both services → restart → sha256 + boot-version proof), then
+`ops/hypd_links.py` with OUR three share links (teaches the bot which product
+each one covers), then `ops/earnkaro_check.py` (live: the EarnKaro key pays US,
+and our hypd links round-trip through Bitly), then `ops/conversion_report.py`
+(per-route verdict from the live DB + log). Every line it prints is `OK` or
+`CHECK`, and every `CHECK` names its own fix; exit code 1 if anything needs
+attention. Re-running it is always safe.
+
+## Deploying to the server (manual steps)
 
 The dual-hotfix deployer expects the two inner bundles next to itself and
 applies both services in one shot (extract → migrate `.env` → compile →

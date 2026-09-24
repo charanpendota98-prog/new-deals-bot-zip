@@ -41,7 +41,13 @@ WHAT THE BOT DOES NOW (pinned by test_hypd_links.py, 61 checks, all green)
   * Another creator's hypd.store link (store != 93944/smartdeals) is NEVER
     published as ours — it would pay them.
 
-SERVER STEPS (after pulling this branch)
+SERVER STEPS — THE SHORT VERSION (one command)
+  git pull && ./ops/deploy_fresh.sh
+    # tests -> bundles -> deploy bot+bridge -> restart -> learn OUR three links
+    # -> live proof (key pays us, hypd links round-trip) -> per-route status.
+    # --dry-run to see the plan, --verify-only to prove without deploying.
+
+SERVER STEPS (step by step, if you prefer to see each one)
   # 1. Deploy the code (bot + bridge) as usual:
       ./ops/deploy_and_verify.sh --with-tests
 
