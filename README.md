@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
+| `ops/` | `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -55,9 +55,11 @@ python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
-python3 test_earnkaro_conversion.py  # EarnKaro request/response contract, the
-                                     # API key's publisher, Amazon-via-EarnKaro,
-                                     # the three first-preference sources
+python3 test_earnkaro_conversion.py  # 95 checks: EarnKaro request/response contract,
+                                     # the API key's publisher, Amazon-via-EarnKaro,
+                                     # the three first-preference sources, the
+                                     # whose-link-attribution verdicts and the
+                                     # conversion report
 python3 test_hypd_links.py        # 61 checks: OUR hypd.store links: no unwrap, always Bitly,
                                      # Meesho->our-link map, foreign-store refusal
 python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
@@ -148,6 +150,22 @@ campaign for), and the channel under Amazon review still shows the direct
 tagged product page — our earned links are expanded back to
 `amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
 to restore the pure native-tag behaviour of 2026-09-06.
+
+**"Anni perfectga convert chesthunnava ledaa?" — answer it from DATA**:**
+
+```bash
+python3 ops/conversion_report.py            # last 24h: config, routes, log markers, verdict
+python3 ops/conversion_report.py --hours 72
+python3 ops/conversion_report.py --json     # for cron/alerting
+```
+
+It reads the bot's own database and log and prints one verdict line per route —
+`EarnKaro WORKING (pays 5478322)`, `Amazon WORKING (tag mama086-21, via
+EarnKaro, native fallback)`, `HYPD WORKING (N learned, M posts on our link,
+K waiting for curation)`, `Bitly PRESENT/MISSING` — lists every link produced in
+the window classified by route (`passthrough` = posted UNMONETIZED), and ends
+with `NEEDS ATTENTION` + the exact command for each item. Exit code 1 when
+something needs attention, so a cron job can alert on it.
 
 **Prove it in one command** (on the server, which has internet):
 

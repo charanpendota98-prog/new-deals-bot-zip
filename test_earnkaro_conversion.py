@@ -527,6 +527,63 @@ def test_checker_proves_our_hypd_links_too():
           'status.startswith("unreachable")' in source, "")
 
 
+def test_status_report_answers_are_we_converting():
+    """"anni perfectga convert chesthunnava ledaa?" must be answerable from data.
+
+    ops/conversion_report.py classifies every link the bot produced by route and
+    prints a verdict per route plus what needs attention. Pinned here so the
+    answer cannot drift back to guesswork.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "conversion_report", Path(__file__).parent / "ops" / "conversion_report.py")
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+
+    cases = (
+        ("https://ekaro.in/abc123",
+         "https://www.flipkart.com/x/p/itm1?affExtParam2=5478322", "earnkaro"),
+        ("https://bit.ly/amz",
+         "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21", "amazon"),
+        ("https://bit.ly/hypd",
+         "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg", "hypd"),
+        ("https://www.myntra.com/tshirt/buy", "https://www.myntra.com/tshirt/buy", "passthrough"),
+    )
+    for affiliate, resolved, want in cases:
+        got = report.route_of(affiliate, resolved)
+        check(f"the report classifies {want} correctly", got == want, f"{got} != {want}")
+
+    cfg = {"earnkaro_token": True, "earnkaro_publisher": "5478322", "earnkaro_issued": "x",
+           "earnkaro_endpoint": "e", "convert_option": "convert_only",
+           "amazon_via_earnkaro": "true", "amazon_tag": "mama086-21",
+           "hypd_store": "93944", "hypd_slug": "smartdeals", "hypd_always_bitly": "true",
+           "hypd_merchants": "meesho.com", "bitly_tokens": 1}
+    healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
+                          "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
+               "hypd_learned": [{"afflink": "x"}], "hypd_wanted": [], "posted_deals": 7}
+    lines, problems = report.verdict(cfg, healthy, {"markers": {}})
+    check("a healthy window reports nothing to fix", not problems, str(problems))
+    check("and it says EarnKaro is working and which account is paid",
+          any("WORKING" in l and "5478322" in l for l in lines), str(lines))
+    check("it says our hypd links are working",
+          any(l.startswith("HYPD") and "WORKING" in l for l in lines), str(lines))
+
+    broken = dict(healthy)
+    broken["hypd_wanted"] = [{"product": "https://www.meesho.com/kurtis/p/none123"}]
+    broken["routes"] = {"passthrough": {"count": 3, "examples": []}}
+    lines, problems = report.verdict(cfg, broken,
+                                     {"markers": {"EK AUTH": {"count": 2, "last": "now"}}})
+    joined = " ".join(problems)
+    check("a refused EarnKaro token is reported as BROKEN", "AUTH" in joined, joined)
+    check("products waiting for a hypd link are reported", "hypd link" in joined.lower(), joined)
+    check("unmonetized deals are reported", "clean merchant link" in joined, joined)
+
+    auth_lines, _ = report.verdict(cfg, healthy, {"markers": {"EK AUTH": {"count": 1}}})
+    check("and the verdict names the fix when the key is refused",
+          any("BROKEN" in l for l in auth_lines), str(auth_lines))
+
+
 def main():
     test_response_shapes()
     test_request_contract()
@@ -541,6 +598,7 @@ def main():
     test_priority_boost_is_applied()
     test_checker_proves_whose_link()
     test_checker_proves_our_hypd_links_too()
+    test_status_report_answers_are_we_converting()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")
 
 

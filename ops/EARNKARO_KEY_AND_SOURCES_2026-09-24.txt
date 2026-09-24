@@ -29,6 +29,28 @@ What a good run looks like:
             HYPD: 3 of 3 of OUR share links resolved and came back to our store
             through Bitly.
 
+THE WHOLE PICTURE IN ONE COMMAND (run it any time, also from cron):
+
+    python3 ops/conversion_report.py
+
+    CONFIG
+      EarnKaro : key=YES  publisher=5478322 (issued 2026-09-24 18:15)
+                 endpoint=https://ekaro-api.affiliaters.in/api/converter/public  convert_option=convert_only
+      Amazon   : tag=mama086-21  via EarnKaro=true
+      HYPD     : store=93944 (smartdeals)  always Bitly=true  merchants=meesho.com,shopsy.in
+      Bitly    : 1 token(s)
+    ROUTES (last 24h, from the bot's own database)
+      earnkaro         37        amazon         9        hypd         4
+      passthrough      1   <- earns NOTHING (no campaign anywhere)
+    VERDICT
+      EarnKaro : WORKING - 37 converted link(s), 0 auth failures (pays 5478322)
+      Amazon   : WORKING - tag mama086-21; via EarnKaro=true with the native tag as fallback
+      HYPD     : WORKING - 3 link(s) learned, 4 post(s) on OUR link
+                 K product(s) WAITING for curation (earn nothing until then)
+      Bitly    : PRESENT - 1 token(s); our hypd links are shortened
+    NEEDS ATTENTION  (exit code 1, so cron can alert)
+      - ... the exact item + the command that fixes it
+
 The same command also proves the OTHER half (Meesho/Shopsy). It resolves the
 three hypd.store share links, shortens them with Bitly exactly like the bot, and
 follows the short link back to prove it is still OUR store:
@@ -157,7 +179,7 @@ DEPLOY
       # or place the token in ops/.earnkaro_key (gitignored) before deploying
 
 TESTS (all green)
-  python3 test_earnkaro_conversion.py   # 84 checks: converter contract, key,
+  python3 test_earnkaro_conversion.py   # 95 checks: converter contract, key,
                                         # Amazon policy, the three new sources
   python3 test_render_job.py            # 160 checks
   python3 test_pipeline_fixes.py        # 229 checks

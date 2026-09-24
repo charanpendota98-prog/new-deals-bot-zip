@@ -65,6 +65,7 @@ SERVER STEPS (after pulling this branch)
       --wanted. Curating one link removes the product from the list and every
       later post of it earns on OUR link.
 
+      python3 ops/conversion_report.py          # everything, per route, from live data
       python3 ops/earnkaro_check.py --hypd-only
         # resolves each of OUR share links, Bitly-shortens them the way the bot
         # does, follows the short link BACK and proves it lands on our store:
