@@ -109,8 +109,7 @@ def describe_token(token: str, source: str) -> tuple[bool, str]:
         return False, ""
     publisher = str(claims.get("earnkaro") or "").strip()
     issued = claims.get("iat")
-    print(f"token shape       : JWT, issued {issued if issued else 'unknown'}"
-          f" ({_as_date(issued)})")
+    print(f"token shape       : JWT, issued {_as_date(issued)}")
     print(f"EarnKaro publisher: {publisher or '<none in token>'}"
           "   <- every converted link pays THIS account")
     if not publisher:
@@ -174,6 +173,79 @@ def first_http_url(value) -> str | None:
     return None
 
 
+# Hosts that only redirect: the publisher is visible on the DESTINATION, not on
+# the short link itself, so a converted short link must be expanded before it can
+# be called "our" link.
+SHORTENER_HOSTS = ("ekaro.in", "ekaro.app", "earnkaro.com", "clnk.in", "clnk.app",
+                   "bitli.in", "bitl.in", "fktr.in", "myntr.it", "ajiio.co",
+                   "bit.ly", "is.gd", "amzn.to", "linkredirect.in")
+
+
+def attribution_of(url: str) -> dict:
+    """The visible affiliate attribution on a URL, as a plain dict.
+
+    Flipkart-family pages carry the publisher in `affExtParam2`, Amazon in
+    `tag`, and several networks add `affid`/`affExtParam1`. An EarnKaro short
+    link carries none of them - that is why a short link is expanded first.
+    """
+    from urllib.parse import parse_qs, urlparse
+    try:
+        parsed = urlparse(url or "")
+    except Exception:
+        return {}
+    query = {str(k).lower(): v for k, v in parse_qs(parsed.query or "").items()}
+    out = {"host": (parsed.hostname or "").lower()}
+    for key in ("affid", "affextparam1", "affextparam2", "tag", "utm_source"):
+        values = query.get(key)
+        if values:
+            out[key] = values[0]
+    return out
+
+
+def is_short_link(url: str) -> bool:
+    from urllib.parse import urlparse
+    host = (urlparse(url or "").hostname or "").lower()
+    return any(host == h or host.endswith("." + h) for h in SHORTENER_HOSTS)
+
+
+def expand(url: str, timeout: float) -> str:
+    """Follow a short link to its destination (GET: HEAD is often blocked)."""
+    import urllib.request
+    request = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "Chrome/131 Safari/537.36"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.url or url
+    except urllib.error.HTTPError as exc:        # a redirect chain still lands here sometimes
+        return getattr(exc, "url", url) or url
+    except Exception:
+        return url
+
+
+def whose_link(url: str, publisher: str, our_tag: str, timeout: float) -> tuple[str, str]:
+    """('ours' | 'foreign' | 'hidden', detail) for a converted link."""
+    published = url
+    detail = ""
+    if is_short_link(url) or not attribution_of(url).get("affextparam2"):
+        final = expand(url, timeout)
+        if final and final != url:
+            detail = f" -> {final[:150]}"
+            published = final
+    att = attribution_of(published)
+    seen = att.get("affextparam2")
+    tag = att.get("tag")
+    if seen:
+        return ("ours" if seen == publisher else "foreign",
+                f"affExtParam2={seen}{detail}")
+    if tag:
+        return ("ours" if (our_tag and tag == our_tag) else "foreign",
+                f"tag={tag}{detail}")
+    if att.get("affid"):
+        return "hidden", f"affid={att['affid']} (publisher id not shown){detail}"
+    return "hidden", (detail.strip() or "attribution not visible (short link)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the EarnKaro API key end to end.")
     parser.add_argument("--key", help="API token to check (default: env or bestgaa/.env)")
@@ -183,6 +255,10 @@ def main() -> int:
                         help="sent as convert_option (default: convert_only)")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--offline", action="store_true", help="decode the token only, no network calls")
+    parser.add_argument("--no-expand", action="store_true",
+                        help="do not follow short links (skip the 'does it pay US?' step)")
+    parser.add_argument("--amazon-tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
+                        help="our Amazon Associates tag, for Amazon probes")
     args = parser.parse_args()
 
     key, source = find_key(args.key, args.env_file)
@@ -207,6 +283,8 @@ def main() -> int:
 
     print("\n" + "-" * 78)
     failures = 0
+    ours = 0
+    hidden = 0
     for name, deal in PROBES:
         status, body = convert(key, args.api, deal, args.convert_option, args.timeout)
         try:
@@ -217,9 +295,21 @@ def main() -> int:
         verdict = "MONETIZED" if link else "no link"
         if status in (401, 403):
             verdict = "TOKEN REFUSED"
+        paid = ""
         if link:
-            if publisher and f"affextparam2={publisher}" not in link.lower() and publisher not in link:
-                pass  # EarnKaro short links hide the publisher; not a failure
+            if args.no_expand:
+                paid, where = "unchecked", "expansion disabled (--no-expand)"
+            else:
+                paid, where = whose_link(link, publisher, args.amazon_tag, args.timeout)
+            if paid == "ours":
+                ours += 1
+                verdict = f"MONETIZED - PAYS US ({publisher})"
+            elif paid == "foreign":
+                failures += 1
+                verdict = "WRONG ACCOUNT - this link pays somebody else"
+            elif paid == "hidden":
+                hidden += 1
+                verdict = "MONETIZED (whose account not visible)"
         else:
             failures += 1
         print(f"\n[{name}]")
@@ -227,6 +317,8 @@ def main() -> int:
         print(f"  http      : {status}   {verdict}")
         if link:
             print(f"  link      : {link[:120]}")
+            if where:
+                print(f"  attribution: {where}")
         print(f"  raw body  : {body[:220].strip()}")
         if status in (401, 403):
             print("  -> the token itself was refused: regenerate EARNKARO_API_KEY.")
@@ -236,13 +328,25 @@ def main() -> int:
 
     print("\n" + "=" * 78)
     if failures:
-        print(f"RESULT: {failures} of {len(PROBES)} probes returned no link.")
-        print("A store with no EarnKaro campaign is normal (Amazon search pages, some\n"
-              "marketplaces). A NO-LINK on the Flipkart/Myntra probes with HTTP 200\n"
-              "means the token is valid but the request/response contract changed —\n"
-              "the raw body above is what the bot will log as 'EK CONVERT | no link'.")
+        print(f"RESULT: {failures} of {len(PROBES)} probes failed (no link, or a link")
+        print("that pays a DIFFERENT account). A store with no EarnKaro campaign is")
+        print("normal (Amazon search pages, some marketplaces). A NO-LINK on the")
+        print("Flipkart/Myntra probes with HTTP 200 means the token is valid but the")
+        print("request/response contract changed - the raw body above is what the bot")
+        print("logs as 'EK CONVERT | no link'. A WRONG ACCOUNT line means the token")
+        print("belongs to somebody else's EarnKaro account: replace EARNKARO_API_KEY.")
         return 1
-    print("RESULT: the key is live and every probe converted. Nothing else to fix.")
+    if ours:
+        print(f"RESULT: the key is live and {ours} converted link(s) were expanded and")
+        print(f"        PROVED to pay OUR EarnKaro account {publisher}. Nothing else to fix.")
+    else:
+        print("RESULT: the key is live and every probe converted, but the publisher")
+        print("        behind the short links was not visible from here - re-run")
+        print("        without --no-expand, or trust the token claims above (they name")
+        print("        the account every converted link is minted for).")
+    if hidden:
+        print(f"        {hidden} probe(s) could not be attributed (short link whose")
+        print("        destination refused to be read); the token claims remain the proof.")
     return 0
 
 

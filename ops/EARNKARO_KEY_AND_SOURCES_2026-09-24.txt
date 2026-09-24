@@ -5,6 +5,51 @@ USER REQUEST
   "e three channel source ga pettu 1st preference ivvu and perfectgaa convert
    avvatleu earnkaro na links check chesvaa apikey isthunnanu perefctgaa set cheyu"
 
+
+IS THE KEY SET UP - AND DOES IT CONVERT INTO **OUR** LINKS?
+========================================================================
+
+One command answers it on the server (needs internet):
+
+    python3 ops/earnkaro_check.py
+
+What a good run looks like:
+
+    token shape       : JWT, issued 2026-09-24 18:15 UTC
+    EarnKaro publisher: 5478322   <- every converted link pays THIS account
+    endpoint          : https://ekaro-api.affiliaters.in/api/converter/public
+    convert_option    : convert_only
+    [Flipkart product]
+      http      : 200   MONETIZED - PAYS US (5478322)
+      link      : https://ekaro.in/...
+      attribution: affExtParam2=5478322 -> https://www.flipkart.com/...?affExtParam2=5478322
+
+    RESULT: the key is live and N converted link(s) were expanded and PROVED to
+            pay OUR EarnKaro account 5478322. Nothing else to fix.
+
+Reading it:
+
+  * "PAYS US (5478322)"     the returned short link was EXPANDED and its visible
+                            attribution is our publisher -> the link is OURS.
+  * "MONETIZED (whose account not visible)"
+                            the store redirected somewhere unreadable; the token
+                            claims above are still the proof of the account.
+  * "WRONG ACCOUNT"         the API answered a link that pays somebody ELSE
+                            (or a HYPD-attributed page) - replace EARNKARO_API_KEY.
+  * "no link" with HTTP 200 a store with no EarnKaro campaign (normal for some
+                            marketplaces and for search pages) - that link is
+                            posted clean, and OUR HYPD link covers Meesho/Shopsy.
+  * "TOKEN REFUSED" (401/403)
+                            the token was rejected - regenerate it and re-run
+                            ops/set_earnkaro_key.sh.
+
+If the endpoint cannot be reached at all (transport error, exit 0 in the HTTP
+column), the network - not the key - is the problem; re-run from the server.
+
+In THIS workspace the same command only reaches the token-claims half: the sandbox
+has no outbound internet (TLS is reset for every host), so "http: 0" here is the
+sandbox, not the key. The live conversion proof has to come from the server.
+
 1. THE THREE NEW SOURCES (first preference)
    ------------------------------------------
      https://t.me/+O3j4ghbtJzhjZjJl
@@ -103,7 +148,7 @@ DEPLOY
       # or place the token in ops/.earnkaro_key (gitignored) before deploying
 
 TESTS (all green)
-  python3 test_earnkaro_conversion.py   # 68 checks: converter contract, key,
+  python3 test_earnkaro_conversion.py   # 77 checks: converter contract, key,
                                         # Amazon policy, the three new sources
   python3 test_render_job.py            # 160 checks
   python3 test_pipeline_fixes.py        # 229 checks

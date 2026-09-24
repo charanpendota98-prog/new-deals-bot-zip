@@ -149,6 +149,22 @@ tagged product page — our earned links are expanded back to
 `amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
 to restore the pure native-tag behaviour of 2026-09-06.
 
+**Prove it in one command** (on the server, which has internet):
+
+```bash
+python3 ops/earnkaro_check.py            # token claims + live probes
+python3 ops/earnkaro_check.py --offline  # token only, no network
+```
+
+A healthy run prints `EarnKaro publisher: 5478322 <- every converted link pays
+THIS account` and then `MONETIZED - PAYS US (5478322)` per store: the returned
+short link is **expanded** and its visible attribution checked, so "HTTP 200" is
+never mistaken for "our link". `WRONG ACCOUNT` means the token belongs to
+somebody else (or the response echoed someone else's attribution) - replace the
+key with `./ops/set_earnkaro_key.sh '<token>'`. A store with no campaign is
+normal and posts a clean link; Meesho/Shopsy are covered by OUR HYPD link (see
+the next section).
+
 **Three new first-preference sources** (2026-09-24, "e three channel source ga
 pettu 1st preference ivvu"): `t.me/+O3j4ghbtJzhjZjJl`,
 `t.me/+8KzU3P58MJ9jN2M1`, `t.me/+6LA1ljXGlbNmMjA1`. They fan out to every

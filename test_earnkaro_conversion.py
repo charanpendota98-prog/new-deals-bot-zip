@@ -455,6 +455,63 @@ def test_priority_boost_is_applied():
           boosted > ordinary, str(rows))
 
 
+def test_checker_proves_whose_link():
+    """`ops/earnkaro_check.py` must be able to say WHOSE account a link pays.
+
+    "perefctgaa na links gaa" is not answered by "HTTP 200": the converted link
+    has to be OUR link. The checker expands short links and reads the visible
+    attribution, so it can tell ours from somebody else's. Pinned here so the
+    tool cannot silently go back to only counting HTTP 200s.
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "earnkaro_check", Path(__file__).parent / "ops" / "earnkaro_check.py")
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    publisher = bot.OUR_EK_ID
+    check("the bot's own publisher comes from the token", bool(publisher), publisher)
+
+    ours = ("https://www.flipkart.com/boat-airdopes/p/itm123?pid=ACCFHBDD6HYQZ6AZ"
+            f"&affExtParam1=1234&affExtParam2={publisher}")
+    theirs = ours.replace(f"affExtParam2={publisher}", "affExtParam2=999999")
+    # OUR_TAG may be empty in this test's env; the tag we own is the constant.
+    our_tag = sorted(bot.OUR_AMAZON_TAGS)[0]
+    amazon_ours = f"https://www.amazon.in/dp/B0FPDD9WKP?tag={our_tag}"
+    amazon_theirs = "https://www.amazon.in/dp/B0FPDD9WKP?tag=deals0911-21"
+    hypd_destination = ("https://www.meesho.com/cotton-saree/p/abc12345"
+                        "?affid=infhypd&affExtParam1=6ab13e1eb6ce5677d060574c"
+                        "&affExtParam2=daoli7dtm6mc5h7k1ffg")
+
+    verdict, where = checker.whose_link(ours, publisher, bot.OUR_TAG, 5)
+    check("a converted Flipkart link with our publisher proves OUR link",
+          verdict == "ours", f"{verdict}: {where}")
+    verdict, _ = checker.whose_link(theirs, publisher, bot.OUR_TAG, 5)
+    check("and a link carrying a foreign publisher is refused",
+          verdict == "foreign", verdict)
+    verdict, _ = checker.whose_link(amazon_ours, publisher, our_tag, 5)
+    check("an Amazon link with our tag proves OUR link", verdict == "ours", verdict)
+    verdict, _ = checker.whose_link(amazon_theirs, publisher, our_tag, 5)
+    check("a source's Amazon tag is not ours", verdict == "foreign", verdict)
+    verdict, where = checker.whose_link(hypd_destination, publisher, our_tag, 5)
+    # A page carrying HYPD's own attribution is NOT an EarnKaro link; the check
+    # must never call it ours (and must name the token it saw).
+    check("a HYPD-attributed page is never reported as OUR EarnKaro link",
+          verdict != "ours" and "daoli7dtm6mc5h7k1ffg" in where, f"{verdict}: {where}")
+    hypd_share = "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg"
+    verdict, where = checker.whose_link(hypd_share, publisher, our_tag, 5)
+    check("and OUR hypd share link is reported as not-an-EarnKaro-link",
+          verdict != "ours", f"{verdict}: {where}")
+
+    # The user-facing result line must name the account, not just "200 OK".
+    source = (Path(__file__).parent / "ops" / "earnkaro_check.py").read_text(encoding="utf-8")
+    check("the checker's verdict names the paying account",
+          "PAYS US ({publisher})" in source, "")
+    check("and it expands short links before judging them",
+          "def expand(" in source and "is_short_link" in source, "")
+
+
 def main():
     test_response_shapes()
     test_request_contract()
@@ -467,6 +524,7 @@ def main():
     test_first_preference_wins_the_claim()
     test_first_preference_backfill_is_bounded()
     test_priority_boost_is_applied()
+    test_checker_proves_whose_link()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")
 
 
