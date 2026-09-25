@@ -229,3 +229,44 @@ convert chesthunnava link manavi gaa")
   render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge
   self-test PASS. (Fresh sandboxes need BOTH pip install AND tg-wa-bridge npm
   install every session: node_modules is never snapshotted.)
+
+===============================================================
+ROUND 30 - SELF-HEALING OUR LINKS (the even-more-advanced round)
+===============================================================
+The user: "final ga bestga advancedga build chesav kada inka
+advancedgaa" - keep pushing. Next level taken: SELF-HEAL.
+
+Any post that ships a PLAIN merchant link (EarnKaro down, no
+campaign at render - the exact "ours=0 plain=1" case) is now
+EDITED IN PLACE with OUR link the moment conversion recovers:
+
+  1. At delivery the LINK AUDIT's plain leftover urls are queued
+     (link_heal) together with the ids of the messages we sent.
+  2. A heal worker (own task, LINK_HEAL_SECONDS=300 cycle)
+     retries affiliate.convert() per row with quadratic backoff
+     (60s, 240s, ... capped 1h; LINK_HEAL_MAX_TRIES=24 then give
+     up quietly).
+  3. ONLY a link whose ownership verdict is "ours" (our
+     shorteners, hypd, OUR amazon tag, OUR EK publisher) is ever
+     written back. A conversion answering with another PLAIN url
+     is refused - plain is never swapped for plain.
+  4. Each sent message that still carries the old url is edited:
+     client.edit_message(target, msg_id, text with url replaced
+     everywhere). One log line per edit:
+       LINK HEAL | queue=.. target=.. | plain -> ours: A -> B
+
+PROOF (demo, fake client):
+  EX1 EarnKaro down -> edits=0 (kept plain) tries=1 backoff queued
+  LINK HEAL | queue=3 target=LootZoneIndia11 | plain -> ours:
+    https://www.amazon.in/dp/B0HEAL1 -> https://bit.ly/selfheal1
+  EX2 conversion up -> heal_edits=1 | edited in place -> OUR link
+
+TESTS (test_line_fidelity, 9 new pins): ownership verdicts ours/
+foreign/plain; down->backoff; plain answer never edited in; ours
+edited in and row closed; give-up after LINK_HEAL_MAX_TRIES; the
+delivery path queues heals; main runs the heal loop. FULL BATTERY
+STILL GREEN (line fidelity all / pipeline 229/0 / render 160/0 /
+earnkaro 106 / hypd 72 / best_copy / duplicate_sim / rescan /
+bridge self-test).
+
+Config: LINK_HEAL_SECONDS=300 (30-3600), LINK_HEAL_MAX_TRIES=24.

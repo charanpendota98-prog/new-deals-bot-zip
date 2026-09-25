@@ -1407,6 +1407,43 @@ def untagged_compact_amazon_link(url: str) -> str:
     return without_amazon_tag(compact)             # never carry a tag out
 
 
+# SELF-HEAL (2026-09-25, "inka advancedgaa"): a post that shipped a plain
+# merchant link (EarnKaro down / no campaign at render time) is EDITED IN PLACE
+# the moment our conversion succeeds. The worker retries with backoff.
+LINK_HEAL_SECONDS = _num("LINK_HEAL_SECONDS", 300, 30, 3600)
+LINK_HEAL_MAX_TRIES = max(3, int(os.getenv("LINK_HEAL_MAX_TRIES", "24")))
+
+
+def link_ownership(url: str, target: str = "") -> str:
+    """Judge one URL AS IT STANDS: 'ours', 'foreign' or 'plain'.
+
+    Shared vocabulary with the last gate (enforce_our_link_attribution): our
+    shorteners / our hypd share links / our Associates tag / our publisher id
+    are 'ours'; a visible stranger attribution (their tag, their affExtParam2)
+    is 'foreign'; a bare merchant URL is 'plain' - safe to publish but earning
+    nothing, and therefore the SELF-HEAL queue's only customer."""
+    clean = clean_url(url)
+    host = (urlparse(clean).hostname or "").lower()
+    if not host or not clean.startswith("http"):
+        return "plain"
+    if (in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS)
+            or in_domains(host, OUR_SHORTENER_DOMAINS)
+            or is_our_hypd_link(clean)):
+        return "ours"
+    query = [(k, v) for k, v in parse_qsl(urlparse(clean).query, keep_blank_values=True)]
+    if in_domains(host, AMAZON_DOMAINS):
+        tags = {v for k, v in query if k.lower() == "tag" and v}
+        if OUR_TAG and tags == {OUR_TAG}:
+            return "ours"
+        return "foreign" if tags else "plain"
+    for key, value in query:
+        if key.lower() in ("affextparam2", "aff_id") and value:
+            return "ours" if (OUR_EK_ID and value == OUR_EK_ID) else "foreign"
+    if any(k.lower() in FLIPKART_ATTRIBUTION_QUERY_KEYS and v for k, v in query):
+        return "foreign"
+    return "plain"
+
+
 def enforce_our_link_attribution(text: str, target: str = "") -> tuple[str, int, int, int]:
     """THE LAST GATE (2026-09-25): "advancedgaa manavi perefctga convert
     chetshadigaa links" - every link that leaves the bot is OURS or a clean
@@ -4651,6 +4688,18 @@ class Store:
           last_error TEXT,
           PRIMARY KEY(queue_id,target)
         );
+        CREATE TABLE IF NOT EXISTS link_heal (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          queue_id INTEGER NOT NULL,
+          target TEXT NOT NULL,
+          url TEXT NOT NULL,
+          msg_refs TEXT NOT NULL DEFAULT '',
+          tries INTEGER NOT NULL DEFAULT 0,
+          next_try REAL NOT NULL DEFAULT 0,
+          healed_at REAL,
+          given_up INTEGER NOT NULL DEFAULT 0,
+          UNIQUE(queue_id,target,url)
+        );
         CREATE TABLE IF NOT EXISTS link_cache (
           source_url TEXT PRIMARY KEY,
           affiliate_url TEXT NOT NULL,
@@ -5667,6 +5716,44 @@ class Store:
                 "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
                 ("sent" if ok else "pending", error[:500], queue_id, target),
             )
+            self.conn.commit()
+
+    async def queue_link_heal(self, queue_id: int, target: str, url: str,
+                              msg_refs: str) -> None:
+        """SELF-HEAL: remember a post's plain (unmonetized) link together with
+        the message refs it shipped in, so the heal worker can EDIT it in place
+        the moment our conversion succeeds."""
+        async with self.lock:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO link_heal(queue_id,target,url,msg_refs,tries,next_try)"
+                " VALUES(?,?,?,?,0,0)",
+                (queue_id, target, url, msg_refs),
+            )
+            self.conn.commit()
+
+    async def pending_link_heals(self, now: float | None = None) -> list:
+        async with self.lock:
+            return self.conn.execute(
+                "SELECT id,queue_id,target,url,msg_refs,tries FROM link_heal"
+                " WHERE healed_at IS NULL AND given_up=0 AND next_try<=?"
+                " ORDER BY id LIMIT 12",
+                (now if now is not None else time.time(),),
+            ).fetchall()
+
+    async def record_link_heal(self, heal_id: int, healed: bool) -> None:
+        async with self.lock:
+            if healed:
+                self.conn.execute(
+                    "UPDATE link_heal SET healed_at=? WHERE id=?",
+                    (time.time(), heal_id),
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE link_heal SET tries=tries+1,"
+                    " next_try=?+MIN(3600,60*(tries+1)*(tries+1)),"
+                    " given_up=CASE WHEN tries+1>=? THEN 1 ELSE 0 END WHERE id=?",
+                    (time.time(), LINK_HEAL_MAX_TRIES, heal_id),
+                )
             self.conn.commit()
 
     async def shopping_quota_left(self) -> int:
@@ -6938,6 +7025,58 @@ async def build_maps(client: TelegramClient):
     return source_map, target_map
 
 
+async def heal_plain_links(client, affiliate) -> int:
+    """SELF-HEAL (2026-09-25, "inka advancedgaa"): a post that shipped a plain
+    merchant link (EarnKaro was down / had no campaign at render time) is
+    EDITED IN PLACE the moment our conversion succeeds - from then on the
+    reader's click pays us. Only an OUR link ever replaces: a conversion that
+    answers with another plain merchant URL is not worth an edit. Rows queue at
+    delivery (post-audit plain links) and retry with quadratic backoff until
+    they convert or LINK_HEAL_MAX_TRIES gives up."""
+    healed_total = 0
+    for heal in await store.pending_link_heals():
+        url = heal["url"]
+        try:
+            result = await affiliate.convert(url, multi_link=False)
+        except Exception as exc:  # noqa: BLE001 - a heal attempt must never crash the loop
+            log.warning("LINK HEAL convert failed %s: %s", url[:60], exc)
+            result = None
+        ours = (result.affiliate if result and link_ownership(result.affiliate) == "ours"
+                else None)
+        if not ours:
+            await store.record_link_heal(heal["id"], False)
+            continue
+        for ref in str(heal["msg_refs"] or "").split(","):
+            if not ref.strip().isdigit():
+                continue
+            try:
+                msg = await client.get_messages(heal["target"], ids=int(ref))
+                text = (getattr(msg, "message", None) or getattr(msg, "text", "") or "")
+                if url not in text:
+                    continue
+                await client.edit_message(
+                    heal["target"], int(ref), replace_url_everywhere(text, url, ours))
+                healed_total += 1
+                log.info("LINK HEAL | queue=%s target=%s | plain -> ours: %s -> %s",
+                         heal["queue_id"], heal["target"], url[:60], ours)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("LINK HEAL edit failed target=%s ref=%s: %s",
+                            heal["target"], ref, exc)
+        await store.record_link_heal(heal["id"], True)
+    return healed_total
+
+
+async def link_heal_loop(client, affiliate, stop: asyncio.Event) -> None:
+    """Run the self-heal worker on its own clock for the life of the bot."""
+    while not stop.is_set():
+        try:
+            await heal_plain_links(client, affiliate)
+        except Exception as exc:  # noqa: BLE001 - the loop survives anything
+            log.warning("LINK HEAL cycle failed: %s", exc)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=LINK_HEAL_SECONDS)
+
+
 async def maintenance_loop(stop: asyncio.Event) -> None:
     while not stop.is_set():
         try:
@@ -7207,24 +7346,25 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
         return False
 
 
-async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
+async def send_media_item(client, entity, media, caption: str, refs: list | None = None):
     """One photo with its caption, or the whole album as one grid, with real fallbacks.
 
     If the grid cannot be sent, the first photo goes out with the caption - exactly what
     the bot always did - and the remaining photos follow as their own messages, so the
-    reader still gets every image the source posted.
+    reader still gets every image the source posted. Returns the caption-bearing
+    message (the SELF-HEAL queue needs its id to edit the links later).
     """
     paths = media_list(media)
     if len(paths) <= 1:
-        await client.send_file(entity, paths[0] if paths else None, caption=caption,
-                               parse_mode=None)
-        return
+        return await client.send_file(entity, paths[0] if paths else None, caption=caption,
+                                      parse_mode=None)
     if await send_media_group(client, entity, caption, paths, list(refs or [])):
-        return
-    await client.send_file(entity, paths[0], caption=caption, parse_mode=None)
+        return None
+    sent = await client.send_file(entity, paths[0], caption=caption, parse_mode=None)
     for extra in paths[1:]:
         with contextlib.suppress(Exception):
             await client.send_file(entity, extra, parse_mode=None)
+    return sent
 
 
 def channel_header_line() -> str:
@@ -7271,7 +7411,8 @@ def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
 
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
-                  media_refs: list | None = None) -> tuple[bool, str]:
+                  media_refs: list | None = None,
+                  sent_refs: list | None = None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
@@ -7285,11 +7426,13 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
         for attempt in range(POST_RETRIES):
             try:
                 if kind == "file":
-                    await send_media_item(client, entity, media_path, content, media_refs)
+                    out_msg = await send_media_item(client, entity, media_path, content, media_refs)
                 else:
-                    await client.send_message(
+                    out_msg = await client.send_message(
                         entity, content, parse_mode=None, link_preview=link_preview
                     )
+                if sent_refs is not None and out_msg is not None:
+                    sent_refs.append(getattr(out_msg, "id", None))
                 if progress_callback:
                     await progress_callback(index + 1)
                 sent = True
@@ -8254,6 +8397,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                             "carrying attribution that was not ours", row["id"], target, _fixed)
             log.info("LINK AUDIT | queue=%s target=%s | ours=%d plain=%d fixed=%d",
                      row["id"], target, _ours, _plain, _fixed)
+            # SELF-HEAL QUEUE (2026-09-25, "inka advancedgaa"): every link the
+            # audit saw as PLAIN (our conversion was down / had no campaign) is
+            # remembered with the message it shipped in - the heal worker edits
+            # it into OUR link in place the moment conversion succeeds.
+            heal_urls = ([clean_url(u) for u in dict.fromkeys(URL_RE.findall(target_text))
+                          if link_ownership(u, target) == "plain"] if _plain else [])
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):
                 # Never on the review channel: that header is a link into the
@@ -8267,11 +8416,18 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             target_media = media_path
             if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:
                 target_media = []
+            sent_refs: list = []
             ok, error = await deliver(
                 client, entity, target_text, target_media,
                 start_chunk=start_chunk, progress_callback=checkpoint,
                 link_preview=allow_preview, media_refs=media_refs,
+                sent_refs=sent_refs,
             )
+            if ok and heal_urls and sent_refs:
+                refs_joined = ",".join(str(r) for r in sent_refs if r is not None)
+                for heal_url in heal_urls:
+                    with contextlib.suppress(Exception):
+                        await store.queue_link_heal(row["id"], target, heal_url, refs_joined)
             if premium_claimed:
                 await store.complete_premium(row["id"], ok)
             await store.delivery(row["id"], target, ok, error)
@@ -8444,6 +8600,7 @@ async def main() -> None:
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
+    link_heal_task = asyncio.create_task(link_heal_loop(client, affiliate, stop))
     await stop.wait()
     # Allow pending workers a brief graceful drain; queue remains durable if interrupted.
     try:
@@ -8457,6 +8614,8 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await link_heal_task
     await client.disconnect()
     await session.close()
     store.conn.close()

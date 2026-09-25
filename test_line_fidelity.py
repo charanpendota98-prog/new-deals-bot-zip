@@ -1219,6 +1219,106 @@ def test_the_full_junk_sweep_is_clean():
           "Dhamaka deals" in lone, repr(lone))
 
 
+def test_self_heal_edits_a_plain_link_into_ours():
+    """USER (2026-09-25): "inka advancedgaa" - SELF-HEALING OUR LINKS. A post
+    that shipped a PLAIN merchant link (EarnKaro down / no campaign) is edited
+    IN PLACE the moment our conversion succeeds. Only OUR links replace; a
+    conversion answering with another plain URL is never swapped in; rows
+    retry with backoff and give up after LINK_HEAL_MAX_TRIES."""
+    import shutil
+    import tempfile
+    from pathlib import Path as _P
+    tmp = tempfile.mkdtemp(prefix="heal-")
+    old_store = bot.store
+    old_tag = bot.OUR_TAG
+    bot.OUR_TAG = "mama086-21"
+    bot.store = bot.Store(_P(tmp) / "heal.sqlite3")
+    try:
+        check("link_ownership: our shorteners/hypd/tag/publisher are ours",
+              bot.link_ownership("https://bit.ly/abc") == "ours"
+              and bot.link_ownership("https://ekaro.in/enkr1") == "ours"
+              and bot.link_ownership("https://www.amazon.in/dp/B0X?tag=mama086-21") == "ours",
+              "ours verdicts")
+        check("link_ownership: a stranger tag/publisher is foreign",
+              bot.link_ownership("https://www.amazon.in/dp/B0X?tag=thief-21") == "foreign"
+              and bot.link_ownership("https://dl.flipkart.com/x/p/ITM1?pid=ITM1"
+                                     "&affExtParam2=999999") == "foreign",
+              "foreign verdicts")
+        check("link_ownership: a bare merchant URL is plain (heal's customer)",
+              bot.link_ownership("https://www.amazon.in/dp/B0HEAL1") == "plain",
+              "plain verdict")
+
+        class FakeMsg:
+            def __init__(self, mid, text):
+                self.id = mid; self.message = text; self.text = text
+
+        class FakeClient:
+            def __init__(self, texts):
+                self.texts = texts; self.edits = []
+            async def get_messages(self, target, ids=0):
+                return FakeMsg(ids, self.texts.get(int(ids), ""))
+            async def edit_message(self, target, mid, new_text):
+                self.edits.append((target, int(mid), new_text))
+
+        class FakeAff:
+            def __init__(self, answer):
+                self.answer = answer
+            async def convert(self, url, multi_link=False, resolved_hint=None):
+                if not self.answer:
+                    return None
+                return bot.LinkResult(url, url, self.answer, "PID:HEAL")
+
+        async def scenario():
+            plain = "https://www.amazon.in/dp/B0HEAL1"
+            far = 1e18  # "always due" clock for the backoff assertions
+            # 1. conversion still down -> no edit, backoff recorded
+            await bot.store.queue_link_heal(7, "LootZoneIndia11", plain, "101,102")
+            client = FakeClient({101: f"Combo deal\n{plain}", 102: "chunk two"})
+            healed = await bot.heal_plain_links(client, FakeAff(None))
+            check("no conversion yet: nothing edited", healed == 0 and not client.edits,
+                  repr(client.edits))
+            again = await bot.store.pending_link_heals(now=far)
+            check("the row waits with backoff for its next try",
+                  len(again) == 1 and again[0]["tries"] == 1, str(list(again)))
+            # 2. conversion answers PLAIN -> never swapped in
+            await bot.store.queue_link_heal(7, "LootZoneIndia11", plain, "101,102")
+            healed = await bot.heal_plain_links(client, FakeAff("https://www.myntra.com/x"))
+            check("a plain answer is never edited in",
+                  healed == 0 and not client.edits, repr(client.edits))
+            # 3. conversion answers OURS -> the message is edited in place
+            await bot.store.queue_link_heal(7, "LootZoneIndia11", plain, "101,102")
+            healed = await bot.heal_plain_links(client, FakeAff("https://bit.ly/healed1"))
+            check("the plain link is healed into ours", healed == 1, str(healed))
+            check("the edited message carries OUR link and not the plain one",
+                  client.edits and client.edits[0][1] == 101
+                  and "https://bit.ly/healed1" in client.edits[0][2]
+                  and plain not in client.edits[0][2], repr(client.edits))
+            check("the healed row is closed",
+                  not await bot.store.pending_link_heals(now=far))
+            # 4. a link that never converts gives up after LINK_HEAL_MAX_TRIES
+            await bot.store.queue_link_heal(8, "LootZoneIndia11", plain + "9", "201")
+            for _ in range(bot.LINK_HEAL_MAX_TRIES + 2):
+                pending = await bot.store.pending_link_heals(now=far)
+                if not pending:
+                    break
+                await bot.store.record_link_heal(pending[0]["id"], False)
+            check("a link that never converts gives up quietly",
+                  not await bot.store.pending_link_heals(now=far))
+
+        asyncio.run(scenario())
+        src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+        deliver_block = src[src.index("async def process_job"):]
+        check("the delivery path queues plain links for self-heal",
+              "queue_link_heal(" in deliver_block and "link_ownership(" in deliver_block,
+              "heal queue not wired")
+        check("the heal worker runs on its own clock in main",
+              "link_heal_loop(client, affiliate, stop)" in src, "heal loop not spawned")
+    finally:
+        bot.store = old_store
+        bot.OUR_TAG = old_tag
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_the_review_channel_copy_is_built_from_an_allowlist():
     """USER RULE (2026-09-05): the new channel is under EarnKaro/Amazon review, so it
     must follow the programme rules 100% - the other channels are untouched. A
@@ -3694,6 +3794,7 @@ def main() -> int:
     test_useless_source_lines_never_reach_a_target()
     test_the_user_shapes_come_out_exactly_right()
     test_the_full_junk_sweep_is_clean()
+    test_self_heal_edits_a_plain_link_into_ours()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
