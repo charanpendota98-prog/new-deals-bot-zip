@@ -977,6 +977,21 @@ def test_a_flipkart_product_link_goes_out_short():
     check("a search/category link is left for the shortener, not mangled",
           bot.compact_flipkart_product_link(search) == bot.clean_url(search),
           bot.compact_flipkart_product_link(search))
+    # USER REPORT (2026-09-25): "earnkaro tho short ga cheyatledu" - a GENERATED
+    # link names its publisher in the query (affExtParam2=<our EarnKaro id>),
+    # and compaction used to drop exactly that: tidy link, zero commission.
+    attributed = ("https://www.flipkart.com/boat-bottle-black/p/itm0613a6a4f24de"
+                  "?lid=LSTBOTHEXH9ZG8XAJTNABEVPU&marketplace=FLIPKART"
+                  "&pid=BOTHEXH9ZG8XAJTN&otracker=clip"
+                  "&affExtParam1=acct1&affExtParam2=5478322")
+    kept = bot.compact_flipkart_product_link(attributed)
+    check("a generated link KEEPS its EarnKaro attribution when compacted",
+          "affExtParam2=5478322" in kept and "affExtParam1=acct1" in kept, kept)
+    check("pid (the product identity) is kept with it",
+          "pid=BOTHEXH9ZG8XAJTN" in kept, kept)
+    check("while the session noise still goes",
+          "lid=" not in kept and "marketplace=" not in kept
+          and "otracker=" not in kept, kept)
 
 
 def test_our_amazon_tag_only_rides_on_declared_channels():
@@ -1566,6 +1581,136 @@ def test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link():
     check("media is dropped for the review channel only",
           "target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY" in deliver
           and "target_media = media_path" in deliver, "text-only not wired")
+
+
+def test_long_amazon_links_never_reach_a_loot_channel_raw():
+    """USER REPORT (2026-09-25): "asal long links velthunnai earnkaro tho
+    short ga cheyatledu".
+
+    Two leaks, both closed here:
+    1. The undeclared-channel tag-strip swapped OUR short link back to the FULL
+       destination - fine for /dp/ (33 chars) but a hidden-keywords SEARCH URL
+       exploded to 300+ characters on every loot channel.
+    2. When the render-time shortener was busy, a long link sailed through
+       untouched. Delivery now shrinks whatever is still long (the URL is
+       shortened exactly as it stands - the shortener is even asked with the
+       UNTAGGED destination)."""
+    import asyncio
+    old_tag = bot.OUR_TAG
+    bot.OUR_TAG = "mama086-21"
+    try:
+        long_search = ("https://www.amazon.in/s?hidden-keywords=B0AAA11111+%7C+B0BBB22222"
+                       "+%7C+B0CCC33333+%7C+B0DDD44444+%7C+B0EEE55555"
+                       "&btn_ref=ssss&qid=1700000000&tag=mama086-21")
+
+        class RecordingAff:
+            shorten_leftover_long_links = bot.AffiliateClient.shorten_leftover_long_links
+
+            def __init__(self):
+                self._short_to_long = {"https://bit.ly/hk1": long_search}
+                self.asked = []
+
+            async def shorten(self, url):
+                self.asked.append(url)
+                return "https://bit.ly/untaggedhk"
+
+        # 1. THE STRIP LAYER: the swap is to the CLEAN destination - tag and
+        # session junk gone - never to the raw tracking-laden URL.
+        stripped = bot.strip_amazon_tag_for_undeclared(
+            "Multi deal\nhttps://bit.ly/hk1", "LootZoneIndia11", RecordingAff())
+        check("the swap is no longer the raw long URL",
+              "btn_ref" not in stripped and "qid=" not in stripped
+              and bot.OUR_TAG not in stripped, stripped)
+        check("the product list behind the link survives",
+              "hidden-keywords=B0AAA11111" in stripped, stripped)
+
+        # 2. THE DELIVERY COMPOSITION (strip + the second-chance shortener):
+        # the loot channel meets a short link, and the shortener is asked with
+        # the UNTAGGED destination.
+        aff = RecordingAff()
+
+        async def to_channel(text):
+            t = bot.strip_amazon_tag_for_undeclared(text, "LootZoneIndia11", aff)
+            return await aff.shorten_leftover_long_links(t)
+
+        out = asyncio.run(to_channel("Multi deal\nhttps://bit.ly/hk1"))
+        check("the loot channel never meets the raw long Amazon URL",
+              "hidden-keywords" not in out and "bit.ly/hk1" not in out, out)
+        check("it meets a short link instead",
+              "https://bit.ly/untaggedhk" in out, out)
+        check("the shortener was asked for the UNTAGGED destination",
+              aff.asked and "tag=" not in aff.asked[0]
+              and "hidden-keywords=B0AAA11111" in aff.asked[0], str(aff.asked))
+        check("and for the de-noised one",
+              "btn_ref" not in aff.asked[0] and "qid=" not in aff.asked[0],
+              str(aff.asked))
+
+        # With NO shortener at all the deal still posts: untagged, de-noised
+        # (the "a deal is never lost" half of the rule).
+        class Bare:
+            _short_to_long = {"https://bit.ly/hk1": long_search}
+
+        bare = bot.strip_amazon_tag_for_undeclared(
+            "Multi deal\nhttps://bit.ly/hk1", "LootZoneIndia11", Bare())
+        check("with no shortener the clean untagged form is kept, never the tag",
+              bot.OUR_TAG not in bare and "btn_ref" not in bare
+              and "hidden-keywords=B0AAA11111" in bare, bare)
+
+        # A /dp/ swap is still exactly the native product URL.
+        dp_aff = type("A", (), {"_short_to_long": {"https://bit.ly/dp1":
+                      "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21"}})()
+        dp = bot.strip_amazon_tag_for_undeclared(
+            "x https://bit.ly/dp1", "LootZoneIndia11", dp_aff)
+        check("a /dp/ swap is the exact native product URL",
+              "https://www.amazon.in/dp/B0FPDD9WKP" in dp and "bit.ly" not in dp
+              and bot.OUR_TAG not in dp, dp)
+    finally:
+        bot.OUR_TAG = old_tag
+
+
+def test_delivery_second_chance_never_posts_a_long_link():
+    """The delivery-time shortener pass itself (2026-09-25): whatever is still
+    over the threshold on the way OUT is shortened; short links and shortener
+    domains are never re-wrapped (no Bitly quota spent on an ekaro.in link);
+    a dead shortener keeps the link - and with it the deal - exactly as it is."""
+    import asyncio
+
+    class NoSession:
+        pass
+
+    aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
+    asked = []
+
+    async def fake_shorten(url):
+        asked.append(url)
+        return "https://bit.ly/late"
+
+    aff.shorten = fake_shorten
+    long_link = ("https://www.flipkart.com/search?q=soap&sid=abc&otracker="
+                 + "x" * 70)
+    out = asyncio.run(aff.shorten_leftover_long_links("GRAB\n" + long_link))
+    check("a long link the render pass missed is shortened at delivery",
+          "https://bit.ly/late" in out and long_link not in out, out)
+    check("the deal text is untouched", "GRAB" in out, out)
+    check("the shortener saw the exact URL (tags/attribution intact)",
+          asked == [long_link], str(asked))
+
+    asked.clear()
+    neat = ("Watch\nhttps://ekaro.in/enkr1\nhttps://bit.ly/abc\n"
+            "https://amzn.to/x\nhttps://www.amazon.in/dp/B0GLY3Q2XR")
+    same = asyncio.run(aff.shorten_leftover_long_links(neat))
+    check("already-short links are never re-wrapped",
+          same == neat and not asked, same)
+
+    class Dead:
+        shorten_leftover_long_links = bot.AffiliateClient.shorten_leftover_long_links
+
+        async def shorten(self, url):
+            return None
+
+    kept = asyncio.run(Dead().shorten_leftover_long_links("Deal\n" + long_link))
+    check("a dead shortener keeps the link - the deal is never lost",
+          long_link in kept, kept)
 
 
 def test_the_four_defects_the_user_photographed():
@@ -3311,6 +3456,8 @@ def main() -> int:
     test_the_review_channel_posts_at_a_human_pace()
     test_our_tag_is_live_now_on_the_review_channel()
     test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
+    test_long_amazon_links_never_reach_a_loot_channel_raw()
+    test_delivery_second_chance_never_posts_a_long_link()
     test_the_four_defects_the_user_photographed()
     test_only_the_review_channel_is_restricted()
     test_deep_audit_prices_foreign_tags_and_nameless_posts()

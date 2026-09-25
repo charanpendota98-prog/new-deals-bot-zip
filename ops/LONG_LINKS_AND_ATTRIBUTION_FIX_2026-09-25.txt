@@ -1,0 +1,84 @@
+WHAT CHANGED (2026-09-25) — no long links on our channels; EarnKaro links keep
+their money
+========================================================================================
+
+USER REQUEST
+  "anni perefctgaa vellatldu mana channels ki perefctga build chesava asal
+   long links velthunnai earnkaro tho shaotenga cheyatledu"
+
+THE THREE DEFECTS (found by reading the delivery path against that report)
+-------------------------------------------------------------------------
+1. THE LONG LINKS (the "asal long links velthunnai" half).
+   Delivery rewrites OUR short links for channels not declared to Amazon
+   (strip_amazon_tag_for_undeclared): the bit.ly must not hide our Associates
+   tag from an undeclared channel. But the swap went back to the FULL
+   destination URL - fine for a /dp/ link (~33 chars) and DISASTROUS for an
+   Amazon hidden-keywords/SEARCH link, which exploded to 300+ characters on
+   every loot channel (and from there into the WhatsApp channels via the
+   bridge). The swap is now the UNTAGGED COMPACT form (tag + btn_ref/qid/psc
+   session junk gone, /dp/ collapsed), and anything still long is shrunk by a
+   new delivery-time pass.
+
+2. THE LOST COMMISSION (the "earnkaro tho short ga cheyatledu" half).
+   compact_flipkart_product_link() rebuilt a generated Flipkart link keeping
+   `pid` ONLY - it dropped affExtParam1/affExtParam2/affid/subid, i.e. the
+   EarnKaro publisher id that makes the click pay US. A tidy link that earns
+   nothing. Compaction now keeps the attribution keys (FLIPKART_ATTRIBUTION_
+   QUERY_KEYS) and still drops the session noise (lid/marketplace/srno/otracker).
+
+3. NO SECOND CHANCE AT DELIVERY.
+   The render-time shorten pass could miss (Bitly busy/rate-limited exactly
+   when a long search link needed it) and the raw long link sailed out. New
+   AffiliateClient.shorten_leftover_long_links() runs on the way to every
+   channel except the review channel (native links there are the standing
+   rule): anything still over SHORTEN_MIN_LEN is shortened NOW. The URL is
+   shortened exactly as it stands (our tag and the EarnKaro attribution ride
+   behind the hop and stay visible to the provenance gates), already-short
+   links and every shortener domain are never re-wrapped (no Bitly quota on an
+   ekaro.in link), and if the shortener is down the link is kept - a deal is
+   never lost, only made neat.
+
+WHAT THE BOT DOES NOW (pinned by the suites, all green)
+  * An undeclared channel never meets a raw long Amazon URL: the swap is the
+    clean untagged form and the second-chance pass puts it behind a short link
+    (the shortener is even asked with the UNTAGGED destination).
+  * A generated Flipkart/EarnKaro link keeps affExtParam2=<5478322> through
+    compaction - tidy AND monetized.
+  * Delivery-time: no link over the threshold leaves for a channel while a
+    shortener works. Review channel (smartbuyhub11) stays native by rule.
+  * A dead shortener keeps the link (and with it the deal) exactly as it is.
+
+NEW/MOVED CHECKS
+  test_line_fidelity.py      +16 checks (attribution keep, the untagged swap,
+                              the delivery second chance)
+  test_earnkaro_conversion.py +5 checks (a generated link still pays US after
+                              compaction) - 102 checks now
+  Everything else unchanged and green: render_job 160, pipeline_fixes 229,
+  hypd_links 72, best_copy, duplicate_sim, rescan, bridge self-test.
+
+SERVER STEPS — THE SHORT VERSION (one command)
+  git pull && ./ops/deploy_fresh.sh
+    # tests -> bundles -> deploy bot+bridge -> restart -> teach OUR links
+    # -> live proof -> per-route status. --dry-run to see the plan,
+    # --verify-only to prove without deploying.
+
+  # Live proof that long links are gone and EarnKaro pays US:
+      python3 ops/earnkaro_check.py          # converted links expand back and
+                                             # PROVE publisher 5478322
+      python3 ops/conversion_report.py       # per-route verdict (exit 1 on any
+                                             # CHECK so cron can alert)
+  # If the log still shows EK AUTH / TOKEN REFUSED: the key expired/rotated -
+      ./ops/set_earnkaro_key.sh '<token>'    # rotate, pin the publisher, verify
+  # If SHORTEN failed / BITLY unavailable appears: add/rotate BITLY_TOKENS
+  # (comma-separated, the client works through all of them) - with the second
+  # chance pass this is now a cosmetic retry, not a long-link leak.
+
+ENV KNOBS (unchanged)
+  SHORTEN_MIN_LEN=70        the "long link" threshold
+  HYPD_ALWAYS_BITLY=true    our hypd links are always Bitly (previous round)
+  AMAZON_TAG_TARGETS=       '' = review channel only (tag compliance);
+                            'all' = every owned channel carries the tag
+
+RELATED
+  ops/HYPD_OUR_LINKS_2026-09-24.txt      OUR HYPD links (previous round)
+  ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt   the EarnKaro/sources round

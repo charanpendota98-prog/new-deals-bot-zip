@@ -191,6 +191,37 @@ def test_request_contract():
           str(dict(cached_row) if cached_row else None))
 
 
+def test_generated_links_keep_their_attribution():
+    """USER REPORT (2026-09-25): "earnkaro tho short ga cheyatledu". The
+    compaction pass rebuilt a generated Flipkart link keeping `pid` only and
+    dropped affExtParam2=<our publisher id>: the post looked tidy and paid
+    nobody. The attribution is now part of the compact form - the tidy link
+    and the commission survive together."""
+    long_fk = ("https://www.flipkart.com/boat-bottle-black/p/itm0613?lid=LST123"
+               "&marketplace=FLIPKART&pid=ITM123&otracker=clip"
+               "&affExtParam1=acct&affExtParam2=5478322")
+    session = FakeSession([json.dumps({"success": 1, "data": long_fk})])
+    aff = Aff(session)  # shorten() -> None: the raw form must already be safe
+    result = asyncio.run(aff.convert(
+        "https://www.flipkart.com/boat-bottle-black/p/itm0613?pid=ITM123", False))
+    check("a generated Flipkart link is published (not dropped)",
+          bool(result), repr(result))
+    check("and it STILL pays US after compaction",
+          bool(result) and "affExtParam2=5478322" in result.affiliate
+          and "affExtParam1=acct" in result.affiliate,
+          result.affiliate if result else "")
+    check("the product identity is kept with it",
+          bool(result) and "pid=ITM123" in result.affiliate,
+          result.affiliate if result else "")
+    check("while the session noise is still dropped",
+          bool(result) and "lid=" not in result.affiliate
+          and "otracker=" not in result.affiliate,
+          result.affiliate if result else "")
+    check("and the link is materially shorter than it came in",
+          bool(result) and len(result.affiliate) < len(long_fk),
+          str(len(result.affiliate)) if result else "")
+
+
 def test_echo_and_foreign_links_are_refused():
     # The API echoing the source's own affiliate link is not our commission.
     echoed = "https://www.flipkart.com/x/p/itm1?affid=someoneelse"
@@ -595,6 +626,7 @@ def test_status_report_answers_are_we_converting():
 def main():
     test_response_shapes()
     test_request_contract()
+    test_generated_links_keep_their_attribution()
     test_echo_and_foreign_links_are_refused()
     test_token_claims()
     test_amazon_policy()

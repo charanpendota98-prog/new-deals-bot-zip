@@ -817,7 +817,13 @@ def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> s
     if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
         return text
     out = text
-    # Pass 1: our tag hidden behind a shortener we created.
+    # Pass 1: our tag hidden behind a shortener we created. The swap is to the
+    # UNTAGGED COMPACT destination - never the full tracking-laden URL, which
+    # used to explode a hidden-keywords search link to 300+ characters on every
+    # undeclared channel (2026-09-25: "asal long links velthunnai"). Whatever
+    # is still long afterwards is shortened on the way out by
+    # AffiliateClient.shorten_leftover_long_links(), so no channel ever meets a
+    # raw long link while a shortener works.
     reverse = dict(getattr(affiliate, "_short_to_long", {}) or {})
     for short, long_url in reverse.items():
         if short not in out:
@@ -827,20 +833,14 @@ def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> s
             continue
         if OUR_TAG.lower() not in long_url.lower():
             continue
-        parsed = urlparse(clean_url(long_url))
-        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-                 if k.lower() != "tag"]
-        out = out.replace(short, parsed._replace(query=urlencode(query, doseq=True)).geturl())
+        out = out.replace(short, untagged_compact_amazon_link(long_url))
     # Pass 2: the plainly visible amazon.in links.
     for raw in dict.fromkeys(URL_RE.findall(out)):
         url = clean_url(raw)
         host = (urlparse(url).hostname or "").lower()
         if not in_domains(host, AMAZON_DOMAINS):
             continue
-        parsed = urlparse(url)
-        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-                 if k.lower() != "tag"]
-        untagged = parsed._replace(query=urlencode(query, doseq=True)).geturl()
+        untagged = untagged_compact_amazon_link(url)
         if untagged != raw:
             out = out.replace(raw, untagged)
     return out
@@ -1099,6 +1099,20 @@ TRACKING_QUERY_KEYS = {
     "shareid", "source", "subid", "sub_id", "clickid", "irclickid", "irgwc",
     "referral_code", "referral", "refcode", "invite_code", "invitecode",
     "gclid", "fbclid", "msclkid",
+}
+# MONEY parameters on a GENERATED affiliate URL. compact_flipkart_product_link
+# must never drop these: they name the publisher the click pays (EarnKaro uses
+# affExtParam2=<publisher id>, Cuelinks uses aff_id/subid, HYPD uses
+# affid/affExtParam1/affExtParam2). The old rebuild kept only `pid`, so a
+# generated Flipkart link was compacted into a CLEAN page that earned nothing
+# (2026-09-25: "earnkaro tho short ga cheyatledu"). Session noise (lid /
+# marketplace / srno / otracker) is still dropped.
+FLIPKART_ATTRIBUTION_QUERY_KEYS = {
+    "affid", "aff_id", "affiliate", "affiliate_id", "affsrc",
+    "affextparam1", "affextparam2",
+    "aff_sub", "aff_sub1", "aff_sub2", "affsubid",
+    "subid", "sub_id", "subid1", "subid2", "subid3",
+    "sub_id1", "sub_id2", "sub_id3",
 }
 # Amazon-only junk: search/session attribution that bloats /s? links to 300+
 # chars (btn_ref=srctok-..., ds=, qid=...). Meaningful filters (k, i, rh, s,
@@ -1363,6 +1377,36 @@ def compact_amazon_product_link(link: str) -> str:
         return clean_url(link)
 
 
+def without_amazon_tag(url: str) -> str:
+    """The same Amazon URL with the Associates `tag` parameter removed - the
+    form a channel NOT declared to Amazon may show."""
+    try:
+        parsed = urlparse(clean_url(url))
+        query = [(k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+                 if k.lower() != "tag"]
+        return parsed._replace(query=urlencode(query, doseq=True)).geturl()
+    except Exception:
+        return clean_url(url)
+
+
+def untagged_compact_amazon_link(url: str) -> str:
+    """The delivery form of an Amazon URL for a channel NOT declared to Amazon.
+
+    USER REPORT (2026-09-25): "asal long links velthunnai". Delivery used to
+    swap OUR short link back to the FULL destination URL - right for a /dp/
+    link (~33 chars) but a hidden-keywords SEARCH URL exploded to 300+
+    characters on every undeclared channel. So the swap is to the CLEAN form:
+    our tag and the session junk (btn_ref / qid / psc ...) are gone, a product
+    page collapses to https://www.amazon.in/dp/ASIN, and whatever is still long
+    (a search URL whose filters ARE the product list) is left for
+    AffiliateClient.shorten_leftover_long_links() to put behind a short link.
+    """
+    raw = clean_url(url)
+    cleaned = merchant_url(raw)                    # tag + tracking + amazon junk gone
+    compact = compact_amazon_product_link(cleaned)  # /dp/ASIN minimal form (may re-add OUR_TAG)
+    return without_amazon_tag(compact)             # never carry a tag out
+
+
 def is_amazon_search_or_browse_link(link: str) -> bool:
     """True for an Amazon SEARCH / category / browse URL, which has no single ASIN.
 
@@ -1438,16 +1482,20 @@ def compact_flipkart_product_link(link: str) -> str:
         match = FLIPKART_ITEM_RE.match(parsed.path or "")
         if not match:
             return raw
-        pid = ""
-        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-            if key.lower() == "pid" and value:
-                pid = value
-                break
+        # USER RULE (2026-09-05, "shortga ravali"): the product identity (pid)
+        # and the ATTRIBUTION survive; everything else is session noise. The
+        # attribution half matters most: a generated EarnKaro/Cuelinks link
+        # names its publisher in these params, and dropping them compacted the
+        # commission out of the link.
+        kept = [(key, value) for key, value in parse_qsl(
+            parsed.query, keep_blank_values=True)
+            if value and (key.lower() == "pid"
+                          or key.lower() in FLIPKART_ATTRIBUTION_QUERY_KEYS)]
         # A dl.* link is Flipkart's own app-redirect wrapper for the same page.
         netloc = "www.flipkart.com"
         return parsed._replace(
             scheme="https", netloc=netloc, path=match.group("path"),
-            query=urlencode([("pid", pid)]) if pid else "", fragment="", params="",
+            query=urlencode(kept), fragment="", params="",
         ).geturl()
     except Exception:
         return clean_url(link)
@@ -6318,6 +6366,55 @@ class AffiliateClient:
                 out = out.replace(raw, tag_native_amazon(native))
         return out
 
+    async def shorten_leftover_long_links(self, rendered: str) -> str:
+        """DELIVERY-TIME second chance: no long link may reach a channel while
+        a shortener still works.
+
+        USER REPORT (2026-09-25): "asal long links velthunnai earnkaro tho
+        short ga cheyatledu". Two leaks fed it: the render-time shortener can
+        be busy exactly when a long search/category link needs it, and the
+        undeclared-channel tag-strip shrinks a search URL only partially. This
+        pass runs on the way OUT and shortens whatever is still over the
+        threshold. The URL is shortened EXACTLY as it stands (our tag and the
+        EarnKaro attribution ride behind the hop and stay visible to the
+        provenance gates), already-short links and every shortener domain are
+        never re-wrapped (no Bitly quota is wasted on an ekaro.in link), and if
+        the shortener is down the original link is kept - a deal is never lost,
+        only made neat."""
+        out = rendered or ""
+        pending: list[tuple[str, str]] = []
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            url = clean_url(raw)
+            if len(url) <= SHORTEN_MIN_LEN:
+                continue
+            host = (urlparse(url).hostname or "").lower()
+            if (in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                    or in_domains(host, OUR_SHORTENER_DOMAINS)
+                    or in_domains(host, SHORTENER_HOSTS)):
+                continue
+            pending.append((raw, url))
+        if not pending:
+            return out
+        sem = asyncio.Semaphore(max(1, min(6, EK_MAX_CONCURRENCY)))
+
+        async def _short(url: str) -> str | None:
+            async with sem:
+                return await self.shorten(url)
+
+        shortened_all = list(await asyncio.gather(
+            *(_short(url) for _, url in pending),
+            return_exceptions=True,
+        ))
+        for (raw, url), shortened in zip(pending, shortened_all):
+            if isinstance(shortened, Exception):
+                log.warning("SHORTEN failed at delivery %s: %s", url[:60], shortened)
+                continue
+            if not shortened:
+                log.warning("SHORTEN unavailable at delivery; keeping the verified link as it is")
+                continue
+            out = replace_url_everywhere(out, raw, shortened)
+        return out
+
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
         """FINAL guarantee that no link leaves the post clumsy/long:
           1. Every Amazon PRODUCT (/dp/ASIN) URL is collapsed to its shortest
@@ -7840,6 +7937,18 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # is therefore removed here; it lives in the review branch only.
             target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
             allow_preview = await store.preview_allowed(target_text)
+            # USER RULE (2026-09-25): "asal long links velthunnai" - nothing
+            # over the length threshold may reach a channel while a shortener
+            # works. Render already tried; this is the last-chance pass on the
+            # way out (it also shrinks what the strip above left half-clean).
+            # The reviewed channel is exempt by the standing rule ("review
+            # channelo shorten ga marchatam bitly use cheyaku" - native store
+            # links only). Duck-typed test affiliates without the method keep
+            # their text exactly as it is.
+            if target != SHOPPING_TARGET:
+                shrink = getattr(affiliate, "shorten_leftover_long_links", None)
+                if shrink is not None:
+                    target_text = await shrink(target_text)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):
                 # Never on the review channel: that header is a link into the
