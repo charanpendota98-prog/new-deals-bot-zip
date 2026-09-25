@@ -114,3 +114,38 @@ ADVANCED CONVERT ROUND (same day, follow-up request)
 RELATED
   ops/HYPD_OUR_LINKS_2026-09-24.txt      OUR HYPD links (previous round)
   ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt   the EarnKaro/sources round
+
+-------------------------------------------------------------------------------
+NEAT GATE ROUND (same day, user: "final ga anni perefctgaa okaynaa antha chethavi
+add cheyatam cheyaku okaynaa source lo paniki ranivi vunna kuda mana target lo
+skip cheyali okaynaa and fix cheyu peerfctgaa neatga anni")
+-------------------------------------------------------------------------------
+* THE RULE: even when the SOURCE printed junk, OUR TARGET skips it. Two tiers:
+  - ALWAYS-DROP (junk by shape, even with a price glued on):
+    "Forwarded from X" / "Fwd:" routing labels;
+    wrapper notices ("Multi Product Live @9999", "Combo Live @499", "Sale Live");
+    spam-elongation screaming ("looooottt", "Yesssss") - judged on the line's
+    WORDS only, never on URL text (shortener slugs like "amzn.to/dmXXXX" are
+    link data and a links-only line is never dropped).
+  - DROP-AS-LINE / CUT-AS-CLAUSE (junk with no deal evidence):
+    media pointers ("Watch above video for proof", "video dekho", "screenshot
+    chudandi") and quantity-fill ("Buy Max Quantity", "Max Quantity"). A bare
+    junk line goes whole; glued to a real product line ("Bottle @89 Buy Max
+    Quantity") only the clause goes ("Bottle @89" keeps - @-price is evidence).
+* WHAT STAYS (fidelity, unchanged): product, price (Rs./@/Rs), coupon codes,
+  MRP/Save lines, and the source's own hype banner ("TOP DEAL OF THE DAY") -
+  STRIP_CAMPAIGN_BANNERS=true still exists for the day those go too.
+* is_useless_line() (above is_promo_noise_line) is the choke point - it also
+  feeds is_promo_noise_line, format_clustered_product_list (note lines no longer
+  travel with list blocks) and strip_inline_cta (tier-2 clause cut).
+* BUG CAUGHT BY TESTS: the first elongation draft ran on raw line text and
+  dropped "https://amzn.to/dmXXXX" (slug letter run). Fixed with URL masking
+  before any elongation/pointer/quantity judgment.
+* Proof: junk-heavy probe -> ZERO leaks; keepers verbatim (product/price/coupon/
+  @price/banner); "Buy Max Quantity" x4 list pin REVERSED per the new rule
+  (test_line_fidelity test_a_product_list_pairs_every_deal_with_its_own_link).
+* TESTS: +test_useless_source_lines_never_reach_a_target (line_fidelity).
+* Suites at this commit: earnkaro 106 - line_fidelity all - pipeline_fixes 229/0
+  - render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge
+  self-test PASS (npm install needed in fresh sandboxes: node_modules is never
+  snapshotted).

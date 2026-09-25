@@ -2625,11 +2625,72 @@ REFERRAL_SPAM_RE = re.compile(
 )
 
 
-def is_promo_noise_line(line: str) -> bool:
-    """True only for pure promo/navigation boilerplate (no deal content)."""
+# USELESS SOURCE LINES (user rule 2026-09-25: "source lo paniki ranivi vunna kuda
+# mana target lo skip cheyali" - even when the SOURCE printed junk, our TARGET
+# must skip it). Two tiers:
+#   * ALWAYS-DROP shapes - a routing label ("Forwarded from X"), a wrapper notice
+#     ("Multi Product Live @9999") or a spam-elongation ("Loot looooottt") is
+#     junk by its own shape, even when a price is glued onto it;
+#   * a media pointer / quantity-fill instruction ("Watch above video for proof",
+#     "Buy Max Quantity") is dropped as a whole line when it carries no deal
+#     evidence, and cut as a clause when it is glued to a real product line
+#     ("Bottle @89 Buy Max Quantity" keeps "Bottle @89" - see strip_inline_cta).
+USELESS_ALWAYS_DROP_PY = (
+    # Forwarded/Fwd/FW routing labels naming someone else's channel.
+    re.compile(r"(?i)^\W*(?:-{2,}\s*)?(?:forwarded|fwd|fw)\s*(?:message\s*)?(?:from\b|:)"),
+    # Wrapper notices with no product: "Multi Product Live @9999", "Combo Live
+    # @499", "Sale Live", "Deals Live now". A product line ("Samsung M14 Live
+    # @9999") names the product first and never matches the anchor.
+    re.compile(r"(?i)^\W*(?:multi[\s-]?products?|combos?|mega\s+sale|flash\s+sale"
+               r"|loot\s+sale|sale|offers?|deals?)\s+(?:is\s+)?live\b"),
+    re.compile(r"(?i)^\W*live\s*@\s*[\d,]+"),
+)
+# Spam-elongation noise ("looooottt", "Yesssss", "Noooooo"): the same letter 4+
+# times in a row inside a word marks the line as channel screaming, and the price
+# it may carry repeats on the real product line. The check NEVER runs on URL
+# text: shortener slugs ("amzn.to/dmXXXX") and merchant paths legitimately
+# contain letter runs, and a line that is only a link must never be dropped.
+SPAM_ELONGATION_PY = re.compile(r"(?i)\b\w*([A-Za-z])\1{3,}\w*\b")
+# "Watch above video for proof", "video dekho", "see below pic", "screenshot
+# chudandi" - a pointer at media that our text-only post does not carry.
+USELESS_POINTER_PY = re.compile(
+    r"(?i)\b(?:watch|see|dekho|chud(?:u|andi)?)\b[^.\n]{0,30}\b(?:video|videos|"
+    r"screenshot|screenshots|proof|pic|pics|photo|photos|image|images|above|below|upar|neeche)\b"
+    r"|\b(?:video|screenshot|photo|pic|image)s?\s+(?:ni\s+)?(?:dekho|chudu|chudandi)\b")
+# "Buy Max Quantity" / "Max Quantity" - a stock-rush instruction, never product
+# content (the review copy already bans it verbatim).
+USELESS_QUANTITY_FILL_PY = re.compile(
+    r"(?i)\b(?:buy|order|take|grab)\s+max(?:imum)?\s+quantit(?:y|ies)\b"
+    r"|\bmax(?:imum)?\s+quantit(?:y|ies)\b")
+# "@899" is a price exactly like "₹899" for the inline tier (see _PRICE_WITH_TAIL).
+_AT_PRICE_EVIDENCE_RE = re.compile(r"@\s*[\d,]+")
+
+
+def is_useless_line(line: str) -> bool:
+    """True when the line is source junk that must never reach a target."""
     t = (line or "").strip()
     if not t:
         return False
+    if any(rx.search(t) for rx in USELESS_ALWAYS_DROP_PY):
+        return True
+    # Elongation / pointer / quantity evidence is judged on the WORDS of the
+    # line only - a URL's letters are link data, never content.
+    words = URL_RE.sub(" ", t)
+    if SPAM_ELONGATION_PY.search(words):
+        return True
+    if USELESS_POINTER_PY.search(words) or USELESS_QUANTITY_FILL_PY.search(words):
+        return not bool(BRANDING_DEAL_EVIDENCE_RE.search(t)
+                        or _AT_PRICE_EVIDENCE_RE.search(t))
+    return False
+
+
+def is_promo_noise_line(line: str) -> bool:
+    """True for promo/navigation boilerplate or useless source junk."""
+    t = (line or "").strip()
+    if not t:
+        return False
+    if is_useless_line(t):
+        return True
     if REFERRAL_SPAM_RE.search(t):
         return True
     urls = URL_RE.findall(t)
@@ -2738,6 +2799,12 @@ def strip_inline_cta(line: str) -> str:
     )
     for pattern in patterns:
         out = re.sub(pattern, " ", out, flags=re.I)
+    # USELESS-LINE tier 2 (2026-09-25): "Bottle @89 Buy Max Quantity" keeps the
+    # product line and only the quantity-fill / media-pointer clause goes.
+    # URL-free lines only - inside a URL those words are link data (".../watch").
+    if not URL_RE.search(out):
+        out = USELESS_QUANTITY_FILL_PY.sub(" ", out)
+        out = USELESS_POINTER_PY.sub(" ", out)
     out = re.sub(r"\s{2,}", " ", out)
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
@@ -3998,18 +4065,22 @@ def format_clustered_product_list(text: str) -> str:
     The source writes the list as "name + price" blocks (often with a note line
     such as "Buy Max Quantity") and then dumps every link at the bottom. Read
     that way it is unreadable: the reader cannot tell which link is which deal.
-    Here each block keeps its own note lines and gets its own link directly
-    under it, in the source's own order. Nothing is invented, nothing is
-    dropped, nothing is reordered.
+    Here each block gets its own link directly under it, in the source's own
+    order. Nothing is invented and nothing real is dropped or reordered - but
+    USELESS note lines never travel with a deal (user 2026-09-25: "source lo
+    paniki ranivi vunna kuda mana target lo skip cheyali"), so "Buy Max
+    Quantity"-style junk is skipped here too.
     """
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    cleaned = "\n".join(ln for ln in (text or "").splitlines()
+                       if not is_useless_line(ln))
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
     url_positions = [i for i, line in enumerate(lines) if URL_RE.fullmatch(line)]
     if len(url_positions) < 3:
-        return text
+        return cleaned
     first_url = url_positions[0]
     # Only fix posts whose generated URLs are all grouped at the bottom.
     if any(not URL_RE.fullmatch(line) for line in lines[first_url:]):
-        return text
+        return cleaned
     head = lines[:first_url]
     # Split the head into blocks: a new block starts on every price-bearing
     # label; anything after it (a note, an MRP line) belongs to that block.

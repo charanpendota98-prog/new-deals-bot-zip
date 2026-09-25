@@ -829,11 +829,12 @@ def test_a_product_list_pairs_every_deal_with_its_own_link():
     check("each block keeps its product name and price",
           all(any(x in b[0] for x in ("Anjeer", "Mix Dry Fruits", "Methi", "mustard")) for b in blocks),
           repr(out))
-    check("the source's own note line travels with its deal",
-          all("Buy Max Quantity" in b for b in blocks), repr(out))
-    check("no link and no line was lost",
+    check("useless note lines never travel with a deal (2026-09-25)",
+          "Buy Max Quantity" not in out and "Max Quantity" not in out, repr(out))
+    check("no link and no product line was lost",
           all(u in out for u in ("sYKjVp", "41Tz5Y", "4JArbD", "Nv2fnb"))
-          and out.count("Buy Max Quantity") == 4, repr(out))
+          and all(x in out for x in ("Anjeer", "Mix Dry Fruits", "Methi", "mustard"))
+          and all(p in out for p in ("258", "180", "220")), repr(out))
     check("a post that is not a bottom-dumped list is left alone",
           bot.format_clustered_product_list("One deal \u20b9199\nhttps://a.in/x")
           == "One deal \u20b9199\nhttps://a.in/x")
@@ -1041,6 +1042,54 @@ def test_our_amazon_tag_only_rides_on_declared_channels():
     deliver = src[src.index("async def process_job"):]
     check("the strip runs on the delivery path, per target",
           "strip_amazon_tag_for_undeclared(target_text, target" in deliver, "not wired in")
+
+
+def test_useless_source_lines_never_reach_a_target():
+    """USER RULE (2026-09-25): "antha chethavi add cheyatam cheyaku ... source lo
+    paniki ranivi vunna kuda mana target lo skip cheyali ... fix cheyu peerfctgaa
+    neatga anni". Even when the SOURCE printed junk, our TARGET must skip it.
+    Two tiers: always-drop junk shapes (routing labels, wrapper notices, spam
+    elongation) go even with a price glued on; media pointers / quantity-fill
+    instructions go as whole lines and only their clause goes when glued to a
+    real product line. What the source wrote ABOUT the deal (product, price,
+    coupon, MRP/Save, @-prices, its own hype banner) stays exactly."""
+    junk = (
+        "---------- Forwarded from Dhamaka Deals ----------\n"
+        "\U0001f525\U0001f525 TOP DEAL OF THE DAY \U0001f525\U0001f525\n"
+        "Prestige Cooker 5L at 1499 (78% off)\n"
+        "Buy Max Quantity\n"
+        "Order fast hurry limited stock!!!\n"
+        "Join our channel @DhamakaDeals for more loot deals\n"
+        "Watch above video for proof\n"
+        "Use code PEOPLE200\n"
+        "https://dl.flipkart.com/dl/prestige-cooker/p/ITM1?pid=ITM1\n"
+        "Multi Product Live @9999\n"
+        "\U0001f631\u20b930 Loot looooottt!\U0001f631\n"
+        "Join https://t.me/DhamakaDeals now\n"
+        "Sent via SomeBot\n"
+        "@screenshot\n"
+        "\U0001f4f8\n"
+        "Milton Bottle @89 Buy Max Quantity\n"
+        "Samsung M14 @9999\n"
+    )
+    out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(junk)))
+    check("the useless gate output is neat and complete", bool(out), repr(out))
+    for banned in ("Forwarded", "Buy Max", "Max Quantity", "Watch above", "video",
+                   "Multi Product", "Live @9999", "looooottt", "Join", "t.me/",
+                   "Sent via", "@screenshot", "Order fast", "hurry", "\U0001f4f8"):
+        check(f"useless {banned!r} never reaches a target",
+              banned.lower() not in out.lower(), repr(out))
+    for kept in ("TOP DEAL OF THE DAY", "Prestige Cooker 5L at 1499 (78% off)",
+                 "Use code PEOPLE200", "dl.flipkart.com/dl/prestige-cooker",
+                 "Milton Bottle @89", "Samsung M14 @9999"):
+        check(f"the source's {kept[:28]!r} travels as written",
+              kept in out, repr(out))
+    check("the inline product line only loses its quantity clause",
+          "Milton Bottle @89 Buy" not in out and "Milton Bottle @89" in out, repr(out))
+    check("junk drops are idempotent",
+          bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(out))) == out, repr(out))
+    check("the useless gate is real code in the bot",
+          "def is_useless_line(" in (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8"))
 
 
 def test_the_review_channel_copy_is_built_from_an_allowlist():
@@ -3515,6 +3564,7 @@ def main() -> int:
     test_a_flipkart_product_link_goes_out_short()
     test_our_amazon_tag_only_rides_on_declared_channels()
     test_the_review_channel_copy_is_built_from_an_allowlist()
+    test_useless_source_lines_never_reach_a_target()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()
