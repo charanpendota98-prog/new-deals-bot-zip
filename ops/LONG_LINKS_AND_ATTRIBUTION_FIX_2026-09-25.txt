@@ -149,3 +149,26 @@ skip cheyali okaynaa and fix cheyu peerfctgaa neatga anni")
   - render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge
   self-test PASS (npm install needed in fresh sandboxes: node_modules is never
   snapshotted).
+
+-------------------------------------------------------------------------------
+GIBBERISH + MIN-QTY ROUND (same day, user: two live examples - "ilaga vunte
+ilaga ravali mana target lo ... jksksks idi remove avvali ... source lo vunnaidi
+ravali bestga kani anavsaram anipinchinavi skip cheyali")
+-------------------------------------------------------------------------------
+* EX1 SHAPE (kept EXACTLY, pinned in tests): product+price title, "Apply 2%
+  coupon", the link, "Min Buy Qnty - 2". MIN quantity is REAL deal info (the
+  reader must know the minimum order) - only MAX-fill ("Buy Max Quantity",
+  "Buy Max Qnty") is junk. Quantity rule now covers qnty/qty abbreviations.
+* EX2 SHAPE: "jksksks" (keyboard mash) is removed; the title, "Deal Price:293
+  Rs. <tick>", "Discount:40% Off" and the link travel verbatim.
+* GIBBERISH RULE (_is_gibberish_token): a 3+ letter token with NO vowel
+  (a/e/i/o/u/y) is a keyboard mash. Protections by shape:
+  - "Rs" (2 letters) is a price word, never mash;
+  - ALL-CAPS tokens are code shapes ("HFJF" is a spendable coupon - money);
+  - "y" counts as a vowel ("Qnty" keeps - the user's pinned line).
+  Line-level: a gibberish-ONLY line goes whole; glued to a real line, only the
+  mash token is cut (strip_inline_cta tier 2, URL-free lines only).
+* TESTS: +test_the_user_shapes_come_out_exactly_right (both examples verbatim,
+  MAX-abbrev dies, MIN qty / HFJF / Rs protected, glued-token cut).
+* Suites: earnkaro 106 - line_fidelity all - pipeline_fixes 229/0 -
+  render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge PASS.

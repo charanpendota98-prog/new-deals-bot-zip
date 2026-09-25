@@ -1092,6 +1092,65 @@ def test_useless_source_lines_never_reach_a_target():
           "def is_useless_line(" in (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8"))
 
 
+def test_the_user_shapes_come_out_exactly_right():
+    """USER (2026-09-25, two live examples):
+
+    1) "🔥 Wooden Incense Holder @ ₹88 / Apply 2% coupon / <link> / Min Buy Qnty
+    - 2" - "ilaga vunte ilaga ravali mana target lo": comes out EXACTLY like
+    that. "Min Buy Qnty - 2" is REAL deal info (the minimum order quantity) and
+    stays - only MAX-fill ("Buy Max Quantity", "Buy Max Qnty") is junk.
+    2) "Murphy 7W ... / Deal Price:293 Rs. ✅ / Discount:40% Off / jksksks /
+    <link>" - "jksksks idi remove avvali ... anavsaram anipinchinavi skip
+    cheyali": the keyboard-mash token goes, everything else travels verbatim.
+    """
+    out1 = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(
+        "\U0001f525 Wooden Incense Holder @ \u20b988\n\nApply 2% coupon\n\n"
+        "[https://www.amazon.in/dp/B0BX6S9X6X?tag=mama086-21]"
+        "(https://www.amazon.in/dp/B0BX6S9X6X?tag=mama086-21)\n\n"
+        "Min Buy Qnty - 2")))
+    check("example 1: the product line and price travel as written",
+          "\U0001f525 Wooden Incense Holder @ \u20b988" in out1, repr(out1))
+    check("example 1: the coupon line travels as written",
+          "Apply 2% coupon" in out1, repr(out1))
+    check("example 1: the link survives (markdown collapsed to the bare URL)",
+          out1.count("https://www.amazon.in/dp/B0BX6S9X6X") == 1, repr(out1))
+    check("example 1: 'Min Buy Qnty - 2' is deal info and stays",
+          "Min Buy Qnty - 2" in out1, repr(out1))
+    check("example 1: nothing was added",
+          len([l for l in out1.splitlines() if l.strip()]) == 4, repr(out1))
+
+    out2 = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(
+        "Murphy 7W PHOCUS LED Spot Round Panel Light with 2-Year Warranty | Ce..\n"
+        "Deal Price:293 Rs. \u2705\nDiscount:40% Off\njksksks\n"
+        "[https://www.amazon.in/dp/B09B4PQD1W?tag=mama086-21]"
+        "(https://www.amazon.in/dp/B09B4PQD1W?tag=mama086-21)")))
+    check("example 2: the gibberish 'jksksks' is removed",
+          "jksksks" not in out2 and "jksks" not in out2, repr(out2))
+    check("example 2: the title travels as written",
+          "Murphy 7W PHOCUS LED Spot Round Panel Light with 2-Year Warranty | Ce.." in out2,
+          repr(out2))
+    check("example 2: Deal Price line travels as written (Rs. and \u2705 intact)",
+          "Deal Price:293 Rs. \u2705" in out2, repr(out2))
+    check("example 2: the discount line travels as written",
+          "Discount:40% Off" in out2, repr(out2))
+    check("example 2: the link survives",
+          "https://www.amazon.in/dp/B09B4PQD1W" in out2, repr(out2))
+
+    # The junk-token rule has protected edges:
+    check("MAX-fill dies even abbreviated", bot.is_useless_line("Buy Max Qnty"), "abbrev leak")
+    check("MIN quantity info never dies",
+          not bot.is_useless_line("Min Buy Qnty - 2") and "Qnty" in "Min Buy Qnty - 2",
+          "min qty over-strip")
+    check("a bare coupon code is money, not mash",
+          not bot._is_gibberish_token("HFJF") and not bot.is_useless_line("HFJF"), "code over-strip")
+    check("Rs is a price word, not mash",
+          not bot._is_gibberish_token("Rs"), "Rs over-strip")
+    glued = bot.sanitize_outbound_text(bot.tidy_post(
+        bot.strip_inline_cta("Deal Price:293 Rs. \u2705 jksksks")))
+    check("a mash token glued to a real line loses only the token",
+          "jksksks" not in glued and "Deal Price:293 Rs." in glued, repr(glued))
+
+
 def test_the_review_channel_copy_is_built_from_an_allowlist():
     """USER RULE (2026-09-05): the new channel is under EarnKaro/Amazon review, so it
     must follow the programme rules 100% - the other channels are untouched. A
@@ -3565,6 +3624,7 @@ def main() -> int:
     test_our_amazon_tag_only_rides_on_declared_channels()
     test_the_review_channel_copy_is_built_from_an_allowlist()
     test_useless_source_lines_never_reach_a_target()
+    test_the_user_shapes_come_out_exactly_right()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()

@@ -2658,12 +2658,30 @@ USELESS_POINTER_PY = re.compile(
     r"screenshot|screenshots|proof|pic|pics|photo|photos|image|images|above|below|upar|neeche)\b"
     r"|\b(?:video|screenshot|photo|pic|image)s?\s+(?:ni\s+)?(?:dekho|chudu|chudandi)\b")
 # "Buy Max Quantity" / "Max Quantity" - a stock-rush instruction, never product
-# content (the review copy already bans it verbatim).
+# content (the review copy already bans it verbatim). The abbreviations matter
+# too ("Buy Max Qnty"), while "Min Buy Qnty - 2" is REAL deal info and stays:
+# the reader must know the minimum order quantity, so only MAX-fill is junk.
 USELESS_QUANTITY_FILL_PY = re.compile(
-    r"(?i)\b(?:buy|order|take|grab)\s+max(?:imum)?\s+quantit(?:y|ies)\b"
-    r"|\bmax(?:imum)?\s+quantit(?:y|ies)\b")
+    r"(?i)\b(?:buy|order|take|grab)\s+max(?:imum)?\s+(?:quantit(?:y|ies)|qnt(?:y|ies)|qty)\b"
+    r"|\bmax(?:imum)?\s+(?:quantit(?:y|ies)|qnt(?:y|ies)|qty)\b")
 # "@899" is a price exactly like "₹899" for the inline tier (see _PRICE_WITH_TAIL).
 _AT_PRICE_EVIDENCE_RE = re.compile(r"@\s*[\d,]+")
+# GIBBERISH (user 2026-09-25: "jksksks idi remove avvali ... anavsaram
+# anipinchinavi skip cheyali"): a keyboard-mash token with no vowel at all is
+# never deal content. Shape rules that protect the money words:
+#   * 3+ letters ("Rs" is a price word, never mash);
+#   * not ALL-CAPS code shape ("HFJF" is a spendable coupon - money);
+#   * "y" counts as a vowel ("Qnty" keeps - the user pinned "Min Buy Qnty - 2").
+_GIBBERISH_TOKEN_PY = re.compile(r"^[A-Za-z]{3,}$")
+_VOWELS_PY = set("aeiouyAEIOU")
+
+
+def _is_gibberish_token(word: str) -> bool:
+    """True for a vowel-less keyboard mash ("jksksks"), never a real word/code."""
+    w = (word or "").strip("*_~.,!?;:'\"()[]#-–—|/\\")
+    if not _GIBBERISH_TOKEN_PY.match(w) or w.isupper():
+        return False
+    return not any(ch in _VOWELS_PY for ch in w)
 
 
 def is_useless_line(line: str) -> bool:
@@ -2681,6 +2699,11 @@ def is_useless_line(line: str) -> bool:
     if USELESS_POINTER_PY.search(words) or USELESS_QUANTITY_FILL_PY.search(words):
         return not bool(BRANDING_DEAL_EVIDENCE_RE.search(t)
                         or _AT_PRICE_EVIDENCE_RE.search(t))
+    # A gibberish-only line ("jksksks") goes whole; glued to a real line, only
+    # the mash token goes (strip_inline_cta tier 2).
+    tokens = [w for w in re.findall(r"[A-Za-z]+", words)]
+    if tokens and all(_is_gibberish_token(w) for w in tokens):
+        return True
     return False
 
 
@@ -2805,6 +2828,7 @@ def strip_inline_cta(line: str) -> str:
     if not URL_RE.search(out):
         out = USELESS_QUANTITY_FILL_PY.sub(" ", out)
         out = USELESS_POINTER_PY.sub(" ", out)
+        out = " ".join(w for w in out.split() if not _is_gibberish_token(w))
     out = re.sub(r"\s{2,}", " ", out)
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
