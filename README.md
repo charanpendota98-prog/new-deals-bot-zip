@@ -55,7 +55,7 @@ python3 test_rescan.py            # ingest dead-man's switch + idempotency
 python3 test_pipeline_fixes.py    # 229 checks: immediacy, zero duplicates, quality
 python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
 python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
-python3 test_earnkaro_conversion.py  # 102 checks: EarnKaro request/response contract,
+python3 test_earnkaro_conversion.py  # 106 checks: EarnKaro request/response contract,
                                      # the API key's publisher, Amazon-via-EarnKaro,
                                      # the three first-preference sources, the
                                      # whose-link-attribution verdicts and the

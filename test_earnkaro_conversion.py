@@ -191,6 +191,55 @@ def test_request_contract():
           str(dict(cached_row) if cached_row else None))
 
 
+def test_product_link_memory_reuses_our_link():
+    """USER (2026-09-25): "advancedgaa manavi perefctga convert chetshadigaa
+    links". The same product reaches us on MANY source URLs (a slug link today,
+    a tracking variant tomorrow, another channel's wrapper next week). Once OUR
+    link exists for the PRODUCT, every later URL of it earns on that same link -
+    the network saying "no campaign" for the new URL can no longer downgrade a
+    monetized product to an unmonetized passthrough. Only strong identities
+    (ASIN:/PID:/...) are reused - never the URL-hash fallback."""
+    import shutil
+    import tempfile
+    from pathlib import Path as _P
+    tmp = tempfile.mkdtemp(prefix="linkmap-")
+    old_store = bot.store
+    bot.store = bot.Store(_P(tmp) / "linkmap.sqlite3")
+    try:
+        # 1. The first arrival converts through the API and is remembered.
+        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/ourmap1"})])
+        aff = Aff(session)
+        first = asyncio.run(aff.convert(
+            "https://www.flipkart.com/slug-a/p/ITM0001?pid=ITM0001", False))
+        check("the first arrival converts and pays us",
+              bool(first) and first.affiliate == "https://ekaro.in/ourmap1",
+              repr(first))
+
+        # 2. A DIFFERENT source url for the SAME product, and the network now
+        #    says "no campaign": OUR remembered link is what the post carries.
+        session2 = FakeSession(
+            [json.dumps({"success": 0, "message": "Url not found in post!"})])
+        aff2 = Aff(session2)
+        second = asyncio.run(aff2.convert(
+            "https://www.flipkart.com/other-slug/p/ITM0001?pid=ITM0001&utm_source=x",
+            False))
+        check("the same product on a NEW url still earns on OUR link",
+              bool(second) and second.affiliate == "https://ekaro.in/ourmap1",
+              repr(second))
+        check("and the identity is shared (PID key, never the url hash)",
+              bool(second) and not second.deal_key.startswith("URL:"),
+              second.deal_key if second else "")
+
+        # 3. A DIFFERENT product must never inherit the memory.
+        third = asyncio.run(aff2.convert(
+            "https://www.flipkart.com/slug-b/p/ITM9999?pid=ITM9999", False))
+        check("a different product never reuses the memory",
+              third is None, repr(third))
+    finally:
+        bot.store = old_store
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_generated_links_keep_their_attribution():
     """USER REPORT (2026-09-25): "earnkaro tho short ga cheyatledu". The
     compaction pass rebuilt a generated Flipkart link keeping `pid` only and
@@ -626,6 +675,7 @@ def test_status_report_answers_are_we_converting():
 def main():
     test_response_shapes()
     test_request_contract()
+    test_product_link_memory_reuses_our_link()
     test_generated_links_keep_their_attribution()
     test_echo_and_foreign_links_are_refused()
     test_token_claims()

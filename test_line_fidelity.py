@@ -980,18 +980,31 @@ def test_a_flipkart_product_link_goes_out_short():
     # USER REPORT (2026-09-25): "earnkaro tho short ga cheyatledu" - a GENERATED
     # link names its publisher in the query (affExtParam2=<our EarnKaro id>),
     # and compaction used to drop exactly that: tidy link, zero commission.
-    attributed = ("https://www.flipkart.com/boat-bottle-black/p/itm0613a6a4f24de"
-                  "?lid=LSTBOTHEXH9ZG8XAJTNABEVPU&marketplace=FLIPKART"
-                  "&pid=BOTHEXH9ZG8XAJTN&otracker=clip"
-                  "&affExtParam1=acct1&affExtParam2=5478322")
-    kept = bot.compact_flipkart_product_link(attributed)
-    check("a generated link KEEPS its EarnKaro attribution when compacted",
-          "affExtParam2=5478322" in kept and "affExtParam1=acct1" in kept, kept)
-    check("pid (the product identity) is kept with it",
-          "pid=BOTHEXH9ZG8XAJTN" in kept, kept)
-    check("while the session noise still goes",
-          "lid=" not in kept and "marketplace=" not in kept
-          and "otracker=" not in kept, kept)
+    # The flip side is just as important: a STRANGER's publisher id must never
+    # survive - that click would pay THEM.
+    old_ek = bot.OUR_EK_ID
+    bot.OUR_EK_ID = "5478322"
+    try:
+        attributed = ("https://www.flipkart.com/boat-bottle-black/p/itm0613a6a4f24de"
+                      "?lid=LSTBOTHEXH9ZG8XAJTNABEVPU&marketplace=FLIPKART"
+                      "&pid=BOTHEXH9ZG8XAJTN&otracker=clip"
+                      "&affExtParam1=acct1&affExtParam2=5478322")
+        kept = bot.compact_flipkart_product_link(attributed)
+        check("a generated link KEEPS its EarnKaro attribution when compacted",
+              "affExtParam2=5478322" in kept and "affExtParam1=acct1" in kept, kept)
+        check("pid (the product identity) is kept with it",
+              "pid=BOTHEXH9ZG8XAJTN" in kept, kept)
+        check("while the session noise still goes",
+              "lid=" not in kept and "marketplace=" not in kept
+              and "otracker=" not in kept, kept)
+        stranger = bot.compact_flipkart_product_link(
+            attributed.replace("affExtParam1=acct1&affExtParam2=5478322",
+                               "affExtParam1=acct9&affExtParam2=999999"))
+        check("a STRANGER's publisher id is never kept (the click would pay them)",
+              "affExtParam" not in stranger and "999999" not in stranger
+              and "pid=BOTHEXH9ZG8XAJTN" in stranger, stranger)
+    finally:
+        bot.OUR_EK_ID = old_ek
 
 
 def test_our_amazon_tag_only_rides_on_declared_channels():
@@ -1711,6 +1724,62 @@ def test_delivery_second_chance_never_posts_a_long_link():
     kept = asyncio.run(Dead().shorten_leftover_long_links("Deal\n" + long_link))
     check("a dead shortener keeps the link - the deal is never lost",
           long_link in kept, kept)
+
+
+def test_link_audit_is_the_last_word_for_our_links():
+    """USER (2026-09-25): "advancedgaa manavi perefctga convert chetshadigaa
+    links". The LAST gate before delivery: every link is OURS or a clean    merchant link - never somebody else's attribution - and the log answers
+    "mana links ga convert avuthunnayi?" per post (LINK AUDIT)."""
+    old_tag, old_ek = bot.OUR_TAG, bot.OUR_EK_ID
+    bot.OUR_TAG, bot.OUR_EK_ID = "mama086-21", "5478322"
+    try:
+        text = ("Deal\n"
+                "https://ekaro.in/e1\n"
+                "https://bit.ly/ours1\n"
+                "https://www.amazon.in/dp/B0AAA11111?tag=mama086-21\n"
+                "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=5478322\n"
+                "https://t.me/SecretLootIndia1")
+        out, ours, plain, fixed = bot.enforce_our_link_attribution(
+            text, "LootZoneIndia11")
+        check("proven-ours links pass untouched",
+              out == text and fixed == 0, out)
+        check("the audit counts them honestly (ours=4, plain=1)",
+              ours == 4 and plain == 1, str((ours, plain, fixed)))
+
+        foreign = ("Deal\nhttps://www.flipkart.com/x/p/itm1?pid=1"
+                   "&affExtParam2=999999&otracker=x")
+        out2, _, _, fixed2 = bot.enforce_our_link_attribution(
+            foreign, "LootZoneIndia11")
+        check("a STRANGER's publisher id is stripped at the last gate",
+              fixed2 == 1 and "999999" not in out2 and "affExtParam" not in out2,
+              out2)
+        check("and the link still opens the product", "pid=1" in out2, out2)
+
+        thief = "Deal\nhttps://www.amazon.in/dp/B0BBB22222?tag=thief-21"
+        out3, _, _, fixed3 = bot.enforce_our_link_attribution(
+            thief, "LootZoneIndia11")
+        check("an undeclared channel never carries a stranger's Amazon tag",
+              fixed3 == 1 and "thief-21" not in out3 and "B0BBB22222" in out3,
+              out3)
+        out4, _, _, fixed4 = bot.enforce_our_link_attribution(
+            thief, bot.SHOPPING_TARGET)
+        check("the declared channel gets OUR tag instead of the thief's",
+              fixed4 == 1 and "tag=mama086-21" in out4 and "thief-21" not in out4,
+              out4)
+
+        check("a source's own short link is never rewritten",
+              bot.enforce_our_link_attribution(
+                  "x\nhttps://fkrt.co/own", "LootZoneIndia11")[0]
+              == "x\nhttps://fkrt.co/own")
+
+        src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+        deliver = src[src.index("async def process_job"):]
+        check("the audit is the last word on the delivery path",
+              "enforce_our_link_attribution(" in deliver, "not wired")
+        check("and every post is accounted for in the log (LINK AUDIT)",
+              "LINK AUDIT" in deliver and "LINK MAP" in src, "no audit/map lines")
+    finally:
+        bot.OUR_TAG, bot.OUR_EK_ID = old_tag, old_ek
 
 
 def test_the_four_defects_the_user_photographed():
@@ -3458,6 +3527,7 @@ def main() -> int:
     test_our_tag_cannot_ride_into_an_undeclared_channel_inside_a_short_link()
     test_long_amazon_links_never_reach_a_loot_channel_raw()
     test_delivery_second_chance_never_posts_a_long_link()
+    test_link_audit_is_the_last_word_for_our_links()
     test_the_four_defects_the_user_photographed()
     test_only_the_review_channel_is_restricted()
     test_deep_audit_prices_foreign_tags_and_nameless_posts()

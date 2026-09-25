@@ -79,6 +79,38 @@ ENV KNOBS (unchanged)
   AMAZON_TAG_TARGETS=       '' = review channel only (tag compliance);
                             'all' = every owned channel carries the tag
 
+ADVANCED CONVERT ROUND (same day, follow-up request)
+  "ippud anni perefctga fix chesavaa advancedgaaa manavi perefctga convert
+   chetshadigaa links" - every link must convert as OURS, advanced.
+
+  1. PRODUCT-LEVEL LINK MEMORY ("LINK MAP"). link_cache already remembered a
+     source URL -> OUR link. Now the PRODUCT identity (ASIN:/PID:/MYNTRA:/...
+     - never the URL-hash fallback) is remembered too: the same product
+     arriving on a NEW source URL (slug variant, tracking wrapper, another
+     channel's paste) reuses OUR minted link instead of downgrading to an
+     unmonetized passthrough when the network says "no campaign" for the new
+     URL. Logged per reuse:  LINK MAP | <host> -> <our link> | product <key>
+     store.our_link_for_product() + AffiliateClient._remembered_our_link().
+
+  2. PROVABLY-OURS ATTRIBUTION. compact_flipkart_product_link() keeps the
+     attribution ONLY when the visible publisher id (affExtParam2/aff_id) is
+     OURS (OUR_EK_ID). A STRANGER's publisher id is dropped - that click would
+     pay THEM - and the product (pid) is kept so the link still works.
+
+  3. THE LAST GATE: enforce_our_link_attribution() runs per target at
+     delivery, after the tag-strip and the second-chance shortener. Every
+     outgoing link is either OURS (our shorteners, our hypd links, our
+     publisher id, our Associates tag) or a CLEAN merchant link. What is
+     provably wrong is repaired: a stranger's Amazon tag (ours on a declared
+     channel, gone on an undeclared one) and visible foreign publisher
+     attribution (dropped). A source's own short link is never rewritten.
+     Every post logs its verdict:
+       LINK AUDIT | queue=<id> target=<t> | ours=N plain=N fixed=N
+     greppable proof that "mana links" carry the deals.
+
+  NEW CHECKS: line_fidelity +11 (stranger drop, the audit gate),
+  earnkaro +4 (product-link memory) = 106 checks there. All suites green.
+
 RELATED
   ops/HYPD_OUR_LINKS_2026-09-24.txt      OUR HYPD links (previous round)
   ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt   the EarnKaro/sources round

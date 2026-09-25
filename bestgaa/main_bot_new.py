@@ -1407,6 +1407,73 @@ def untagged_compact_amazon_link(url: str) -> str:
     return without_amazon_tag(compact)             # never carry a tag out
 
 
+def enforce_our_link_attribution(text: str, target: str = "") -> tuple[str, int, int, int]:
+    """THE LAST GATE (2026-09-25): "advancedgaa manavi perefctga convert
+    chetshadigaa links" - every link that leaves the bot is OURS or a clean
+    merchant link, NEVER somebody else's attribution.
+
+    It only rewrites what is PROVABLY wrong:
+      * a stranger's Associates tag - ours on a declared channel (a reviewer
+        must see our tag earn), gone on an undeclared one (compliance);
+      * a visible publisher id that is not ours (affExtParam2/aff_id) - that
+        click would pay THEM, so the attribution is dropped and the link still
+        opens the product.
+    OUR links (our shorteners, our hypd share links, our publisher id, our
+    Associates tag) pass untouched, and a source's own short link is never
+    rewritten - we cannot know where it goes and its attribution is not
+    visible. Returns (text, ours, plain, fixed)."""
+    ours = plain = fixed = 0
+    out = text or ""
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not host or not url.startswith("http"):
+            continue
+        if (in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                or in_domains(host, OUR_SHORTENER_DOMAINS)
+                or is_our_hypd_link(url)):
+            ours += 1
+            continue
+        query = [(k, v) for k, v in parse_qsl(urlparse(url).query,
+                                              keep_blank_values=True)]
+        if in_domains(host, AMAZON_DOMAINS):
+            tags = {v for k, v in query if k.lower() == "tag" and v}
+            if OUR_TAG and tags == {OUR_TAG}:
+                ours += 1
+                continue
+            declared = bool(target) and target in AMAZON_TAG_TARGETS
+            healed = apply_amazon_tag(url) if declared else without_amazon_tag(url)
+            if healed != raw:
+                out = out.replace(raw, healed)
+                fixed += 1
+            else:
+                plain += 1
+            continue
+        publisher = ""
+        for key, value in query:
+            if key.lower() in ("affextparam2", "aff_id") and value:
+                publisher = value
+                break
+        if publisher and OUR_EK_ID and publisher == OUR_EK_ID:
+            ours += 1
+            continue
+        if publisher or any(k.lower() in FLIPKART_ATTRIBUTION_QUERY_KEYS and v
+                            for k, v in query):
+            kept = [(k, v) for k, v in query
+                    if v and k.lower() not in FLIPKART_ATTRIBUTION_QUERY_KEYS
+                    and k.lower() != "tag"]
+            healed = urlparse(url)._replace(
+                query=urlencode(kept, doseq=True)).geturl()
+            if healed != raw:
+                out = out.replace(raw, healed)
+                fixed += 1
+            else:
+                plain += 1
+            continue
+        plain += 1
+    return out, ours, plain, fixed
+
+
 def is_amazon_search_or_browse_link(link: str) -> bool:
     """True for an Amazon SEARCH / category / browse URL, which has no single ASIN.
 
@@ -1483,14 +1550,23 @@ def compact_flipkart_product_link(link: str) -> str:
         if not match:
             return raw
         # USER RULE (2026-09-05, "shortga ravali"): the product identity (pid)
-        # and the ATTRIBUTION survive; everything else is session noise. The
-        # attribution half matters most: a generated EarnKaro/Cuelinks link
-        # names its publisher in these params, and dropping them compacted the
-        # commission out of the link.
-        kept = [(key, value) for key, value in parse_qsl(
-            parsed.query, keep_blank_values=True)
-            if value and (key.lower() == "pid"
-                          or key.lower() in FLIPKART_ATTRIBUTION_QUERY_KEYS)]
+        # and the PROVABLY-OURS attribution survive; everything else is session
+        # noise. The attribution half is money: a generated EarnKaro link names
+        # its publisher in affExtParam2/aff_id, and dropping it compacted the
+        # commission out of the link (2026-09-25). But a STRANGER's publisher
+        # id must never be kept either - that click would pay THEM - so the
+        # attribution rides only when the visible publisher is ours.
+        pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        publisher = ""
+        for key, value in pairs:
+            if key.lower() in ("affextparam2", "aff_id") and value:
+                publisher = value
+                break
+        ours_attr = bool(publisher) and bool(OUR_EK_ID) and publisher == OUR_EK_ID
+        kept = [(key, value) for key, value in pairs
+                if value and (key.lower() == "pid"
+                              or (ours_attr
+                                  and key.lower() in FLIPKART_ATTRIBUTION_QUERY_KEYS))]
         # A dl.* link is Flipkart's own app-redirect wrapper for the same page.
         netloc = "www.flipkart.com"
         return parsed._replace(
@@ -4961,6 +5037,23 @@ class Store:
                 "SELECT * FROM link_cache WHERE source_url=?", (canonical_url(source_url),)
             ).fetchone()
 
+    async def our_link_for_product(self, key: str) -> sqlite3.Row | None:
+        """PRODUCT-LEVEL LINK MEMORY (2026-09-25: "advancedgaa manavi perefctga
+        convert chetshadigaa links"). The OUR link we already minted for this
+        PRODUCT, whatever source URL it first arrived on - a slug link today, a
+        tracking variant tomorrow, a different channel's wrapper next week.
+        Only STRONG identities (ASIN:/PID:/MYNTRA:/... - never the URL-hash
+        fallback) are reused: two different products must never share one
+        commission link. Newest first."""
+        if not key or key.startswith("URL:"):
+            return None
+        async with self.lock:
+            return self.conn.execute(
+                "SELECT * FROM link_cache WHERE deal_key=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+
     async def remember_hypd_link(self, afflink_url: str, resolved_url: str,
                                  product_key_value: str) -> None:
         """Record OUR HYPD share link and the merchant page behind it.
@@ -6080,6 +6173,14 @@ class AffiliateClient:
                         (urlparse(clean).hostname or clean)[:60])
         if earned is not None:
             return earned
+        # PRODUCT-LEVEL LINK MEMORY (2026-09-25): the same product reaches us
+        # on many source URLs. When the network has nothing for THIS url but we
+        # already minted OUR link for the same product, that link is what the
+        # post carries - "manavi perfect ga convert" - instead of quietly
+        # downgrading a monetized product to an unmonetized passthrough.
+        remembered = await self._remembered_our_link(source_url, resolved, multi_link)
+        if remembered is not None:
+            return remembered
         if native_amazon_possible:
             # The network could not monetize this Amazon link. Dropping it would
             # lose the deal and posting it untagged would earn nothing, so publish
@@ -6090,6 +6191,43 @@ class AffiliateClient:
                         AMAZON_VIA_EARNKARO)
             return await self._native_amazon_link(source_url, clean, resolved, multi_link)
         return None
+
+    async def _remembered_our_link(self, source_url: str, resolved: str,
+                                   multi_link: bool) -> "LinkResult | None":
+        """Reuse OUR minted link for this PRODUCT (store.our_link_for_product).
+
+        Same safety rules as the source-url cache: the row must be one we
+        produced (our runtime shortener or valid_generated), a native Amazon
+        row from the old policy is stale while AMAZON_VIA_EARNKARO is on, and
+        a list still unifies on our shortener. The reuse is logged (LINK MAP)
+        so the log itself proves "mana links" are carrying the deals.
+        """
+        key = product_key(resolved)
+        cached = await store.our_link_for_product(key)
+        if not cached:
+            return None
+        affiliate = clean_url(cached["affiliate_url"] or "")
+        cached_host = (urlparse(affiliate).hostname or "").lower()
+        cache_is_safe = (
+            bool(affiliate)
+            and clean_url(affiliate) != clean_url(source_url)
+            and (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                 or self.valid_generated(affiliate))
+        )
+        cached_is_amazon = in_domains(cached_host, AMAZON_DOMAINS)
+        if not cache_is_safe or (AMAZON_VIA_EARNKARO and cached_is_amazon):
+            return None
+        needs_short = (should_use_bitly(resolved, multi_link)
+                       or len(affiliate) > SHORTEN_MIN_LEN)
+        if needs_short and not (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                                or in_domains(cached_host, OUR_SHORTENER_DOMAINS)):
+            shortened = await self.shorten(affiliate)
+            if shortened:
+                affiliate = shortened
+        log.info("LINK MAP | %s -> %s | product %s already earns; reusing OUR link",
+                 (urlparse(resolved).hostname or resolved)[:45], affiliate[:70], key[:40])
+        await store.cache_link(source_url, affiliate, clean_url(resolved), key)
+        return LinkResult(source_url, clean_url(resolved), affiliate, key)
 
     async def _hypd_destination(self, afflink: str) -> str:
         """The merchant page OUR HYPD share link points at (identity only).
@@ -7949,6 +8087,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 shrink = getattr(affiliate, "shorten_leftover_long_links", None)
                 if shrink is not None:
                     target_text = await shrink(target_text)
+            # LAST GATE (2026-09-25): prove - and where needed, repair - that    # every link is OURS or a clean merchant link before it leaves. The
+            # LINK AUDIT line is the log's own answer to "mana links ga
+            # convert avuthunnayi?" per post.
+            target_text, _ours, _plain, _fixed = enforce_our_link_attribution(
+                target_text, target)
+            if _fixed:
+                log.warning("LINK AUDIT | queue=%s target=%s | repaired %s link(s) "
+                            "carrying attribution that was not ours", row["id"], target, _fixed)
+            log.info("LINK AUDIT | queue=%s target=%s | ours=%d plain=%d fixed=%d",
+                     row["id"], target, _ours, _plain, _fixed)
             if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):
                 # Never on the review channel: that header is a link into the
