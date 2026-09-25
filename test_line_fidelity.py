@@ -1151,6 +1151,65 @@ def test_the_user_shapes_come_out_exactly_right():
           "jksksks" not in glued and "Deal Price:293 Rs." in glued, repr(glued))
 
 
+def test_the_full_junk_sweep_is_clean():
+    """USER (2026-09-25): "anni fix cheyu" - the complete useless-line sweep.
+    Signatures ("Dhamaka deals", "Loot Zone", "Tricks Guide", "Offer Zone"),
+    media labels ("Screenshot proof", "Unboxing video"), channel outros
+    ("Thanks for watching", "Please rate us"), post metadata ("Posted at 9 PM",
+    "Source: google"), keyboard runs ("qwerty", "asdf"), elongation ("brooo",
+    "Nooo"), filler ("Price may change", "Only for today") - ALL skip at the
+    target. And the sweep NEVER touches deal content or product words."""
+    post = ("Loot Zone\n"
+            "\U0001f525 Wooden Incense Holder @ \u20b988\n"
+            "Apply 2% coupon\n"
+            "https://www.amazon.in/dp/B0BX6S9X6X\n"
+            "Min Buy Qnty - 2\n"
+            "Offer Zone\nScreenshot proof\nUnboxing video\nProof\n"
+            "Thanks for watching\nPlease rate us\n"
+            "Posted at 9 PM\nPosted on 5th Oct\nUpdated at 10 AM\n"
+            "Source: google\nPrice may change\nOnly for today\n"
+            "qwerty\nasdf\nbrooo\nNooo\nlooott\njksksks\nTricks Guide\nSecret World\n")
+    out = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(post)))
+    for junk in ("Loot Zone", "Tricks Guide", "Offer Zone", "Secret World",
+                 "Screenshot", "Unboxing", "Proof", "Thanks for", "rate us",
+                 "Posted at", "Posted on", "Updated at", "Source:", "Price may change",
+                 "Only for today", "qwerty", "asdf", "brooo", "Nooo", "looott", "jksksks"):
+        check(f"sweep: {junk!r} never reaches the target",
+              junk.lower() not in out.lower(), repr(out))
+    for keep in ("\U0001f525 Wooden Incense Holder @ \u20b988", "Apply 2% coupon",
+                 "https://www.amazon.in/dp/B0BX6S9X6X", "Min Buy Qnty - 2"):
+        check(f"sweep: {keep[:30]!r} travels as written", keep in out, repr(out))
+
+    # Hype-family two-word lines are BANNER fidelity (the "LOOT DEAL" pin) and
+    # travel on the loot path exactly as the source wrote them.
+    for hype_line in ("LOOT DEAL", "Dhamaka deals"):
+        kept = bot.sanitize_outbound_text(bot.tidy_post(
+            bot.clean_source_text(hype_line + "\nSocks at 99\nhttps://fkrt.co/s")))
+        check(f"hype-family line travels: {hype_line!r}", hype_line in kept, repr(kept))
+
+    # The sweep's protected edges - real words that only LOOK like noise:
+    for keep_line in ("Nokia 225 4G qwerty keypad phone \u20b92,999",
+                      "Photo frame @899", "bookkeeper special gift set \u20b9499",
+                      "Use code HFJF", "Min Buy Qnty - 2", "Pack of 2",
+                      "Fastrack Watch @899", "Any queries reach out to Admin/Owner"):
+        kept = bot.sanitize_outbound_text(bot.tidy_post(
+            bot.clean_source_text(keep_line + "\nhttps://amzn.to/x")))
+        check(f"sweep keeps real content {keep_line[:30]!r}",
+              keep_line in kept, repr(kept))
+    for keep_banner in ("\U0001f525 MEGA LOOT \U0001f525", "\u26a1\ufe0f 11 PM FLASH SALE \u26a1\ufe0f",
+                        "\U0001f525\U0001f525 TOP DEAL OF THE DAY \U0001f525\U0001f525", "Deal of the Day"):
+        kept = bot.sanitize_outbound_text(bot.tidy_post(
+            bot.clean_source_text(keep_banner + "\nSocks at 99\nhttps://fkrt.co/s")))
+        check(f"a decorated hype banner travels: {keep_banner[:24]!r}",
+              keep_banner in kept, repr(kept))
+    # Wall-of-links guard (documented): a lone branding line with NOTHING else
+    # textual stays as the post's only headline - never a wall of bare links.
+    lone = bot.sanitize_outbound_text(bot.tidy_post(
+        bot.clean_source_text("Dhamaka deals\nhttps://fkrt.co/s")))
+    check("a lone signature with no other text is the wall-guard headline",
+          "Dhamaka deals" in lone, repr(lone))
+
+
 def test_the_review_channel_copy_is_built_from_an_allowlist():
     """USER RULE (2026-09-05): the new channel is under EarnKaro/Amazon review, so it
     must follow the programme rules 100% - the other channels are untouched. A
@@ -3625,6 +3684,7 @@ def main() -> int:
     test_the_review_channel_copy_is_built_from_an_allowlist()
     test_useless_source_lines_never_reach_a_target()
     test_the_user_shapes_come_out_exactly_right()
+    test_the_full_junk_sweep_is_clean()
     test_review_channel_posts_are_disclosed_amazon_only_and_capped()
     test_the_review_channel_carries_no_amazon_marks_photos_or_channel_pointers()
     test_a_roundup_list_cannot_be_posted_twice_from_two_sources()

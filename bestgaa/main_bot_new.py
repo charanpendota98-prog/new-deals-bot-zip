@@ -2574,6 +2574,8 @@ PROMO_PATTERNS_PY = [
                r"\b(?:referral|refer|sign\s*-?\s*up|signup|invite)\b", re.I),
     re.compile(r"\binstall\s+(?:the\s+|our\s+|this\s+)?(?:app|apk)\b", re.I),
     re.compile(r"\b(?:sent|posted|powered)\s+via\s+\S+|\bvia\s+\w+\s+admin\b", re.I),
+    re.compile(r"\b(?:thanks?|thank\s+you)\s+(?:for|to)\s+(?:watching|visiting|reading|your\s+time|your\s+support)\b", re.I),
+    re.compile(r"\b(?:please\s+)?rate\s+us\b|\breview\s+us\b", re.I),
 ]
 _PROMO_WORD_RE = re.compile(
     r"t\.me|telegram|whatsapp|join|subscribe|follow|share|forward|click|tap|"
@@ -2644,19 +2646,70 @@ USELESS_ALWAYS_DROP_PY = (
     re.compile(r"(?i)^\W*(?:multi[\s-]?products?|combos?|mega\s+sale|flash\s+sale"
                r"|loot\s+sale|sale|offers?|deals?)\s+(?:is\s+)?live\b"),
     re.compile(r"(?i)^\W*live\s*@\s*[\d,]+"),
+    # Post metadata, not deal content: "Posted at 9 PM", "Updated on 5th Oct".
+    re.compile(r"(?i)^\W*(?:posted|updated|published|last\s+updated)\s+(?:at|on)\b"),
+    # A "source:" label names nothing a reader can buy (the link says it).
+    re.compile(r"(?i)^\W*source\s*[:\-–]\s*"),
+    # Unverifiable filler the review copy already bans verbatim.
+    re.compile(r"(?i)^\W*prices?\s+may\s+change\b"),
 )
-# Spam-elongation noise ("looooottt", "Yesssss", "Noooooo"): the same letter 4+
-# times in a row inside a word marks the line as channel screaming, and the price
-# it may carry repeats on the real product line. The check NEVER runs on URL
-# text: shortener slugs ("amzn.to/dmXXXX") and merchant paths legitimately
-# contain letter runs, and a line that is only a link must never be dropped.
-SPAM_ELONGATION_PY = re.compile(r"(?i)\b\w*([A-Za-z])\1{3,}\w*\b")
+# GIBBERISH / MASH / ELONGATION (user 2026-09-25: "jksksks idi remove avvali ...
+# anavsaram anipinchinavi skip cheyali"). Three token shapes of channel noise:
+#   * gibberish - 3+ letters with no vowel at all ("jksksks", "thnxx", "plzz");
+#   * keyboard run - a consecutive qwerty-row slice ("qwerty", "asdf", "hjkl");
+#   * elongation - one letter 3+ times in a row ("brooo", "Nooo", "looott").
+# Money-word protections that keep the sweep honest:
+#   * 2-letter tokens are never noise ("Rs" is a price word);
+#   * ALL-CAPS tokens are code shapes ("HFJF" is a spendable coupon);
+#   * digit-mixed tokens are codes/SKUs ("B0AAA11111"), never judged;
+#   * "y" counts as a vowel ("Qnty" keeps - the user pinned "Min Buy Qnty - 2");
+#   * a keyboard run only kills a WHOLE line - inside "Nokia qwerty keypad"
+#     the word is product text and travels untouched (no token cut for runs).
+# Everything here is judged on the line's WORDS only - never on URL text
+# (shortener slugs like "amzn.to/dmXXXX" are link data).
+_GIBBERISH_TOKEN_PY = re.compile(r"^[A-Za-z]{3,}$")
+_VOWELS_PY = set("aeiouyAEIOU")
+_KEYBOARD_ROWS = "qwertyuiopasdfghjklzxcvbnm"
+_PUNCT_STRIP = "*_~.,!?;:'\"()[]#-–—|/\\"
+
+
+def _is_gibberish_token(word: str) -> bool:
+    """True for a vowel-less keyboard mash ("jksksks"), never a real word/code."""
+    w = (word or "").strip(_PUNCT_STRIP)
+    if not _GIBBERISH_TOKEN_PY.match(w) or w.isupper():
+        return False
+    return not any(ch in _VOWELS_PY for ch in w)
+
+
+def _is_keyboard_run(word: str) -> bool:
+    """True for a consecutive qwerty-row slice ("qwerty", "asdf", "zxcvbn")."""
+    w = (word or "").strip(_PUNCT_STRIP).lower()
+    return len(w) >= 4 and w.isalpha() and not w.isupper() and (
+        w in _KEYBOARD_ROWS or w in _KEYBOARD_ROWS[::-1])
+
+
+def _is_elongation_token(word: str) -> bool:
+    """True for screamed elongation ("brooo", "Nooo", "looott")."""
+    w = (word or "").strip(_PUNCT_STRIP)
+    if len(w) < 3 or not w.isalpha() or w.isupper():
+        return False
+    low = w.lower()
+    return any(ch * 3 in low for ch in set(low))
+
+
 # "Watch above video for proof", "video dekho", "see below pic", "screenshot
-# chudandi" - a pointer at media that our text-only post does not carry.
+# chudandi", or a bare media label ("Screenshot proof", "Video credit",
+# "Unboxing video", "Proof") - a pointer at media our text-only post does not
+# carry. The bare-label shape is whole-line anchored: "Photo frame @899" names
+# a product and is never touched.
 USELESS_POINTER_PY = re.compile(
     r"(?i)\b(?:watch|see|dekho|chud(?:u|andi)?)\b[^.\n]{0,30}\b(?:video|videos|"
     r"screenshot|screenshots|proof|pic|pics|photo|photos|image|images|above|below|upar|neeche)\b"
     r"|\b(?:video|screenshot|photo|pic|image)s?\s+(?:ni\s+)?(?:dekho|chudu|chudandi)\b")
+_MEDIA_LABEL_LINE_PY = re.compile(
+    r"(?i)^\W*(?:the\s+)?(?:unboxing|unbox|screenshot|screenshots|photo|photos|"
+    r"pic|pics|vid|vids|video|videos|proof|proofs|clip|clips)"
+    r"(?:\s*[:\-–]?\s*(?:proof|proofs|credit|credits|vid|vids|videos?|source|clip|clips))?\W*$")
 # "Buy Max Quantity" / "Max Quantity" - a stock-rush instruction, never product
 # content (the review copy already bans it verbatim). The abbreviations matter
 # too ("Buy Max Qnty"), while "Min Buy Qnty - 2" is REAL deal info and stays:
@@ -2666,22 +2719,6 @@ USELESS_QUANTITY_FILL_PY = re.compile(
     r"|\bmax(?:imum)?\s+(?:quantit(?:y|ies)|qnt(?:y|ies)|qty)\b")
 # "@899" is a price exactly like "₹899" for the inline tier (see _PRICE_WITH_TAIL).
 _AT_PRICE_EVIDENCE_RE = re.compile(r"@\s*[\d,]+")
-# GIBBERISH (user 2026-09-25: "jksksks idi remove avvali ... anavsaram
-# anipinchinavi skip cheyali"): a keyboard-mash token with no vowel at all is
-# never deal content. Shape rules that protect the money words:
-#   * 3+ letters ("Rs" is a price word, never mash);
-#   * not ALL-CAPS code shape ("HFJF" is a spendable coupon - money);
-#   * "y" counts as a vowel ("Qnty" keeps - the user pinned "Min Buy Qnty - 2").
-_GIBBERISH_TOKEN_PY = re.compile(r"^[A-Za-z]{3,}$")
-_VOWELS_PY = set("aeiouyAEIOU")
-
-
-def _is_gibberish_token(word: str) -> bool:
-    """True for a vowel-less keyboard mash ("jksksks"), never a real word/code."""
-    w = (word or "").strip("*_~.,!?;:'\"()[]#-–—|/\\")
-    if not _GIBBERISH_TOKEN_PY.match(w) or w.isupper():
-        return False
-    return not any(ch in _VOWELS_PY for ch in w)
 
 
 def is_useless_line(line: str) -> bool:
@@ -2694,15 +2731,18 @@ def is_useless_line(line: str) -> bool:
     # Elongation / pointer / quantity evidence is judged on the WORDS of the
     # line only - a URL's letters are link data, never content.
     words = URL_RE.sub(" ", t)
-    if SPAM_ELONGATION_PY.search(words):
+    tokens = re.findall(r"[A-Za-z]+", words)
+    if any(_is_elongation_token(w) for w in tokens):
+        return True
+    if _MEDIA_LABEL_LINE_PY.match(t):
         return True
     if USELESS_POINTER_PY.search(words) or USELESS_QUANTITY_FILL_PY.search(words):
         return not bool(BRANDING_DEAL_EVIDENCE_RE.search(t)
                         or _AT_PRICE_EVIDENCE_RE.search(t))
-    # A gibberish-only line ("jksksks") goes whole; glued to a real line, only
-    # the mash token goes (strip_inline_cta tier 2).
-    tokens = [w for w in re.findall(r"[A-Za-z]+", words)]
-    if tokens and all(_is_gibberish_token(w) for w in tokens):
+    # A gibberish/mash-only line ("jksksks", "asdf", "qwerty") goes whole; glued
+    # to a real line, only the gibberish/elongation token goes (strip_inline_cta
+    # tier 2) - a keyboard run inside "Nokia qwerty keypad" is product text.
+    if tokens and all(_is_gibberish_token(w) or _is_keyboard_run(w) for w in tokens):
         return True
     return False
 
@@ -2785,6 +2825,7 @@ GLOBAL_CTA_PATTERNS_PY = (
     rf"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:channel|telegram|whatsapp\s+channel|group|now)\b{CTA_TAIL_PY}",
     r"\b(?:join|subscribe|follow)\s+(?:our\s+)?(?:us\s+)?(?:on|via)?\s*t\.me/\S+",
     rf"\b(?:for\s+more|more\s+)(?:loot|deal|update|offer)s?\b{CTA_TAIL_PY}",
+    rf"\b(?:only|valid)\s+(?:for\s+)?(?:today|tonight|now)\b{CTA_TAIL_PY}",
     r"\bt\.me/\S+", r"\bwhatsapp\.com/(?:channel|invite)/\S+", r"\bwa\.me/\S+",
 )
 
@@ -2828,7 +2869,8 @@ def strip_inline_cta(line: str) -> str:
     if not URL_RE.search(out):
         out = USELESS_QUANTITY_FILL_PY.sub(" ", out)
         out = USELESS_POINTER_PY.sub(" ", out)
-        out = " ".join(w for w in out.split() if not _is_gibberish_token(w))
+        out = " ".join(w for w in out.split()
+                       if not (_is_gibberish_token(w) or _is_elongation_token(w)))
     out = re.sub(r"\s{2,}", " ", out)
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
@@ -2921,6 +2963,15 @@ BRANDING_WORDS = BRANDING_NOUNS | BANNER_NOISE_WORDS | frozenset(
     "share forward turn notifications notification stay tuned connected edited "
     "posted powered made managed only now here this that new best".split())
 HANDLE_RE = re.compile(r"@(?![A-Za-z]{1,3}\b)[A-Za-z][A-Za-z0-9_]{3,}")
+# A bare channel SIGNATURE with a brand-suffix noun ("Loot Zone", "Offer Zone",
+# "Tricks Guide"): the noun is how these channel names read. Hype-family words
+# (deal/loot/offer) are deliberately NOT here: "LOOT DEAL" and "Dhamaka deals"
+# are campaign-banner lines and travel by the SOURCE FIDELITY rule (pinned in
+# tests) - STRIP_CAMPAIGN_BANNERS=true is the switch for those. Decorated
+# banners keep their emoji and multi-word hype ("Deal of the Day") is untouched.
+SIGNATURE_LINE_PY = re.compile(
+    r"(?i)^\W*[A-Za-z][A-Za-z&.]{1,15}\s+"
+    r"(?:zones?|hubs?|adda|world|point|official|guides?|tricks?)\W*$")
 
 
 def is_branding_line(line: str) -> bool:
@@ -2930,6 +2981,8 @@ def is_branding_line(line: str) -> bool:
         return False
     if BRANDING_DEAL_EVIDENCE_RE.search(t):
         return False
+    if SIGNATURE_LINE_PY.match(t) and not _EMOJI_RE.search(t):
+        return True
     words = [w for w in re.sub(r"[^\w\s]", " ", t, flags=re.U).split() if w]
     if not words:
         return False

@@ -172,3 +172,31 @@ ravali bestga kani anavsaram anipinchinavi skip cheyali")
   MAX-abbrev dies, MIN qty / HFJF / Rs protected, glued-token cut).
 * Suites: earnkaro 106 - line_fidelity all - pipeline_fixes 229/0 -
   render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge PASS.
+
+-------------------------------------------------------------------------------
+FULL SWEEP ROUND (same day, user: "anni fix cheyu")
+-------------------------------------------------------------------------------
+* THE COMPLETE USELESS-LINE SWEEP. Empirical hunt (35 junk + 33 keeper shapes):
+  22 leaks found, ZERO over-strips, ALL fixed:
+  - brand-suffix signatures ("Loot Zone", "Offer Zone", "Tricks Guide",
+    "Secret World") -> gone (SIGNATURE_LINE_PY in is_branding_line, wall-guarded);
+  - bare media labels ("Screenshot proof", "Unboxing video", "Proof",
+    "Video credit") -> gone (whole-line anchor - "Photo frame @899" untouched);
+  - channel outros ("Thanks for watching", "Please rate us") -> gone;
+  - post metadata ("Posted at 9 PM", "Updated at 10 AM", "Source: google") ->
+    gone; filler ("Price may change", "Only for today") -> gone;
+  - keyboard runs ("qwerty", "asdf", "zxcvbn", "hjkl") -> gone as LINES only -
+    "Nokia qwerty keypad phone" travels whole (no token cut for runs);
+  - 3-letter elongation ("brooo", "Nooo", "looott", "sooon") -> gone (line or
+    glued token).
+* POLICY MATRIX (pinned): hype-family two-word lines ("LOOT DEAL",
+  "Dhamaka deals") are BANNER FIDELITY and travel as written (the existing
+  "LOOT DEAL" pin); brand-SUFFIX names are signatures and go. Decorated banners
+  ("🔥🔥 TOP DEAL OF THE DAY 🔥🔥") stay. STRIP_CAMPAIGN_BANNERS=true remains the
+  switch for the day hype lines should go too.
+* Protected edges (pinned): HFJF/codes, Rs., Min Buy Qnty, bookkeeper-grade
+  double letters, qwerty-inside-product-names, Photo-frame product lines,
+  Pack of 2 / Size: M / Admin-Owner fixture lines.
+* TESTS: +test_the_full_junk_sweep_is_clean. Suites: earnkaro 106 -
+  line_fidelity all - pipeline_fixes 229/0 - render_job 160/0 - hypd 72 -
+  best_copy - duplicate_sim - rescan - bridge self-test PASS.
