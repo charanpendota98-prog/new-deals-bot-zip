@@ -200,3 +200,32 @@ FULL SWEEP ROUND (same day, user: "anni fix cheyu")
 * TESTS: +test_the_full_junk_sweep_is_clean. Suites: earnkaro 106 -
   line_fidelity all - pipeline_fixes 229/0 - render_job 160/0 - hypd 72 -
   best_copy - duplicate_sim - rescan - bridge self-test PASS.
+
+-------------------------------------------------------------------------------
+LINK PROOF + UNITS ROUND (same day, user: "inka chala mistake vunai perefctga
+convert chesthunnava link manavi gaa")
+-------------------------------------------------------------------------------
+* FULL END-TO-END LINK DEMO (real pipeline fakes, the user's exact examples):
+  - EX1 "Wooden Incense ... [amazon dp/B0BX6S9X6X?tag=mama086-21] ... Min Buy
+    Qnty - 2"  ->  RENDERED/DELIVERED: https://ekaro.in/enwd1 (OUR link),
+    LINK AUDIT ours=1 plain=0 fixed=0 on both loot channels.
+  - EX2 "Murphy ... jksksks [amazon dp/B09B4PQD1W?tag=mama086-21]"  ->
+    jksksks GONE, https://ekaro.in/enmy1 ours=1.
+  - HARD MIX (thief tag + foreign affExtParam2=999999 + amzn.to/thief + myntra)
+    -> all four become OUR ekaro links, thief/foreign attribution GONE,
+    LINK AUDIT ours=4 plain=0 fixed=0.
+  - LIST (3 products bottom-dumped, thief tags) -> per-item pairing + uniform
+    Bitly (dm01..dm03), "Buy Max Qnty" dropped, "Min Buy Qnty - 2" kept,
+    LINK AUDIT ours=3.
+  - LINK MAP: same product (B0BX6S9X6X) on a NEW source URL -> the SAME OUR
+    link reused (no second conversion in the log).
+* REAL BUG CAUGHT LIVE BY THE DEMO: the gibberish token cut ate UNIT WORDS -
+  "Anjeer 500 gms at 258" published as "Anjeer 500 at 258". "gms", "pcs",
+  "cms", "ltr", "mrp", "gst", "rpm" have no vowels and read as mash. FIX:
+  _PROTECTED_TOKENS (units + money/meta words) inside _is_gibberish_token.
+  Pinned: "500 gms / 2 pcs / 100 ml / 5000 rpm / MRP / GST" all survive the
+  full clean path.
+* Suites: earnkaro 106 - line_fidelity all - pipeline_fixes 229/0 -
+  render_job 160/0 - hypd 72 - best_copy - duplicate_sim - rescan - bridge
+  self-test PASS. (Fresh sandboxes need BOTH pip install AND tg-wa-bridge npm
+  install every session: node_modules is never snapshotted.)

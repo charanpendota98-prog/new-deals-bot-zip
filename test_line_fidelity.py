@@ -1145,6 +1145,15 @@ def test_the_user_shapes_come_out_exactly_right():
           not bot._is_gibberish_token("HFJF") and not bot.is_useless_line("HFJF"), "code over-strip")
     check("Rs is a price word, not mash",
           not bot._is_gibberish_token("Rs"), "Rs over-strip")
+    for unit in ("gms", "pcs", "cms", "ltr", "mrp", "gst", "rpm", "kgs", "qty"):
+        check(f"the unit word {unit!r} is never mash",
+              not bot._is_gibberish_token(unit), unit)
+    units_line = bot.sanitize_outbound_text(bot.tidy_post(bot.clean_source_text(
+        "Premium Afghani Anjeer 500 gms at 258\n2 pcs combo\n"
+        "100 ml bottle\n5000 rpm motor\nMRP 16999\nGST included\nhttps://amzn.to/x")))
+    for kept_unit in ("500 gms", "2 pcs", "100 ml", "5000 rpm", "MRP 16999", "GST"):
+        check(f"the full clean path keeps {kept_unit!r}",
+              kept_unit in units_line, repr(units_line))
     glued = bot.sanitize_outbound_text(bot.tidy_post(
         bot.strip_inline_cta("Deal Price:293 Rs. \u2705 jksksks")))
     check("a mash token glued to a real line loses only the token",

@@ -2671,12 +2671,21 @@ _GIBBERISH_TOKEN_PY = re.compile(r"^[A-Za-z]{3,}$")
 _VOWELS_PY = set("aeiouyAEIOU")
 _KEYBOARD_ROWS = "qwertyuiopasdfghjklzxcvbnm"
 _PUNCT_STRIP = "*_~.,!?;:'\"()[]#-–—|/\\"
+# REAL no-vowel words the mash rule must never touch: units ("500 gms",
+# "2 pcs", "100 ml", "5000 rpm") and money/meta words ("MRP", "GST"). Caught
+# live in the link demo: "Anjeer 500 gms" published as "Anjeer 500".
+_PROTECTED_TOKENS = frozenset("""
+gm gms kg kgs ml mls ltr ltrs cm cms mm pc pcs nos qty mrp gst rpm mg km
+ft lb lbs oz pt qt yd sqft kv wh db kb sql nth
+""".split())
 
 
 def _is_gibberish_token(word: str) -> bool:
     """True for a vowel-less keyboard mash ("jksksks"), never a real word/code."""
     w = (word or "").strip(_PUNCT_STRIP)
     if not _GIBBERISH_TOKEN_PY.match(w) or w.isupper():
+        return False
+    if w.lower() in _PROTECTED_TOKENS:
         return False
     return not any(ch in _VOWELS_PY for ch in w)
 
