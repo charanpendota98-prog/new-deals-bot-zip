@@ -13,6 +13,11 @@ One command answers it on the server (needs internet):
 
     python3 ops/earnkaro_check.py
 
+The output below is an example only, not a live check of the current key or
+production links. This code-review/test run made no live EarnKaro API request;
+use `--deal-url` with the exact failing merchant URL before treating a link as
+verified.
+
 What a good run looks like:
 
     token shape       : JWT, issued 2026-09-24 18:15 UTC
@@ -26,8 +31,8 @@ What a good run looks like:
 
     RESULT: the key is live and N converted link(s) were expanded and PROVED to
             pay OUR EarnKaro account 5478322. Nothing else to fix.
-            HYPD: 3 of 3 of OUR share links resolved and came back to our store
-            through Bitly.
+            HYPD: configured links are accepted only after a Meesho destination
+            is verified; Bitly must return to our store.
 
 THE WHOLE PICTURE IN ONE COMMAND (run it any time, also from cron):
 
@@ -37,7 +42,7 @@ THE WHOLE PICTURE IN ONE COMMAND (run it any time, also from cron):
       EarnKaro : key=YES  publisher=5478322 (issued 2026-09-24 18:15)
                  endpoint=https://ekaro-api.affiliaters.in/api/converter/public  convert_option=convert_only
       Amazon   : tag=mama086-21  via EarnKaro=true
-      HYPD     : store=93944 (smartdeals)  always Bitly=true  merchants=meesho.com,shopsy.in
+      HYPD     : store=93944 (smartdeals)  always Bitly=true  merchants=meesho.com only
       Bitly    : 1 token(s)
     ROUTES (last 24h, from the bot's own database)
       earnkaro         37        amazon         9        hypd         4
@@ -45,15 +50,16 @@ THE WHOLE PICTURE IN ONE COMMAND (run it any time, also from cron):
     VERDICT
       EarnKaro : WORKING - 37 converted link(s), 0 auth failures (pays 5478322)
       Amazon   : WORKING - tag mama086-21; via EarnKaro=true with the native tag as fallback
-      HYPD     : WORKING - 3 link(s) learned, 4 post(s) on OUR link
+      HYPD     : WORKING - N verified Meesho link(s) learned, 4 post(s) on OUR link
                  K product(s) WAITING for curation (earn nothing until then)
       Bitly    : PRESENT - 1 token(s); our hypd links are shortened
     NEEDS ATTENTION  (exit code 1, so cron can alert)
       - ... the exact item + the command that fixes it
 
-The same command also proves the OTHER half (Meesho/Shopsy). It resolves the
-three hypd.store share links, shortens them with Bitly exactly like the bot, and
-follows the short link back to prove it is still OUR store:
+The same command can live-check the HYPD side for Meesho only. It checks the
+configured candidate share links, verifies a Meesho destination before
+shortening, then follows the Bitly link back to prove it is still OUR store.
+The previously identified Shopsy link is deliberately excluded:
 
     python3 ops/earnkaro_check.py --hypd-only     # just that part, faster
     python3 ops/earnkaro_check.py --skip-hypd     # just the EarnKaro part
@@ -69,7 +75,8 @@ Reading it:
                             (or a HYPD-attributed page) - replace EARNKARO_API_KEY.
   * "no link" with HTTP 200 a store with no EarnKaro campaign (normal for some
                             marketplaces and for search pages) - that link is
-                            posted clean, and OUR HYPD link covers Meesho/Shopsy.
+                            posted clean; HYPD is used only for verified Meesho
+                            products, never for Shopsy.
   * "TOKEN REFUSED" (401/403)
                             the token was rejected - regenerate it and re-run
                             ops/set_earnkaro_key.sh.
@@ -117,16 +124,31 @@ sandbox, not the key. The live conversion proof has to come from the server.
    * `convert_option` was missing. Without it the account-level default decides
      the RESPONSE shape, and a shape the bot could not read meant a post that
      went out unmonetized.
-   * Every shape is now read: the bare link, the whole deal text with the link
-     inside it, a list, an object of link fields - and failures
-     ("Url not found in post!", "could not locate ...") are logged in the API's
-     own words. An unreadable answer is a LOST COMMISSION; it must never be
-     invisible.
-   * HTTP 401/403 is logged as `EK AUTH` with the exact fix, instead of looking
-     like "this store has no campaign".
-   * Each monetized link logs one line: `EK CONVERT | <store> -> <link>`, so
-     "are the EarnKaro links actually being generated?" is answerable from the
-     log alone. `UNMONETIZED LINK` still marks posts that earn nothing.
+   * Explicit `success=0`/error responses are never rescued by a URL in the
+     body; when a whole deal is returned, original source URLs are skipped.
+   * The API result must be an attributable network redirect or carry our
+     publisher id. A plain merchant-page echo is rejected instead of being
+     cached and advertised as a commission link. Flipkart compaction preserves
+     `affExtParam2` instead of silently stripping our attribution.
+   * Outcomes have distinct markers: `EK SUCCESS`, `EK MISS`, `EK REJECT`,
+     `EK AUTH`, `EK HTTP`, `EK NETWORK`, and `EK FALLBACK`. A native Amazon-tag
+     fallback is explicitly NOT counted as an EarnKaro conversion.
+   * `ops/conversion_report.py` splits these outcomes and no longer reports the
+     old ambiguous `EK CONVERT` success lines as no-campaign failures.
+
+   **Account settings matter too:** the API token authenticates the caller but
+   does not select a network for each store. In Affiliaters, connect EarnKaro
+   under Affiliate Settings > Networks and set the Amazon / Flipkart / Others
+   Selections to a network that supports those stores, then save. The official
+   pages are https://docs.affiliaters.in/settings/affiliate-settings/networks
+   and https://docs.affiliaters.in/settings/affiliate-settings/selections.
+   Unsupported store campaigns can genuinely answer no-link.
+
+   To prove a failed post, use its actual product URL rather than the built-in
+   sample URLs (which may be unsupported or stale):
+     python3 ops/earnkaro_check.py --skip-hypd \
+       --deal-url 'https://www.flipkart.com/<actual-product-url>'
+     # repeat --deal-url for each actual product link; the token is never printed.
 
 3. THE API KEY (isset perfectly)
    -----------------------------
@@ -146,12 +168,13 @@ sandbox, not the key. The live conversion proof has to come from the server.
    the token, chmod 600, restarts bestgaa and verifies against the live API.
 
    Check any time:
-     python3 ops/earnkaro_check.py --offline     # decode the token, no network
-     python3 ops/earnkaro_check.py               # live conversion probes + raw bodies
-     bash ops/diagnose.sh                        # section 4b prints which account earns
+     python3 ops/earnkaro_check.py --offline     # decode the token, no API call
+     python3 ops/earnkaro_check.py               # sample probes + raw bodies
+     python3 ops/earnkaro_check.py --skip-hypd --deal-url '<actual failing URL>'
+     bash ops/diagnose.sh                        # section 4b prints the current verdict
 
-   Watch the first converted deals:
-     journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+   Watch conversion outcomes (success, miss, rejection, and fallbacks separately):
+     journalctl -u bestgaa -f | grep -E 'EK SUCCESS|EK MISS|EK AUTH|EK REJECT|EK HTTP|EK NETWORK|EK FALLBACK|UNMONETIZED'
 
 4. AMAZON POLICY (AMAZON_VIA_EARNKARO, default true)
    -------------------------------------------------
@@ -179,7 +202,7 @@ DEPLOY
       # or place the token in ops/.earnkaro_key (gitignored) before deploying
 
 TESTS (all green)
-  python3 test_earnkaro_conversion.py   # 97 checks: converter contract, key,
+  python3 test_earnkaro_conversion.py   # 118 checks: converter contract, key,
                                         # Amazon policy, the three new sources
   python3 test_render_job.py            # 160 checks
   python3 test_pipeline_fixes.py        # 229 checks

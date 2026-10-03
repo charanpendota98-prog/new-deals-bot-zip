@@ -48,13 +48,13 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          'BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
          # OUR HYPD creator store (USER RULE 2026-09-24): hypd.store share
          # links of this store ARE our monetized links - never unwrapped, never
-         # parameter-stripped, ALWAYS Bitly-shortened - and the Meesho/Shopsy
+         # parameter-stripped, ALWAYS Bitly-shortened - and verified Meesho
          # products we curated there earn on them instead of posting untagged.
          # Defaults in main_bot_new.py are the same; pinning them here makes the
          # live config explicit. Train the links with: python3 ops/hypd_links.py
          'HYPD_STORE_ID':'93944','HYPD_STORE_SLUG':'smartdeals',
          'HYPD_ALWAYS_BITLY':'true',
-         'HYPD_MERCHANT_DOMAINS':'meesho.com,shopsy.in',
+         'HYPD_MERCHANT_DOMAINS':'meesho.com',
          # Highest commission wins: Amazon always direct Associates tag
          # (EarnKaro takes a cut in the middle; 0.0 = never route via EK).
          'AMAZON_EARNKARO_RATIO':'0.0'}

@@ -1,4 +1,4 @@
-"""HYPD creator-store links: OUR link, Bitly-shortened, product remembered.
+"""HYPD creator-store links: verified Meesho only, our link, Bitly-shortened.
 
 Run: python3 test_hypd_links.py   (from the repo root)
 
@@ -8,20 +8,18 @@ chesi cheyu convert chesi shorten chesi"
 
 What is pinned here, and why:
 
-1. RECOGNITION. Our store's share link (hypd.store/93944/afflink/<token>) is OUR
-   monetized link; another creator's store id is somebody else's money and must
-   never be treated as ours.
+1. RECOGNITION. Our store's share link (hypd.store/93944/afflink/<token>) is
+   owned by us; another creator's store id is somebody else's money. Ownership
+   alone is not enough: only verified Meesho destinations qualify for HYPD.
 2. NO UNWRAPPING. resolve() used to follow the redirect, and the tracked
    parameters (affid=infhypd, affExtParam1, affExtParam2) were then stripped as
    "tracking noise" - the user's own commission link became a clean untagged
-   page worth nothing. The HYPD link is now final: it is never resolved by the
-   pipeline and never sent to EarnKaro.
-3. BITLY. Every HYPD link is shortened ("convert chesi shorten chesi"), and the
-   short link - not the raw one - is what the post carries and what the
-   provenance cache knows.
-4. THE PRODUCT BEHIND IT. The merchant page is recorded, so the same product
-   arriving later as a bare Meesho/Shopsy link (no EarnKaro campaign) earns on
-   the same HYPD link instead of posting untagged.
+   page worth nothing. A verified Meesho HYPD link is final: it is never
+   unwrapped or sent to EarnKaro. Shopsy and unknown destinations use no HYPD.
+3. BITLY. Each verified Meesho HYPD link is shortened ("convert chesi shorten
+   chesi"), and the post carries the short link when available.
+4. THE PRODUCT BEHIND IT. The verified Meesho page is recorded, so a later bare
+   Meesho link can use the same HYPD link. Shopsy is never routed through HYPD.
 """
 import asyncio
 import json
@@ -44,13 +42,12 @@ import main_bot_new as bot  # noqa: E402
 
 PASS = 0
 
-OUR_LINK = "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg"
-OUR_LINK_2 = "https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg"
-OUR_LINK_3 = "https://hypd.store/93944/afflink/daol52dtm6mc5h7k1ejg"
+KNOWN_SHOPSY_LINK = "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg"
+OUR_LINK = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
 FOREIGN_LINK = "https://hypd.store/88888/afflink/someoneelsestoken1"
 DESTINATION = ("https://www.meesho.com/cotton-saree/p/abc12345"
                "?affid=infhypd&affExtParam1=6ab13e1eb6ce5677d060574c"
-               "&affExtParam2=daoli7dtm6mc5h7k1ffg")
+               "&affExtParam2=daoll7ltm6mc5h7k1fq0")
 
 
 def check(name, ok, detail=""):
@@ -128,7 +125,7 @@ class Aff(bot.AffiliateClient):
 
 
 def test_recognition():
-    for link in (OUR_LINK, OUR_LINK_2, OUR_LINK_3):
+    for link in (KNOWN_SHOPSY_LINK, OUR_LINK):
         check(f"{link[:46]}... is OUR hypd link", bot.is_our_hypd_link(link), link)
         check("...and is recognised as a hypd link at all", bot.is_hypd_link(link), link)
         check("...with the store read out of the path",
@@ -194,9 +191,9 @@ def test_bitly_outage_keeps_the_hypd_link():
         try:
             session = FakeSession(bitly=None)          # Bitly + is.gd both unusable
             aff = Aff(session)
-            result = asyncio.run(aff.convert(OUR_LINK_2, False))
+            result = asyncio.run(aff.convert(OUR_LINK, False))
             check("a shortener outage never loses the user's own link",
-                  bool(result) and result.affiliate == OUR_LINK_2, repr(result))
+                  bool(result) and result.affiliate == OUR_LINK, repr(result))
         finally:
             bot.store = original
 
@@ -245,7 +242,7 @@ def test_shorten_pass_covers_hypd_links():
         try:
             session = FakeSession(bitly="https://bit.ly/final")
             aff = Aff(session)
-            text = f"Smart deal\n{OUR_LINK_3}"
+            text = f"Smart deal\n{OUR_LINK}"
             out = asyncio.run(aff.shorten_long_urls_in_text(text))
             check("the raw hypd link never leaves the bot when Bitly works",
                   "hypd.store" not in out and "bit.ly/final" in out, out)
@@ -269,10 +266,78 @@ def test_destination_from_page_markup():
             # body that names the merchant page.
             session = FakeSession(hypd_destination=None, hypd_body=body, bitly="https://bit.ly/js")
             aff = Aff(session)
-            result = asyncio.run(aff.convert(OUR_LINK_3, False))
+            result = asyncio.run(aff.convert(OUR_LINK, False))
             check("the merchant page is read out of the redirect page",
                   bool(result) and "meesho.com/cotton-saree/p/xyz98765" in result.resolved,
                   repr(getattr(result, "resolved", None)))
+        finally:
+            bot.store = original
+
+
+def test_shopsy_is_not_routed_through_our_hypd_store():
+    """Only Meesho may use HYPD; stale Shopsy mappings/cache must be ignored."""
+    with tempfile.TemporaryDirectory() as td:
+        original = bot.store
+        bot.store = bot.Store(Path(td) / "hypd-shopsy.sqlite3")
+        try:
+            shopsy = "https://www.shopsy.in/duffle-bag/p/SHOPSY123"
+            key = bot.product_key(shopsy)
+            # Simulate a row learned under the old Meesho+Shopsy policy.
+            bot.store.conn.execute(
+                "INSERT INTO hypd_links(token,store,afflink_url,resolved_url,product_key,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                (bot.hypd_afflink_token(KNOWN_SHOPSY_LINK), "93944", KNOWN_SHOPSY_LINK, shopsy, key, 1.0))
+            bot.store.conn.commit()
+            check("legacy Shopsy mapping is hidden from Meesho listings",
+                  not bot.store.recent_hypd_links(), str(bot.store.recent_hypd_links()))
+            awaitable = bot.store.cache_link(shopsy, "https://bit.ly/old-shopsy-hypd", shopsy, key)
+            asyncio.run(awaitable)
+
+            session = FakeSession(bitly="https://bit.ly/new-link")
+            result = asyncio.run(Aff(session).convert(shopsy, False))
+            check("a stale Shopsy HYPD short link is not served from cache", result is None,
+                  repr(result))
+            stale_count = bot.store.conn.execute("SELECT COUNT(*) FROM hypd_links").fetchone()[0]
+            check("the stale Shopsy HYPD mapping is removed from storage", stale_count == 0,
+                  f"{stale_count} row(s) remain")
+            check("Shopsy follows the ordinary EarnKaro path, not Bitly/HYPD",
+                  getattr(session, "ek_calls", 0) == 1
+                  and not any("bitly" in p["url"] for p in session.posts), str(session.posts))
+
+            # If a source itself supplies an OUR HYPD share link for Shopsy, strip
+            # the out-of-scope HYPD hop, try the ordinary network, and keep a clean
+            # merchant fallback rather than publishing our HYPD link or dropping it.
+            direct_session = FakeSession(
+                hypd_destination=shopsy, bitly="https://bit.ly/must-not-use-hypd")
+            direct = asyncio.run(Aff(direct_session).convert(OUR_LINK, False))
+            check("a direct HYPD link to Shopsy is replaced with the clean merchant URL",
+                  bool(direct) and direct.affiliate.startswith("https://www.shopsy.in/")
+                  and "hypd.store" not in direct.affiliate and "bit.ly" not in direct.affiliate,
+                  repr(direct))
+            check("the direct Shopsy HYPD link never enters our product map",
+                  not bot.store.recent_hypd_links(), str(bot.store.recent_hypd_links()))
+            check("store learning rejects non-Meesho destinations",
+                  not asyncio.run(bot.store.remember_hypd_link(OUR_LINK, shopsy, key)), "")
+        finally:
+            bot.store = original
+
+
+def test_unverified_hypd_destination_is_rejected():
+    """An unknown merchant page is never published or shortened through HYPD."""
+    with tempfile.TemporaryDirectory() as td:
+        original = bot.store
+        bot.store = bot.Store(Path(td) / "hypd-unverified.sqlite3")
+        try:
+            body = '<script>window.location="https://merchant.example/product/123"</script>'
+            session = FakeSession(hypd_destination=None, hypd_body=body,
+                                  bitly="https://bit.ly/must-not-use")
+            result = asyncio.run(Aff(session).convert(OUR_LINK, False))
+            check("an unknown HYPD destination is rejected", result is None, repr(result))
+            check("unknown destinations are neither shortened nor sent to EarnKaro",
+                  not session.posts, str(session.posts))
+            check("an unknown destination cannot be learned",
+                  not asyncio.run(bot.store.remember_hypd_link(
+                      OUR_LINK, "https://merchant.example/product/123", "PID:123")), "")
         finally:
             bot.store = original
 
@@ -283,8 +348,10 @@ def test_config_defaults():
     check("our store slug is known", "smartdeals" in bot.OUR_HYPD_STORES,
           str(sorted(bot.OUR_HYPD_STORES)))
     check("Bitly shortening of hypd links is on by default", bot.HYPD_ALWAYS_BITLY is True, "")
-    check("Meesho and Shopsy are the merchants this covers",
-          {"meesho.com", "shopsy.in"} <= bot.HYPD_MERCHANT_DOMAINS, str(bot.HYPD_MERCHANT_DOMAINS))
+    check("HYPD is scoped to Meesho only",
+          bot.HYPD_MERCHANT_DOMAINS == {"meesho.com"}, str(bot.HYPD_MERCHANT_DOMAINS))
+    check("Shopsy is deliberately excluded from HYPD",
+          "shopsy.in" not in bot.HYPD_MERCHANT_DOMAINS, str(bot.HYPD_MERCHANT_DOMAINS))
     source = (Path(bot.__file__).read_text(encoding="utf-8"))
     check("our hypd link is returned before any health/convert path",
           source.index("if is_our_hypd_link(source_url) or is_our_hypd_link(resolved):")
@@ -294,8 +361,8 @@ def test_config_defaults():
 def test_the_curation_queue_records_what_cannot_earn_yet():
     """A Meesho product with no curated HYPD link must NOT fail silently.
 
-    EarnKaro has no Meesho/Shopsy campaign at all, so without a curated HYPD
-    link that post earns nothing. The bot records it as a to-do
+    Without a curated HYPD link, a Meesho post earns nothing. The bot records
+    it as a to-do
     (ops/hypd_links.py --wanted) and says so once, with the exact fix.
     """
     with tempfile.TemporaryDirectory() as td:
@@ -315,7 +382,7 @@ def test_the_curation_queue_records_what_cannot_earn_yet():
 
             # Learning the link clears the to-do and monetizes from now on.
             asyncio.run(bot.store.remember_hypd_link(
-                "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg", meesho,
+                OUR_LINK, meesho,
                 "PID:www.meesho.com:none99999"))
             check("learning the HYPD link clears the to-do entry",
                   not bot.store.recent_hypd_wanted(limit=10), str(bot.store.recent_hypd_wanted()))
@@ -349,8 +416,9 @@ def test_deploy_wiring():
     hotfix = (repo / "ops" / "apply_dual_hotfix.sh").read_text(encoding="utf-8")
     for needle, what in (
         ("'HYPD_STORE_ID':'93944'", "bot .env gets our store id"),
+        ("'HYPD_STORE_SLUG':'smartdeals'", "bot .env gets our store slug"),
         ("'HYPD_ALWAYS_BITLY':'true'", "bot .env gets always-Bitly"),
-        ("'HYPD_MERCHANT_DOMAINS':'meesho.com,shopsy.in'", "bot .env gets the merchant list"),
+        ("'HYPD_MERCHANT_DOMAINS':'meesho.com'", "bot .env pins HYPD to Meesho only"),
         ("'HYPD_STORES':'93944,smartdeals'", "bridge .env gets our store ids"),
     ):
         check(what, needle in hotfix, needle)
@@ -373,6 +441,10 @@ def test_deploy_wiring():
           "bot.AffiliateClient" in source and "remember_hypd_link" in source, "")
     check("and never stores a foreign creator's store as ours",
           "NEVER used as ours" in source, "")
+    check("the HYPD tool requires a verified Meesho destination",
+          "HYPD_MERCHANT_DOMAINS" in source and "NOT STORED" in source, "")
+    check("HYPD dry-run resolves without mutating bot state",
+          "client._hypd_destination(url)" in source and "Do not call convert()" in source, "")
 
     fresh = repo / "ops" / "deploy_fresh.sh"
     check("ops/deploy_fresh.sh exists (the one-command fresh deploy)", fresh.exists(), str(fresh))
@@ -386,16 +458,20 @@ def test_deploy_wiring():
         ("--verify-only", "it can verify without deploying"),
     ):
         check(what, needle in fresh_src, needle)
-    for token in ("daoli7dtm6mc5h7k1ffg", "daol5bac45l0tc0oo5rg", "daol52dtm6mc5h7k1ejg"):
-        check(f"the fresh deploy learns our link {token}", token in fresh_src, "")
+    check("the fresh deploy verifies our new HYPD candidate before learning it",
+          "daoll7ltm6mc5h7k1fq0" in fresh_src, "")
+    check("the fresh deploy never learns the known Shopsy HYPD link",
+          "daoli7dtm6mc5h7k1ffg" not in fresh_src, "")
     check("and it never unwraps our links (no resolver is called on them)",
           "resolve_our" not in fresh_src, "")
 
     runbook = (repo / "ops" / "HYPD_OUR_LINKS_2026-09-24.txt").read_text(encoding="utf-8")
-    for link in (OUR_LINK, OUR_LINK_2, OUR_LINK_3):
-        check(f"the runbook lists {link.rsplit('/', 1)[-1]}", link in runbook, "")
-    check("the runbook names the Meesho source channel",
-          "t.me/+6LA1ljXGlbNmMjA1" in runbook, "")
+    for link in (OUR_LINK,):
+        check(f"the Meesho-only runbook records candidate {link.rsplit('/', 1)[-1]}", link in runbook, "")
+    check("the runbook labels the known Shopsy link as excluded",
+          KNOWN_SHOPSY_LINK in runbook and "stays excluded from Meesho routes" in runbook, "")
+    check("the runbook pins the merchant configuration to Meesho",
+          "HYPD_MERCHANT_DOMAINS=meesho.com" in runbook, "")
 
 
 def main():
@@ -407,6 +483,8 @@ def main():
     test_foreign_store_link_is_not_republished()
     test_shorten_pass_covers_hypd_links()
     test_destination_from_page_markup()
+    test_shopsy_is_not_routed_through_our_hypd_store()
+    test_unverified_hypd_destination_is_rejected()
     test_config_defaults()
     test_deploy_wiring()
     test_the_curation_queue_records_what_cannot_earn_yet()

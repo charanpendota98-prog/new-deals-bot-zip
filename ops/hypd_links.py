@@ -9,7 +9,7 @@ Run on the server (or anywhere with internet) from the bot directory:
 
     python3 ops/hypd_links.py <hypd-link> [<hypd-link> ...]
         Resolve each share link through the LIVE site, print where it goes, and
-        remember it - so a bare Meesho/Shopsy link for the same product earns on
+        remember it - so a bare Meesho link for the same product earns on
         it later. This is the "I curated these products in the HYPD app"
         workflow: paste the links you created, and the bot starts using them.
 
@@ -19,7 +19,7 @@ Run on the server (or anywhere with internet) from the bot directory:
 
     python3 ops/hypd_links.py --wanted
         Products the bot had to post UNMONETIZED because no HYPD link exists for
-        them yet (Meesho/Shopsy: EarnKaro has no campaign at all). Create the link
+        them yet (Meesho: use our HYPD store). Create the link
         for one of them in the HYPD app, learn it with this tool, and every later
         post of that product earns on it.
 
@@ -31,10 +31,10 @@ WHY THIS EXISTS
   creator app for a curated product, and that link (hypd.store/<store>/afflink/
   <token>) is the one that carries the attribution. So the bot does the two
   things it CAN do perfectly:
-    * treat the links you already created as OUR monetized links (never
-      unwrapped, never stripped, always Bitly-shortened), and
-    * remember the product behind each one, so the same product arriving later
-      as a bare Meesho/Shopsy link (no EarnKaro campaign) still earns on it.
+    * treat only verified Meesho share links from our store as OUR monetized
+      links (never unwrapped, never stripped, always Bitly-shortened), and
+    * remember the Meesho product behind each one, so a later bare Meesho link
+      (no EarnKaro campaign) still earns on it.
 
 Exit codes: 0 = ok, 1 = nothing usable (bad link / wrong store / not found).
 """
@@ -73,7 +73,7 @@ def describe(url: str) -> str:
 
 
 async def resolve_live(url: str) -> tuple[str, str]:
-    """(destination, key) using the bot's own client (real network)."""
+    """(destination, key) using the bot's own resolver without writing state."""
     async with bot.aiohttp.ClientSession() as session:
         client = bot.AffiliateClient(session)
         if not bot.is_our_hypd_link(url):
@@ -81,10 +81,10 @@ async def resolve_live(url: str) -> tuple[str, str]:
             # goes (and that it earns for somebody else).
             destination = await bot.AffiliateClient.resolve(client, url)
             return (destination, bot.product_key(destination) if destination else "")
-        link = await client.convert(url, False)
-        if not link:
-            return ("", "")
-        return (link.resolved, link.deal_key)
+        # Do not call convert(): --dry-run must not mutate link_cache, the HYPD
+        # mapping table, or the wanted list as a side effect of verification.
+        destination = await client._hypd_destination(url)
+        return (destination, bot.product_key(destination) if destination else "")
 
 
 async def remember(url: str, destination: str, key: str) -> None:
@@ -104,14 +104,14 @@ async def main() -> int:
     print("=" * 78)
     print(f"HYPD store        : {bot.HYPD_STORE_ID} ({bot.HYPD_STORE_SLUG})  domains={sorted(bot.HYPD_DOMAINS)}")
     print(f"always Bitly      : {bot.HYPD_ALWAYS_BITLY}")
-    print(f"Meesho family     : {sorted(bot.HYPD_MERCHANT_DOMAINS)}")
+    print(f"HYPD merchant     : Meesho only {sorted(bot.HYPD_MERCHANT_DOMAINS)}")
     print(f"database          : {bot.DB_PATH}")
     print("=" * 78)
 
     if args.wanted:
         rows = bot.store.recent_hypd_wanted(limit=200)
         if not rows:
-            print("Every Meesho/Shopsy product seen so far has OUR HYPD link. Nothing pending.")
+            print("Every Meesho product seen so far has OUR HYPD link. Nothing pending.")
             return 0
         print(f"{len(rows)} product(s) posted UNMONETIZED - no HYPD link curated yet:\n")
         for row in rows:
@@ -157,23 +157,33 @@ async def main() -> int:
             print(f"  destination : {destination[:120]}")
             print(f"  product key : {key or '(unknown)'}")
         else:
-            print("  destination : could not be read (the link still works as OUR link)")
-        if bot.is_our_hypd_link(url):
-            if args.dry_run:
-                print("  (dry run: not stored)")
-            else:
-                await remember(url, destination, key)
-                print("  stored: the same product now earns on OUR link, even from a bare Meesho link")
-        else:
+            print("  destination : not verified; no merchant is eligible for HYPD until it resolves")
+        if not bot.is_our_hypd_link(url):
             print("  -> another creator's store: NEVER used as ours (it would pay them)")
             failures += 1
+            continue
+        destination_host = (bot.urlparse(bot.clean_url(destination)).hostname or "").lower() if destination else ""
+        if not destination or not bot.in_domains(destination_host, bot.HYPD_MERCHANT_DOMAINS):
+            print("  -> NOT STORED: our HYPD store is configured for Meesho only; "
+                  "destination must be a verified Meesho product URL")
+            failures += 1
+            continue
+        if args.dry_run:
+            print("  (dry run: not stored)")
+        else:
+            stored = await remember(url, destination, key)
+            if stored:
+                print("  stored: this Meesho product now uses OUR HYPD link")
+            else:
+                print("  -> NOT STORED: ownership or Meesho destination validation failed")
+                failures += 1
 
     print("\n" + "=" * 78)
     if failures:
         print(f"RESULT: {failures} link(s) could not be learned.")
         return 1
-    print("RESULT: ok. Bot usage: hypd links pass through as OUR links (Bitly), and")
-    print("the learned products monetize bare Meesho/Shopsy links for the same page.")
+    print("RESULT: ok. Bot usage: only verified Meesho products use our HYPD link (Bitly),")
+    print("and the learned product mapping applies to later bare Meesho links.")
     return 0
 
 

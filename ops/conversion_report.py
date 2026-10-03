@@ -17,8 +17,8 @@ It reads the bot's OWN database and log and reports, per monetization route
   ROUTES       every link the bot produced in the window, classified by route:
                earnkaro / amazon / hypd / affiliate / shortened / PASS-THROUGH
                (a pass-through row is a clean merchant link: it earns NOTHING).
-  LOG MARKERS  how often each decision fired lately (EK CONVERT, EK AUTH,
-               EK REJECT, HYPD LINK, HYPD MISSING, BITLY unavailable, ...).
+  LOG MARKERS  separate counts for EK SUCCESS, EK MISS, EK AUTH, EK REJECT,
+               EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, etc.
   VERDICT      one line per route: WORKING / NEEDS ATTENTION / IDLE, plus the
                exact command for anything that needs attention.
 
@@ -62,13 +62,17 @@ SHORTENER_HOSTS = ("bit.ly", "j.mp", "bitly.com", "is.gd", "t.co", "buff.ly")
 AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in")
 
 LOG_MARKERS = (
-    ("EK CONVERT", "EarnKaro: conversion ATTEMPTED and no link returned"),
+    ("EK SUCCESS", "EarnKaro: API returned an attributable affiliate link"),
+    ("EK MISS", "EarnKaro: API returned no usable converted link"),
     ("EK AUTH", "EarnKaro: the TOKEN was refused (regenerate the key!)"),
-    ("EK REJECT", "EarnKaro: a link paying somebody else was refused"),
+    ("EK REJECT", "EarnKaro: extracted API output failed attribution validation"),
+    ("EK HTTP", "EarnKaro: API returned a non-success HTTP status"),
+    ("EK NETWORK", "EarnKaro: API/network retries were exhausted"),
+    ("EK FALLBACK", "Amazon used its native tag because EarnKaro did not convert"),
     ("PROVENANCE rejected", "a link we did not produce was refused"),
     ("UNMONETIZED LINK", "a deal posted with a clean merchant link (earns NOTHING)"),
     ("HYPD LINK", "OUR hypd link published (Bitly) - earns on our store"),
-    ("HYPD MISSING", "a Meesho/Shopsy product with NO curated hypd link (earns nothing)"),
+    ("HYPD MISSING", "a Meesho product with NO curated HYPD link (earns nothing)"),
     ("HYPD WANTED", "the product was added to the curation to-do list"),
     ("BITLY unavailable", "shortener outage: the raw link was kept (never unmonetized)"),
     ("BITLY failed", "Bitly call failed (rate limit/token)"),
@@ -175,7 +179,7 @@ def config_report(env: dict[str, str]) -> dict:
         "hypd_store": env.get("HYPD_STORE_ID", "93944"),
         "hypd_slug": env.get("HYPD_STORE_SLUG", "smartdeals"),
         "hypd_always_bitly": env.get("HYPD_ALWAYS_BITLY", "true"),
-        "hypd_merchants": env.get("HYPD_MERCHANT_DOMAINS", "meesho.com,shopsy.in"),
+        "hypd_merchants": "meesho.com (pinned; HYPD is Meesho-only)",
         "bitly_tokens": len(bitly_tokens),
     }
 
@@ -194,16 +198,43 @@ def db_report(db: Path, hours: float) -> dict:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
         return bool(row)
 
+    verified_hypd_keys: set[str] = set()
+    out_of_scope_hypd_keys: set[str] = set()
+    if table_exists("hypd_links"):
+        for hypd_row in conn.execute(
+                "SELECT resolved_url, product_key FROM hypd_links").fetchall():
+            key = str(hypd_row["product_key"] or "")
+            if not key:
+                continue
+            if in_hosts(host_of(hypd_row["resolved_url"] or ""), ("meesho.com",)):
+                verified_hypd_keys.add(key)
+            else:
+                out_of_scope_hypd_keys.add(key)
+
     if table_exists("link_cache"):
         rows = conn.execute(
-            "SELECT affiliate_url, resolved_url, created_at FROM link_cache WHERE created_at>=?",
-            (since,)).fetchall()
+            "SELECT source_url, affiliate_url, resolved_url, deal_key, created_at "
+            "FROM link_cache WHERE created_at>=?", (since,)).fetchall()
         for row in rows:
-            route = route_of(row["affiliate_url"], row["resolved_url"])
+            affiliate = row["affiliate_url"]
+            resolved = row["resolved_url"] or ""
+            source_host = host_of(row["source_url"] or "")
+            resolved_host = host_of(resolved)
+            key = str(row["deal_key"] or "")
+            route = route_of(affiliate, resolved)
+            if route == "hypd" and not in_hosts(resolved_host, ("meesho.com",)):
+                route = "hypd_out_of_scope"
+            elif route == "shortened":
+                if key in out_of_scope_hypd_keys and key not in verified_hypd_keys:
+                    route = "hypd_out_of_scope"
+                elif key in verified_hypd_keys:
+                    route = "hypd"
+            if source_host == "hypd.store" and not in_hosts(resolved_host, ("meesho.com",)):
+                route = "hypd_out_of_scope"
             bucket = out["routes"].setdefault(route, {"count": 0, "examples": []})
             bucket["count"] += 1
             if route == "passthrough" and len(out["passthrough_examples"]) < 8:
-                out["passthrough_examples"].append(row["resolved_url"] or row["affiliate_url"])
+                out["passthrough_examples"].append(resolved or affiliate)
         out["links_in_window"] = sum(b["count"] for b in out["routes"].values())
     else:
         out["links_in_window"] = 0
@@ -214,13 +245,15 @@ def db_report(db: Path, hours: float) -> dict:
              "created": as_time(row["created_at"])}
             for row in conn.execute(
                 "SELECT afflink_url, resolved_url, created_at FROM hypd_links"
-                " ORDER BY created_at DESC LIMIT 10").fetchall()]
+                " ORDER BY created_at DESC").fetchall()
+            if in_hosts(host_of(row["resolved_url"] or ""), ("meesho.com",))][:10]
     if table_exists("hypd_wanted"):
         out["hypd_wanted"] = [
             {"product": row["product_url"], "times": row["times"], "last": as_time(row["last_seen"])}
             for row in conn.execute(
                 "SELECT product_url, times, last_seen FROM hypd_wanted"
-                " ORDER BY times DESC, last_seen DESC LIMIT 10").fetchall()]
+                " ORDER BY times DESC, last_seen DESC").fetchall()
+            if in_hosts(host_of(row["product_url"] or ""), ("meesho.com",))][:10]
     if table_exists("posted_deals"):
         out["posted_deals"] = conn.execute(
             "SELECT COUNT(*) AS n FROM posted_deals WHERE posted_at>=?",
@@ -257,8 +290,17 @@ def log_report(log: Path, hours: float) -> dict:
                 when = None
         if when and when < cutoff:
             continue
+        # Older builds used the same `EK CONVERT` prefix for both success and
+        # failure. Split those historical lines by their payload instead of
+        # treating every successful conversion as a no-campaign result.
+        legacy_markers: set[str] = set()
+        if "EK CONVERT |" in line:
+            if "| no link for " in line:
+                legacy_markers.add("EK MISS")
+            elif " -> " in line:
+                legacy_markers.add("EK SUCCESS")
         for marker, _what in LOG_MARKERS:
-            if marker in line:
+            if marker in line or marker in legacy_markers:
                 bucket = out["markers"].setdefault(marker, {"count": 0, "last": ""})
                 bucket["count"] += 1
                 bucket["last"] = (when or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -281,17 +323,37 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         lines.append("EarnKaro : SUSPECT - token does not name a publisher")
     else:
         auth = markers.get("EK AUTH", {}).get("count", 0)
-        no_link = markers.get("EK CONVERT", {}).get("count", 0)
-        converted = routes.get("earnkaro", {}).get("count", 0)
+        successes = markers.get("EK SUCCESS", {}).get("count", 0)
+        no_link = markers.get("EK MISS", {}).get("count", 0)
+        rejects = markers.get("EK REJECT", {}).get("count", 0)
+        http_errors = markers.get("EK HTTP", {}).get("count", 0)
+        network_errors = markers.get("EK NETWORK", {}).get("count", 0)
+        cached_route_rows = routes.get("earnkaro", {}).get("count", 0)
+        converted = max(successes, cached_route_rows)
+        problems_found = rejects + http_errors + network_errors
         if auth:
             problems.append(f"{auth} EarnKaro AUTH failure(s) in the window - "
                             "regenerate the key (ops/set_earnkaro_key.sh)")
             lines.append(f"EarnKaro : BROKEN - token refused {auth}x (publisher {cfg['earnkaro_publisher']})")
+        elif problems_found:
+            problems.append(f"{problems_found} EarnKaro API output/error event(s); inspect EK REJECT / EK HTTP / EK NETWORK logs")
+            lines.append(f"EarnKaro : NEEDS REVIEW - {converted} successful link(s), "
+                         f"{rejects} rejected output(s), {http_errors + network_errors} API/network error(s)")
+        elif converted and no_link:
+            problems.append(f"partial EarnKaro conversion: {converted} successful link(s), {no_link} API no-link response(s); "
+                            "check Affiliaters network selections and store campaign eligibility")
+            lines.append(f"EarnKaro : PARTIAL - {converted} successful link(s), {no_link} no-link response(s) "
+                         f"(pays {cfg['earnkaro_publisher']})")
+        elif converted:
+            lines.append(f"EarnKaro : WORKING - {converted} attributable link(s) observed "
+                         f"(pays {cfg['earnkaro_publisher']})")
+        elif no_link:
+            problems.append(f"zero successful EarnKaro links and {no_link} API no-link response(s); "
+                            "check Affiliaters network selections, connected EarnKaro account, and campaign eligibility")
+            lines.append(f"EarnKaro : NOT CONVERTING - {no_link} no-link response(s), 0 attributable links")
         else:
-            lines.append(f"EarnKaro : WORKING - {converted} converted link(s), 0 auth failures"
-                         + (f", {no_link} answer(s) of 'no campaign' (normal for some stores)"
-                            if no_link else "")
-                         + f" (pays {cfg['earnkaro_publisher']})")
+            lines.append("EarnKaro : IDLE - no fresh API success/no-link activity in this window; "
+                         "cached links may still be used, so this is not a live conversion proof")
 
     # --- Amazon
     tag = cfg["amazon_tag"] or "(none - tagless!)"
@@ -299,20 +361,27 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         problems.append("AMAZON_TAG is empty - Amazon links would be published tagless")
         lines.append("Amazon   : ATTENTION - no tag configured")
     else:
-        lines.append(f"Amazon   : WORKING - tag {tag}; routed via EarnKaro="
-                     f"{cfg['amazon_via_earnkaro']} with the native tag as fallback")
+        fallback_count = markers.get("EK FALLBACK", {}).get("count", 0)
+        lines.append(f"Amazon   : tag {tag}; routed via EarnKaro={cfg['amazon_via_earnkaro']}"
+                     + (f"; {fallback_count} native-tag fallback(s) used (not EarnKaro commission)"
+                        if fallback_count else ""))
 
     # --- HYPD / Meesho
     learned = db.get("hypd_learned", [])
     wanted = db.get("hypd_wanted", [])
     hypd_posts = markers.get("HYPD LINK", {}).get("count", 0)
     if learned or hypd_posts:
-        lines.append(f"HYPD     : WORKING - {len(learned)} link(s) learned, {hypd_posts} post(s) on OUR link"
-                     f" (store {cfg['hypd_store']}/{cfg['hypd_slug']})")
+        lines.append(f"HYPD     : WORKING - {len(learned)} verified Meesho link(s) learned, "
+                     f"{hypd_posts} post(s) on OUR link (store {cfg['hypd_store']}/{cfg['hypd_slug']})")
     else:
-        lines.append("HYPD     : IDLE - nothing learned yet; run ops/hypd_links.py with your links")
+        lines.append("HYPD     : IDLE - nothing learned yet; run ops/hypd_links.py with a verified Meesho link")
+    out_of_scope = routes.get("hypd_out_of_scope", {}).get("count", 0)
+    if out_of_scope:
+        problems.append(f"{out_of_scope} legacy HYPD cache row(s) point outside Meesho; "
+                        "they are not valid under the current policy and will be rechecked on use")
+        lines.append(f"           {out_of_scope} out-of-scope legacy HYPD cache row(s) detected")
     if wanted:
-        problems.append(f"{len(wanted)} Meesho/Shopsy product(s) posted UNMONETIZED - "
+        problems.append(f"{len(wanted)} Meesho product(s) posted UNMONETIZED - "
                         "curate a hypd link and learn it (ops/hypd_links.py)")
         lines.append(f"           {len(wanted)} product(s) WAITING for curation (earn nothing until then)")
 
