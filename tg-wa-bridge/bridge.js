@@ -315,17 +315,16 @@ const OUR_LINK_HOSTS = new Set([
   'bit.ly', 'is.gd',
 ])
 // ---------------------------------------------------------------------------
-// HYPD creator-store share links (USER RULE 2026-09-24). Our store curates a
-// product and gets https://hypd.store/<store>/afflink/<token>, which redirects
-// to the merchant page carrying HYPD's own attribution. That link IS our
-// monetized link: it must never be resolved (that hands over the merchant page
-// and HYPD's parameters, and the publishable link is lost) and it is always
-// Bitly-shortened. A hypd.store link from ANOTHER creator's store pays them, so
-// it is NOT ours (it resolves and posts like any raw source link).
+// HYPD creator-store share links (USER RULE 2026-09-24). Only our store's
+// links with a VERIFIED Meesho destination may be kept as HYPD and shortened.
+// Shopsy gets a clean merchant fallback; foreign-store and unknown destinations
+// are blocked from HYPD. Bot-fed HYPD links have already passed this check in
+// BestGAA; direct-source HYPD links are verified below before they are used.
 //   HYPD_STORES: comma list of our store ids/usernames (default our store).
 const HYPD_STORES = new Set((process.env.HYPD_STORES || '93944,smartdeals')
   .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
 const HYPD_HOSTS = new Set(['hypd.store'])
+const HYPD_CLEAN_FALLBACK_DOMAINS = new Set(['shopsy.in'])
 function isHypdHost(host) {
   return [...HYPD_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))
 }
@@ -431,6 +430,56 @@ function withTimeout(promise, ms, label) {
 }
 function cleanUrl(value) { return value.replace(/&amp;/gi, '&').replace(/[.,;:!?"')()\]}>]+$/g, '') }
 function urlsIn(text) { return [...new Set((text || '').match(/https?:\/\/[^\s<>\[\](){}"']+/gi)?.map(cleanUrl) || [])] }
+function isMeeshoUrl(url) {
+  const host = hostOf(url)
+  return host === 'meesho.com' || host.endsWith('.meesho.com')
+}
+function cleanHypdDestination(value) {
+  try {
+    const u = new URL(value)
+    for (const key of [...u.searchParams.keys()]) {
+      const name = key.toLowerCase()
+      if (['affid', 'aff_id', 'affextparam1', 'affextparam2', 'utm_source',
+        'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'].includes(name)) {
+        u.searchParams.delete(key)
+      }
+    }
+    u.hash = ''
+    return u.toString()
+  } catch {
+    return ''
+  }
+}
+async function resolveOwnedHypdDestination(url, fetchFn = fetch) {
+  if (!isOurHypdLink(url)) return ''
+  try {
+    const response = await fetchFn(url, {
+      method: 'GET', redirect: 'follow', signal: AbortSignal.timeout(15_000),
+      headers: { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/131 Safari/537.36' },
+    })
+    if (Number(response.status) >= 400) return ''
+    const final = cleanUrl(response.url || url)
+    if (isMeeshoUrl(final)) return final
+    const finalHost = hostOf(final)
+    if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => finalHost === domain || finalHost.endsWith('.' + domain))) {
+      return cleanHypdDestination(final)
+    }
+    let body = ''
+    try { body = (await response.text()).slice(0, 200_000) } catch { /* fail closed below */ }
+    // HYPD client-side redirect pages may escape slashes inside a script URL.
+    body = body.replace(/\\\//g, '/')
+    for (const candidate of urlsIn(body)) {
+      if (isMeeshoUrl(candidate)) return candidate
+      const candidateHost = hostOf(candidate)
+      if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => candidateHost === domain || candidateHost.endsWith('.' + domain))) {
+        return cleanHypdDestination(candidate)
+      }
+    }
+  } catch (error) {
+    log.warn({ url: url.slice(0, 60), err: error.message }, 'HYPD destination could not be verified')
+  }
+  return ''
+}
 // Source-channel promo / navigation / boilerplate that is NOT part of the deal
 // and must never reach the WhatsApp post. A line is noise only when it carries
 // NO real deal content (no link, no price, no %, no 3+ product words). Join /
@@ -1441,8 +1490,35 @@ async function resolveUrl(url, fetchFn = fetch) {
 //     the deal reaches WhatsApp even when the bot never posted it to Telegram
 async function prepareDirectJob(job, fetchFn = fetch) {
   job.resolvedLinks ||= {}
+  job.blockedLinks ||= {}
+  job.verifiedHypdLinks ||= {}
   for (const url of urlsIn(job.text || '')) {
-    if (job.resolvedLinks[url] || isOurGeneratedLink(url)) continue
+    if (job.blockedLinks[url] || job.verifiedHypdLinks[url] || job.resolvedLinks[url]) continue
+    if (isHypdHost(hostOf(url))) {
+      if (!isOurHypdLink(url)) {
+        job.blockedLinks[url] = true
+        log.warn({ id: job.id, url: url.slice(0, 60) }, 'HYPD REJECT | foreign store link blocked')
+        continue
+      }
+      const destination = await resolveOwnedHypdDestination(url, fetchFn)
+      if (destination && isMeeshoUrl(destination)) {
+        job.verifiedHypdLinks[url] = destination
+        log.info({ id: job.id, destination: destination.slice(0, 90) }, 'HYPD VERIFIED | Meesho destination; our share link may be used')
+      } else if (destination && [...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => {
+        const host = hostOf(destination)
+        return host === domain || host.endsWith('.' + domain)
+      })) {
+        job.resolvedLinks[url] = cleanHypdDestination(destination)
+        log.warn({ id: job.id, destination: job.resolvedLinks[url].slice(0, 90) },
+          'HYPD OUT OF SCOPE | using a clean Shopsy URL instead of HYPD')
+      } else {
+        job.blockedLinks[url] = true
+        log.warn({ id: job.id, url: url.slice(0, 60) },
+          'HYPD REJECT | destination is not verified Meesho; link removed')
+      }
+      continue
+    }
+    if (isOurGeneratedLink(url)) continue
     let resolved = url
     if (REDIRECT_FOLLOW_HOSTS.has(hostOf(url))) {
       resolved = (await resolveUrl(url, fetchFn)) || url
@@ -1807,7 +1883,10 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
     // masked it never touches the product name, price, MRP or spec text.
     const text = cleanBodyLine(line, lineUrls)
     if (text) out.push(text)
-    if (includeLinks) for (const url of lineUrls) out.push(displayUrl(job, url))
+    if (includeLinks) for (const url of lineUrls) {
+      const shown = displayUrl(job, url)
+      if (shown) out.push(shown)
+    }
   }
   if (includeLinks) {
     // A link must never vanish because a cleanup pass swallowed the line it sat
@@ -1815,7 +1894,7 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
     const written = out.join('\n')
     for (const url of urlsIn(cleaned)) {
       const ours = displayUrl(job, url)
-      if (!written.includes(ours)) out.push(ours)
+      if (ours && !written.includes(ours)) out.push(ours)
     }
   }
   const body = out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
@@ -1963,6 +2042,9 @@ function passesBestDealGate(job) {
 // reject good deals. Everything else keeps full verification.
 function urlsForProvenance(job, urls) {
   return urls.filter(url => {
+    if (job?.direct && job?.blockedLinks?.[url]) return false
+    if (job?.direct && isOurHypdLink(url)
+      && (job?.verifiedHypdLinks?.[url] || job?.resolvedLinks?.[url])) return false
     if (isServiceUrl(url) || isServiceUrl(displayUrl(job, url))) return false
     if (isOurAmazonTagLink(url) || isOurAmazonTagLink(displayUrl(job, url))) return false
     if (job?.direct && !isOurGeneratedLink(url)) return false
@@ -2244,9 +2326,9 @@ function needsShortening(url, isList = false) {
   if (isServiceUrl(url)) return false
   const host = hostOf(url)
   if ([...ALREADY_SHORT_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return false
-  // USER RULE (2026-09-24): "bitly tho shorten ga chesi cheyu" - OUR HYPD share
-  // links are always shortened, however short they look, so nothing after the
-  // domain tells the reader which store or product it is.
+  // USER RULE (2026-09-24): "bitly tho shorten ga chesi cheyu" - only a verified
+  // Meesho destination behind OUR HYPD share link is always shortened. Direct
+  // sources are verified in prepareDirectJob first.
   if (isOurHypdLink(url)) return true
   // USER RULE: Bitly quota is precious — spend it ONLY where raw links look
   // ugly: product LISTS (2+ links) and genuinely long links. A normal single
@@ -2351,6 +2433,7 @@ function normalizeAmazonTags(text) {
 // The URL actually shown to subscribers: shortened form first, then the
 // resolved merchant page (direct-source jobs), then the original.
 function displayUrl(job, url) {
+  if (job?.blockedLinks?.[url]) return ''
   return job?.shortLinks?.[url] || job?.resolvedLinks?.[url] || url
 }
 
@@ -2699,8 +2782,8 @@ function isShareIntent(url) {
 
 async function deadDestinations(job, urls) {
   const dead = []
-  for (const url of urls.filter(u => !isShareIntent(u))) {
-    const target = job?.resolvedLinks?.[url] || url
+  for (const url of urls.filter(u => !isShareIntent(u) && !job?.blockedLinks?.[u])) {
+    const target = job?.verifiedHypdLinks?.[url] || job?.resolvedLinks?.[url] || url
     if (!(await notBroken(target))) dead.push(target)
   }
   return dead
@@ -2782,7 +2865,7 @@ async function verifyJob(job, fetchFn = fetch) {
   const isList = urls.length >= 2
   for (const url of urls) {
     if (shortenedCount >= 20) break
-    if (job.shortLinks[url]) continue
+    if (job.blockedLinks?.[url] || job.shortLinks[url]) continue
     // Long Amazon category/search links: strip session junk first so the
     // Bitly target (and any unshortened fallback) is already clean and short.
     const display = stripAmazonJunk(job?.resolvedLinks?.[url] || url)
@@ -5037,20 +5120,68 @@ https://fktr.in/MANY${i}`,
   if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=other-21')) throw new Error('foreign-tagged amazon link is not ours')
   if (isOurGeneratedLink('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('ex-our tag deals0911-21 is also foreign')
   if (isOurGeneratedLink('https://amzn.to/x')) throw new Error('raw amazon shortener is not ours')
-  // USER RULE (2026-09-24): OUR HYPD creator-store share link is our monetized
-  // link - recognised as ours (never resolved, so HYPD's own attribution
-  // survives) and always Bitly-shortened; another store's hypd link is not ours.
-  if (!isOurGeneratedLink('https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg')) {
+  // USER RULE (2026-09-24): HYPD ownership is recognized here; direct-source
+  // links are separately destination-verified before they can be shortened.
+  if (!isOurGeneratedLink('https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0')) {
     throw new Error('our hypd share link must count as ours')
   }
-  if (isOurGeneratedLink('https://hypd.store/999999/afflink/daoli7dtm6mc5h7k1ffg')) {
+  if (isOurGeneratedLink('https://hypd.store/999999/afflink/daoll7ltm6mc5h7k1fq0')) {
     throw new Error("another creator's hypd link is not ours")
   }
-  if (!needsShortening('https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg')) {
+  if (!needsShortening('https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0')) {
     throw new Error('our hypd share link must always be shortened')
   }
-  if (needsShortening('https://hypd.store/999999/afflink/daoli7dtm6mc5h7k1ffg')) {
+  if (needsShortening('https://hypd.store/999999/afflink/daoll7ltm6mc5h7k1fq0')) {
     throw new Error('another store hypd link is shortened by the normal length rule only')
+  }
+  {
+    const hypd = 'https://hypd.store/93944/afflink/verifiedMeeshoToken'
+    const destination = 'https://www.meesho.com/women-kurta/p/MEESHO123?affid=infhypd'
+    const fakeFetch = async url => ({
+      url,
+      status: 200,
+      text: async () => `<script>window.location = "${destination}"</script>`,
+    })
+    const job = { id: 'hypd-meesho', direct: true, text: `Kurta deal ₹499\n${hypd}` }
+    await prepareDirectJob(job, fakeFetch)
+    if (job.verifiedHypdLinks?.[hypd] !== destination) throw new Error('direct HYPD Meesho destination was not verified')
+    if (displayUrl(job, hypd) !== hypd) throw new Error('verified Meesho HYPD share link must remain the displayed destination')
+    if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('verified direct HYPD should not require a bot-cache row')
+    if (!needsShortening(displayUrl(job, hypd))) throw new Error('verified Meesho HYPD should be shortened')
+  }
+  {
+    const hypd = 'https://hypd.store/93944/afflink/shopsyDestinationToken'
+    const shopsy = 'https://www.shopsy.in/duffle-bag/p/SHOPSY123?affid=infhypd&affExtParam1=x&affExtParam2=y'
+    const fakeFetch = async url => ({ url, status: 200, text: async () => `<script>go("${shopsy}")</script>` })
+    const job = { id: 'hypd-shopsy', direct: true, text: `Duffle deal ₹499\n${hypd}` }
+    await prepareDirectJob(job, fakeFetch)
+    if (displayUrl(job, hypd) !== 'https://www.shopsy.in/duffle-bag/p/SHOPSY123') {
+      throw new Error('direct Shopsy HYPD must become a clean merchant URL: ' + displayUrl(job, hypd))
+    }
+    if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('clean Shopsy fallback must not carry the HYPD wrapper into provenance')
+    const post = formatWhatsAppPost(job)
+    if (post.includes('hypd.store') || !post.includes('https://www.shopsy.in/duffle-bag/p/SHOPSY123')) {
+      throw new Error('direct Shopsy post must use its clean merchant fallback: ' + post)
+    }
+  }
+  {
+    const hypd = 'https://hypd.store/93944/afflink/unknownDestinationToken'
+    const fakeFetch = async url => ({ url, status: 200,
+      text: async () => '<script>go("https://merchant.example/product/123")</script>' })
+    const job = { id: 'hypd-unknown', direct: true, text: `Mystery deal ₹499\n${hypd}` }
+    await prepareDirectJob(job, fakeFetch)
+    if (!job.blockedLinks?.[hypd] || displayUrl(job, hypd)) throw new Error('unknown HYPD destination must be blocked')
+    if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('blocked HYPD destination must not reach provenance')
+    if (formatWhatsAppPost(job).includes('hypd.store')) throw new Error('unknown HYPD destination leaked to the post')
+  }
+  {
+    const foreign = 'https://hypd.store/88888/afflink/foreignDestinationToken'
+    let fetched = false
+    const job = { id: 'hypd-foreign', direct: true, text: `Mystery deal ₹499\n${foreign}` }
+    await prepareDirectJob(job, async () => { fetched = true; throw new Error('must not fetch foreign HYPD') })
+    if (!job.blockedLinks?.[foreign] || fetched || displayUrl(job, foreign)) {
+      throw new Error('foreign HYPD link must be blocked without fetching')
+    }
   }
   // Our-tag Amazon links are self-proving and must NEVER reach the link_cache
   // DB check (provenance leak fix): the tag only exists on links WE tagged, the

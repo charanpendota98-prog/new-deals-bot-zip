@@ -32,47 +32,42 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), routing + media-fix notes |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
 
+The complete offline regression gate runs the bot behavior suites, cross-service product-identity checks, the WhatsApp bridge self-test, and Python syntax checks. GitHub Actions runs this same command on every push and pull request.
+
 ```bash
-# Python bot — deps (a fresh box needs aiohttp/telethon) + smoke test
-pip install --break-system-packages aiohttp telethon
-python3 -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py \
-                      ops/quality_audit.py
+# Local setup (once)
+python3 -m venv .venv
+.venv/bin/python -m pip install -r bestgaa/requirements.txt
+npm install --prefix tg-wa-bridge --no-package-lock --ignore-scripts
 
-# Bridge — deps + built-in contract tests (expects: "bridge self-test PASS").
-# Env values are arbitrary — the self-test makes no network calls (and, since
-# v17.6, it cannot write the live state file either):
-cd tg-wa-bridge && npm install \
-  && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test
+# Run all offline checks (no Telegram, WhatsApp, or affiliate credentials required)
+PYTHON=.venv/bin/python ./ops/test_all.sh
 
-# Behaviour tests (no network; expects all green):
-python3 test_render_job.py        # 160 checks: routing, formatting, conversion
-python3 test_rescan.py            # ingest dead-man's switch + idempotency
-python3 test_pipeline_fixes.py    # 225 checks: immediacy, zero duplicates, quality
-python3 test_best_copy.py         # best copy of a product, fidelity gate, auditor
-python3 test_duplicate_sim.py     # real worker path: one copy per channel, always
-python3 test_earnkaro_conversion.py  # 97 checks: EarnKaro request/response contract,
-                                     # the API key's publisher, Amazon-via-EarnKaro,
-                                     # the three first-preference sources, the
-                                     # whose-link-attribution verdicts and the
-                                     # conversion report
-python3 test_hypd_links.py        # 72 checks: OUR hypd.store links: no unwrap, always Bitly,
-                                     # Meesho->our-link map, foreign-store refusal
-python3 ops/deploy_and_verify.sh --verify-only   # on the server: proves what is live
+# On the deployed server: prove what is live
+python3 ops/deploy_and_verify.sh --verify-only
 
-# Prove the guarantees on a real (or copied) database — read-only, exit 1 with
-# --strict so cron/systemd can alert on it:
-python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200
+# Audit a real or copied database (read-only; --strict exits non-zero on findings)
+python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --strict
 ```
+
+To run an individual behavior suite, use `python3 test_render_job.py`,
+`python3 test_rescan.py`, `python3 test_pipeline_fixes.py`,
+`python3 test_best_copy.py`, `python3 test_duplicate_sim.py`,
+`python3 test_earnkaro_conversion.py`, `python3 test_hypd_links.py`, or
+`python3 test_line_fidelity.py` from the repository root. The bridge contract
+can also be run directly with `cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x
+WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test`.
 
 The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 `EARNKARO_API_KEY` and `AMAZON_TAG` at import time — it exits with
-`Missing required environment variable` until a real `.env` exists. That is
-expected on a dev machine; see deployment below.
+`Missing required environment variable` until a real `.env` exists. The offline
+test suites set dummy values for their isolated checks; see deployment below for
+live credentials.
 
 ## Deploying to the server (one command, fresh)
 
@@ -86,9 +81,10 @@ git pull                       # main has everything now
 
 It chains, in order: `ops/deploy_and_verify.sh --with-tests` (suites → repack →
 deploy both services → restart → sha256 + boot-version proof), then
-`ops/hypd_links.py` with OUR three share links (teaches the bot which product
-each one covers), then `ops/earnkaro_check.py` (live: the EarnKaro key pays US,
-and our hypd links round-trip through Bitly), then `ops/conversion_report.py`
+`ops/hypd_links.py` with configured HYPD candidates (it stores only links whose
+destination is verified Meesho), then `ops/earnkaro_check.py` (live: the
+EarnKaro key pays US, and verified Meesho HYPD links round-trip through Bitly),
+then `ops/conversion_report.py`
 (per-route verdict from the live DB + log). Every line it prints is `OK` or
 `CHECK`, and every `CHECK` names its own fix; exit code 1 if anything needs
 attention. Re-running it is always safe.
@@ -134,28 +130,39 @@ all three are now covered by `test_earnkaro_conversion.py`:
    cannot, logs the API's own words — an unreadable answer is a **lost
    commission**, never a lost post.
 3. **The key is set up properly.** The token is a JWT whose payload names the
-   account that gets paid (`earnkaro: 5478322`). The bot decodes it at startup,
-   pins `OUR_EK_ID` to that publisher (the foreign-publisher guard that rejects
-   a converted Flipkart link carrying `affExtParam2` of somebody else), logs
-   which account earns, and refuses to pretend: a token that is not a JWT, or
-   one whose publisher disagrees with `.env`, is reported loudly. A refused
-   token (HTTP 401/403) is logged as `EK AUTH` with the fix, instead of being
-   mistaken for "this store has no campaign".
+   account (`earnkaro: 5478322`). The bot decodes it at startup and rejects a
+   Flipkart URL carrying somebody else's `affExtParam2`; a refused token
+   (HTTP 401/403) is logged as `EK AUTH`.
+
+**Important: the token alone does not select the affiliate network.** The
+Affiliaters account must also have EarnKaro connected under [Networks](https://docs.affiliaters.in/settings/affiliate-settings/networks),
+and the [Selections](https://docs.affiliaters.in/settings/affiliate-settings/selections)
+for Amazon, Flipkart, and Others must point to a network that supports that
+store. Save those settings in Affiliaters. Unsupported stores/campaigns can
+still legitimately return no link; the bot cannot manufacture a campaign.
 
 ```bash
-# On the server — set or rotate the key in one command (token never printed):
+# On the server — set/rotate the key (never printed by the script):
 cd ~/bestgaa-bot/bestgaa-bot   # or wherever ops/ lives
-./set_earnkaro_key.sh 'eyJhbGciOiJIUzI1NiIs...'     # writes .env, restarts, verifies
-python3 ops/earnkaro_check.py --offline             # decode the token only
-python3 ops/earnkaro_check.py                       # live conversion probes
-journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'
+./set_earnkaro_key.sh '<fresh-token>'
+python3 ops/earnkaro_check.py --offline
+
+# Diagnose the ACTUAL URLs that failed to convert (repeat --deal-url as needed):
+python3 ops/earnkaro_check.py --skip-hypd \
+  --deal-url 'https://www.flipkart.com/real-product-url' \
+  --deal-url 'https://www.amazon.in/dp/REALASIN'
+
+# Stream distinct outcomes; no token is logged:
+journalctl -u bestgaa -f | grep -E 'EK SUCCESS|EK MISS|EK AUTH|EK REJECT|EK HTTP|EK NETWORK|EK FALLBACK|UNMONETIZED'
 ```
 
-Every successful conversion logs one `EK CONVERT | <store> -> <link>` line, so
-"are the EarnKaro links actually being generated?" is answerable from the log
-alone; `UNMONETIZED LINK` still marks the posts that earn nothing. A link cached
-while Amazon was still tagged natively is re-converted rather than served for
-its 14-day life, so the switch takes effect immediately.
+`EK SUCCESS` means an attributable affiliate output passed validation;
+`EK MISS` means there was no usable output (including a no-link response or an
+API source echo); `EK REJECT` means an extracted output failed attribution
+validation. An Amazon
+native-tag fallback is logged as `EK FALLBACK` and is **not** counted as an
+EarnKaro conversion. `UNMONETIZED LINK` still marks deals posted with a clean
+merchant URL and no affiliate attribution.
 
 `ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` is the same thing as a runbook
 (what to run on the server, in order).
@@ -178,13 +185,14 @@ python3 ops/conversion_report.py --hours 72
 python3 ops/conversion_report.py --json     # for cron/alerting
 ```
 
-It reads the bot's own database and log and prints one verdict line per route —
-`EarnKaro WORKING (pays 5478322)`, `Amazon WORKING (tag mama086-21, via
-EarnKaro, native fallback)`, `HYPD WORKING (N learned, M posts on our link,
-K waiting for curation)`, `Bitly PRESENT/MISSING` — lists every link produced in
-the window classified by route (`passthrough` = posted UNMONETIZED), and ends
-with `NEEDS ATTENTION` + the exact command for each item. Exit code 1 when
-something needs attention, so a cron job can alert on it.
+It reads the bot's own database and log and prints route health based on
+separate `EK SUCCESS`, `EK MISS`, `EK AUTH`, and `EK REJECT` markers. EarnKaro can
+report `WORKING`, `PARTIAL`, `NOT CONVERTING`, `NEEDS REVIEW`, or `IDLE`; it no
+longer counts every `EK CONVERT` line as a failed conversion. Amazon's native
+fallback count is shown separately and is never labelled EarnKaro commission.
+It also classifies links in the window (`passthrough` = posted UNMONETIZED) and
+ends with `NEEDS ATTENTION` + suggested fixes. Exit code 1 when something needs
+attention, so a cron job can alert on it.
 
 **Prove it in one command** (on the server, which has internet):
 
@@ -201,7 +209,7 @@ it resolves OUR hypd share links, Bitly-shortens them exactly like the bot, and
 follows the short link back to our store (`--hypd-only` runs just that part). `WRONG ACCOUNT` means the token belongs to
 somebody else (or the response echoed someone else's attribution) - replace the
 key with `./ops/set_earnkaro_key.sh '<token>'`. A store with no campaign is
-normal and posts a clean link; Meesho/Shopsy are covered by OUR HYPD link (see
+normal and posts a clean link; Meesho is covered by OUR HYPD link (see
 the next section).
 
 **Three new first-preference sources** (2026-09-24, "e three channel source ga
@@ -215,29 +223,28 @@ carry uppercase characters, so source matching is normalised
 (`normalize_source_name()`), which is also what the claim SQL's `lower(source)`
 already did.
 
-## OUR HYPD links: Meesho/Shopsy products earn on our own link (2026-09-24)
+## OUR HYPD link: Meesho only (store 93944)
 
-The user supplied three of **our own** HYPD creator-store share links
-(`hypd.store/93944/afflink/…` — store `93944`, slug `smartdeals`) and said: the
-Meesho products arriving in the third source channel (`t.me/+6LA1ljXGlbNmMjA1`)
-must convert **through our link**, and that link must always be Bitly-shortened.
+HYPD is configured to use **our** creator-store ID `93944` (`smartdeals`) for
+verified Meesho products only. Shopsy is deliberately excluded. An HYPD share
+link is learned or posted only after its destination is verified as a Meesho
+product page; old Shopsy mappings are ignored and removed when encountered.
 
 **What a HYPD share link is.** It is not a wrapper to be unwrapped: the
 attribution lives in the token itself (`affid=infhypd`, `affExtParam1=<our HYPD
 account>`, `affExtParam2=<the token>`), so resolving/replacing it throws the
 commission away. It is a **final, monetized link** and is treated like one.
 
-Behaviour (pinned by `test_hypd_links.py`, 72 checks, green):
+Behaviour (pinned by `test_hypd_links.py`):
 
 | Situation | What the bot does |
 |---|---|
-| A source (or bridge) posts OUR `hypd.store/93944/afflink/…` link | Published as **our** link: never unwrapped, never stripped, no EarnKaro call, and **always Bitly-shortened** (`HYPD_ALWAYS_BITLY=true`, even though the URL is short) |
-| The same link arrives again in a text dump | `shorten()` pass keeps it short whether it is raw (converted) or already `bit.ly` |
-| Bitly/is.gd is down | The **raw HYPD link is posted** — the commission link is never lost or left unmonetized |
-| A bare Meesho/Shopsy **product** link (no EarnKaro campaign) | The bot resolves it, finds the product identity, and swaps in **our HYPD link already minted for that product** (`store.hypd_link_for`), then Bitly-shortens it |
-| A bare Meesho/Shopsy link with **no** known HYPD link | Falls through to the normal path, posts UNMONETIZED, and is recorded on the curation to-do list (`HYPD MISSING` + `HYPD WANTED` in the log); nothing is ever invented |
-| Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours (that would pay them); it goes down the normal path |
-| A HYPD link rediscovered later | `resolve()` returns it untouched with **no network call** (nothing to unwrap) |
+| A source posts our `hypd.store/93944/afflink/…` link and it resolves to Meesho | Published as **our** link: never stripped, not sent to EarnKaro, and Bitly-shortened |
+| A bare Meesho product has a matching, verified HYPD mapping | The bot swaps in our curated Meesho HYPD link and shortens it |
+| A Meesho product has no known HYPD mapping | It is recorded as `HYPD MISSING` / `HYPD WANTED`; no link is invented, and the post may be unmonetized |
+| Shopsy, or an HYPD link whose destination is Shopsy | **Never** routed through HYPD; it follows the ordinary affiliate path or uses a clean merchant fallback |
+| An HYPD link has an unknown destination | Not learned or published as a Meesho link; the tool reports that it could not verify the merchant |
+| Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours; it would pay them |
 
 **Teaching the bot your HYPD links** (HYPD has no public link-creation API —
 links are minted in the HYPD creator app for a curated product, then the bot
@@ -260,17 +267,16 @@ source spells the URL (with or without HYPD's tracking parameters) — earns on
 our link. Merchant pages are stored clean (tracking stripped) so a bare link
 matches.
 
-Knobs (`.env`, all optional): `HYPD_STORE_ID=93944` (default, ours),
-`HYPD_STORE_SLUG=smartdeals`, `OUR_HYPD_STORES` (extra store ids to trust),
-`HYPD_ALWAYS_BITLY=true`, `HYPD_MERCHANT_DOMAINS=meesho.com,shopsy.in`
-(merchants this covers), and reserved `HYPD_API_URL`/`HYPD_API_TOKEN` (unused
-until HYPD ships a link API). The bridge mirrors the store ids via `HYPD_STORES`
-(`93944,smartdeals`) and its self-test asserts our link counts as ours, a
-foreign store (`999999`) does not, and our link is always shortened.
+Pinned HYPD scope: `HYPD_STORE_ID=93944`, `HYPD_STORE_SLUG=smartdeals`,
+`HYPD_ALWAYS_BITLY=true`, and `HYPD_MERCHANT_DOMAINS=meesho.com` (Meesho only;
+Shopsy is excluded). Reserved `HYPD_API_URL`/`HYPD_API_TOKEN` are unused until
+HYPD ships a link API. The bridge mirrors the store ids via `HYPD_STORES`
+(`93944,smartdeals`); for direct-source posts it verifies Meesho destinations,
+uses a clean Shopsy fallback, and blocks foreign/unknown HYPD destinations.
 
 Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
 
-**Nothing earns nothing silently.** A Meesho/Shopsy product we have no HYPD
+**Nothing earns nothing silently.** A Meesho product we have no HYPD
 link for is counted and listed (`HYPD MISSING`, `HYPD WANTED`, then
 `ops/hypd_links.py --wanted`), so the fix — curate it once in the HYPD app — is
 one command away. Learning a link removes it from that list automatically.

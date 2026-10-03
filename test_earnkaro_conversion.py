@@ -90,6 +90,8 @@ def test_response_shapes():
          json.dumps({"success": "1", "data": real}), real),
         ("status instead of success",
          json.dumps({"status": "success", "data": real}), real),
+        ("a top-level converted_url field",
+         json.dumps({"success": 1, "converted_url": real}), real),
         ("a trailing bracket after the link",
          json.dumps({"success": 1, "data": real + ")"}), real),
         ("a url-encoded query survives",
@@ -100,9 +102,19 @@ def test_response_shapes():
         got, reason = bot.parse_earnkaro_response(body)
         check(f"parsed {name}", got == expected, f"got={got!r} reason={reason!r}")
 
+    source = "https://www.flipkart.com/x/p/itm-source?pid=123&lid=old"
+    body = json.dumps({"success": 1, "data": f"Original: {source}\nConverted: {real}"})
+    got, reason = bot.parse_earnkaro_response(body, source_urls=(source,))
+    check("a whole-deal response skips the original URL and finds the converted one",
+          got == real, f"got={got!r} reason={reason!r}")
+
     failures = [
         ("success=0 with the API's own sentence",
          json.dumps({"success": 0, "message": "Url not found in post!"})),
+        ("success=0 cannot be rescued by an echoed URL in data",
+         json.dumps({"success": 0, "data": real, "message": "no campaign"})),
+        ("status=error cannot be rescued by a URL in data",
+         json.dumps({"status": "error", "data": real, "message": "invalid token"})),
         ("'could not locate' data",
          json.dumps({"success": 0, "data": "could not locate any product link"})),
         ("an empty body", ""),
@@ -204,6 +216,69 @@ def test_echo_and_foreign_links_are_refused():
     check("a non-shop link is not sent to the API",
           asyncio.run(aff2.convert("https://t.me/somechannel", False)) is None
           and not session2.posts)
+
+
+def test_echoed_destination_is_not_mistaken_for_a_conversion():
+    """A short source URL can resolve to a merchant page different from source_url.
+
+    The old guard compared the API result only with source_url, so an API echo
+    of the resolved bare product page passed as a monetized EarnKaro link.
+    """
+    source = "https://fktr.in/echo-short-link"
+    resolved = "https://www.flipkart.com/boat-airdopes/p/itm9876543210?pid=PID9876543210"
+    session = FakeSession([json.dumps({"success": 1, "data": resolved})])
+    aff = Aff(session)
+    result = asyncio.run(aff.convert(source, False, resolved_hint=resolved))
+    check("a bare resolved merchant URL is not accepted as an EarnKaro conversion",
+          result is None, repr(result))
+
+    # A direct Flipkart result can be genuine when the token's publisher is
+    # explicitly present. Compaction must retain that attribution.
+    direct = ("https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itm1234567890"
+              "?lid=SESSIONNOISE123&marketplace=FLIPKART&pid=PRODUCTPID12345"
+              "&affExtParam2=5478322")
+    source2 = "https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itm1234567890?pid=PRODUCTPID12345"
+    session2 = FakeSession([json.dumps({"success": 1, "data": direct})])
+    aff2 = Aff(session2)
+    result2 = asyncio.run(aff2.convert(source2, False, resolved_hint=source2))
+    check("our direct Flipkart publisher id is accepted from the converter",
+          bool(result2) and "affExtParam2=5478322" in result2.affiliate, repr(result2))
+    check("Flipkart compaction strips session noise but keeps product and attribution",
+          bool(result2) and "pid=PRODUCTPID12345" in result2.affiliate
+          and "lid=" not in result2.affiliate and "marketplace=" not in result2.affiliate,
+          repr(result2))
+
+    foreign_direct = direct.replace("affExtParam2=5478322", "affExtParam2=999999")
+    parsed_foreign, _ = bot.parse_earnkaro_response(
+        json.dumps({"success": 1, "data": foreign_direct}), source_urls=(source2,))
+    check("a foreign direct publisher id reaches attribution rejection, not echo filtering",
+          parsed_foreign == foreign_direct
+          and not bot.AffiliateClient.earnkaro_output_kind(parsed_foreign), repr(parsed_foreign))
+
+    # A previously cached long affiliate URL must still pass the last outbound
+    # provenance check after the final formatter compacts it.
+    async def final_tidy_check():
+        with tempfile.TemporaryDirectory() as td:
+            local = bot.Store(Path(td) / "affiliate-tidy.sqlite3")
+            previous = bot.store
+            bot.store = local
+            try:
+                await local.cache_link(source2, direct, source2, "FK:PRODUCTPID12345")
+                final_aff = bot.AffiliateClient(FakeSession([]))
+                async def no_shortener(url):
+                    return None
+                final_aff.shorten = no_shortener
+                rendered = await final_aff.shorten_long_urls_in_text("Deal\n" + direct)
+                return rendered, await local.verify_generated_text(rendered)
+            finally:
+                bot.store = previous
+
+    rendered, provenance_ok = asyncio.run(final_tidy_check())
+    rendered_url = bot.URL_RE.findall(rendered)[0] if bot.URL_RE.findall(rendered) else ""
+    check("the final tidy pass preserves affExtParam2", "affExtParam2=5478322" in rendered_url,
+          rendered_url)
+    check("and registers the compact affiliate URL before provenance validation",
+          provenance_ok, rendered_url)
 
 
 # ---------------------------------------------------------------------------
@@ -490,7 +565,7 @@ def test_checker_proves_whose_link():
     amazon_theirs = "https://www.amazon.in/dp/B0FPDD9WKP?tag=deals0911-21"
     hypd_destination = ("https://www.meesho.com/cotton-saree/p/abc12345"
                         "?affid=infhypd&affExtParam1=6ab13e1eb6ce5677d060574c"
-                        "&affExtParam2=daoli7dtm6mc5h7k1ffg")
+                        "&affExtParam2=daoll7ltm6mc5h7k1fq0")
 
     verdict, where = checker.whose_link(ours, publisher, bot.OUR_TAG, 5)
     check("a converted Flipkart link with our publisher proves OUR link",
@@ -506,8 +581,8 @@ def test_checker_proves_whose_link():
     # A page carrying HYPD's own attribution is NOT an EarnKaro link; the check
     # must never call it ours (and must name the token it saw).
     check("a HYPD-attributed page is never reported as OUR EarnKaro link",
-          verdict != "ours" and "daoli7dtm6mc5h7k1ffg" in where, f"{verdict}: {where}")
-    hypd_share = "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg"
+          verdict != "ours" and "daoll7ltm6mc5h7k1fq0" in where, f"{verdict}: {where}")
+    hypd_share = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
     verdict, where = checker.whose_link(hypd_share, publisher, our_tag, 5)
     check("and OUR hypd share link is reported as not-an-EarnKaro-link",
           verdict != "ours", f"{verdict}: {where}")
@@ -518,13 +593,62 @@ def test_checker_proves_whose_link():
           "PAYS US ({publisher})" in source, "")
     check("and it expands short links before judging them",
           "def expand(" in source and "is_short_link" in source, "")
+    check("the live check rejects a native Amazon fallback as EarnKaro output",
+          not checker.is_earnkaro_output(amazon_ours, publisher), amazon_ours)
+    check("the checker accepts OUR generated EarnKaro redirect",
+          checker.is_earnkaro_output("https://ekaro.in/enkr123", publisher), "")
+    check("the checker rejects a plain merchant URL even after HTTP 200",
+          not checker.is_earnkaro_output("https://www.flipkart.com/x/p/itm1", publisher), "")
+    parsed, why = checker.response_link(
+        200, json.dumps({"success": 0, "data": "https://ekaro.in/fake", "message": "no campaign"}),
+        "https://www.flipkart.com/x/p/itm1")
+    check("the checker honors success=0 instead of trusting a URL in the body",
+          parsed is None and "no campaign" in why, f"{parsed}: {why}")
+    parsed, why = checker.response_link(
+        200, json.dumps({"success": 1, "data": "source https://www.flipkart.com/x/p/itm1\n"
+                                              "converted https://ekaro.in/genuine"}),
+        "https://www.flipkart.com/x/p/itm1")
+    check("the checker skips a source echo and picks the returned affiliate link",
+          parsed == "https://ekaro.in/genuine", f"{parsed}: {why}")
+    direct, _ = checker.response_link(
+        200, json.dumps({"success": 1, "data":
+                         "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=" + publisher}),
+        "https://www.flipkart.com/x/p/itm1?pid=1")
+    check("the checker keeps a direct Flipkart result when it adds our publisher id",
+          bool(direct) and checker.is_earnkaro_output(direct, publisher), repr(direct))
+    already_ours = ("https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=" + publisher)
+    parsed_ours, _ = checker.response_link(
+        200, json.dumps({"success": 1, "data": already_ours}), already_ours)
+    check("the checker retains a direct result that already carries our publisher id",
+          parsed_ours == already_ours, repr(parsed_ours))
+
+    # --offline is advertised as token-only and must not probe HYPD/Bitly or
+    # the EarnKaro endpoint as a side effect.
+    old_argv = sys.argv
+    old_hypd_check = checker.check_our_hypd_links
+    old_convert = checker.convert
+    def unexpected_network(*_args, **_kwargs):
+        raise AssertionError("--offline attempted a network call")
+    try:
+        checker.check_our_hypd_links = unexpected_network
+        checker.convert = unexpected_network
+        sys.argv = ["earnkaro_check.py", "--key", TOKEN, "--offline"]
+        offline_result = checker.main()
+    finally:
+        checker.check_our_hypd_links = old_hypd_check
+        checker.convert = old_convert
+        sys.argv = old_argv
+    check("--offline inspects the token without any network probes", offline_result == 0,
+          str(offline_result))
 
 
 def test_checker_proves_our_hypd_links_too():
     """One command must answer BOTH questions: EarnKaro key AND our hypd links."""
     source = (Path(__file__).parent / "ops" / "earnkaro_check.py").read_text(encoding="utf-8")
-    for token in ("daoli7dtm6mc5h7k1ffg", "daol5bac45l0tc0oo5rg", "daol52dtm6mc5h7k1ejg"):
-        check(f"the checker probes our hypd link {token}", token in source, "")
+    check("the checker probes our new HYPD candidate behind the Meesho-only gate",
+          "daoll7ltm6mc5h7k1fq0" in source, "")
+    check("the checker excludes the known Shopsy HYPD link",
+          "daoli7dtm6mc5h7k1ffg" not in source, "")
     check("it shorts our hypd link the way the bot does (Bitly v4)",
           "api-ssl.bitly.com/v4/shorten" in source, "")
     check("and proves the short link comes back to OUR store",
@@ -533,6 +657,56 @@ def test_checker_proves_our_hypd_links_too():
           "--hypd-only" in source and "--skip-hypd" in source, "")
     check("a network-less box is not reported as a broken link",
           'status.startswith("unreachable")' in source, "")
+
+
+def test_hypd_diagnostic_only_shortens_verified_meesho_links():
+    """HYPD diagnostics must not Bitly-wrap Shopsy or unknown destinations."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "earnkaro_check_hypd_scope", Path(__file__).parent / "ops" / "earnkaro_check.py")
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    old_values = {name: getattr(checker, name) for name in (
+        "OUR_HYPD_LINKS", "bitly_tokens", "resolve_hypd_meesho_destination",
+        "bitly_shorten", "resolve_once")}
+    links = ("https://hypd.store/93944/afflink/testmeesho1",
+             "https://hypd.store/93944/afflink/testmeesho2")
+    shorten_calls = []
+    try:
+        checker.OUR_HYPD_LINKS = links
+        checker.bitly_tokens = lambda _timeout: ["test-token"]
+        destinations = {links[0]: "https://www.shopsy.in/duffle/p/1", links[1]: ""}
+        checker.resolve_hypd_meesho_destination = lambda url, _timeout: (
+            url, "200", destinations[url])
+        checker.bitly_shorten = lambda *args: (shorten_calls.append(args[0]) or "https://bit.ly/should-not-exist", "")
+        failures, ok = checker.check_our_hypd_links(1.0, False)
+        check("Shopsy and unknown destinations are both rejected",
+              failures == 2 and ok == 0, f"failures={failures}, ok={ok}")
+        check("unverified destinations are never sent to Bitly", not shorten_calls,
+              str(shorten_calls))
+
+        destinations = {link: "https://www.meesho.com/product/p/abc" for link in links}
+        checker.resolve_once = lambda _url, _timeout: (
+            "https://hypd.store/93944/afflink/verified-token", "200")
+        checker.bitly_shorten = lambda url, _tokens, _timeout: (
+            shorten_calls.append(url) or "https://bit.ly/verified", "")
+        failures, ok = checker.check_our_hypd_links(1.0, False)
+        check("verified Meesho candidates may be shortened and checked",
+              failures == 0 and ok == 2 and shorten_calls == list(links),
+              f"failures={failures}, ok={ok}, shortened={shorten_calls}")
+
+        foreign = "https://hypd.store/88888/afflink/not-ours"
+        checker.OUR_HYPD_LINKS = (foreign,)
+        before = len(shorten_calls)
+        failures, ok = checker.check_our_hypd_links(1.0, False)
+        check("a foreign HYPD store is not fetched or shortened",
+              failures == 1 and ok == 0 and len(shorten_calls) == before,
+              f"failures={failures}, ok={ok}, shortened={shorten_calls}")
+    finally:
+        for name, value in old_values.items():
+            setattr(checker, name, value)
 
 
 def test_status_report_answers_are_we_converting():
@@ -549,13 +723,18 @@ def test_status_report_answers_are_we_converting():
     report = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(report)
 
+    report_cfg = report.config_report({"HYPD_MERCHANT_DOMAINS": "meesho.com,shopsy.in"})
+    check("the status report pins HYPD to Meesho despite a stale Shopsy env value",
+          report_cfg["hypd_merchants"] == "meesho.com (pinned; HYPD is Meesho-only)",
+          report_cfg["hypd_merchants"])
+
     cases = (
         ("https://ekaro.in/abc123",
          "https://www.flipkart.com/x/p/itm1?affExtParam2=5478322", "earnkaro"),
         ("https://bit.ly/amz",
          "https://www.amazon.in/dp/B0FPDD9WKP?tag=mama086-21", "amazon"),
         ("https://bit.ly/hypd",
-         "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg", "hypd"),
+         "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0", "hypd"),
         ("https://www.myntra.com/tshirt/buy", "https://www.myntra.com/tshirt/buy", "passthrough"),
     )
     for affiliate, resolved, want in cases:
@@ -567,6 +746,49 @@ def test_status_report_answers_are_we_converting():
            "amazon_via_earnkaro": "true", "amazon_tag": "mama086-21",
            "hypd_store": "93944", "hypd_slug": "smartdeals", "hypd_always_bitly": "true",
            "hypd_merchants": "meesho.com", "bitly_tokens": 1}
+    import sqlite3
+    import time
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "hypd-report.sqlite3"
+        conn = sqlite3.connect(db_path)
+        conn.executescript("""
+            CREATE TABLE link_cache (source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+                resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+            CREATE TABLE hypd_links (token TEXT, store TEXT, afflink_url TEXT,
+                resolved_url TEXT, product_key TEXT, created_at REAL);
+            CREATE TABLE hypd_wanted (product_url TEXT, product_key TEXT, times INTEGER,
+                first_seen REAL, last_seen REAL);
+        """)
+        now = time.time()
+        meesho = "https://www.meesho.com/product/p/mee123"
+        shopsy = "https://www.shopsy.in/product/p/shop123"
+        conn.executemany("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", [
+            ("m", "93944", "https://hypd.store/93944/afflink/meesho", meesho, "PID:mee123", now),
+            ("s", "93944", "https://hypd.store/93944/afflink/shopsy", shopsy, "PID:shop123", now),
+        ])
+        conn.executemany("INSERT INTO link_cache VALUES(?,?,?,?,?)", [
+            (meesho, "https://bit.ly/meesho", meesho, "PID:mee123", now),
+            (shopsy, "https://bit.ly/shopsy", shopsy, "PID:shop123", now),
+        ])
+        conn.executemany("INSERT INTO hypd_wanted VALUES(?,?,?,?,?)", [
+            (meesho, "PID:mee123", 1, now, now),
+            (shopsy, "PID:shop123", 1, now, now),
+        ])
+        conn.commit()
+        conn.close()
+        scoped = report.db_report(db_path, 24)
+        check("the report classifies verified Meesho short links as HYPD",
+              scoped["routes"].get("hypd", {}).get("count") == 1, str(scoped["routes"]))
+        check("the report flags and separates legacy Shopsy HYPD cache rows",
+              scoped["routes"].get("hypd_out_of_scope", {}).get("count") == 1,
+              str(scoped["routes"]))
+        check("the report lists only verified Meesho HYPD mappings and wanted rows",
+              len(scoped["hypd_learned"]) == 1 and len(scoped["hypd_wanted"]) == 1,
+              f"learned={scoped['hypd_learned']} wanted={scoped['hypd_wanted']}")
+        scoped_lines, scoped_problems = report.verdict(cfg, scoped, {"markers": {}})
+        check("the report warns about the legacy out-of-scope row",
+              any("legacy HYPD cache" in p for p in scoped_problems), str(scoped_problems))
+
     healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
                           "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
                "hypd_learned": [{"afflink": "x"}], "hypd_wanted": [], "posted_deals": 7}
@@ -591,11 +813,33 @@ def test_status_report_answers_are_we_converting():
     check("and the verdict names the fix when the key is refused",
           any("BROKEN" in l for l in auth_lines), str(auth_lines))
 
+    zero_routes = dict(healthy, routes={})
+    no_link_lines, no_link_problems = report.verdict(
+        cfg, zero_routes, {"markers": {"EK MISS": {"count": 3}}})
+    earnkaro_line = next((line for line in no_link_lines if line.startswith("EarnKaro")), "")
+    check("zero API conversions are reported as NOT CONVERTING, not WORKING",
+          "NOT CONVERTING" in earnkaro_line and "WORKING" not in earnkaro_line,
+          str(no_link_lines))
+    check("the no-conversion verdict points to Affiliaters selections and campaigns",
+          any("network selections" in p for p in no_link_problems), str(no_link_problems))
+
+    with tempfile.TemporaryDirectory() as td:
+        legacy_log = Path(td) / "legacy.log"
+        legacy_log.write_text(
+            "[INFO] EK CONVERT | www.flipkart.com -> https://ekaro.in/a\n"
+            "[WARNING] EK CONVERT | no link for www.amazon.in | API said: none\n",
+            encoding="utf-8")
+        legacy = report.log_report(legacy_log, 24)["markers"]
+        check("legacy EK CONVERT success/failure logs are split accurately",
+              legacy.get("EK SUCCESS", {}).get("count") == 1
+              and legacy.get("EK MISS", {}).get("count") == 1, str(legacy))
+
 
 def main():
     test_response_shapes()
     test_request_contract()
     test_echo_and_foreign_links_are_refused()
+    test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_token_claims()
     test_amazon_policy()
     test_stale_native_amazon_cache_rows_are_reconverted()
@@ -606,6 +850,7 @@ def main():
     test_priority_boost_is_applied()
     test_checker_proves_whose_link()
     test_checker_proves_our_hypd_links_too()
+    test_hypd_diagnostic_only_shortens_verified_meesho_links()
     test_status_report_answers_are_we_converting()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")
 

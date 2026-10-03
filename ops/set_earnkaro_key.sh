@@ -141,4 +141,4 @@ fi
 
 echo
 echo "DONE. Watch the first converted deals in the log:"
-echo "  journalctl -u bestgaa -f | grep -E 'EK CONVERT|EK AUTH|EK REJECT|UNMONETIZED'"
+echo "  journalctl -u bestgaa -f | grep -E 'EK SUCCESS|EK MISS|EK AUTH|EK REJECT|EK HTTP|EK NETWORK|EK FALLBACK|UNMONETIZED'"

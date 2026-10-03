@@ -5,14 +5,13 @@
 #   ./ops/deploy_fresh.sh                 # deploy + verify + teach + report
 #   ./ops/deploy_fresh.sh --dry-run       # print the plan, change nothing
 #   ./ops/deploy_fresh.sh --no-tests      # skip the pre-ship suites (faster)
-#   ./ops/deploy_fresh.sh --no-learn      # do not learn the 3 hypd links
+#   ./ops/deploy_fresh.sh --no-learn      # do not learn the configured Meesho HYPD links
 #   ./ops/deploy_fresh.sh --verify-only   # deploy nothing; just prove + report
 #
 # What it chains (each step is idempotent - re-running is always safe):
 #   1. ops/deploy_and_verify.sh --with-tests   tests -> repack -> deploy -> restart
 #                                              -> hash/version proof
-#   2. ops/hypd_links.py  <our 3 share links>  teach the bot which product each
-#                                              HYPD link covers (skip if already known)
+#   2. ops/hypd_links.py  <candidate HYPD shares>  store only verified Meesho mappings
 #   3. ops/earnkaro_check.py                   live: EarnKaro key pays US +
 #                                              our hypd links come back to our store
 #   4. ops/conversion_report.py                per-route verdict from the live DB+log
@@ -36,12 +35,11 @@ for arg in "$@"; do
   esac
 done
 
-# Our HYPD creator store (93944 / smartdeals). These ARE our monetized links:
-# never unwrapped, always Bitly-shortened (USER RULE 2026-09-24).
+# Candidate share link from our HYPD store (93944 / smartdeals). The known
+# Shopsy link is intentionally absent; this candidate is learned only if
+# ops/hypd_links.py verifies a Meesho destination.
 OUR_HYPD_LINKS=(
-  "https://hypd.store/93944/afflink/daoli7dtm6mc5h7k1ffg"
-  "https://hypd.store/93944/afflink/daol5bac45l0tc0oo5rg"
-  "https://hypd.store/93944/afflink/daol52dtm6mc5h7k1ejg"
+  "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
 )
 
 PY=python3
@@ -67,7 +65,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$DO_LEARN" == "1" ]]; then
     echo "  3. $PY ops/hypd_links.py ${OUR_HYPD_LINKS[0]} \\"
     for link in "${OUR_HYPD_LINKS[@]:1}"; do echo "                              $link \\"; done
-    echo "       # teach the bot which product each of OUR share links covers"
+    echo "       # the tool stores only links verified to land on Meesho"
   fi
   echo "  4. $PY ops/earnkaro_check.py        # live: key pays US + hypd links round-trip via Bitly"
   echo "  5. $PY ops/conversion_report.py    # per-route verdict from the live DB + log"
@@ -107,19 +105,19 @@ else
   step "2/5 DEPLOY (skipped: --verify-only)"
 fi
 
-step "3/5 TEACH THE BOT OUR HYPD LINKS (shop products -> OUR link)"
+step "3/5 VERIFY AND LEARN OUR HYPD CANDIDATES (Meesho only)"
 if [[ "$DO_LEARN" == "1" ]]; then
   if ( cd "$REPO" && "$PY" ops/hypd_links.py --list ) | grep -q "hypd.store/93944"; then
     ok "at least one of OUR hypd links is already known"
   fi
   if ( cd "$REPO" && "$PY" ops/hypd_links.py "${OUR_HYPD_LINKS[@]}" ); then
-    ok "the three share links are learned (product -> OUR link)"
+    ok "verified Meesho share links are learned (product -> OUR link)"
   else
     bad "hypd_links.py could not learn every link - run it alone to see which one"
   fi
   WANTED="$( cd "$REPO" && "$PY" ops/hypd_links.py --wanted 2>/dev/null | grep -c 'https://www\.' || true )"
   if [[ "${WANTED:-0}" -gt 0 ]]; then
-    bad "$WANTED Meesho/Shopsy product(s) still have NO hypd link - curate them in the HYPD app"
+    bad "$WANTED Meesho product(s) still have NO HYPD link - curate them in the HYPD app"
   else
     ok "no product is waiting for a hypd link"
   fi
@@ -146,7 +144,7 @@ echo "==========================================================================
 if (( ${#FAILURES[@]} == 0 )); then
   echo " FRESH DEPLOY DONE — every check passed."
   echo " Watch the first posts:"
-  echo "   tail -f \${BOT_LOG:-$HOME/bestgaa-bot/bestgaa-bot/logs/bot.log} | grep -E 'EK CONVERT|EK AUTH|HYPD LINK|HYPD MISSING|UNMONETIZED'"
+  echo "   tail -f \${BOT_LOG:-$HOME/bestgaa-bot/bestgaa-bot/logs/bot.log} | grep -E 'EK SUCCESS|EK MISS|EK AUTH|EK REJECT|EK HTTP|EK NETWORK|EK FALLBACK|HYPD LINK|HYPD MISSING|UNMONETIZED'"
 else
   echo " FRESH DEPLOY FINISHED WITH ${#FAILURES[@]} ITEM(S) TO LOOK AT:"
   for item in "${FAILURES[@]}"; do echo "   - $item"; done
