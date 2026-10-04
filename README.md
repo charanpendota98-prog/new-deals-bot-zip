@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -166,6 +166,54 @@ merchant URL and no affiliate attribution.
 
 `ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` is the same thing as a runbook
 (what to run on the server, in order).
+
+### Fresh key (2026-10-04): prove the EXACT link the channel will carry
+
+The token currently in this checkout is `ops/.earnkaro_key` (**gitignored**,
+never committed): it decodes to EarnKaro publisher `5478322`, issued
+2026-10-04 05:20 UTC. `ops/apply_dual_hotfix.sh` writes exactly that file into
+the server `.env`, and `ops/earnkaro_check.py` now also *reads* it when no
+`--key`/`--env-file`/`bestgaa/.env` provides one — so the key a deploy would
+use is the key a check tests.
+
+Asking "will this link convert, shorten and pay us?" about a real source link
+used to need two tools and some faith. One command now answers it by running
+**the bot's own pipeline** (`bestgaa/main_bot_new.py`, not a re-implementation
+of its rules: resolve → convert → shorten), and prints the link the post will
+carry:
+
+```bash
+python3 ops/earnkaro_check.py --plan --deal-url 'https://www.flipkart.com/real-product-url'
+python3 ops/earnkaro_check.py --plan --multi --deal-url '<link 1>' --deal-url '<link 2>'   # a list post
+```
+
+```
+[Actual post URL 1]
+  source    : https://www.flipkart.com/real-product-url
+  resolve   : https://www.flipkart.com/real-product-url?pid=...
+  posted as : https://ekaro.in/enkr...
+  long link : https://www.flipkart.com/...
+  length    : SHORT LINK on ekaro.in (our short domain; never re-shortened)
+  attribution: affExtParam2=5478322 -> https://www.flipkart.com/...
+  verdict   : OURS - this post pays our EarnKaro account 5478322
+```
+
+The verdicts are deliberately blunt: **UNMONETIZED** (the network has no
+campaign for that store — the deal still posts, with a clean merchant link and
+no commission), **NATIVE AMAZON-TAG FALLBACK** (the bot's own gate refuses to
+call that an EarnKaro conversion, and neither does this report: with Associates
+still rejecting the account it earns nothing), **WRONG ACCOUNT** (it pays
+somebody else), **OUR HYPD creator-store link** (store 93944, Meesho only), and
+a length line that admits when the shortener was unavailable and the longer
+link posted instead (a deal is never lost to a shortener outage). Exit code 1
+if any link needs attention; every line names its own fix. The plan run uses a throwaway
+queue database and points `EARNKARO_API_KEY` at the key under test, so it can
+never disturb live state.
+
+The plan mode itself is pinned by `test_earnkaro_conversion.py` (fake client, no
+network): the link it prints, the account it proves, the UNMONETIZED and
+WRONG ACCOUNT verdicts, and that a transient API failure is reported as
+*retryable* rather than as a deal that earns nothing.
 
 **Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
 through EarnKaro like every other store: Amazon Associates is still rejecting

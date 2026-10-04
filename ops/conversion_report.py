@@ -471,6 +471,9 @@ def main() -> int:
         print("\nFixes: python3 ops/earnkaro_check.py   (EarnKaro key + OUR hypd links, live)")
         print("       python3 ops/hypd_links.py --wanted   (products waiting for a hypd link)")
         print("       ./ops/set_earnkaro_key.sh '<token>'  (rotate a refused key)")
+        print("       python3 ops/earnkaro_check.py --plan --deal-url '<a real source link>'")
+        print("           -> the EXACT link the channel will carry for that deal (converted,")
+        print("              shortened, and proved to pay OUR account)")
     else:
         print("\nEverything that should be converting is converting.")
     return 1 if problems else 0

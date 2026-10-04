@@ -709,6 +709,156 @@ def test_hypd_diagnostic_only_shortens_verified_meesho_links():
             setattr(checker, name, value)
 
 
+def test_checker_plan_prints_the_posted_link():
+    """`--plan` answers "what EXACTLY will the channel carry?" with the bot's OWN code.
+
+    "perefctgaa shorten ga convert avvali ... source thikoni mana link ga chesi
+    post cheyali" is only answered by the link the post will actually carry:
+    converted, OURS, and short. A checker that re-implemented those rules would
+    eventually answer with a copy that no longer matches what posts, so the plan
+    mode imports bestgaa/main_bot_new.py and runs its real AffiliateClient.
+    Pinned here in both directions: the answers it must give, and the answers it
+    must never give (a failed link reported as a conversion).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "earnkaro_check_plan", Path(__file__).parent / "ops" / "earnkaro_check.py")
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    publisher = bot.OUR_EK_ID
+    check("the plan's publisher proof is the token's own account", bool(publisher), publisher)
+
+    loaded, why = checker.load_bot_module(bot.EK_KEY, "")
+    check("--plan imports the bot module that actually posts (same object as the suites')",
+          loaded is bot or getattr(loaded, "__file__", "") == getattr(bot, "__file__", ""),
+          f"loaded={loaded} why={why}")
+
+    class FakeClient:
+        """The bot's client shape with the network taken out."""
+
+        def __init__(self, results):
+            self.results = list(results)
+            self.multi_flags = []
+            self.resolved = []
+
+        async def resolve(self, url):
+            self.resolved.append(url)
+            return url
+
+        async def convert(self, source_url, multi_link, resolved_hint=None):
+            self.multi_flags.append(multi_link)
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    def link_result(affiliate, resolved="https://www.flipkart.com/x/p/itm1?pid=1"):
+        return bot.LinkResult("https://www.flipkart.com/x/p/itm1?pid=1", resolved,
+                              affiliate, "key")
+
+    def run(client, probes, multi_link=False, whose=None):
+        return asyncio.run(checker.plan_posted_links(
+            client, probes, multi_link=multi_link, publisher=publisher, our_tag="",
+            timeout=5.0, bot=bot,
+            whose=whose or (lambda link, pub, tag, timeout: ("ours", f"affExtParam2={pub}"))))
+
+    ours_link = "https://bitli.in/AbC123"
+    checked = []
+
+    def record_whose(link, pub, tag, timeout):
+        checked.append(link)
+        return "ours", f"affExtParam2={pub}"
+
+    client = FakeClient([link_result(ours_link)])
+    lines, failures = run(client, [("Actual post URL 1", "https://www.flipkart.com/x/p/itm1?pid=1")],
+                          whose=record_whose)
+    joined = "\n".join(lines)
+    check("the plan prints the link the channel will carry", ours_link in joined, joined)
+    check("and proves whose account that posted link pays",
+          f"pays our EarnKaro account {publisher}" in joined, joined)
+    check("the attribution check is run on the POSTED link, not the merchant page",
+          checked == [ours_link], str(checked))
+    check("it says out loud that the link is short (the bot's own short-domain rule)",
+          "SHORT LINK" in joined, joined)
+    check("a converted, ours, short link has nothing to fix", failures == 0, str(failures))
+
+    list_client = FakeClient([link_result(ours_link)])
+    long_link = ("https://www.myntra.com/tshirts/roadster/roadster-men-navy-tshirt/1234567/buy"
+                 "?utm_source=source&utm_campaign=spring")
+    lines, failures = run(list_client,
+                          [("Actual post URL 1", "https://a.example/deal-one"),
+                           ("Actual post URL 2", "https://b.example/deal-two")], multi_link=True)
+    joined = "\n".join(lines)
+    check("a list post's links go through convert() as a list (multi_link=True on each)",
+          list_client.multi_flags == [True, True], str(list_client.multi_flags))
+    check("the plan names it as a list post", "list post" in joined, joined)
+
+    lines, _ = run(FakeClient([link_result(long_link)]),
+                   [("Actual post URL 1", "https://www.myntra.com/x")])
+    joined = "\n".join(lines)
+    check("and it admits when a link could NOT be shortened instead of claiming it was",
+          "NOT on a short domain" in joined, joined)
+
+    lines, failures = run(FakeClient([None]), [("Actual post URL 1", "https://www.myntra.com/x")])
+    joined = "\n".join(lines)
+    check("a store with no campaign is reported as UNMONETIZED, never as a conversion",
+          "UNMONETIZED" in joined and "NOBODY IS PAID" in joined, joined)
+    check("that line names its own fix (Affiliaters selections)",
+          "Selections" in joined, joined)
+    check("and an unmonetized link needs attention", failures == 1, str(failures))
+
+    lines, failures = run(
+        FakeClient([link_result("https://ekaro.in/enkr999")]),
+        [("Actual post URL 1", "https://www.flipkart.com/x")],
+        whose=lambda link, pub, tag, timeout: ("foreign", "affExtParam2=999999"))
+    joined = "\n".join(lines)
+    check("a link paying somebody else is called WRONG ACCOUNT", "WRONG ACCOUNT" in joined, joined)
+    check("and it fails the run", failures == 1, str(failures))
+
+    lines, failures = run(FakeClient([RuntimeError("EarnKaro HTTP 503")]),
+                          [("Actual post URL 1", "https://www.flipkart.com/x")])
+    joined = "\n".join(lines)
+    check("a transient API failure is reported as retryable, not as an unmonetized deal",
+          "would retry" in joined and "UNMONETIZED" not in joined, joined)
+    check("and it needs attention", failures == 1, str(failures))
+
+    # The fallback the bot's OWN gate refuses to call a conversion must not be
+    # dressed up as one here either: Associates is still rejecting the account.
+    our_tag = sorted(bot.OUR_AMAZON_TAGS)[0]
+    native = f"https://www.amazon.in/dp/B0FPDD9WKP?tag={our_tag}"
+    lines, failures = run(FakeClient([link_result(native, native)]),
+                          [("Actual post URL 1", "https://www.amazon.in/dp/B0FPDD9WKP")])
+    joined = "\n".join(lines)
+    check("a native Amazon-tag fallback is NOT reported as an EarnKaro conversion",
+          "NOT an EarnKaro conversion" in joined and "pays our EarnKaro account" not in joined,
+          joined)
+    check("and it says plainly that nothing is earned", "earns NOTHING" in joined, joined)
+    check("the native fallback needs attention too", failures == 1, str(failures))
+
+    hypd_link = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
+    lines, failures = run(FakeClient([link_result(hypd_link, "https://www.meesho.com/x/p/1")]),
+                          [("Actual post URL 1", hypd_link)])
+    joined = "\n".join(lines)
+    check("OUR HYPD link is reported as ours (store 93944), not as a stranger's",
+          "OUR HYPD creator-store link" in joined and str(bot.HYPD_STORE_ID) in joined, joined)
+    check("an ours-HYPD post has nothing to fix", failures == 0, str(failures))
+
+    short_note = checker.shortness_note(bot, "https://ekaro.in/xyz")
+    check("the short-link verdict reads the bot's own short domains",
+          "SHORT LINK" in short_note, short_note)
+    long_note = checker.shortness_note(bot, "https://www.myntra.com/" + "a" * 90)
+    check("and a long merchant link is never called short",
+          "NOT on a short domain" in long_note, long_note)
+
+    source = (Path(__file__).parent / "ops" / "earnkaro_check.py").read_text(encoding="utf-8")
+    check("the checker also accepts the deploy's key file as the key under test",
+          ".earnkaro_key" in source, "")
+    check("--plan refuses to guess when no --deal-url was given (exit 2, no API call)",
+          "needs at least one --deal-url" in source, "")
+
+
 def test_status_report_answers_are_we_converting():
     """"anni perfectga convert chesthunnava ledaa?" must be answerable from data.
 
@@ -850,6 +1000,7 @@ def main():
     test_priority_boost_is_applied()
     test_checker_proves_whose_link()
     test_checker_proves_our_hypd_links_too()
+    test_checker_plan_prints_the_posted_link()
     test_hypd_diagnostic_only_shortens_verified_meesho_links()
     test_status_report_answers_are_we_converting()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")
