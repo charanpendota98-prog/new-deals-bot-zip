@@ -210,7 +210,7 @@ def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
 
 def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
                   our_links: "set[str] | tuple[str, ...]" = ()) -> str:
-    """'our-short' | 'our-publisher' | 'clean-merchant' | 'foreign' for a link.
+    """'our-short' | 'our-publisher' | 'unattributed' | 'clean-merchant' | 'foreign'.
 
     This is the summary the user actually asks for ("mana links perfectga post
     chesthunda ledaa?"): every published link is either a short link WE minted,
