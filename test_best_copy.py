@@ -259,6 +259,11 @@ def test_link_ownership_is_data_backed():
     check("classify_link buckets our publisher id as our-publisher",
           qa.classify_link(direct_ours, "", publisher) == "our-publisher",
           qa.classify_link(direct_ours, "", publisher))
+    check("classify_link buckets a network/HYPD short link as our-short, not clean-merchant",
+          qa.classify_link("https://ekaro.in/enkr123") == "our-short"
+          and qa.classify_link("https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0") == "our-short",
+          f"{qa.classify_link('https://ekaro.in/enkr123')} / "
+          f"{qa.classify_link('https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0')}")
     check("classify_link buckets a clean unmonetizable store page as clean-merchant",
           qa.classify_link("https://www.myntra.com/x/1/detail") == "clean-merchant",
           qa.classify_link("https://www.myntra.com/x/1/detail"))

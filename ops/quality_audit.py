@@ -64,6 +64,13 @@ OUR_HOSTS = re.compile(r"https?://(?:[^/\s]*earnkaro\.com/|gop\.im/)", re.I)
 # the outage fallback). A link on one of these is ours only when a link_cache row
 # says the bot produced it: other channels post bit.ly links too.
 OUR_RUNTIME_SHORTENER_HOSTS = ("bit.ly", "is.gd")
+# The affiliate network's OWN short domains (what the EarnKaro/Affiliaters
+# converter mints) and our HYPD share links. These are MONETIZED links, so the
+# summary must not file them under "clean merchant" - that bucket means "kept on
+# purpose, earns nothing".
+OUR_NETWORK_SHORT = re.compile(
+    r"https?://(?:[^/\s]*\.)?(?:ekaro\.(?:in|app)|clnk\.(?:in|app)|bitli\.in|fktr\.in|"
+    r"myntr\.it|ajiio\.in|cuelinks\.com|l\.ead\.me|affiliaters\.in|hypd\.store)/", re.I)
 OUR_T_ME = re.compile(r"https?://t\.me/(?:addlist/|LootZoneIndia11\b|SecretLootIndia1\b)", re.I)
 AMAZON_HOST = re.compile(r"^(?:www\.|m\.)?amazon\.[a-z.]{2,8}$", re.I)
 AMAZON_SHORT = re.compile(r"^(?:www\.)?amzn\.(?:to|in)$", re.I)
@@ -156,7 +163,8 @@ def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
     """
     if why_not_our_link(url, our_tag, our_publisher, our_links):
         return "foreign"
-    if OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url):
+    if (OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url)
+            or OUR_NETWORK_SHORT.match(url)):
         return "our-short"
     if our_links and url in our_links:
         return "our-short"
