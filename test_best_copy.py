@@ -252,6 +252,22 @@ def test_link_ownership_is_data_backed():
     check("a foreign id glued to our tag is still refused",
           qa.why_not_our_link("https://www.amazon.in/dp/B0X?tag=mama086-21&affid=zz",
                               "mama086-21", publisher) is not None, "")
+    # USER REPORT 2026-10-04: the converted Shopsy link carried BOTH our
+    # affExtParam2 and another channel's campaign id `cmpid=AFF_deals101`. With
+    # both present it is OURS (we are paid), but a `cmpid=AFF_*` with no id of
+    # ours names somebody else - the audit must see that on its own, not only
+    # when an `affid` happens to sit next to it.
+    shopsy_shape = ("https://www.shopsy.in/x/p/itm8ad37c08bc9ac?pid=1&mcn=LEHLAH"
+                    "&affid=deals101&cmpid=AFF_deals101"
+                    f"&affExtParam1=ENKR20261004A2196972183&affExtParam2={publisher}")
+    check("a link with OUR id and another channel's cmpid is still ours",
+          qa.why_not_our_link(shopsy_shape, "", publisher) is None,
+          str(qa.why_not_our_link(shopsy_shape, "", publisher)))
+    check("a link naming only a stranger's cmpid campaign is foreign",
+          qa.classify_link("https://www.flipkart.com/x/p/itm1?pid=1&cmpid=AFF_deals101",
+                           "", publisher) == "foreign",
+          qa.classify_link("https://www.flipkart.com/x/p/itm1?pid=1&cmpid=AFF_deals101",
+                           "", publisher))
 
     check("classify_link buckets our runtime short link as our-short",
           qa.classify_link(ours_bitly, "", "", minted) == "our-short",

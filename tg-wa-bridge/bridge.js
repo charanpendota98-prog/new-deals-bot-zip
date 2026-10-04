@@ -2899,6 +2899,9 @@ function attributeBareMerchantPages(job) {
       .flatMap(k => u.searchParams.getAll(k).filter(Boolean))
     const oursPresent = valuesOf('affextparam2').includes(PUBLISHER_ID)
     const tags = valuesOf('tag')
+    // A link that already names an affiliate account belongs to whoever minted
+    // it: leave it alone (re-stamping a page that carries somebody's ids is not
+    // how a click is won, and the source's own attribution is not ours to move).
     const foreign = [...FOREIGN_ATTRIBUTION_KEYS].some(k => valuesOf(k).some(v => v !== PUBLISHER_ID))
     if (oursPresent || tags.length || foreign) continue
     const stamped = attributeWithOurPublisher(url)

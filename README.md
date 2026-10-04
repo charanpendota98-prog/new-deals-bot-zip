@@ -1113,23 +1113,27 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.6 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.7 — **not yet deployed to a server**;
+the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
+Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
+changed — see `ops/quality_audit.py`;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print). Hashes refreshed
 2026-10-04, so they describe THIS tree:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.6) | `704cda7c13f89169ca251a1d0dfc7fd9dbdc3463502d932e9b0d1ff9fce1be06` |
-| `tg-wa-bridge/bridge.js` | `cc730296d1afa9bd8fa7c30aa700b712fd61f3d5c9c8445db734525cee8d0e76` |
+| `bestgaa/main_bot_new.py` (v18.7) | `15f5e023f4295064470bb21a7acff11eb2d66ac734f5a4ca9c9d918947f4c209` |
+| `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `cb576e8bb756194696d48639aee57293099e8775692fb81bdfd4bf31a8ed4408` |
+| `ops/quality_audit.py` | `0d20a024b52180efb98073f035a0bb38b68fccf0374ef84ae94d87e876b38163` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `0c4c0af8a0a9872083c249a24262e74e0b4004bf6d137b1e649258aef3d0b08c` |
 | `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
 | `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
-| `test_best_copy.py` | `50b815e17a4d9a6efef89e1c45b308e61604fa2945cab427a9b832596be1c46c` |
+| `test_best_copy.py` | `0724fce2aafc34ed2f7a0c3cde56c7f9da2cbe8fec2f53afd1b26b48f2f1643b` |
+| `test_earnkaro_conversion.py` | `8e46e7e1aaf4cdb1b20274e912720da6168a5ad3afd4007e99f84a12935353ed` |
 
 A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
 tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python

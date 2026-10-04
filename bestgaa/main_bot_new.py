@@ -1187,6 +1187,17 @@ FOREIGN_ATTRIBUTION_KEYS = {
     "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
 }
 
+# NOTE (USER QUESTION 2026-10-04, "idi manadenaa link"): on a Flipkart-family
+# link `affid` is the AFFILIATE ACCOUNT id - the network's account, exactly as
+# Flipkart documents its own affiliate URLs - and `affExtParam2` is the publisher
+# who gets credited inside it. An EarnKaro-converted link carries BOTH
+# (affid=deals101&cmpid=AFF_deals101&affExtParam1=ENKR...&affExtParam2=OURS) and
+# is OURS: `affExtParam2=5478322` is the id the money is credited to. Those
+# network parameters must never be stripped from a converted link - removing
+# them is the one change that could really lose the commission - so the posting
+# path is deliberately left alone here and the AUDIT is taught whose link it is
+# (see ops/quality_audit.py, which now agrees with whose_link()).
+
 
 def attribute_with_our_publisher(url: str, publisher: str = "") -> str:
     """OUR EarnKaro publisher id on a Flipkart-family product URL.
@@ -6621,6 +6632,13 @@ class AffiliateClient:
                                         "or an invalid destination (host=%s)",
                                         (urlparse(result).hostname or "unknown").lower())
                             return None
+                        # The converter's output is published as EarnKaro minted it.
+                        # Its affid/cmpid/mcn parameters are the network's own
+                        # routing; affExtParam1 is the conversion id and
+                        # affExtParam2 is the publisher that is paid - all checked
+                        # by earnkaro_output_kind() just above. See the note on
+                        # FOREIGN_ATTRIBUTION_KEYS: stripping those is what would
+                        # actually break the commission.
                         result = apply_amazon_tag(result)
                         if not await self.link_not_broken(result):
                             return None

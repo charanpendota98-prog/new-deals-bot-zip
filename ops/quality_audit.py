@@ -79,8 +79,14 @@ FOREIGN_SHORTENERS = re.compile(
     r"|gpt\.sh|shorturl\.at|is\.gd|rb\.gy|ow\.ly|rebrand\.ly|tly\.in|s\.id/)", re.I)
 # Publisher ids that are never ours. Flipkart's pid= is a PRODUCT id, so it is
 # deliberately absent here.
+# One capture group on purpose: callers use findall() and expect plain strings.
+# The `cmpid=` branch only counts when the campaign is the AFF_ affiliate form
+# (`cmpid=AFF_deals101`, seen live 2026-10-04) - a plain marketing cmpid is not
+# somebody's commission. The value keeps its AFF_ prefix, which no publisher id
+# ever equals, so it can only ever be read as "not ours".
 AFFILIATE_ID_RE = re.compile(
-    r"[?&](?:affid|aff_id|pubid|publisherid|associateid|affextparam2|refid|clickid)=([^&#]*)", re.I)
+    r"[?&](?:(?:affid|aff_id|pubid|publisherid|associateid|affextparam2|refid|clickid)="
+    r"|cmpid=(?=aff[_-]))([^&#]*)", re.I)
 FOREIGN_PROMO = re.compile(r"join\s+(?:this\s+)?channel|subscribe\s+to|t\.me/\+|startapp\.bot", re.I)
 PRICE_RE = re.compile(rf"{RUPEE}\s*(\d[\d,]*)")
 LIST_MARKER_RE = re.compile(r"(?im)^\s*(?:deal\s*\d+|\d+\s*[.)])")
@@ -146,6 +152,13 @@ def why_unattributed(url: str, our_publisher: str = "",
         return None  # already ours
     foreign = [(key, v) for key in FOREIGN_ATTRIBUTION_PARAMS
                for v in pairs.get(key, []) if v and v != our_publisher]
+    if not foreign:
+        # `cmpid=AFF_<slug>` is the affiliate campaign of an account (see
+        # AFFILIATE_ID_RE): the page is somebody's, not a page nobody is paid
+        # for. A plain marketing cmpid (cmpid=summer-sale) is not, and the page
+        # keeps counting as unattributed.
+        foreign = [("cmpid", v) for v in pairs.get("cmpid", [])
+                   if re.match(r"aff[_-]", v, re.I)]
     if foreign or any(v for v in pairs.get("tag", [])):
         return None  # somebody else's attribution: that is a FOREIGN link
     return ("can carry our publisher id (%s) but was posted without it - the product "
@@ -200,6 +213,17 @@ def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
         return None
     if tags and not ours:
         return "tagged to somebody else (%s)" % ",".join(sorted(set(tags)))[:40]
+    # USER QUESTION 2026-10-04 ("idi manadenaa link"): an EarnKaro-minted
+    # Flipkart-family link carries affid=<the network's account> and
+    # affExtParam2=<the publisher who is paid> - exactly how Flipkart documents
+    # its affiliate URLs. When that publisher id is OURS the link is ours, and
+    # the network's own affid/cmpid/mcn are the route the commission travels -
+    # not a stranger's id. This is the same verdict whose_link() gives in
+    # ops/earnkaro_check.py ("ours" when affExtParam2 == our publisher), and the
+    # pipeline itself accepts such a link (earnkaro_output_kind -> publisher).
+    # The audit was the only place saying otherwise, so only the audit changes.
+    if foreign_ids and our_publisher and our_publisher in all_ids:
+        return None
     if foreign_ids:
         return "carries somebody else's affiliate id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
     unattributed = why_unattributed(url, our_publisher, our_links)

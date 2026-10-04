@@ -234,6 +234,62 @@ def test_request_contract():
           str(dict(cached_row) if cached_row else None))
 
 
+def test_an_earnkaro_link_that_names_our_publisher_is_ours():
+    """USER QUESTION 2026-10-04 ("idi manadenaa link"): the converted Shopsy link
+
+        .../p/itm8ad...?pid=...&mcn=LEHLAH&affid=deals101&cmpid=AFF_deals101
+                       &affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322
+
+    is OURS. `affid` is the AFFILIATE ACCOUNT id (Flipkart's own docs put it on
+    every affiliate URL: ?affid=test&affExtParam1=..&affExtParam2=..), i.e. the
+    network account the commission is routed through - here Affiliaters/EarnKaro,
+    with `cmpid=AFF_deals101`/`mcn=`. The publisher who is PAID is affExtParam2,
+    and that is our 5478322, next to EarnKaro's own conversion id (affExtParam1
+    =ENKR...). The link must therefore be published EXACTLY as the converter
+    minted it: stripping the network's parameters is the one change that could
+    really lose the commission.
+    """
+    page = ("https://www.shopsy.in/ghar-soaps-magic-soap-sandal-wood-saffron-detan-"
+            "glowing-brightening-skin/p/itm8ad37c08bc9ac")
+    identity = "pid=SOPG8C2YHJSCJGYM&mcn=LEHLAH"
+    minted = (f"{page}?{identity}&affid=deals101&cmpid=AFF_deals101"
+              "&affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322")
+
+    # The SOURCE's own attribution is dropped before the request (the API mints
+    # fresh ids for us) - that is old, deliberate behaviour.
+    asked = bot.merchant_url(minted)
+    check("the source's own affiliate ids are not sent to the converter",
+          "affid=" not in asked and "affExtParam1=" not in asked
+          and "affExtParam2=" not in asked, asked)
+    check("but the product identity of the page survives the request",
+          "pid=SOPG8C2YHJSCJGYM" in asked and "mcn=LEHLAH" in asked, asked)
+
+    source = f"{page}?{identity}"
+    session = FakeSession([json.dumps({"success": 1, "data": minted})])
+    result = asyncio.run(Aff(session).convert(source, False))
+    check("a link carrying OUR publisher id is accepted from the converter",
+          bool(result) and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("it is published exactly as EarnKaro minted it (nothing stripped)",
+          bool(result) and "affid=deals101" in result.affiliate
+          and "cmpid=AFF_deals101" in result.affiliate
+          and "mcn=LEHLAH" in result.affiliate
+          and "affExtParam1=ENKR20261004A2196972183" in result.affiliate
+          and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("the pipeline's own classifier agrees it is ours, not a stranger's",
+          bot.AffiliateClient.earnkaro_output_kind(result.affiliate) == "publisher"
+          and bot.AffiliateClient.valid_generated(result.affiliate),
+          f"{bot.AffiliateClient.earnkaro_output_kind(result.affiliate)} / "
+          f"{bot.AffiliateClient.valid_generated(result.affiliate)}")
+
+    # The guard is not weakened: an output naming ONLY a stranger stays refused.
+    foreign_only = bot.clean_url(minted.replace("affExtParam2=5478322", "affExtParam2=999999"))
+    parsed, _ = bot.parse_earnkaro_response(json.dumps({"success": 1, "data": foreign_only}),
+                                            source_urls=(source,))
+    check("an output naming only a stranger's publisher is still refused",
+          parsed == foreign_only and not bot.AffiliateClient.earnkaro_output_kind(parsed),
+          repr(parsed))
+
+
 def test_echo_and_foreign_links_are_refused():
     # The API echoing the source's own affiliate link is not our commission.
     echoed = "https://www.flipkart.com/x/p/itm1?affid=someoneelse"
@@ -1153,6 +1209,7 @@ def test_status_report_answers_are_we_converting():
 def main():
     test_response_shapes()
     test_request_contract()
+    test_an_earnkaro_link_that_names_our_publisher_is_ours()
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_unknown_affiliate_domain_is_verified_or_refused()
