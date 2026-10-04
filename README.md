@@ -1131,6 +1131,15 @@ printing exactly what the older build was coded to print). Hashes refreshed
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `50b815e17a4d9a6efef89e1c45b308e61604fa2945cab427a9b832596be1c46c` |
 
+A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
+tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python
+file compiles, `./ops/test_all.sh` prints ALL OFFLINE CHECKS PASSED, and
+`cd ops && ./repack_bundles.sh` produces both deploy bundles whose `main_bot_new.py` /
+`bridge.js` are byte-identical to the tracked sources (compare with
+`unzip -p … | sha256sum`). `ops/deploy_and_verify.sh` derives the expected version from
+the bot docstring, so it checks the running log against THIS code, and the older
+installers no longer pin the startup marker to v15. Runbook section 8 has the full list.
+
 `ops/earnkaro_check.py`, `ops/conversion_report.py`, `ops/set_earnkaro_key.sh`,
 `test_earnkaro_conversion.py`, `ops/LINK_PERFECTION_2026-10-04.txt` and this README
 carry the 2026-10-04 work (`--plan`, `EK VERIFIED`, LINK PERFECTION, the

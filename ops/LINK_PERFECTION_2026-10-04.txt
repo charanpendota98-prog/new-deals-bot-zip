@@ -250,3 +250,50 @@ USER REQUEST
       # want: FOREIGN=0 and unattributed=0 (or a number that stops growing)
       python3 ops/conversion_report.py
       # LINKS : WORKING - N published link(s), all ours (a short, b tagged, c clean merchant)
+
+
+8. PERFECT BUILD - WHAT WAS VERIFIED BEFORE SHIPPING (v18.6, commit 85ca77e)
+===========================================================================
+  The build is only "perfect" if a FRESH CLONE reproduces it. Verified here:
+
+  (1) SUITES - every offline check, not a subset:
+        PYTHON=.venv/bin/python ./ops/test_all.sh
+        -> ALL OFFLINE CHECKS PASSED
+        render/routing, rescan+recovery, pipeline fixes (238 checks), best-copy,
+        duplicates, EarnKaro contract (167 checks), HYPD (83 checks), line
+        fidelity, WhatsApp bridge self-test, Python syntax.
+
+  (2) SYNTAX, every language in the tree:
+        bash -n on every tracked *.sh        node --check tg-wa-bridge/bridge.js
+        python -m py_compile bestgaa/*.py ops/*.py *.py
+
+  (3) BUNDLES - the artifacts the server actually installs:
+        cd ops && ./repack_bundles.sh
+        # bestgaa_final_bundle.zip  (main_bot_new.py, deploy_bestgaa.sh,
+        #   migrate_legacy_env.py, requirements.txt, bestgaa.service,
+        #   README_FIRST.txt, coverage_audit.py, quality_audit.py)
+        # tg_wa_bridge_bundle.zip  (bridge.js, package.json,
+        #   tg-wa-bridge.service, install_bridge.sh,
+        #   switch_whatsapp_number.sh, README_FIRST.txt)
+     The BUNDLED files must be byte-identical to the tracked sources:
+        unzip -p ops/bestgaa_final_bundle.zip main_bot_new.py | sha256sum
+        sha256sum bestgaa/main_bot_new.py
+        # both = 704cda7c13f89169ca251a1d0dfc7fd9dbdc3463502d932e9b0d1ff9fce1be06
+        unzip -p ops/tg_wa_bridge_bundle.zip bridge.js | sha256sum
+        sha256sum tg-wa-bridge/bridge.js
+        # both = cc730296d1afa9bd8fa7c30aa700b712fd61f3d5c9c8445db734525cee8d0e76
+
+  (4) VERSION PLUMBING - the build tells you which code is running:
+        bestgaa/main_bot_new.py docstring + startup log: v18.6
+        ops/deploy_and_verify.sh derives WANT_VERSION from that docstring, so it
+        checks the LOG LINE against the CODE, never against a hardcoded number.
+        bestgaa/deploy_bestgaa.sh + ops/install_bestgaa.sh no longer pin the
+        startup marker to v15 (a v16+ deploy used to print a pointless WARNING).
+
+  RUN ORDER ON THE SERVER (one pass, Telegram + WhatsApp together)
+        cd ~/bestgaa-bot/bestgaa-bot
+        ./ops/set_earnkaro_key.sh "$(cat ops/.earnkaro_key)"
+        cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh
+        cd .. && python3 ops/earnkaro_check.py --skip-hypd
+        python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+        python3 ops/conversion_report.py
