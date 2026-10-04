@@ -9,6 +9,10 @@ Run this on the server (or anywhere with internet) right after setting
     python3 ops/earnkaro_check.py --key <token>    # check a fresh token first
     python3 ops/earnkaro_check.py --env-file /home/ubuntu/bestgaa-bot/bestgaa-bot/.env
 
+    # THE EXACT LINK THE CHANNEL WILL CARRY, for a real source/product URL:
+    python3 ops/earnkaro_check.py --plan \
+        --deal-url 'https://www.flipkart.com/<real-product-url>'
+
 Why it exists: "the EarnKaro links are not converting" has three very different
 causes that look identical in a channel —
 
@@ -23,11 +27,20 @@ account gets paid), then calls the SAME endpoint with the SAME headers and body
 the bot sends, and prints the raw response next to the link the bot would
 publish. Nothing is written anywhere; the token is never echoed to the screen.
 
+`--plan --deal-url <url>` goes one step further: it imports the bot's OWN
+module (`bestgaa/main_bot_new.py`) and runs the real pipeline for that URL -
+resolve -> convert -> shorten - so the output is not a copy of the rules but
+the actual `AffiliateClient`, printing the link the channel will carry, its
+length, whether it is still short, and whose account it pays. A link the
+network cannot monetize is reported as UNMONETIZED (that deal posts clean and
+earns nothing) - never silently reported as a conversion.
+
 Exit codes: 0 = every probe converted, 1 = at least one probe failed.
 """
 from __future__ import annotations
 
 import argparse
+import asyncio
 import base64
 import json
 import os
@@ -84,6 +97,16 @@ def find_key(explicit: str | None, env_file: str | None) -> tuple[str, str]:
             value = load_env_file(candidate).get("EARNKARO_API_KEY", "").strip()
             if value:
                 return value, str(candidate)
+    # The raw token file the deploy scripts read (ops/.earnkaro_key, gitignored):
+    # if it exists, THIS is the key a deploy would write, so it is the key a
+    # check should test. Never printed.
+    key_file = REPO_ROOT / "ops" / ".earnkaro_key"
+    try:
+        value = key_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        value = ""
+    if value:
+        return value, str(key_file)
     return "", "not found"
 
 
@@ -130,7 +153,12 @@ def convert(token: str, api: str, deal: str, option: str, timeout: float) -> tup
     body = json.dumps({"deal": deal, "convert_option": option}).encode("utf-8")
     request = urllib.request.Request(
         api, data=body, method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                 # Cloudflare ("error code: 1010") blocks the default
+                 # "Python-urllib/x.y" agent; the bot sends the same UA.
+                 "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/131.0.0.0 Safari/537.36")},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -496,6 +524,208 @@ def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
     return failures, ok
 
 
+# ---------------------------------------------------------------------------
+# --plan: run the BOT'S OWN pipeline for a real source/product link and print
+# the exact link the channel will carry (converted -> shortened -> posted).
+# ---------------------------------------------------------------------------
+def load_bot_module(key: str, amazon_tag: str):
+    """(bot module | None, why not) — imports the pipeline that actually posts.
+
+    The checker must never answer "what will be posted?" with a second copy of
+    the bot's rules: copies drift and then the answer is a lie. So this imports
+    `bestgaa/main_bot_new.py` itself. The key under test always wins over any
+    `.env` the bot module loads (it uses setdefault), and the queue database is
+    pointed at a throwaway file so a plan run can never touch live state.
+    """
+    import tempfile
+    os.environ["EARNKARO_API_KEY"] = key          # the key under test, not .env
+    os.environ.setdefault("TELEGRAM_API_ID", "1")
+    os.environ.setdefault("TELEGRAM_API_HASH", "plan-mode-no-telegram-login")
+    os.environ.setdefault("AMAZON_TAG", amazon_tag or "mama086-21")
+    if not os.environ.get("BOT_DB_PATH"):
+        os.environ["BOT_DB_PATH"] = str(
+            Path(tempfile.mkdtemp(prefix="earnkaro-plan-")) / "plan.sqlite3")
+    sys.path.insert(0, str(REPO_ROOT / "bestgaa"))
+    try:
+        import main_bot_new as bot  # noqa: PLC0415 - deliberately late/optional
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    return bot, ""
+
+
+def posted_route(bot, link: str) -> str:
+    """Which route minted the posted link — asked of the BOT's own gates.
+
+    "earnkaro"      an attributable network conversion: pays the token's publisher
+    "hypd"          OUR HYPD creator-store link for a verified Meesho product
+    "amazon_native" the native ?tag= FALLBACK - explicitly NOT an EarnKaro
+                    conversion, and with Associates still rejecting the account
+                    it earns nothing (the bot itself refuses to call this one)
+    "other"         a link the bot minted another way (e.g. a Bitly hop)
+    """
+    from urllib.parse import urlparse
+    kind_fn = getattr(getattr(bot, "AffiliateClient", None), "earnkaro_output_kind", None)
+    try:
+        if kind_fn and kind_fn(link):
+            return "earnkaro"
+    except Exception:
+        pass
+    is_our_hypd = getattr(bot, "is_our_hypd_link", None)
+    try:
+        if is_our_hypd and is_our_hypd(link):
+            return "hypd"
+    except Exception:
+        pass
+    host = (urlparse(link or "").hostname or "").lower()
+    if getattr(bot, "in_domains")(host, getattr(bot, "AMAZON_DOMAINS", ())):
+        return "amazon_native"
+    return "other"
+
+
+def shortness_note(bot, link: str) -> str:
+    """Is the link that will be posted actually short? Asked of the BOT's rules."""
+    from urllib.parse import urlparse
+    host = (urlparse(link or "").hostname or "").lower()
+    limit = int(getattr(bot, "SHORTEN_MIN_LEN", 70))
+    ours = set(getattr(bot, "OUR_SHORTENER_DOMAINS", ())) | set(
+        getattr(bot, "OUR_RUNTIME_SHORTENER_DOMAINS", ()))
+    if ours and getattr(bot, "in_domains")(host, ours):
+        return f"SHORT LINK on {host} (our short domain; never re-shortened)"
+    if len(link) <= limit:
+        return (f"{len(link)} chars - within the bot's {limit}-char limit, so it posts "
+                "as it is (no shortener quota spent)")
+    return (f"{len(link)} chars and NOT on a short domain - the shortener was rate-limited "
+            "or down, so this longer link is posted (a deal is never lost)")
+
+
+async def plan_posted_links(client, probes, *, multi_link: bool, publisher: str, our_tag: str,
+                            timeout: float, bot, whose=None):
+    """([lines], failures) — the bot's real convert() for each source link.
+
+    `whose` is injectable so the offline test can drive this without network.
+    """
+    whose = whose or whose_link
+    lines: list[str] = []
+    failures = 0
+    converted = 0
+    unmonetized = 0
+    for name, url in probes:
+        lines.append(f"\n[{name}]")
+        lines.append(f"  source    : {url[:110]}")
+        try:
+            resolved = await client.resolve(url)
+        except Exception as exc:
+            failures += 1
+            lines.append(f"  resolve   : FAILED - {type(exc).__name__}: {exc}")
+            continue
+        if resolved and str(resolved) != url:
+            lines.append(f"  resolve   : {str(resolved)[:110]}")
+        try:
+            result = await client.convert(url, multi_link, str(resolved) if resolved else None)
+        except Exception as exc:
+            # The bot raises so the JOB retries: a temporary API outage must
+            # never be reported as "this deal earns nothing".
+            failures += 1
+            lines.append(f"  convert   : TRANSIENT FAILURE, the job would retry - "
+                         f"{type(exc).__name__}: {exc}")
+            continue
+        if not result:
+            unmonetized += 1
+            failures += 1
+            lines.append("  convert   : UNMONETIZED - the network has no campaign for this "
+                         "store/URL. The bot still posts the deal with a clean merchant link; "
+                         "NOBODY IS PAID for it.")
+            lines.append("  fix       : Affiliaters > Affiliate Settings > Networks + Selections "
+                         "(connect EarnKaro and pick a network per store), or take the deal from "
+                         "another source link")
+            continue
+        posted = str(result.affiliate)
+        route = posted_route(bot, posted)
+        lines.append(f"  posted as : {posted}")
+        lines.append(f"  long link : {str(result.resolved)[:110]}")
+        lines.append(f"  length    : {shortness_note(bot, posted)}")
+        if route == "amazon_native":
+            # The bot's own gate refuses to call this an EarnKaro conversion, and
+            # neither may this report: Associates is still rejecting the account,
+            # so a native ?tag= fallback earns NOTHING.
+            unmonetized += 1
+            failures += 1
+            lines.append("  verdict   : NATIVE AMAZON-TAG FALLBACK - NOT an EarnKaro conversion "
+                         "(the network had no campaign for this URL). Amazon Associates is still "
+                         "rejecting the account, so this earns NOTHING.")
+            lines.append("  fix       : Affiliaters > Affiliate Settings > Selections + Networks "
+                         "(Amazon -> a network that has a campaign), or treat this deal as "
+                         "unmonetized")
+            continue
+        if route == "hypd":
+            converted += 1
+            lines.append("  verdict   : OURS - OUR HYPD creator-store link "
+                         f"(store {getattr(bot, 'HYPD_STORE_ID', '?')}), verified Meesho only: "
+                         "this is our commission link")
+            continue
+        converted += 1
+        paid, where = whose(posted, publisher, our_tag, timeout)
+        if where:
+            lines.append(f"  attribution: {where}")
+        if paid == "ours":
+            lines.append(f"  verdict   : OURS - this post pays our EarnKaro account {publisher}")
+        elif paid == "foreign":
+            failures += 1
+            lines.append("  verdict   : WRONG ACCOUNT - it pays somebody else. The bot's own gate "
+                         "should have refused it: rotate EARNKARO_API_KEY and re-check the "
+                         "Affiliaters selections")
+        else:
+            lines.append(f"  verdict   : attribution not visible from here (short link whose "
+                         f"destination refused to be read) - the token claims ({publisher}) "
+                         "remain the proof")
+    lines.append("")
+    lines.append(f"PLAN: {converted} converted, {unmonetized} unmonetized, "
+                 f"{failures} needing attention (of {len(probes)} link(s), "
+                 f"{'list post' if multi_link else 'single-link post'})")
+    return lines, failures
+
+
+def run_plan(args, key: str, publisher: str) -> int:
+    bot, why = load_bot_module(key, args.amazon_tag)
+    if bot is None:
+        print("FAIL: --plan runs the BOT'S OWN pipeline, which could not be imported here.")
+        print(f"      {why}")
+        print("      Fix: python3 -m pip install -r bestgaa/requirements.txt")
+        print("      (Without it, use --deal-url without --plan: it still calls the API with "
+              "the same request the bot sends.)")
+        return 2
+    try:
+        import aiohttp
+    except Exception as exc:
+        print(f"FAIL: aiohttp is missing ({exc}); run: python3 -m pip install -r bestgaa/requirements.txt")
+        return 2
+    probes = [(f"Actual post URL {i + 1}", url.strip())
+              for i, url in enumerate(args.deal_url) if url.strip()]
+    invalid = [url for _, url in probes if not url.startswith(("http://", "https://"))]
+    if invalid:
+        print("FAIL: --deal-url values must be full http(s) URLs")
+        return 2
+    multi_link = bool(args.multi) or len(probes) >= 2
+
+    async def run():
+        async with aiohttp.ClientSession() as session:
+            client = bot.AffiliateClient(session)
+            return await plan_posted_links(
+                client, probes, multi_link=multi_link, publisher=publisher,
+                our_tag=args.amazon_tag, timeout=args.timeout, bot=bot)
+
+    print(f"\nPLAN for {len(probes)} link(s) - running the bot's own pipeline "
+          f"({'list' if multi_link else 'single-link'}, shortener limit "
+          f"{getattr(bot, 'SHORTEN_MIN_LEN', '?')} chars)")
+    lines, failures = asyncio.run(run())
+    print("\n".join(lines))
+    if failures:
+        print("RESULT: at least one link above needs attention - each line names its own fix.")
+        return 1
+    print("RESULT: every link converted, is OURS, and is short enough to post as shown above.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the EarnKaro API key end to end.")
     parser.add_argument("--key", help="API token to check (default: env or bestgaa/.env)")
@@ -507,6 +737,12 @@ def main() -> int:
                         help="sent as convert_option (default: convert_only)")
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--offline", action="store_true", help="decode the token only, no network calls")
+    parser.add_argument("--plan", action="store_true",
+                        help="run the BOT'S OWN pipeline for each --deal-url and print the exact "
+                             "link the channel will carry (resolve -> convert -> shorten)")
+    parser.add_argument("--multi", action="store_true",
+                        help="with --plan: treat the links as ONE list post (2+ links), which is "
+                             "when the bot shortens every link")
     parser.add_argument("--no-expand", action="store_true",
                         help="do not follow short links (skip the 'does it pay US?' step)")
     parser.add_argument("--amazon-tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
@@ -531,6 +767,15 @@ def main() -> int:
     if args.offline:
         print("\n--offline: token inspected, no network calls made.")
         return 0 if token_ok else 1
+    if args.plan:
+        if not args.deal_url:
+            print("\nFAIL: --plan needs at least one --deal-url (the source or product link to run "
+                  "through the bot's pipeline).")
+            return 2
+        if not token_ok:
+            print("\nRefusing to run the pipeline with a key that is not a converter token.")
+            return 1
+        return run_plan(args, key, publisher)
     if args.hypd_only:
         hypd_failures, hypd_ok = check_our_hypd_links(args.timeout, verbose=True)
         print("\n" + "=" * 78)

@@ -32,7 +32,7 @@ WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 |---|---|
 | `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
 
 ## Quick checks (no credentials needed)
@@ -51,8 +51,16 @@ PYTHON=.venv/bin/python ./ops/test_all.sh
 # On the deployed server: prove what is live
 python3 ops/deploy_and_verify.sh --verify-only
 
+# Deploy from a checkout WITHOUT fearing a dropped SSH (2026-10-04: two drops
+# killed the deploy mid-suites). Runs deploy_fresh.sh inside tmux, logged:
+./ops/deploy_stable.sh            # watch: tmux attach -t bestgaa-deploy
+./ops/deploy_stable.sh --status   # or: ./ops/deploy_stable.sh --log
+
 # Audit a real or copied database (read-only; --strict exits non-zero on findings)
 python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --strict
+
+# "idi manadenaa link?" - one URL in, one verdict out (no database needed)
+python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
 ```
 
 To run an individual behavior suite, use `python3 test_render_job.py`,
@@ -167,15 +175,111 @@ merchant URL and no affiliate attribution.
 `ops/EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` is the same thing as a runbook
 (what to run on the server, in order).
 
-**Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
-through EarnKaro like every other store: Amazon Associates is still rejecting
-the account, so a native `?tag=mama086-21` link earns nothing while an EarnKaro
-conversion pays. The native tagged link stays as the **fallback** when the
-network answers "no link" (search/browse pages included, which EarnKaro has no
-campaign for), and the channel under Amazon review still shows the direct
-tagged product page — our earned links are expanded back to
-`amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
-to restore the pure native-tag behaviour of 2026-09-06.
+### Fresh key (2026-10-04): prove the EXACT link the channel will carry
+
+The token currently in this checkout is `ops/.earnkaro_key` (**gitignored**,
+never committed): it decodes to EarnKaro publisher `5478322`, issued
+2026-10-04 05:20 UTC. `ops/apply_dual_hotfix.sh` writes exactly that file into
+the server `.env`, and `ops/earnkaro_check.py` now also *reads* it when no
+`--key`/`--env-file`/`bestgaa/.env` provides one — so the key a deploy would
+use is the key a check tests.
+
+Asking "will this link convert, shorten and pay us?" about a real source link
+used to need two tools and some faith. One command now answers it by running
+**the bot's own pipeline** (`bestgaa/main_bot_new.py`, not a re-implementation
+of its rules: resolve → convert → shorten), and prints the link the post will
+carry:
+
+```bash
+python3 ops/earnkaro_check.py --plan --deal-url 'https://www.flipkart.com/real-product-url'
+python3 ops/earnkaro_check.py --plan --multi --deal-url '<link 1>' --deal-url '<link 2>'   # a list post
+```
+
+```
+[Actual post URL 1]
+  source    : https://www.flipkart.com/real-product-url
+  resolve   : https://www.flipkart.com/real-product-url?pid=...
+  posted as : https://ekaro.in/enkr...
+  long link : https://www.flipkart.com/...
+  length    : SHORT LINK on ekaro.in (our short domain; never re-shortened)
+  attribution: affExtParam2=5478322 -> https://www.flipkart.com/...
+  verdict   : OURS - this post pays our EarnKaro account 5478322
+```
+
+The verdicts are deliberately blunt: **UNMONETIZED** (the network has no
+campaign for that store — the deal still posts, with a clean merchant link and
+no commission), **NATIVE AMAZON-TAG FALLBACK** (the bot's own gate refuses to
+call that an EarnKaro conversion, and neither does this report: with Associates
+still rejecting the account it earns nothing), **WRONG ACCOUNT** (it pays
+somebody else), **OUR HYPD creator-store link** (store 93944, Meesho only), and
+a length line that admits when the shortener was unavailable and the longer
+link posted instead (a deal is never lost to a shortener outage). Exit code 1
+if any link needs attention; every line names its own fix. The plan run uses a throwaway
+queue database and points `EARNKARO_API_KEY` at the key under test, so it can
+never disturb live state.
+
+The plan mode itself is pinned by `test_earnkaro_conversion.py` (fake client, no
+network): the link it prints, the account it proves, the UNMONETIZED, native-tag
+fallback and WRONG ACCOUNT verdicts, the HYPD case, and that a transient API
+failure is reported as *retryable* rather than as a deal that earns nothing.
+
+### "Mana links perfectga post chesthunda?" — one number, from data (v18.4/v18.5)
+
+Two tools now answer it, and they cannot disagree because they share one
+definition of "our link" (`ops/quality_audit.py`'s, which reads the `link_cache`
+rows the pipeline's own provenance gate trusts plus the EarnKaro publisher id
+from the token / `ops/.earnkaro_key`):
+
+```bash
+# every link in the last N posts, classified; --strict exits 1 on a foreign one
+python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200 --strict
+#   QUALITY AUDIT | db=… posts=200 findings=0
+#     LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
+#     every published link is one of ours (minted by this bot, our tag, or a clean merchant page)
+
+# the live window, next to the per-route verdict
+python3 ops/conversion_report.py
+#   LINKS    : WORKING - 137 published link(s), all ours (88 short, 12 tagged, 37 clean merchant)
+```
+
+`our-short` = a link this bot minted (EarnKaro/HYPD/Bitly/is.gd — the Bitly and
+is.gd ones are proven by their `link_cache` row, not by their domain), `our-publisher`
+= our tag or our publisher id, `unattributed` = a **Flipkart/Myntra page with no
+publisher id** (the product opens and pays nobody — a defect, and since v18.5 a
+thing new posts can no longer produce), `clean-merchant` = a store page kept on
+purpose because the network has no campaign AND the page carries no attribution we
+may stamp (it earns nothing and that is the policy), `FOREIGN` = a link that
+should never have left (a source short link, a stranger's tag or id). A `bit.ly`
+link some other channel posted is still `FOREIGN` — the difference is the cache
+row, and that is exactly why this is asked of the data instead of a domain list.
+
+**Why this changed:** the auditor's hardcoded "bit.ly is a third-party shortener"
+rule predates the 2026-09-06 Bitly policy, so it flagged our own healthy list
+posts and `--strict` cried wolf — and a false alarm is how a real one gets
+ignored. Both `test_best_copy.py` (link ownership + the CLI's summary line and
+exit code) and `test_earnkaro_conversion.py` (the report's counts and verdict
+line) pin the new behaviour in both directions.
+
+**And when the converter answers on a domain this build has never seen** — an
+EarnKaro/Affiliaters redirect the bot cannot name — the deal is no longer
+written off as unmonetized: the output is followed and accepted only when its
+destination proves it (`EK VERIFIED`), and refused when it leads back to the
+source, to a foreign shortener, or to a foreign `affExtParam2`. The negatives
+are pinned too (see `test_earnkaro_conversion.py`, section 2b).
+
+**Amazon — Associates APPROVED (2026-10-04).** Our own tag pays in FULL now, so
+`AMAZON_DIRECT_ASSOCIATES=true` (default) publishes the **native tagged link
+first**: `amazon.in/dp/ASIN?tag=mama086-21`, shortened with our own shortener
+(`AMAZON LINK SHORTENED`), recorded in `_short_to_long` so the channel under
+Amazon review still expands to the direct tagged product page at delivery. No
+network cut is taken. `AMAZON_VIA_EARNKARO=true` keeps EarnKaro as the **second
+chance** for an Amazon shape the native path cannot build (no usable ASIN), so
+no Amazon deal loses its monetization. `AMAZON_VIA_EARNKARO=false` means "never
+EarnKaro for Amazon", and `AMAZON_DIRECT_ASSOCIATES=false` restores the
+2026-09-24 network-first order (EarnKaro first, native tagged link as the
+fallback). A cached network row for an Amazon source is upgraded to our own
+tagged link (`AMAZON CACHE UPGRADED`) instead of being served for its full
+14-day life.
 
 **"Anni perfectga convert chesthunnava ledaa?" — answer it from DATA**:**
 
@@ -429,6 +533,74 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.6 — an Amazon SHORT link is a wrapper, never a post; and Amazon links are short
+  in the channel.** User report (2026-10-04): *"https://amzn.to/4dnF9lU?tag=mama086-21 …
+  IDI OPNE CHESTHE VERE VALLA LINK VASTHUNDI … LONG LINK lo MARCHI SHORTEN ga CHESI POST
+  CHEYALIGAA"*, plus a raw `amazon.in/…?tag=dv12399-21`. An `amzn.to` code belongs to
+  whoever created it — our tag glued on the end does not change where it goes (their
+  attribution travels in the redirect) and we earn nothing. Now: `is_amazon_short_host()`
+  marks amzn.to/amzn.in/amzn.eu/a.co as wrappers, the link is resolved to the long
+  amazon.in product page, re-tagged with OUR Associates tag and **shortened with our own
+  shortener** (`SHORTEN_AMAZON_LINKS=true`, applies to single deals too — the compact
+  tagged page is the fallback when the shortener is unavailable); `cut_amazon_short_links()`
+  runs at delivery so a post rendered by an older build still cannot publish a short code
+  (the link is cut, the deal goes out, the log says `AMAZON SHORT CUT`); the bridge resolves
+  or BLOCKS every Amazon short link before the policy gate (`prepareAmazonShortLinks()`, an
+  unresolved one is a permanent refusal) and shortens the ones carrying our tag. A stranger's
+  tag never survives the rebuild, and only a link that really carries OUR tag may be shortened
+  (cloaking an untagged page stays refused). The review channel still sees the direct tagged
+  product page: every short link is registered and expanded back on that one target.
+  Two more commission holes were closed in the same pass: an **HYPD share link that turns out
+  not to point at Meesho** used to publish its verified merchant page BARE — it now carries our
+  publisher id when the page accepts one (`LINK ATTRIBUTED | HYPD out of scope …`); and the
+  **WhatsApp bridge** now stamps a bare Flipkart/Myntra page found in a *bot-fed* post (a row
+  rendered before v18.5, or the degraded-post path) at display time
+  (`attributeBareMerchantPages()`, `LINK ATTRIBUTED | bare merchant page … not free`), while
+  leaving our own links, a stranger's id, our own short links and Meesho pages untouched.
+  Deploying both runtimes is one command — `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh`
+  restarts `bestgaa` **and** `tg-wa-bridge` and refuses to claim success unless the live
+  `bridge.js` sha256 equals the bundled one.
+- **v18.5 — a link that opens but pays nobody can no longer leave the building.**
+  User report (2026-10-04): *"CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU
+  RAVATLEUD … PRODUCT OPEN AVUTHUNDI KAANI ADI MANA LINKS KADU"* — the page opened and
+  the commission never came. Two paths published a BARE merchant page when the network
+  answered "no campaign": `keep_passthrough()` in the bot (Telegram channels) and the
+  bridge's direct-source safety-net jobs (WhatsApp). Bare = nobody's id = worth zero.
+  For the **Flipkart family** the network's own attribution parameter works on the
+  product page itself — `affExtParam2=<publisher>` is exactly the shape the EarnKaro
+  converter returns for this account — so both runtimes now **stamp our publisher id**
+  on the resolved page (`attributeWithOurPublisher()` in the bridge,
+  `attribute_with_our_publisher()` in the bot), replacing any stranger's id instead of
+  carrying it. Amazon keeps its tag, Meesho keeps HYPD, other stores keep the clean-page
+  policy; hosts are `EK_ATTRIBUTION_HOSTS` (`flipkart.com,myntra.com`, extend only after
+  EarnKaro confirms a store) and the stamp can be turned off with
+  `ATTRIBUTE_PASSTHROUGH_LINKS=false`. The auditor grew a matching bucket and finding:
+  `unattributed=N` counts the old posts that opened and paid nobody
+  (`can carry our publisher id (…) but was posted without it`), so the live DB shows how
+  many clicks were lost and the number stops growing once v18.5 runs. Logs:
+  `LINK ATTRIBUTED | queue=… the product page is posted WITH our publisher id (5478322)`.
+- **v18.4 — "mana links perfectga post chesthunda?" is now a number, and a new network
+  domain can no longer cost a commission.** Two changes, one on each side of the
+  question "does the post carry OUR link?":
+  1. **The bot verifies an unrecognized converter output instead of refusing it.**
+     `earnkaro_output_kind()` can only call a link ours when it recognizes the network's
+     short domain, and Affiliaters adds and renames them. An unknown one used to be
+     `EK REJECT` + an unmonetized post — a lost commission that looks *exactly* like
+     "this store has no campaign". A short-link-SHAPED output is now followed
+     (`EK VERIFIED`) and accepted only on evidence: its destination must be a real store
+     page (or carry OUR publisher id / our Amazon tag), and it is still refused when it
+     leads back to the source URL, to a foreign shortener, or to somebody else's
+     `affExtParam2`. A bare merchant-page echo keeps its old treatment (`looks_like_shortener()`
+     is the shape test `is_unresolvable_short_link()` now delegates to, so nothing else moved).
+  2. **`ops/quality_audit.py` stopped crying wolf about our own Bitly links.** Its
+     "bit.ly is a third-party shortener" literal predates the 2026-09-06 policy, under which
+     every list post carries OUR Bitly links by design — so `--strict` flagged healthy posts,
+     and a false alarm is how a real one gets ignored. Ownership is now read from the DATA
+     (the `link_cache` rows the bot's own provenance gate trusts, plus our EarnKaro publisher
+     id from the token/`ops/.earnkaro_key`), the report prints a single
+     `LINK PERFECTION | links=… our-short=… our-publisher=… clean-merchant=… FOREIGN=…`
+     line, `ops/conversion_report.py` shows the same counts for the live window (and says
+     `LINKS : WORKING`, or names the fix when a foreign link did reach a channel).
 - **v18.3 — a post is not its source message, and the bridge's own tests stopped
   depending on the clock.** Two fixes of the same class as v18.2's, both found by asking
   "can a post that reached intake still fail to appear?" of paths nobody had probed:
@@ -953,22 +1125,42 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.3 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.9 — deploy-flow fixes; **not yet deployed to a server**;
+the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
+Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
+changed — see `ops/quality_audit.py`;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
-printing exactly what the older build was coded to print):
+printing exactly what the older build was coded to print). Hashes refreshed
+2026-10-04, so they describe THIS tree:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` | `e89f0de5093aaabdba16f3f048d43c537fcd7165df1669966add127876064c6b` |
-| `tg-wa-bridge/bridge.js` | `66493afec26a757b63278be044dc89f7c96a23417c9f5747bfb179ba74e93527` |
+| `bestgaa/main_bot_new.py` (v18.9) | `ce43213667197eb1ed4fcb81d66e27d01efd2f43ade7bf8ca2f5559a6197fdf8` |
+| `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `62f8caf572c1ee166eaef7386c3fad4163a4b691eb0577c4da05abfbd04795b2` |
+| `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `6da0caa6912de691328c0d3f3b7bc5e41516d18b346ecb327e03ab748bfbb565` |
-| `test_line_fidelity.py` | `a224be7b73fa7a25ce70764f24c43955d500456b81255614cd1811d99de52509` |
-| `test_pipeline_fixes.py` | `c80c0bfacd400e9caf9358c84414f3c5a6d6ac8e855d9651e55097c26fd4b96c` |
+| `ops/deploy_and_verify.sh` | `8b825b41b4c6a23146635c336cb6db698f773316ae933020559944c2af7fd7bb` |
+| `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
+| `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
-| `test_best_copy.py` | `3b50c60f79e0b51f2949917092be3f880927b8479fc0f1aaab4a14de98833807` |
+| `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
+| `test_earnkaro_conversion.py` | `4ed544fc03bd2ec3883c32466d269bd17dfd5915ea23de457f26c28aa878d3b2` |
+
+A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
+tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python
+file compiles, `./ops/test_all.sh` prints ALL OFFLINE CHECKS PASSED, and
+`cd ops && ./repack_bundles.sh` produces both deploy bundles whose `main_bot_new.py` /
+`bridge.js` are byte-identical to the tracked sources (compare with
+`unzip -p … | sha256sum`). `ops/deploy_and_verify.sh` derives the expected version from
+the bot docstring, so it checks the running log against THIS code, and the older
+installers no longer pin the startup marker to v15. Runbook section 8 has the full list.
+
+`ops/earnkaro_check.py`, `ops/conversion_report.py`, `ops/set_earnkaro_key.sh`,
+`test_earnkaro_conversion.py`, `ops/LINK_PERFECTION_2026-10-04.txt` and this README
+carry the 2026-10-04 work (`--plan`, `EK VERIFIED`, LINK PERFECTION, the
+`unattributed` bucket and the v18.5 publisher-id stamping) — re-hash them with
+`sha256sum ops/*.py` after a deploy if you pin hashes elsewhere.
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
 `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,

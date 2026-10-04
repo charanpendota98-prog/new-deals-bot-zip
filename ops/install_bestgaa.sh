@@ -149,11 +149,14 @@ EARNKARO_PUBLISHER_ID=$EK_PUB
 # it explicitly keeps the RESPONSE shape predictable (an unreadable response is
 # a post that goes out unmonetized, not a lost post).
 EARNKARO_CONVERT_OPTION=convert_only
-# USER RULE (2026-09-24): Amazon converts through EarnKaro like every other
-# store - Associates is still rejecting the account, so a native ?tag= link
-# earns nothing. The native tagged link remains the fallback, and the reviewed
-# channel still shows the native tagged product page. Set 'false' for the old
-# pure-native behaviour.
+# USER DECISION (2026-10-04): the Amazon Associates account is APPROVED for our
+# tag, so the NATIVE tagged link (?tag=mama086-21) is the FIRST choice - the
+# whole commission is ours, no network share. EarnKaro is the second chance for
+# an Amazon shape the native path cannot build (no usable ASIN).
+AMAZON_DIRECT_ASSOCIATES=true
+# 'false' means "never EarnKaro for Amazon" (2026-09-06 behaviour); setting
+# AMAZON_DIRECT_ASSOCIATES=false above restores the 2026-09-24 network-first
+# order (EarnKaro first, native tagged link as the fallback).
 AMAZON_VIA_EARNKARO=true
 AMAZON_TAG=$AMZ_TAG
 # USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu, not
@@ -297,7 +300,7 @@ if ! cmp -s "$APP/main_bot.py" "$APP/main_bot_new.py"; then
   echo "ERROR: live main_bot.py != shipped main_bot_new.py" >&2
   exit 1
 fi
-if tail -n 300 "$APP/logs/bot.log" | grep -Eq "BestGAA Production Bot v15 starting|LIVE \| sources="; then
+if tail -n 300 "$APP/logs/bot.log" | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
   echo "       startup marker found in bot.log"
 else
   echo "       WARNING: startup marker not yet visible in last 300 lines"

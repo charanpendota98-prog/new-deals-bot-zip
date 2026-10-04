@@ -153,6 +153,8 @@ else
   echo "   * EarnKaro key refused      -> ./ops/set_earnkaro_key.sh '<token>'"
   echo "   * no BITLY_TOKENS on server -> add BITLY_TOKENS=<token> to bestgaa/.env, restart bestgaa"
   echo "   * products waiting for hypd -> curate in the HYPD app, then: $PY ops/hypd_links.py '<link>'"
+  echo "   * a link that will not pay   -> $PY ops/earnkaro_check.py --plan --deal-url '<the source link>'"
+  echo "                                  (prints the EXACT link the channel would carry)"
 fi
 echo "=============================================================================="
 exit $(( ${#FAILURES[@]} == 0 ? 0 : 1 ))

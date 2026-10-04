@@ -322,6 +322,31 @@ def test_shopsy_is_not_routed_through_our_hypd_store():
             bot.store = original
 
 
+def test_out_of_scope_hypd_destination_still_earns():
+    """USER REPORT 2026-10-04: "product open avuthundi kaani adi mana links kaadu".
+
+    OUR HYPD share link pointing at a NON-Meesho page must not publish that page
+    bare when the page itself accepts our publisher id (Flipkart family): the
+    fallback is stamped, so the click pays US instead of nobody.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        original, original_id = bot.store, bot.OUR_EK_ID
+        bot.store = bot.Store(Path(td) / "hypd-attr.sqlite3")
+        bot.OUR_EK_ID = "5478322"
+        try:
+            flipkart = "https://www.flipkart.com/duffle-bag/p/itmFF123?pid=1"
+            session = FakeSession(hypd_destination=flipkart, bitly="https://bit.ly/must-not-use")
+            result = asyncio.run(Aff(session).convert(OUR_LINK, False))
+            check("an out-of-scope HYPD destination is still published (deal never lost)",
+                  bool(result) and "flipkart.com" in result.affiliate, repr(result))
+            check("and it carries OUR publisher id instead of opening for free",
+                  bool(result) and "affExtParam2=5478322" in result.affiliate, repr(result))
+            check("the HYPD hop itself is gone",
+                  bool(result) and "hypd.store" not in result.affiliate, repr(result))
+        finally:
+            bot.store, bot.OUR_EK_ID = original, original_id
+
+
 def test_unverified_hypd_destination_is_rejected():
     """An unknown merchant page is never published or shortened through HYPD."""
     with tempfile.TemporaryDirectory() as td:
@@ -484,6 +509,8 @@ def main():
     test_shorten_pass_covers_hypd_links()
     test_destination_from_page_markup()
     test_shopsy_is_not_routed_through_our_hypd_store()
+    test_out_of_scope_hypd_destination_still_earns()
+
     test_unverified_hypd_destination_is_rejected()
     test_config_defaults()
     test_deploy_wiring()

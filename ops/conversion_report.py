@@ -18,7 +18,10 @@ It reads the bot's OWN database and log and reports, per monetization route
                earnkaro / amazon / hypd / affiliate / shortened / PASS-THROUGH
                (a pass-through row is a clean merchant link: it earns NOTHING).
   LOG MARKERS  separate counts for EK SUCCESS, EK MISS, EK AUTH, EK REJECT,
-               EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, etc.
+               EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, plus the
+               link-health markers that answer "will this click pay us?" -
+               LINK ATTRIBUTED, AMAZON LINK SHORTENED, AMAZON SHORT RESOLVED/CUT,
+               DEGRADED POST, and the bridge's provenance rescue/cut lines.
   VERDICT      one line per route: WORKING / NEEDS ATTENTION / IDLE, plus the
                exact command for anything that needs attention.
 
@@ -38,16 +41,40 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The DEPLOYED files come FIRST, the checkout's own copies last. 2026-10-04: the
+# deploy imported the bot from the checkout, which created logs/bot.log and a
+# default DB there, and this report read those TEST lines as if they were live -
+# "AMAZON DIRECT 4" from a build that was not even deployed. A file inside the
+# checkout is never evidence about the running bot unless the operator asks for it.
 DEFAULT_DB_CANDIDATES = (
     Path(os.getenv("BOT_DB_PATH", "")) if os.getenv("BOT_DB_PATH") else None,
-    REPO_ROOT / "bestgaa" / "bestgaa.sqlite3",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3"),
+    REPO_ROOT / "bestgaa" / "bestgaa.sqlite3",
 )
 DEFAULT_LOG_CANDIDATES = (
     Path(os.getenv("BOT_LOG", "")) if os.getenv("BOT_LOG") else None,
-    REPO_ROOT / "bestgaa" / "logs" / "bot.log",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/logs/bot.log"),
+    REPO_ROOT / "bestgaa" / "logs" / "bot.log",
 )
+
+
+def pick_candidate(candidates, explicit=None):
+    """(path, note): the first EXISTING candidate, and a warning if it is suspect.
+
+    The old code took the first non-None candidate, so on a server the checkout's
+    file shadowed the deployed one even when it did not exist.
+    """
+    if explicit:
+        return Path(explicit), ""
+    for path in candidates:
+        if path and Path(path).exists():
+            note = ("read from the CHECKOUT (test data), not the deployed bot - pass "
+                    "--db/--log for the live files") if str(REPO_ROOT) in str(path) else ""
+            return Path(path), note
+    for path in candidates:                      # nothing exists: name the default
+        if path:
+            return Path(path), ""
+    return None, ""
 ENV_CANDIDATES = (
     REPO_ROOT / "bestgaa" / ".env",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"),
@@ -66,9 +93,14 @@ LOG_MARKERS = (
     ("EK MISS", "EarnKaro: API returned no usable converted link"),
     ("EK AUTH", "EarnKaro: the TOKEN was refused (regenerate the key!)"),
     ("EK REJECT", "EarnKaro: extracted API output failed attribution validation"),
+    ("EK VERIFIED", "EarnKaro: an unknown redirect domain was followed and PROVED ours"),
     ("EK HTTP", "EarnKaro: API returned a non-success HTTP status"),
     ("EK NETWORK", "EarnKaro: API/network retries were exhausted"),
     ("EK FALLBACK", "Amazon used its native tag because EarnKaro did not convert"),
+    ("AMAZON DIRECT", "Amazon published with OUR OWN Associates tag - full commission, "
+                      "no network share (account approved 2026-10-04)"),
+    ("AMAZON CACHE UPGRADED", "a cached network row for an Amazon source was replaced by "
+                              "our own Associates link"),
     ("PROVENANCE rejected", "a link we did not produce was refused"),
     ("UNMONETIZED LINK", "a deal posted with a clean merchant link (earns NOTHING)"),
     ("HYPD LINK", "OUR hypd link published (Bitly) - earns on our store"),
@@ -77,6 +109,28 @@ LOG_MARKERS = (
     ("BITLY unavailable", "shortener outage: the raw link was kept (never unmonetized)"),
     ("BITLY failed", "Bitly call failed (rate limit/token)"),
     ("SHORTENER fallback=is.gd", "is.gd was used because Bitly was unavailable"),
+    # v18.5/v18.6 link-health markers. These are the ones that answer "is a click
+    # about to pay nobody?" - a bare page stamped with our id, an Amazon short code
+    # resolved to the real product page (or cut when it would not resolve), and a
+    # bot-fed post repaired at delivery.
+    ("LINK ATTRIBUTED", "a page that would have paid NOBODY was published WITH our "
+                        "publisher id instead"),
+    ("AMAZON LINK SHORTENED", "Amazon link resolved to the tagged product page, then "
+                              "shortened with our own shortener"),
+    ("AMAZON SHORT RESOLVED", "an Amazon short code (amzn.to) is a wrapper: it was "
+                              "followed to OUR tagged product page"),
+    ("AMAZON SHORT CUT", "an Amazon short code that would not resolve was CUT (the "
+                         "deal text still posted)"),
+    ("AMAZON SHORT REFUSED", "an Amazon short link was refused as a destination"),
+    ("DEGRADED POST", "the API never answered: trusted merchant links were posted "
+                      "(each one attributed)"),
+    ("LINK DROPPED", "a link that never monetizes was cut; the deal still posted"),
+    # WhatsApp bridge (lower case on purpose - the bridge logs them that way).
+    ("provenance rescue", "the bridge resolved a stranger's wrapper to the merchant "
+                          "page and re-attributed it as OURS"),
+    ("provenance cut", "the bridge cut a stranger's wrapper that would not resolve "
+                       "(the deal still posted)"),
+    ("Provenance mismatch", "the bridge refused a link we did not produce"),
 )
 
 
@@ -175,6 +229,7 @@ def config_report(env: dict[str, str]) -> dict:
         "earnkaro_endpoint": env.get("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public"),
         "convert_option": env.get("EARNKARO_CONVERT_OPTION", "convert_only"),
         "amazon_via_earnkaro": env.get("AMAZON_VIA_EARNKARO", "true"),
+        "amazon_direct_associates": env.get("AMAZON_DIRECT_ASSOCIATES", "true"),
         "amazon_tag": env.get("AMAZON_TAG", ""),
         "hypd_store": env.get("HYPD_STORE_ID", "93944"),
         "hypd_slug": env.get("HYPD_STORE_SLUG", "smartdeals"),
@@ -184,9 +239,28 @@ def config_report(env: dict[str, str]) -> dict:
     }
 
 
+def _quality_audit():
+    """The ONE definition of "our link" (ops/quality_audit.py), imported not copied.
+
+    A second copy of the ownership rule would drift, and then this report would
+    disagree with the auditor about the very posts they both describe.
+    """
+    import importlib.util
+    path = Path(__file__).resolve().parent / "quality_audit.py"
+    try:
+        spec = importlib.util.spec_from_file_location("quality_audit_shared", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def db_report(db: Path, hours: float) -> dict:
     out: dict = {"db": str(db), "exists": db.exists(), "routes": {}, "passthrough_examples": [],
-                 "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0}
+                 "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0,
+                 "links": {"links": 0, "our-short": 0, "our-publisher": 0,
+                           "unattributed": 0, "clean-merchant": 0, "foreign": 0}}
     if not db.exists():
         return out
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -254,6 +328,25 @@ def db_report(db: Path, hours: float) -> dict:
                 "SELECT product_url, times, last_seen FROM hypd_wanted"
                 " ORDER BY times DESC, last_seen DESC").fetchall()
             if in_hosts(host_of(row["product_url"] or ""), ("meesho.com",))][:10]
+    # LINK PERFECTION: every link in every post of the window, classified with the
+    # auditor's own rule (data-backed: link_cache + our tag/publisher id).
+    qa = _quality_audit()
+    if qa is not None and table_exists("queue"):
+        try:
+            our_links = qa.our_minted_links(conn)
+            publisher = str(os.getenv("EARNKARO_PUBLISHER_ID", "")).strip() or str(
+                token_claims(os.getenv("EARNKARO_API_KEY", "")).get("earnkaro") or "")
+            our_tag = os.getenv("AMAZON_TAG", "").strip()
+            for row in conn.execute(
+                    "SELECT rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
+                    (since,)).fetchall():
+                for url in qa.ANY_LINK.findall(row["rendered_text"] or ""):
+                    url = url.rstrip(")】.,;'\"")
+                    out["links"]["links"] += 1
+                    out["links"][qa.classify_link(url, our_tag, publisher, our_links)] += 1
+        except Exception:
+            pass
+
     if table_exists("posted_deals"):
         out["posted_deals"] = conn.execute(
             "SELECT COUNT(*) AS n FROM posted_deals WHERE posted_at>=?",
@@ -299,8 +392,9 @@ def log_report(log: Path, hours: float) -> dict:
                 legacy_markers.add("EK MISS")
             elif " -> " in line:
                 legacy_markers.add("EK SUCCESS")
+        lowered = line.lower()
         for marker, _what in LOG_MARKERS:
-            if marker in line or marker in legacy_markers:
+            if marker.lower() in lowered or marker in legacy_markers:
                 bucket = out["markers"].setdefault(marker, {"count": 0, "last": ""})
                 bucket["count"] += 1
                 bucket["last"] = (when or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -400,6 +494,22 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         problems.append(f"{unmon} deal(s) posted with a clean merchant link "
                         "(no campaign anywhere) - see the pass-through list below")
         lines.append(f"Plain    : {unmon} unmonetized deal(s) in the window")
+    # --- link ownership across every post of the window ("mana links perfectga
+    # post chesthunda?"): counted with the auditor's own data-backed rule, so
+    # this line and `ops/quality_audit.py --strict` can never disagree.
+    links = db.get("links") or {}
+    if links.get("foreign"):
+        problems.append(f"{links['foreign']} published link(s) were NOT ours - run "
+                        "`python3 ops/quality_audit.py --strict` (it names the queue ids)")
+        lines.append(f"LINKS    : NEEDS ATTENTION - {links['foreign']} foreign link(s) reached a channel")
+    elif links.get("unattributed"):
+        lines.append(f"LINKS    : ATTENTION - {links['links']} link(s), of which "
+                     f"{links['unattributed']} on Flipkart/Myntra pages with NO publisher id: "
+                     "the product opens and pays nobody (fixed in v18.5 for new posts)")
+    elif links.get("links"):
+        lines.append(f"LINKS    : WORKING - {links['links']} published link(s), all ours "
+                     f"({links['our-short']} short, {links['our-publisher']} tagged, "
+                     f"{links['clean-merchant']} clean merchant)")
     return lines, problems
 
 
@@ -413,8 +523,8 @@ def main() -> int:
                         help="extra .env file(s) to read (repeatable)")
     args = parser.parse_args()
 
-    db = Path(args.db) if args.db else next((p for p in DEFAULT_DB_CANDIDATES if p), None)
-    log = Path(args.log) if args.log else next((p for p in DEFAULT_LOG_CANDIDATES if p), None)
+    db, db_note = pick_candidate(DEFAULT_DB_CANDIDATES, args.db)
+    log, log_note = pick_candidate(DEFAULT_LOG_CANDIDATES, args.log)
     env = load_env(args.env_file)
 
     cfg = config_report(env)
@@ -427,6 +537,10 @@ def main() -> int:
                           "verdict": lines, "problems": problems}, indent=2))
         return 1 if problems else 0
 
+    if db_note:
+        print(f"NOTE: database {db_note}")
+    if log_note:
+        print(f"NOTE: log {log_note}")
     print("=" * 78)
     print(f"CONVERSION REPORT — last {args.hours:g}h")
     print("=" * 78)
@@ -450,6 +564,34 @@ def main() -> int:
         for url in db_rep.get("passthrough_examples", []):
             print(f"      unmonetized example: {url[:100]}")
         print(f"  posted_deals in window: {db_rep.get('posted_deals', 0)}")
+        links = db_rep.get("links") or {}
+        if links.get("links"):
+            print(f"\nLINK PERFECTION (every link printed in this window's posts)")
+            print(f"  links={links['links']}  our-short={links['our-short']}  "
+                  f"our-publisher={links['our-publisher']}  "
+                  f"unattributed={links.get('unattributed', 0)}  "
+                  f"clean-merchant={links['clean-merchant']}  FOREIGN={links['foreign']}")
+            if links["foreign"]:
+                print("  -> FOREIGN links reached a channel: "
+                      "python3 ops/quality_audit.py --strict  (names the queue ids)")
+            elif links.get("unattributed"):
+                print("  -> Link(s) that CAN pay us but were posted without our publisher "
+                      "id (Flipkart/Myntra): they open and pay nobody. Published before the "
+                      "2026-10-04 attribution fix - new posts stamp it automatically.")
+            else:
+                print("  -> every published link is one of ours (minted by this bot, our "
+                      "tag/publisher, or a clean merchant page kept on purpose)")
+            posture = []
+            for marker, label in (("LINK ATTRIBUTED", "page(s) stamped with our id"),
+                                  ("AMAZON LINK SHORTENED", "Amazon link(s) shortened"),
+                                  ("AMAZON SHORT RESOLVED", "Amazon short code(s) resolved"),
+                                  ("AMAZON SHORT CUT", "Amazon short code(s) cut"),
+                                  ("DEGRADED POST", "degraded post(s) attributed")):
+                count = (lg_rep.get("markers") or {}).get(marker, {}).get("count")
+                if count:
+                    posture.append(f"{count} {label}")
+            if posture:
+                print("  LINK POSTURE | " + "; ".join(posture))
     else:
         print(f"\nROUTES: database not found ({db}) - run this ON the server")
 
@@ -471,6 +613,9 @@ def main() -> int:
         print("\nFixes: python3 ops/earnkaro_check.py   (EarnKaro key + OUR hypd links, live)")
         print("       python3 ops/hypd_links.py --wanted   (products waiting for a hypd link)")
         print("       ./ops/set_earnkaro_key.sh '<token>'  (rotate a refused key)")
+        print("       python3 ops/earnkaro_check.py --plan --deal-url '<a real source link>'")
+        print("           -> the EXACT link the channel will carry for that deal (converted,")
+        print("              shortened, and proved to pay OUR account)")
     else:
         print("\nEverything that should be converting is converting.")
     return 1 if problems else 0

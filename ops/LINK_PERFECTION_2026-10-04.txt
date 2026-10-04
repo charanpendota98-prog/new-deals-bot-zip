@@ -1,0 +1,404 @@
+LINK PERFECTION + UNKNOWN REDIRECT DOMAINS + UNATTRIBUTED LINKS +
+AMAZON SHORT LINKS (2026-10-04, bot v18.6)
+===================================================================
+
+USER REQUEST
+  "MANA LINKS PEREFCTA POST CHESTHUNDA LEDAA? PEREFCTGA CHEYALI OKAYNAAA
+   ADVANCEDGA BESTGAA MORE AND MORE ADVANCEDGAAA
+   NEATGA ANTHA CHETHA LEKUNDAA BES TGA"
+
+  => two questions in one: (a) prove the posts carry OUR links, and (b) make the
+     pipeline handle the cases where it would otherwise silently earn nothing or
+     cry wolf. Both are answered below with data, not with a domain list.
+
+
+1. ARE OUR LINKS BEING POSTED? - ONE NUMBER, AND IT IS NOW TRUSTWORTHY
+===========================================================================
+  The auditor used to say "bit.ly is a third-party shortener". That literal
+  predates the 2026-09-06 policy under which every list post carries OUR Bitly
+  links by design - so it flagged healthy posts, and `--strict` cried wolf. A
+  false alarm is how a real one gets ignored, so ownership is now read from the
+  DATA:
+
+    * the bot's OWN link_cache (the same rows the pipeline's provenance gate
+      consults when it decides a link is ours), and
+    * our EarnKaro publisher id, read from $EARNKARO_PUBLISHER_ID, the token in
+      $EARNKARO_API_KEY, or the gitignored ops/.earnkaro_key (never printed).
+
+  RUN IT:
+
+      python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200
+
+      QUALITY AUDIT | db=... posts=200 findings=0
+        LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
+        every published link is one of ours (minted by this bot, our tag, or a
+        clean merchant page) - nothing foreign reached a channel
+
+      python3 ops/conversion_report.py          # the live window, same counts
+        LINKS    : WORKING - 137 published link(s), all ours (88 short, 12 tagged,
+                   37 clean merchant)
+        # or: LINKS    : NEEDS ATTENTION - 2 foreign link(s) reached a channel
+        #     -> python3 ops/quality_audit.py --strict   (it names the queue ids)
+
+  WHAT THE BUCKETS MEAN
+    our-short        a link THIS bot minted (EarnKaro / HYPD / Bitly / is.gd).
+                     Bitly and is.gd links are proven by their link_cache row -
+                     not by their domain - because other channels post bit.ly
+                     links too. That is the whole point of asking the data.
+    our-publisher    our Amazon tag, or our EarnKaro publisher id
+                     (affExtParam2=5478322).
+    unattributed     a Flipkart or Myntra page with NO publisher id. The product
+                     opens and pays NOBODY - and unlike a clean merchant page it can
+                     be fixed (the network's affExtParam2 works on the page itself).
+                     New posts stamp it automatically (v18.5); this bucket is how the
+                     old, commission-losing posts are still counted and named.
+    clean-merchant   a store page kept ON PURPOSE because the network has no
+                     campaign AND the page itself carries no attribution we may
+                     stamp (e.g. Meesho/AJIO). It earns nothing and the report says
+                     so; it is not a defect.
+    FOREIGN          a link that should never have left: the source's own short
+                     link, another channel's bit.ly, a stranger's tag or id.
+                     `--strict` exits 1 on it; the detail line names why.
+
+  Exit codes: 0 = clean (or nothing to audit), 1 = findings AND --strict.
+  diagnose.sh section 10 and deploy_and_verify.sh section 5 both run the auditor,
+  so the verdict shows up in the normal deploy/verifications without new commands.
+
+
+2. A NEW REDIRECT DOMAIN NO LONGER COSTS A COMMISSION (EK VERIFIED)
+===========================================================================
+  `earnkaro_output_kind()` can only call a link ours when it recognizes the
+  network's short domain. Affiliaters adds and renames them, and the old answer
+  for an unknown one was:
+
+      EK REJECT | API response is not an attributable affiliate link
+      -> the deal posts with a clean merchant link and earns NOTHING
+
+  - indistinguishable from "this store has no campaign". Now a short-link-SHAPED
+  output is FOLLOWED and accepted only when its destination proves it:
+
+      EK VERIFIED | unknown short domain enkr.link resolves to www.myntra.com
+                  (attribution travels in the redirect, as ekaro.in does)
+      EK VERIFIED | unknown short domain enkr.link resolves to www.flipkart.com
+                  carrying OUR publisher id
+
+  ACCEPTED only when:
+    * the destination is a known merchant/store page (or a JS-redirect page whose
+      markup names one), AND
+    * it is not the source URL, not a foreign shortener/echo domain, not a
+      non-shop wrapper, AND
+    * if it shows an affExtParam2, that id is OURS - and for Amazon, its tag is
+      OUR tag.
+
+  STILL REFUSED (unchanged, and pinned by tests):
+    * a bare merchant-page echo (HTTP 200 is not a conversion),
+    * a destination carrying somebody else's publisher id  -> `EK REJECT ... FOREIGN attribution`
+    * a short link that only leads back to the source URL,
+    * a short link that leads to a foreign shortener (amzn.to etc),
+    * a short link that does not redirect at all (nothing was proven),
+    * an Amazon destination without our tag.
+
+  Watch it live:
+
+      journalctl -u bestgaa -f | grep -E 'EK VERIFIED|EK REJECT|EK SUCCESS|EK MISS'
+      # ops/conversion_report.py also counts EK VERIFIED as its own marker now
+
+
+3. THE COMMANDS THAT ANSWER THE QUESTION END TO END
+===========================================================================
+  cd ~/bestgaa-bot/bestgaa-bot
+
+  python3 ops/earnkaro_check.py --plan --deal-url '<source/product link>'   # exact posted link
+  python3 ops/conversion_report.py                       # is everything converting, right now
+  python3 ops/quality_audit.py --limit 200 --strict      # did our links reach the channels only
+  python3 ops/diagnose.sh                                # deploys + coverage + the quality audit
+  ./ops/deploy_fresh.sh                                  # ship it: tests -> bundles -> serve -> prove -> report
+
+
+4. TESTS
+===========================================================================
+  python3 test_best_copy.py            # link ownership: data-backed + the CLI summary/exit code
+  python3 test_earnkaro_conversion.py  # 169 checks: plan mode, EK VERIFIED accept/refuse matrix,
+                                       # the report's LINKS counts and verdict line
+  PYTHON=.venv/bin/python ./ops/test_all.sh   -> ALL OFFLINE CHECKS PASSED
+
+  The live proof still comes from the server (this workspace has no internet).
+  On the next deploy, deploy_and_verify.sh wants the log line
+      BestGAA Production Bot v18.6 starting ...
+  which is exactly how the running build is checked against this source.
+
+
+5. WHY COMMISSIONS WERE MISSING (2026-10-04) - AND WHAT CHANGED (v18.5)
+===========================================================================
+  USER REPORT
+    "CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU RAVATLEUD NDHUKU ANTE
+     LINKS ANNI MARIPOTHUNNAI INVALID LINK SVASTHUNNAI PRODUCT OPEN AVUTHUNDI
+     KAANI ADI MANA LINKS KADU"
+
+  WHAT WAS WRONG (found in the source, not guessed)
+    When the affiliate network answered "no campaign for this store", the bot
+    published the BARE merchant page on purpose (a deal must not be lost). The
+    page opened - and paid nobody. Two places did this:
+      1. bestgaa/main_bot_new.py -> keep_passthrough()  (Telegram channels)
+      2. tg-wa-bridge/bridge.js -> direct-source safety-net jobs that resolve a
+         raw source link and post the merchant page unconverted (WhatsApp)
+    Nobody's id was on the link, so the click was worth zero: "product open
+    avuthundi kaani adi mana links kaadu" - exactly the complaint.
+
+  WHAT CHANGED
+    For the Flipkart family the network's own attribution parameter works on the
+    product page itself: `affExtParam2=<publisher>` is the same shape the
+    EarnKaro converter returns for this account (the bot already treats it as a
+    conversion in earnkaro_output_kind(), and the bridge already treats it as
+    proof of "ours"). So where a page would have gone out bare, the bot and the
+    bridge now STAMP OUR PUBLISHER ID. A stranger's id on the source page is
+    REPLACED, never carried along. Stores with no such contract (Meesho -> HYPD,
+    Amazon -> tag, everyone else -> clean page) are untouched:
+    EK_ATTRIBUTION_HOSTS defaults to `flipkart.com,myntra.com` and can be
+    extended via env ONLY after EarnKaro confirms the store.
+
+  PROOF ON THE SERVER
+      journalctl -u bestgaa -f | grep -E 'LINK ATTRIBUTED|UNMONETIZED LINK'
+      # LINK ATTRIBUTED | queue=... the product page is posted WITH our publisher id
+      #                   (5478322) instead of a bare link that pays nobody: <url>
+      python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+      # unattributed=N counts the OLD posts (pre-v18.5) that opened and paid nobody;
+      # watch it stop growing, then re-post those deals manually if they matter.
+
+
+6. "IDI OPEN CHESTHE VERE VALLA LINK VASTHUNDI" - AMAZON SHORT LINKS (v18.6)
+===========================================================================
+  USER REPORT
+    "https://amzn.to/4dnF9lU?tag=mama086-21 ... IDI OPNE CHESTHE VERE VALLA LINK
+     VASTHUNDI. ASALU ALAGA AVODDU. PERFECTGA JUST TAG MARISTHE VUNNA LINK CHETHE
+     ALAGA AKDU - LONG LINK LO MARCHI SHORTEN GA CHESI POST CHEYALIGAA"
+    also: "https://www.amazon.in/dp/B0D9P2M1PB?th=1&smid=...&tag=dv12399-21"
+
+  WHAT WAS WRONG
+    `amzn.to/XXXX` is a short code that belongs to WHOEVER CREATED IT. Our tag glued
+    on the end does not change where it goes: the reader lands on that person's page
+    (their attribution travels in the redirect) and we earn nothing. A raw
+    `amazon.in/...?tag=dv12399-21` is the same disease with the tag visible.
+
+  WHAT CHANGED (both runtimes)
+    * bot: `is_amazon_short_host()` marks amzn.to / amzn.in / amzn.eu / a.co as
+      WRAPPERS. They are resolved to the long amazon.in product page, re-tagged with
+      OUR Associates tag, compacted and then SHORTENED with our own shortener.
+    * bot: `SHORTEN_AMAZON_LINKS=true` (default) - a single Amazon deal is shortened
+      too, not only list links. The fallback when the shortener cannot answer is the
+      compact `amazon.in/dp/ASIN?tag=OURS` page (never the source's short code).
+    * bot: `cut_amazon_short_links()` runs at DELIVERY as well, so a post rendered by
+      an older build still cannot publish a short code: the link is cut, the deal
+      text goes out, and the log says why (`AMAZON SHORT CUT | queue=...`).
+    * bridge (WhatsApp safety-net jobs): `prepareAmazonShortLinks()` resolves or BLOCKS
+      every Amazon short link before the policy gate; an unresolved one is a permanent
+      refusal, so it is never retried and never published. `needsShortening()` now
+      returns true for a link carrying OUR tag, so the channel shows a short link.
+    * a stranger's tag (`dv12399-21`) never survives the rebuild, and only a link that
+      actually carries OUR tag may be shortened (cloaking an untagged page is refused).
+
+  FOR THE REVIEW CHANNEL: `t.me/smartbuyhub11` still sees the DIRECT tagged product
+  page, because every short link we mint is recorded (`_short_to_long`) and expanded
+  back on that one target - a reviewer never has to follow a redirect.
+
+  PROOF ON THE SERVER
+      journalctl -u bestgaa -f | grep -E 'AMAZON LINK SHORTENED|AMAZON SHORT (CUT|REFUSED)'
+      # AMAZON LINK SHORTENED | https://www.amazon.in/dp/ASIN?tag=OURS -> https://bitli.in/XXXX
+      # AMAZON SHORT CUT | queue=... removed 1 Amazon short link(s) (a short code is
+      #   somebody's wrapper, never our destination)
+      python3 ops/quality_audit.py --limit 200 --strict
+      # an amzn.to link in a published post is a LINKS finding ("the source's own
+      # Amazon short link was posted instead of ours") - it must stay at 0
+  Set SHORTEN_AMAZON_LINKS=false / WA_SHORTEN_AMAZON_LINKS=false to spend no
+  shortener quota on Amazon (the compact tagged page is then posted).
+
+
+7. "COMMSION ASALU MISS AVODDU" - THE LAST TWO PLACES A CLICK COULD PAY NOBODY
+===========================================================================
+  Two more holes were closed after the v18.6 report; both keep the deal AND the
+  commission:
+
+  (a) HYPD link that turns out NOT to point at Meesho. Our HYPD ID is Meesho-only,
+      so the share link is dropped - and the verified merchant page used to be
+      published BARE. If that page is a Flipkart/Myntra page it now carries our
+      publisher id instead:  LINK ATTRIBUTED | HYPD out of scope for <host> ...
+
+  (b) WhatsApp bridge, BOT-FED posts. A row rendered before v18.5 (or the
+      degraded-post path when the API never answered) can still carry a bare
+      Flipkart/Myntra page. `attributeBareMerchantPages()` now stamps our
+      publisher id on it at display time - the provenance check still sees the
+      URL the bot cached, the deal text is untouched, and the reader lands on the
+      page with OUR id:  LINK ATTRIBUTED | bare merchant page ... not free
+      A page already carrying our id, a stranger's id, a Meesho page and our own
+      short links are all left exactly as they are (pinned by the bridge self-test).
+
+  DEPLOY BOTH RUNTIMES (WhatsApp included)
+      cd ~/bestgaa-bot/bestgaa-bot
+      ./ops/repack_bundles.sh && ./ops/apply_dual_hotfix.sh
+      # apply_dual_hotfix.sh: stops bestgaa + tg-wa-bridge, unpacks both bundles,
+      # runs the bridge self-test, verifies the LIVE bridge.js sha256 == the
+      # bundled one, then `systemctl enable --now` both services. If that hash
+      # check fails, old bridge code is still running - the script refuses to
+      # pretend it deployed.
+
+  PROVE IT AFTERWARDS (Telegram + WhatsApp)
+      printf 'bestgaa: ';     sudo systemctl is-active bestgaa
+      printf 'tg-wa-bridge: '; sudo systemctl is-active tg-wa-bridge
+      journalctl -u bestgaa      -n 200 --no-pager | grep -E 'LINK ATTRIBUTED|AMAZON LINK SHORTENED|AMAZON SHORT CUT|EK SUCCESS|EK REJECT|UNMONETIZED'
+      journalctl -u tg-wa-bridge -n 200 --no-pager | grep -E 'LINK ATTRIBUTED|AMAZON SHORT (RESOLVED|CUT)|provenance (rescue|cut)|Provenance mismatch'
+      python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+      # want: FOREIGN=0 and unattributed=0 (or a number that stops growing)
+      python3 ops/conversion_report.py
+      # LINKS : WORKING - N published link(s), all ours (a short, b tagged, c clean merchant)
+
+
+8. PERFECT BUILD - WHAT WAS VERIFIED BEFORE SHIPPING (v18.6, commit 85ca77e)
+===========================================================================
+  The build is only "perfect" if a FRESH CLONE reproduces it. Verified here:
+
+  (1) SUITES - every offline check, not a subset:
+        PYTHON=.venv/bin/python ./ops/test_all.sh
+        -> ALL OFFLINE CHECKS PASSED
+        render/routing, rescan+recovery, pipeline fixes (238 checks), best-copy,
+        duplicates, EarnKaro contract (169 checks), HYPD (83 checks), line
+        fidelity, WhatsApp bridge self-test, Python syntax.
+
+  (2) SYNTAX, every language in the tree:
+        bash -n on every tracked *.sh        node --check tg-wa-bridge/bridge.js
+        python -m py_compile bestgaa/*.py ops/*.py *.py
+
+  (3) BUNDLES - the artifacts the server actually installs:
+        cd ops && ./repack_bundles.sh
+        # bestgaa_final_bundle.zip  (main_bot_new.py, deploy_bestgaa.sh,
+        #   migrate_legacy_env.py, requirements.txt, bestgaa.service,
+        #   README_FIRST.txt, coverage_audit.py, quality_audit.py)
+        # tg_wa_bridge_bundle.zip  (bridge.js, package.json,
+        #   tg-wa-bridge.service, install_bridge.sh,
+        #   switch_whatsapp_number.sh, README_FIRST.txt)
+     The BUNDLED files must be byte-identical to the tracked sources:
+        unzip -p ops/bestgaa_final_bundle.zip main_bot_new.py | sha256sum
+        sha256sum bestgaa/main_bot_new.py
+        # both = 704cda7c13f89169ca251a1d0dfc7fd9dbdc3463502d932e9b0d1ff9fce1be06
+        unzip -p ops/tg_wa_bridge_bundle.zip bridge.js | sha256sum
+        sha256sum tg-wa-bridge/bridge.js
+        # both = cc730296d1afa9bd8fa7c30aa700b712fd61f3d5c9c8445db734525cee8d0e76
+
+  (4) VERSION PLUMBING - the build tells you which code is running:
+        bestgaa/main_bot_new.py docstring + startup log: v18.6
+        ops/deploy_and_verify.sh derives WANT_VERSION from that docstring, so it
+        checks the LOG LINE against the CODE, never against a hardcoded number.
+        bestgaa/deploy_bestgaa.sh + ops/install_bestgaa.sh no longer pin the
+        startup marker to v15 (a v16+ deploy used to print a pointless WARNING).
+
+  RUN ORDER ON THE SERVER (one pass, Telegram + WhatsApp together)
+        cd ~/bestgaa-bot/bestgaa-bot
+        ./ops/set_earnkaro_key.sh "$(cat ops/.earnkaro_key)"
+        cd ops && ./repack_bundles.sh && ./apply_dual_hotfix.sh
+        cd .. && python3 ops/earnkaro_check.py --skip-hypd
+        python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+        python3 ops/conversion_report.py
+
+  The report now also counts the link-health markers themselves (LINK ATTRIBUTED,
+  AMAZON LINK SHORTENED, AMAZON SHORT RESOLVED/CUT, the bridge's provenance
+  rescue/cut), and prints a one-line POSTURE under LINK PERFECTION:
+
+      LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
+        LINK POSTURE | 12 page(s) stamped with our id; 34 Amazon link(s) shortened; 3 Amazon short code(s) resolved
+
+  9. "IDI MANADENAA LINK?" - ONE URL IN, ONE VERDICT OUT  (2026-10-04)
+
+     The conversion always goes through OUR account: the EarnKaro API is called
+     with our token, so the publisher that gets paid is in the link itself.
+     On Flipkart-family links that is `affExtParam2` - the same field
+     ops/earnkaro_check.py calls the publisher ("ours" when it equals 5478322).
+     `affid` (here `deals101`) is the AFFILIATE ACCOUNT id - the network account
+     the commission is routed through - exactly how Flipkart documents its own
+     affiliate URLs (?affid=..&affExtParam1=..&affExtParam2=..). `cmpid`/`mcn`
+     are that account's campaign/network markers. NEVER strip them from a
+     converted link: they are the route the money travels, and removing them is
+     the one change that could really lose the commission. The posting path
+     therefore publishes EarnKaro's output as minted.
+
+     To ask about any link without a database:
+
+        python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
+
+        OUR-PUBLISHER  ...affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322
+                       reason: ours - our id/tag/short link is on it
+        FOREIGN        ...affExtParam2=999999
+                       reason: carries somebody else's affiliate id (999999,AFF_deals101,deals101)
+        UNATTRIBUTED   https://www.myntra.com/x/1/detail
+                       reason: can carry our publisher id (5478322) but was posted
+                               without it - the product opens and NOBODY is paid
+        (exit 1 when anything is FOREIGN, 0 otherwise - usable in a script)
+
+     The audit buckets now agree with whose_link() and with the pipeline's own
+     classifier (earnkaro_output_kind -> "publisher"), so a converted link is
+     never reported foreign for carrying the network's own parameters.
+
+ 10. AMAZON ASSOCIATES APPROVED (2026-10-04) - THE TAG NOW PAYS IN FULL
+
+     USER: "amazin assacite approve chesindi manadi". Decision (asked first):
+     native tag FIRST, tag stays mama086-21.
+
+     What changed (v18.8):
+       * AMAZON_DIRECT_ASSOCIATES=true (default): an Amazon product/search/browse
+         link is published with OUR OWN tagged URL first - the whole Associates
+         commission is ours, no network share. Log: AMAZON DIRECT.
+       * EarnKaro is the SECOND CHANCE, only for an Amazon shape the native path
+         cannot build (no usable ASIN). Nothing about other stores changed: the
+         Amazon switches never gate Flipkart/Myntra (pinned by a regression
+         check after a bug where AMAZON_VIA_EARNKARO=false also stopped them).
+       * The link cache no longer pins the old policy in the other direction:
+         a cached NETWORK row for an Amazon SOURCE is rebuilt as our own tagged
+         link, free, no API call. Log: AMAZON CACHE UPGRADED.
+       * AMAZON_DIRECT_ASSOCIATES=false restores the 2026-09-24 order (EarnKaro
+         first, native tag as the fallback); AMAZON_VIA_EARNKARO=false still
+         means "never EarnKaro for Amazon" (2026-09-06 behaviour).
+
+     PROVE IT ON THE SERVER
+       grep -E 'AMAZON DIRECT|AMAZON CACHE UPGRADED|AMAZON LINK SHORTENED' \
+            <(journalctl -u bestgaa -n 500 --no-pager)
+       python3 ops/conversion_report.py     # markers + amazon_direct_associates
+       python3 ops/diagnose.sh | grep AMAZON_DIRECT_ASSOCIATES
+
+     YOUR SIDE (unchanged, now load-bearing): every channel that carries the tag
+     must be listed in Associates Central with its FULL url, and the account must
+     stay in good standing - the tag is now the money path, not a fallback.
+
+ 11. THE DEPLOY ITSELF: WHAT WENT WRONG ON 2026-10-04, AND THE FIX (v18.9)
+
+     The first real deploy attempt ran every suite green and deployed NOTHING.
+     Three separate causes, all fixed and pinned by the test suite:
+
+     (a) DEPLOY SKIPPED BY A GUARD. deploy_fresh.sh calls
+         `deploy_and_verify.sh --no-pull --with-tests`, and the deploy block was
+         guarded by `[[ "$DO_PULL$DO_DEPLOY" == "11" ]]` - with --no-pull that
+         string is "01", so repack + hotfix + restart never ran. The only
+         symptom was "main_bot.py is an OLDER build" further down.
+         FIX: the deploy runs whenever DO_DEPLOY=1.
+
+     (b) TEST DATA READ AS LIVE DATA. The suites IMPORT the bot, and importing
+         it creates logs/ and a default DB next to the source; conversion_report
+         then took the FIRST NAMED candidate (the checkout's own file) and
+         reported markers from a build that was not running.
+         FIX: the bot honours BOT_LOG_DIR / BOT_MEDIA_DIR, the deploy and
+         test_all.sh run the suites against a throwaway DB/log, and
+         conversion_report prefers the DEPLOYED paths, picks the first EXISTING
+         file, and prints a NOTE when it is reading the checkout.
+
+     (c) CLOUDFLARE 1010 ON THE API PROBE. earnkaro_check.py got
+         `403 error code: 1010` with urllib's default User-Agent (the live bot
+         was converting fine at the same time - identical requests, different
+         timing). The converter POSTs (bot + probe) now send a browser UA.
+
+     (d) A DROPPED SSH KILLED THE RUN (twice: "client_loop: send disconnect").
+         Use the wrapper - it survives a disconnect:
+
+             ./ops/deploy_stable.sh            # deploy_fresh.sh inside tmux
+             ./ops/deploy_stable.sh --attach   # ... and watch it
+             ./ops/deploy_stable.sh --status   # is it still running?
+
+     SAME RUN ORDER, JUST STABLE:
+         cd ~/dealsbot-src && git pull --ff-only
+         ./ops/deploy_stable.sh            # then: tmux attach -t bestgaa-deploy

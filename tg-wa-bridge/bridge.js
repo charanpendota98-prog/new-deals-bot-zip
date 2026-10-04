@@ -1451,6 +1451,56 @@ function isOurAmazonTagLink(url) {
     return false
   }
 }
+// ---------------------------------------------------------------------------
+// OUR ATTRIBUTION ON A RESOLVED MERCHANT PAGE (USER REPORT 2026-10-04:
+// "product open avuthundi kaani adi mana links kaadu ... commission asalu
+// ravatledu"). A safety-net (direct-source) job resolves a raw source link to
+// the merchant page and posted it BARE - it opens, and pays nobody. For the
+// Flipkart family the network's own parameter works on the plain product page:
+// `affExtParam2=<publisher id>` is exactly the shape EarnKaro's converter
+// returns for OUR account (the bot's earnkaro_output_kind treats it as a
+// conversion, and isOurGeneratedLink already accepts it as proof of "ours"), so
+// the resolved page is published WITH our publisher id. A stranger's id is
+// replaced, never carried along. Amazon earns through the Associates tag and
+// Meesho through HYPD - both keep their own path and are not touched here.
+// ---------------------------------------------------------------------------
+const EK_ATTRIBUTION_HOSTS = new Set((process.env.EK_ATTRIBUTION_HOSTS || 'flipkart.com,myntra.com')
+  .split(',').map(x => x.trim().toLowerCase()).filter(Boolean))
+const ATTRIBUTE_PASSTHROUGH_LINKS = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.ATTRIBUTE_PASSTHROUGH_LINKS || 'true').trim().toLowerCase())
+const FOREIGN_ATTRIBUTION_KEYS = new Set([
+  'affid', 'aff_id', 'affid1', 'affid2', 'affextparam1', 'affextparam2',
+  'affiliate', 'affiliate_id', 'affiliateid', 'subid', 'sub_id',
+])
+function attributeWithOurPublisher(url) {
+  if (!PUBLISHER_ID || !ATTRIBUTE_PASSTHROUGH_LINKS) return url
+  try {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase()
+    if (![...EK_ATTRIBUTION_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return url
+    for (const key of [...u.searchParams.keys()]) {
+      if (FOREIGN_ATTRIBUTION_KEYS.has(key.toLowerCase())) u.searchParams.delete(key)
+    }
+    u.searchParams.set('affExtParam2', PUBLISHER_ID)
+    return u.toString()
+  } catch {
+    return url
+  }
+}
+// Amazon's OWN short domains (2026-10-04). `amzn.to/XXXX?tag=ours` was seen in a
+// channel: the code belongs to whoever created it and opening it serves THEIR
+// page, so it is a wrapper, never a destination. Such a link is followed to the
+// real amazon.in page, tagged with OUR Associates tag, and only then posted.
+const AMAZON_SHORT_HOSTS = new Set(['amzn.to', 'amzn.in', 'amzn.eu', 'a.co'])
+function isAmazonShortHost(host) { return [...AMAZON_SHORT_HOSTS].some(d => host === d || host.endsWith('.' + d)) }
+function isAmazonHost(host) {
+  return host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
+}
+// USER RULE 2026-10-04 ("LONG LINK lo MARCHI SHORTEN GA CHESI POST CHEYALIGAA"):
+// an Amazon link we publish is shortened with our own shortener, not just posted
+// as a long tagged URL. Set WA_SHORTEN_AMAZON_LINKS=false to spend no quota on it.
+const SHORTEN_AMAZON_LINKS = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.WA_SHORTEN_AMAZON_LINKS || 'true').trim().toLowerCase())
 // Follow known shortener/redirector hosts to the final merchant page (max 5
 // hops). linkredirect.in embeds the destination in its ?dl= param, so it is
 // decoded without any network call. Returns null when resolution fails.
@@ -1523,6 +1573,13 @@ async function prepareDirectJob(job, fetchFn = fetch) {
     if (REDIRECT_FOLLOW_HOSTS.has(hostOf(url))) {
       resolved = (await resolveUrl(url, fetchFn)) || url
     }
+    if (isAmazonShortHost(hostOf(url)) && !isAmazonHost(hostOf(resolved))) {
+      // `amzn.to/XXXX?tag=ours` opens whoever created that code - never post it.
+      // prepareAmazonShortLinks has the same rule for every job; this early exit
+      // keeps a failed resolve from being re-fetched here.
+      job.blockedLinks[url] = true
+      continue
+    }
     try {
       const u = new URL(resolved)
       const host = u.hostname.toLowerCase()
@@ -1534,6 +1591,10 @@ async function prepareDirectJob(job, fetchFn = fetch) {
         u.searchParams.delete('tag')
         u.searchParams.set('tag', AMAZON_TAG)
         resolved = u.toString()
+      } else {
+        // A bare merchant page pays NOBODY. Where the network's attribution
+        // works on the page itself (Flipkart family), publish it WITH ours.
+        resolved = attributeWithOurPublisher(resolved)
       }
     } catch { /* keep resolved as-is */ }
     if (resolved !== url) job.resolvedLinks[url] = resolved
@@ -2334,6 +2395,10 @@ function needsShortening(url, isList = false) {
   // ugly: product LISTS (2+ links) and genuinely long links. A normal single
   // short amazon dp link posts as-is with our Associates tag.
   if (isList) return true
+  // 2026-10-04: an Amazon link that is OURS (our Associates tag) is shortened
+  // even when it is a single tidy /dp URL, because the user wants the short form
+  // in the channel. The tagged long link remains the fallback if Bitly fails.
+  if (SHORTEN_AMAZON_LINKS && isOurAmazonTagLink(url)) return true
   return url.length > SHORTEN_MIN_LEN
 }
 async function shortenLongUrl(url) {
@@ -2688,8 +2753,20 @@ function validateAffiliateText(job, text) {
     'ajiio.co', 'myntr.in', 'tinyurl.com', 'cutt.ly', 'rb.gy', 't.ly',
   ])
   for (const raw of urls) {
+    // A blocked link is never published (displayUrl returns '' for it): it was
+    // already cut from the post, so it is not an error - the deal goes out.
+    if (job?.blockedLinks?.[raw]) continue
     const u = new URL(raw)
     const host = u.hostname.toLowerCase()
+    if (isAmazonShortHost(host)) {
+      // Only the RESOLVED, our-tag product page may be posted (2026-10-04): the
+      // short code itself belongs to its creator and pays nobody.
+      const resolved = job?.resolvedLinks?.[raw]
+      if (!resolved || !isAmazonHost(hostOf(resolved))) {
+        throw new Error('Amazon short link may not be posted as-is')
+      }
+      continue
+    }
     // Direct-source jobs legitimately carry raw source shorteners: they are
     // resolved to the merchant page before posting (prepareDirectJob).
     if (!direct && [...sourceShorteners].some(domain => host === domain || host.endsWith(`.${domain}`))) {
@@ -2797,6 +2874,80 @@ async function assertLinksHealthy(job, urls) {
     'link health says dead; posting anyway (WA_DROP_DEAD_LINKS=false)')
 }
 
+function attributeBareMerchantPages(job) {
+  // FINAL MISSING-COMMISSION GUARD (2026-10-04). A bot-fed post can still carry a
+  // BARE Flipkart/Myntra page: a row rendered by a build older than v18.5, or the
+  // degraded-post path when the conversion API never answered. Such a page opens
+  // and pays NOBODY. The stamp is applied at DISPLAY time (resolvedLinks), so the
+  // provenance check still sees the same URL the bot cached, the deal text is
+  // untouched, and the reader gets the page with OUR publisher id.
+  job.resolvedLinks ||= {}
+  for (const url of urlsIn(job.text || '')) {
+    if (job.blockedLinks?.[url] || job.resolvedLinks[url] || job.shortLinks?.[url]) continue
+    if (isOurGeneratedLink(url)) continue
+    const host = hostOf(url)
+    const attributable = [...EK_ATTRIBUTION_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))
+    if (!attributable) continue
+    let u
+    try { u = new URL(url) } catch { continue }
+    // URLSearchParams is case-SENSITIVE: read the URL's own names and compare
+    // lowercased, or `affExtParam2=999999` would read as "no attribution at all"
+    // and a stranger's page would be re-stamped as ours.
+    const nameOf = (k) => k.toLowerCase()
+    const valuesOf = (wanted) => [...u.searchParams.keys()]
+      .filter(k => nameOf(k) === wanted)
+      .flatMap(k => u.searchParams.getAll(k).filter(Boolean))
+    const oursPresent = valuesOf('affextparam2').includes(PUBLISHER_ID)
+    const tags = valuesOf('tag')
+    // A link that already names an affiliate account belongs to whoever minted
+    // it: leave it alone (re-stamping a page that carries somebody's ids is not
+    // how a click is won, and the source's own attribution is not ours to move).
+    const foreign = [...FOREIGN_ATTRIBUTION_KEYS].some(k => valuesOf(k).some(v => v !== PUBLISHER_ID))
+    if (oursPresent || tags.length || foreign) continue
+    const stamped = attributeWithOurPublisher(url)
+    if (stamped && stamped !== url) {
+      job.resolvedLinks[url] = stamped
+      log.warn({ id: job.id, url: url.slice(0, 60), as: stamped.slice(0, 90) },
+        'LINK ATTRIBUTED | bare merchant page in a bot-fed post is published WITH our publisher id, not free')
+    }
+  }
+}
+
+async function prepareAmazonShortLinks(job, fetchFn = fetch) {
+  // An Amazon SHORT link is never posted as-is (see AMAZON_SHORT_HOSTS). It is
+  // followed to the real amazon.in page and re-tagged with OUR Associates tag; if
+  // it will not resolve, the link is BLOCKED (cut from the post by displayUrl) so
+  // the deal still goes out and the wrapper - which pays nobody - never does.
+  job.blockedLinks ||= {}
+  job.resolvedLinks ||= {}
+  for (const url of urlsIn(job.text || '')) {
+    const host = hostOf(url)
+    if (!isAmazonShortHost(host)) continue
+    if (job.blockedLinks[url] || job.resolvedLinks[url]) continue
+    const resolved = await resolveUrl(url, fetchFn)
+    let finalUrl = resolved || ''
+    if (finalUrl) {
+      try {
+        const u = new URL(finalUrl)
+        if (isAmazonHost(u.hostname.toLowerCase())) {
+          u.searchParams.delete('tag')
+          u.searchParams.set('tag', AMAZON_TAG)
+          finalUrl = u.toString()
+        }
+      } catch { finalUrl = '' }
+    }
+    if (finalUrl && isAmazonHost(hostOf(finalUrl))) {
+      job.resolvedLinks[url] = finalUrl
+      log.info({ id: job.id, from: url.slice(0, 60), to: finalUrl.slice(0, 90) },
+        'AMAZON SHORT RESOLVED | the short code is a wrapper; OUR tagged product page is what gets posted')
+    } else {
+      job.blockedLinks[url] = true
+      log.warn({ id: job.id, url: url.slice(0, 60) },
+        'AMAZON SHORT CUT | the source short link would not resolve to an Amazon page; the link is out, the deal stays')
+    }
+  }
+}
+
 async function verifyJob(job, fetchFn = fetch) {
   // Tag era: repair Amazon tags BEFORE the policy gate - a stranger's tag is
   // deleted, a bare link gains ours, ours passes untouched - so
@@ -2805,6 +2956,8 @@ async function verifyJob(job, fetchFn = fetch) {
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
+  attributeBareMerchantPages(job)
+  await prepareAmazonShortLinks(job, fetchFn)
   const urls = validateAffiliateText(job, job.text)
   // Service/lifestyle links (Zomato/Swiggy/Zepto/movies/cards) are not in the
   // BestGAA link_cache by design; only monetized store links get the provenance
@@ -2835,7 +2988,10 @@ async function verifyJob(job, fetchFn = fetch) {
             u.searchParams.set('tag', AMAZON_TAG)
           }
           job.resolvedLinks ||= {}
-          job.resolvedLinks[url] = u.toString()
+          // The stranger's wrapper is gone; where the network's own attribution
+          // works on the merchant page, OUR publisher id takes its place instead
+          // of publishing a bare link that pays nobody.
+          job.resolvedLinks[url] = attributeWithOurPublisher(u.toString())
           rescued.push(url)
         } catch { /* keep as unrescued */ }
       } else {
@@ -2889,7 +3045,7 @@ function isPermanent(error) {
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
   // the correct behaviour too (a retry hours later would still be a dup).
-  return /No URL|Foreign\/source shortener|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Best-deal gate|duplicate product/i.test(error.message)
+  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Best-deal gate|duplicate product/i.test(error.message)
 }
 
 async function resolveNewsletterJid(sock, target) {
@@ -5209,6 +5365,73 @@ https://fktr.in/MANY${i}`,
     if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
   }
   {
+    // USER REPORT 2026-10-04 ("product open avuthundi kaani adi mana links kaadu"):
+    // a bot-fed post can still carry a BARE Flipkart/Myntra page (a row rendered by
+    // an older build, or the degraded-post path). It must be published WITH our
+    // publisher id - the stamp lands on the DISPLAY url, so the provenance check
+    // still sees the URL the bot cached and the deal text is untouched.
+    const bare = { id: 'bare1', text: 'Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE1?pid=1' }
+    attributeBareMerchantPages(bare)
+    if (displayUrl(bare, 'https://www.flipkart.com/kurta/p/itmBARE1?pid=1') !== `https://www.flipkart.com/kurta/p/itmBARE1?pid=1&affExtParam2=${PUBLISHER_ID}`) {
+      throw new Error('a bare Flipkart page must be published with our publisher id: ' + displayUrl(bare, 'https://www.flipkart.com/kurta/p/itmBARE1?pid=1'))
+    }
+    if (isOurGeneratedLink(bare.text)) throw new Error('job.text must be untouched (provenance reads it)')
+
+    const oursAlready = { id: 'bare2', text: `Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE2?affExtParam2=${PUBLISHER_ID}` }
+    attributeBareMerchantPages(oursAlready)
+    if (Object.keys(oursAlready.resolvedLinks || {}).length) throw new Error('an already-attributed page must not be re-stamped')
+
+    const foreignId = { id: 'bare3', text: 'Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE3?affExtParam2=999999' }
+    attributeBareMerchantPages(foreignId)
+    if (Object.keys(foreignId.resolvedLinks || {}).length) throw new Error("a stranger's id must not be silently re-stamped here")
+
+    const meesho = { id: 'bare4', text: 'Saree \u20b9299\nhttps://www.meesho.com/sarees/p/mee123' }
+    attributeBareMerchantPages(meesho)
+    if (Object.keys(meesho.resolvedLinks || {}).length) throw new Error('Meesho has no affExtParam2 contract and must be untouched')
+
+    const ourShort = { id: 'bare5', text: 'Kurta \u20b9499\nhttps://bitli.in/OURS' }
+    attributeBareMerchantPages(ourShort)
+    if (Object.keys(ourShort.resolvedLinks || {}).length) throw new Error('our own short link must be left alone')
+  }
+  {
+    // USER REPORT 2026-10-04: `https://amzn.to/XXXX?tag=ours` opens the page of
+    // whoever created that short code. A short Amazon link is a WRAPPER: it is
+    // resolved to the long amazon.in page (re-tagged with OUR Associates tag) and
+    // shortened with our own shortener; if it cannot be resolved, the link is CUT
+    // (the deal text still goes out) instead of being published as-is.
+    if (!isAmazonShortHost('amzn.to') || !isAmazonShortHost('www.amzn.in') || isAmazonShortHost('amazon.in')) {
+      throw new Error('Amazon short-host detection is wrong')
+    }
+    const fakeFetch = async url => {
+      const value = String(url)
+      if (value.includes('amzn.to/GOOD1')) return { url: 'https://www.amazon.in/dp/B0SHORT0001?th=1&smid=AX&tag=dv12399-21', body: { cancel: async () => {} } }
+      throw new Error('no network expected for ' + value)
+    }
+    const good = { id: 'amzShortGood', direct: true, text: 'Deal \u20b9299\nhttps://amzn.to/GOOD1' }
+    await prepareDirectJob(good, fakeFetch)
+    const shown = displayUrl(good, 'https://amzn.to/GOOD1')
+    if (!shown.startsWith('https://www.amazon.in/dp/B0SHORT0001')) throw new Error('an Amazon short link must display as the resolved product page: ' + shown)
+    if (!shown.includes(`tag=${AMAZON_TAG}`)) throw new Error('the resolved Amazon page must carry OUR tag: ' + shown)
+    if (/dv12399-21/.test(shown)) throw new Error("a stranger's tag must not survive resolution: " + shown)
+    if (urlsIn(shown).some(u => isAmazonShortHost(hostOf(u)))) throw new Error('the short code itself must never be the posted URL')
+
+    const dead = { id: 'amzShortDead', direct: true, text: 'Deal \u20b9299\nhttps://amzn.to/SHORTBLOCKED' }
+    await prepareDirectJob(dead, fakeFetch)
+    if (!dead.blockedLinks['https://amzn.to/SHORTBLOCKED']) throw new Error('an unresolvable Amazon short link must be blocked')
+    if (displayUrl(dead, 'https://amzn.to/SHORTBLOCKED') !== '') throw new Error('a blocked Amazon short link must never be displayed')
+    validateAffiliateText(dead, dead.text)  // blocked links are cut, not an error
+
+    // Non-direct (bot-fed) jobs go through the same resolve-or-cut rule.
+    const sourceJob = { id: 'amzShortSource', text: 'Deal \u20b9299\nhttps://amzn.to/GOOD1' }
+    await prepareAmazonShortLinks(sourceJob, fakeFetch)
+    if (!sourceJob.resolvedLinks['https://amzn.to/GOOD1']) throw new Error('a source Amazon short link must be resolved to the product page')
+    validateAffiliateText(sourceJob, sourceJob.text)
+    if (!needsShortening(displayUrl(sourceJob, 'https://amzn.to/GOOD1'))) throw new Error('our Amazon links must be shortened (2026-10-04 user rule)')
+    let rawShortBlocked = false
+    try { validateAffiliateText({}, 'Deal \u20b9299\nhttps://amzn.to/OOPS') } catch { rawShortBlocked = true }
+    if (!rawShortBlocked) throw new Error('an unresolved Amazon short link must be refused, never posted as-is')
+  }
+  {
     // Raw source links resolve to the merchant page; raw amazon gets OUR tag.
     const fakeFetch = async url => {
       const value = String(url)
@@ -5219,8 +5442,18 @@ https://fktr.in/MANY${i}`,
     const djob = { direct: true, text: 'Direct deal ₹299\nhttps://amzn.to/DEAL1\nAlso https://fkrt.co/DEAL2' }
     await prepareDirectJob(djob, fakeFetch)
     if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src&tag=${AMAZON_TAG}`) throw new Error('raw amazon product page must resolve WITH our tag: ' + djob.resolvedLinks['https://amzn.to/DEAL1'])
-    if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== 'https://www.flipkart.com/direct-item/p/itm77?ref=src') throw new Error('raw flipkart shortener not resolved')
+    if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== `https://www.flipkart.com/direct-item/p/itm77?ref=src&affExtParam2=${PUBLISHER_ID}`) throw new Error('raw flipkart shortener must resolve WITH our publisher id: ' + djob.resolvedLinks['https://fkrt.co/DEAL2'])
     if (displayUrl(djob, 'https://amzn.to/DEAL1') !== djob.resolvedLinks['https://amzn.to/DEAL1']) throw new Error('displayUrl must prefer the resolved merchant link')
+    // USER REPORT 2026-10-04 ("product opens but it is not our link"): a bare
+    // merchant page must be published WITH our publisher id, a stranger's id is
+    // replaced, and stores with no direct-attribution contract stay untouched.
+    if (attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1?pid=1') !== `https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=${PUBLISHER_ID}`) throw new Error('bare flipkart page must gain our publisher id')
+    if (attributeWithOurPublisher('https://www.myntra.com/mens-tshirts/itm1?track=one') !== `https://www.myntra.com/mens-tshirts/itm1?track=one&affExtParam2=${PUBLISHER_ID}`) throw new Error('bare myntra page must gain our publisher id')
+    if (attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1?affExtParam2=999999&affid=thief') !== `https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) throw new Error('a stranger affiliate id must be replaced, never kept')
+    if (attributeWithOurPublisher(`https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) !== `https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) throw new Error('attribution must be idempotent')
+    if (attributeWithOurPublisher('https://www.meesho.com/sarees/p/abc') !== 'https://www.meesho.com/sarees/p/abc') throw new Error('meesho must keep its HYPD path')
+    if (attributeWithOurPublisher('https://www.amazon.in/dp/B0X?tag=' + AMAZON_TAG) !== 'https://www.amazon.in/dp/B0X?tag=' + AMAZON_TAG) throw new Error('amazon must keep its Associates tag path')
+    if (!isOurGeneratedLink(attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1'))) throw new Error('an attributed merchant page must read as OURS')
     // Direct jobs never send raw links to the provenance DB; our links do go.
     const prov = urlsForProvenance(djob, ['https://amzn.to/DEAL1', 'https://fktr.in/OURS'])
     if (prov.length !== 1 || prov[0] !== 'https://fktr.in/OURS') throw new Error('direct provenance filter failed')

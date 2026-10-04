@@ -201,6 +201,171 @@ def test_link_policy():
         check(f"refused as not ours: {url[:44]}", qa.why_not_our_link(url, tag) is not None)
 
 
+def test_link_ownership_is_data_backed():
+    """OUR link is decided from the bot's OWN data, not from a domain list.
+
+    The auditor used to say "bit.ly is a third-party shortener" - which, since
+    the 2026-09-06 policy (every list post carries OUR Bitly links), means it
+    flagged our own healthy posts and `--strict` cried wolf. A false alarm is how
+    a real one gets ignored, so ownership is now read from the table the
+    pipeline's provenance gate reads (link_cache) plus the token's publisher id.
+    Pinned here in both directions: ours accepted, foreign still refused.
+    """
+    print("\n== link ownership: our runtime links are ours, strangers' are not ==")
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("quality_audit_links", ROOT / "ops" / "quality_audit.py")
+    qa = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(qa)
+
+    ours_bitly = "https://bit.ly/3xYzAbC"
+    ours_isgd = "https://is.gd/Mint7"
+    foreign_bitly = "https://bit.ly/sponsorOnly"
+    minted = {ours_bitly, ours_isgd}
+
+    check("our own Bitly link is ours when the cache minted it",
+          qa.why_not_our_link(ours_bitly, "", "", minted) is None,
+          str(qa.why_not_our_link(ours_bitly, "", "", minted)))
+    check("our is.gd fallback link is ours the same way",
+          qa.why_not_our_link(ours_isgd, "", "", minted) is None,
+          str(qa.why_not_our_link(ours_isgd, "", "", minted)))
+    check("somebody else's bit.ly link is still refused",
+          qa.why_not_our_link(foreign_bitly, "", "", minted) is not None,
+          str(qa.why_not_our_link(foreign_bitly, "", "", minted)))
+    check("a short link with no cache row explains WHY it is suspect",
+          "no link_cache row" in (qa.why_not_our_link(foreign_bitly, "", "", minted) or ""),
+          str(qa.why_not_our_link(foreign_bitly, "", "", minted)))
+    check("a host we never mint on keeps the plain third-party verdict",
+          qa.why_not_our_link("https://tinyurl.com/x", "", "", minted) ==
+          "a third-party shortener leaked into the post",
+          str(qa.why_not_our_link("https://tinyurl.com/x", "", "", minted)))
+
+    publisher = "5478322"
+    direct_ours = (f"https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2={publisher}")
+    direct_theirs = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=999999"
+    check("a direct Flipkart link carrying OUR publisher id is ours",
+          qa.why_not_our_link(direct_ours, "", publisher) is None,
+          str(qa.why_not_our_link(direct_ours, "", publisher)))
+    check("the same link is suspect when no publisher id is configured",
+          qa.why_not_our_link(direct_ours, "", "") is not None, "")
+    check("somebody else's publisher id is still refused",
+          qa.why_not_our_link(direct_theirs, "", publisher) is not None, "")
+    check("a foreign id glued to our tag is still refused",
+          qa.why_not_our_link("https://www.amazon.in/dp/B0X?tag=mama086-21&affid=zz",
+                              "mama086-21", publisher) is not None, "")
+    # USER REPORT 2026-10-04: the converted Shopsy link carried BOTH our
+    # affExtParam2 and another channel's campaign id `cmpid=AFF_deals101`. With
+    # both present it is OURS (we are paid), but a `cmpid=AFF_*` with no id of
+    # ours names somebody else - the audit must see that on its own, not only
+    # when an `affid` happens to sit next to it.
+    shopsy_shape = ("https://www.shopsy.in/x/p/itm8ad37c08bc9ac?pid=1&mcn=LEHLAH"
+                    "&affid=deals101&cmpid=AFF_deals101"
+                    f"&affExtParam1=ENKR20261004A2196972183&affExtParam2={publisher}")
+    check("a link with OUR id and another channel's cmpid is still ours",
+          qa.why_not_our_link(shopsy_shape, "", publisher) is None,
+          str(qa.why_not_our_link(shopsy_shape, "", publisher)))
+    check("a link naming only a stranger's cmpid campaign is foreign",
+          qa.classify_link("https://www.flipkart.com/x/p/itm1?pid=1&cmpid=AFF_deals101",
+                           "", publisher) == "foreign",
+          qa.classify_link("https://www.flipkart.com/x/p/itm1?pid=1&cmpid=AFF_deals101",
+                           "", publisher))
+
+    check("classify_link buckets our runtime short link as our-short",
+          qa.classify_link(ours_bitly, "", "", minted) == "our-short",
+          qa.classify_link(ours_bitly, "", "", minted))
+    check("classify_link buckets our publisher id as our-publisher",
+          qa.classify_link(direct_ours, "", publisher) == "our-publisher",
+          qa.classify_link(direct_ours, "", publisher))
+    check("classify_link buckets a network/HYPD short link as our-short, not clean-merchant",
+          qa.classify_link("https://ekaro.in/enkr123") == "our-short"
+          and qa.classify_link("https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0") == "our-short",
+          f"{qa.classify_link('https://ekaro.in/enkr123')} / "
+          f"{qa.classify_link('https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0')}")
+    check("classify_link buckets a clean unmonetizable store page as clean-merchant",
+          qa.classify_link("https://www.myntra.com/x/1/detail") == "clean-merchant",
+          qa.classify_link("https://www.myntra.com/x/1/detail"))
+    check("classify_link buckets a stranger's tag as foreign",
+          qa.classify_link("https://www.ajio.com/p/9?tag=rivalpub", "mama086-21") == "foreign",
+          qa.classify_link("https://www.ajio.com/p/9?tag=rivalpub", "mama086-21"))
+    # USER REPORT 2026-10-04 ("product opens but it is not our link ... commission
+    # never comes"): a Flipkart/Myntra page posted WITHOUT our publisher id can
+    # pay us (the network's affExtParam2 works on the page itself), so it is not
+    # a "clean merchant page kept on purpose" - it is a finding, counted apart.
+    check("a Flipkart-family page with no publisher id is reported as unattributed",
+          qa.why_not_our_link("https://www.myntra.com/x/1/detail", "", publisher) is not None
+          and "NOBODY is paid" in (qa.why_not_our_link("https://www.myntra.com/x/1/detail",
+                                                       "", publisher) or ""),
+          str(qa.why_not_our_link("https://www.myntra.com/x/1/detail", "", publisher)))
+    check("classify_link gives it its own bucket, not 'clean-merchant'",
+          qa.classify_link("https://www.myntra.com/x/1/detail", "", publisher) == "unattributed",
+          qa.classify_link("https://www.myntra.com/x/1/detail", "", publisher))
+    check("the same page WITH our publisher id is ours, and stays that way",
+          qa.classify_link(f"https://www.myntra.com/x/1/detail?affExtParam2={publisher}",
+                           "", publisher) == "our-publisher")
+    check("a store with no attribution contract is still a clean merchant page",
+          qa.classify_link("https://www.ajio.com/p/9", "", publisher) == "clean-merchant",
+          qa.classify_link("https://www.ajio.com/p/9", "", publisher))
+
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "links.sqlite3"
+        conn = __import__("sqlite3").connect(db)
+        conn.executescript(
+            "CREATE TABLE queue(id INTEGER PRIMARY KEY, chat_id INTEGER, msg_id INTEGER,"
+            " source TEXT, status TEXT, attempts INTEGER, last_error TEXT, created_at REAL,"
+            " chat_key TEXT, rendered_text TEXT, targets_json TEXT);"
+            "CREATE TABLE deliveries(queue_id INTEGER, target TEXT, status TEXT);"
+            "CREATE TABLE link_cache(source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,"
+            " resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);")
+        now = time.time()
+        good_post = (f"boAt Airdopes 141 TWS Earbuds\n{R}1,099 (78% off)\n{ours_bitly}\n"
+                     f"https://www.myntra.com/x/1/detail")
+        conn.execute("INSERT INTO queue VALUES(1,-1001,11,'lootnow','done',0,'',?,'k',?,?)",
+                     (now, good_post, json.dumps(["LootZoneIndia11"])))
+        conn.execute("INSERT INTO deliveries VALUES(1,'LootZoneIndia11','sent')")
+        conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)",
+                     ("https://www.flipkart.com/x/p/itm1", ours_bitly,
+                      "https://www.flipkart.com/x/p/itm1", "k", now))
+        conn.commit()
+        conn.close()
+
+        out = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
+                              "--db", str(db), "--json"], capture_output=True, text=True)
+        report = json.loads(out.stdout)
+        summary = report["link_summary"]
+        check("the audit reports a link-perfection summary from data",
+              summary["links"] == 2 and summary["our-short"] == 1
+              and summary["clean-merchant"] == 1 and summary["foreign"] == 0, str(summary))
+        check("our own Bitly link produces NO finding any more",
+              not [f for f in report["findings"] if f["kind"] == "LINKS"],
+              str([f for f in report["findings"] if f["kind"] == "LINKS"]))
+        strict = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
+                                 "--db", str(db), "--strict"], capture_output=True, text=True)
+        check("--strict no longer fails a healthy post that carries OUR short link",
+              strict.returncode == 0, strict.stdout[-300:])
+        human = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
+                                "--db", str(db)], capture_output=True, text=True)
+        check("the human output answers the question in one line",
+              "LINK PERFECTION | links=2 our-short=1" in human.stdout, human.stdout[-400:])
+
+        # The 2026-10-04 commission bug, proven from data: a bare Flipkart-family
+        # page opens for the reader and pays nobody. With the publisher id known,
+        # the audit must say so (and --strict must fail) instead of filing it as a
+        # harmless "clean merchant" page.
+        conn = __import__("sqlite3").connect(db)
+        conn.execute("INSERT INTO queue VALUES(2,-1002,12,'lootnow','done',0,'',?,'k',?,?)",
+                     (now, "Kurta Set\n" + R + "799 (60% off)\n"
+                      "https://www.myntra.com/x/2/detail", json.dumps(["LootZoneIndia11"])))
+        conn.execute("INSERT INTO deliveries VALUES(2,'LootZoneIndia11','sent')")
+        conn.commit()
+        conn.close()
+        strict = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
+                                 "--db", str(db), "--publisher", publisher, "--strict"],
+                                capture_output=True, text=True)
+        check("with a publisher id known, a link that pays nobody fails --strict",
+              strict.returncode == 1 and "NOBODY is paid" in strict.stdout, strict.stdout[-500:])
+        check("and the summary counts them in their own bucket (both bare Myntra links)",
+              "unattributed=2" in strict.stdout, strict.stdout[:400])
+
+
 def test_quality_auditor():
     print("\n== ops/quality_audit.py catches every class of defect ==")
     with tempfile.TemporaryDirectory() as td:
@@ -306,10 +471,33 @@ def test_quality_auditor():
         check("a missing database is reported, not crashed on",
               empty.returncode == 0 and "no database" in empty.stdout, empty.stdout)
 
+        # USER QUESTION 2026-10-04 ("idi manadenaa link"): one URL in, one verdict
+        # out - no database needed. The EarnKaro-converted Shopsy link the user
+        # pasted is OURS; the same page minted for a stranger is FOREIGN.
+        audits = ROOT / "ops" / "quality_audit.py"
+        pub = "5478322"
+        pasted = ("https://www.shopsy.in/x/p/itm8ad37c08bc9ac?pid=1&mcn=LEHLAH"
+                  "&affid=deals101&cmpid=AFF_deals101"
+                  f"&affExtParam1=ENKR20261004A2196972183&affExtParam2={pub}")
+        mine = subprocess.run(
+            [sys.executable, str(audits), "--publisher", pub, "--tag", "",
+             "--check-url", pasted], capture_output=True, text=True)
+        theirs_url = pasted.replace(f"affExtParam2={pub}", "affExtParam2=999999")
+        theirs = subprocess.run(
+            [sys.executable, str(audits), "--publisher", pub, "--tag", "",
+             "--check-url", theirs_url], capture_output=True, text=True)
+        check("--check-url names the pasted EarnKaro link as OURS",
+              mine.returncode == 0 and mine.stdout.startswith("OUR-PUBLISHER"),
+              mine.stdout[:200])
+        check("--check-url calls the same page minted for a stranger FOREIGN",
+              theirs.returncode == 1 and theirs.stdout.startswith("FOREIGN"),
+              theirs.stdout[:200])
+
 
 if __name__ == "__main__":
     test_product_identity_matching()
     test_link_policy()
+    test_link_ownership_is_data_backed()
     test_best_copy_swap()
     test_numeric_fidelity_gate()
     test_quality_auditor()

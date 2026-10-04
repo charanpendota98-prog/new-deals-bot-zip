@@ -15,13 +15,22 @@ What this file pins, and why each check exists:
 3.  THE KEY. The token is a JWT naming the EarnKaro publisher that gets paid;
     the bot reads that publisher from the token, pins it (foreign-publisher
     guard) and says out loud which account is earning.
-4.  AMAZON. AMAZON_VIA_EARNKARO=true sends Amazon to EarnKaro like every other
-    store (Associates is still rejecting the account, so a native tag earns
-    nothing); the native tagged link is the fallback, and `=false` restores the
-    2026-09-06 pure-native behaviour.
+4.  AMAZON. The Associates account was APPROVED on 2026-10-04, so the NATIVE
+    tagged link (?tag=mama086-21) is the first choice - the whole commission is
+    ours, no network share - and EarnKaro is the second chance for an Amazon
+    shape the native path cannot build. AMAZON_VIA_EARNKARO=false still means
+    "never EarnKaro for Amazon"; AMAZON_DIRECT_ASSOCIATES=false restores the
+    2026-09-24 network-first order (EarnKaro first, native tag as the fallback).
 5.  THE THREE NEW SOURCES. They fan out to the non-Tricks main targets, are
     recognised as first preference however they are spelled (invite hashes are
     case-carrying), and are claimed before ordinary sources.
+6.  AN UNKNOWN REDIRECT DOMAIN. Affiliaters adds and renames short domains, and
+    refusing one used to mean an unmonetized post - a lost commission that looks
+    exactly like "this store has no campaign". A short-link-shaped output this
+    build does not recognize is therefore FOLLOWED, and accepted only when its
+    destination proves it is ours (a store page, our publisher id, our tag) and
+    never when it leads back to the source, to a foreign shortener, or to a
+    foreign publisher id.
 """
 import asyncio
 import json
@@ -50,6 +59,11 @@ os.environ.update(
     # A private DB: the link cache is durable, and a cached row from another
     # suite would be returned instead of the link this test's fake API minted.
     BOT_DB_PATH=str(Path(_TMP) / "test.sqlite3"),
+    # ...and private logs/media, so importing the bot never writes into the
+    # source tree (2026-10-04: a checkout full of test logs made the live report
+    # describe a build that was not even running).
+    BOT_LOG_DIR=str(Path(_TMP) / "logs"),
+    BOT_MEDIA_DIR=str(Path(_TMP) / "media"),
 )
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -147,17 +161,41 @@ class FakeResponse:
         return False
 
 
+class FakeGet:
+    """A GET that answers with a final URL and a body (the verifier reads both)."""
+
+    def __init__(self, final_url, body=""):
+        self.url = final_url
+        self.content = self
+        self._body = body.encode("utf-8")
+
+    async def read(self, _n=None):
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
 class FakeSession:
     """Records every POST and answers with the next canned body."""
 
-    def __init__(self, bodies):
+    def __init__(self, bodies, gets=()):
         self.bodies = list(bodies)
         self.posts = []
+        self._gets = list(gets)
+        self.gets = []
 
     def post(self, url, **kwargs):
         self.posts.append({"url": url, **kwargs})
         body = self.bodies.pop(0) if self.bodies else json.dumps({"success": 0, "message": "exhausted"})
         return FakeResponse(body)
+
+    def get(self, url, **kwargs):
+        self.gets.append({"url": url, **kwargs})
+        return self._gets.pop(0) if self._gets else FakeGet(url)
 
 
 class Aff(bot.AffiliateClient):
@@ -201,6 +239,62 @@ def test_request_contract():
     check("the converted link is cached for the next post",
           bool(cached_row) and cached_row["affiliate_url"] == "https://ekaro.in/enkr1",
           str(dict(cached_row) if cached_row else None))
+
+
+def test_an_earnkaro_link_that_names_our_publisher_is_ours():
+    """USER QUESTION 2026-10-04 ("idi manadenaa link"): the converted Shopsy link
+
+        .../p/itm8ad...?pid=...&mcn=LEHLAH&affid=deals101&cmpid=AFF_deals101
+                       &affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322
+
+    is OURS. `affid` is the AFFILIATE ACCOUNT id (Flipkart's own docs put it on
+    every affiliate URL: ?affid=test&affExtParam1=..&affExtParam2=..), i.e. the
+    network account the commission is routed through - here Affiliaters/EarnKaro,
+    with `cmpid=AFF_deals101`/`mcn=`. The publisher who is PAID is affExtParam2,
+    and that is our 5478322, next to EarnKaro's own conversion id (affExtParam1
+    =ENKR...). The link must therefore be published EXACTLY as the converter
+    minted it: stripping the network's parameters is the one change that could
+    really lose the commission.
+    """
+    page = ("https://www.shopsy.in/ghar-soaps-magic-soap-sandal-wood-saffron-detan-"
+            "glowing-brightening-skin/p/itm8ad37c08bc9ac")
+    identity = "pid=SOPG8C2YHJSCJGYM&mcn=LEHLAH"
+    minted = (f"{page}?{identity}&affid=deals101&cmpid=AFF_deals101"
+              "&affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322")
+
+    # The SOURCE's own attribution is dropped before the request (the API mints
+    # fresh ids for us) - that is old, deliberate behaviour.
+    asked = bot.merchant_url(minted)
+    check("the source's own affiliate ids are not sent to the converter",
+          "affid=" not in asked and "affExtParam1=" not in asked
+          and "affExtParam2=" not in asked, asked)
+    check("but the product identity of the page survives the request",
+          "pid=SOPG8C2YHJSCJGYM" in asked and "mcn=LEHLAH" in asked, asked)
+
+    source = f"{page}?{identity}"
+    session = FakeSession([json.dumps({"success": 1, "data": minted})])
+    result = asyncio.run(Aff(session).convert(source, False))
+    check("a link carrying OUR publisher id is accepted from the converter",
+          bool(result) and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("it is published exactly as EarnKaro minted it (nothing stripped)",
+          bool(result) and "affid=deals101" in result.affiliate
+          and "cmpid=AFF_deals101" in result.affiliate
+          and "mcn=LEHLAH" in result.affiliate
+          and "affExtParam1=ENKR20261004A2196972183" in result.affiliate
+          and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("the pipeline's own classifier agrees it is ours, not a stranger's",
+          bot.AffiliateClient.earnkaro_output_kind(result.affiliate) == "publisher"
+          and bot.AffiliateClient.valid_generated(result.affiliate),
+          f"{bot.AffiliateClient.earnkaro_output_kind(result.affiliate)} / "
+          f"{bot.AffiliateClient.valid_generated(result.affiliate)}")
+
+    # The guard is not weakened: an output naming ONLY a stranger stays refused.
+    foreign_only = bot.clean_url(minted.replace("affExtParam2=5478322", "affExtParam2=999999"))
+    parsed, _ = bot.parse_earnkaro_response(json.dumps({"success": 1, "data": foreign_only}),
+                                            source_urls=(source,))
+    check("an output naming only a stranger's publisher is still refused",
+          parsed == foreign_only and not bot.AffiliateClient.earnkaro_output_kind(parsed),
+          repr(parsed))
 
 
 def test_echo_and_foreign_links_are_refused():
@@ -282,6 +376,86 @@ def test_echoed_destination_is_not_mistaken_for_a_conversion():
 
 
 # ---------------------------------------------------------------------------
+# 2b. An UNRECOGNIZED converter output is verified, not thrown away
+# ---------------------------------------------------------------------------
+def test_unknown_affiliate_domain_is_verified_or_refused():
+    """A network redirect domain this build has never seen must not cost a commission.
+
+    `earnkaro_output_kind()` recognizes the short domains it knows. When the
+    Affiliaters/EarnKaro API answers with one it does not (they add and rename
+    them), the old behaviour was `EK REJECT` + an unmonetized post - a lost
+    commission that looks exactly like "this store has no campaign". The bot now
+    follows that output and accepts it only when the destination proves it is
+    ours, and still refuses everything that does not prove it.
+    """
+    unknown = "https://enkr.link/AbC123"
+    source = "https://www.flipkart.com/boat-airdopes-141/p/itm1?pid=1"
+    # Every case gets its OWN source URL: link_cache is durable, so reusing one
+    # would serve case (b)'s accepted link from the cache in case (c).
+    case_no = [0]
+
+    def convert_with(get_result, deal=None, resolved=None):
+        case_no[0] += 1
+        deal = deal or (f"https://www.flipkart.com/boat-airdopes-141/p/itm{case_no[0]}"
+                        f"?pid=1{case_no[0]}")
+        session = FakeSession([json.dumps({"success": 1, "data": unknown})],
+                              gets=[get_result(deal) if callable(get_result) else get_result])
+        aff = Aff(session)
+        return asyncio.run(aff.convert(deal, False, resolved_hint=resolved or deal)), session
+
+    # (a) destination is a real store page, no visible attribution (how ekaro.in works)
+    result, session = convert_with(FakeGet("https://www.myntra.com/x/1/detail"))
+    check("an unknown short domain that leads to a store page IS accepted (verified)",
+          bool(result) and result.affiliate.startswith("https://enkr.link/"), repr(result))
+    check("and the bot actually FOLLOWED it before publishing (one GET)",
+          len(session.gets) == 1 and session.gets[0]["url"] == unknown, str(session.gets))
+
+    # (b) destination carries OUR publisher id -> the strongest proof
+    ours_final = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=5478322"
+    result, _ = convert_with(FakeGet(ours_final))
+    check("a destination carrying OUR publisher id is accepted", bool(result), repr(result))
+
+    # (c) destination carries SOMEBODY ELSE'S publisher id -> refused
+    theirs_final = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=999999"
+    result, _ = convert_with(FakeGet(theirs_final))
+    check("a destination carrying a FOREIGN publisher id is refused", result is None, repr(result))
+
+    # (d) it only leads back to the source link -> refused (an echo, not a conversion)
+    result, _ = convert_with(lambda deal: FakeGet(deal))
+    check("a short link that only leads back to the source URL is refused",
+          result is None, repr(result))
+
+    # (e) it leads to another shortener/echo domain -> refused
+    result, _ = convert_with(FakeGet("https://amzn.to/sourceShort"))
+    check("a short link that leads to a foreign shortener/echo is refused",
+          result is None, repr(result))
+
+    # (f) no redirect at all -> nothing was proven
+    result, _ = convert_with(FakeGet(unknown))
+    check("a short link that does not redirect proves nothing and is refused",
+          result is None, repr(result))
+
+    # (g) a JS redirect page (no HTTP redirect) whose markup carries the store URL
+    body = '<html><script>location.replace("https://www.meesho.com/sarees/p/abc12345")</script></html>'
+    result, _ = convert_with(FakeGet(unknown, body))
+    check("a JS-redirect page is read from its markup and accepted when it names a store",
+          bool(result), repr(result))
+
+    # (h) a bare merchant-page ECHO is still not a conversion (the old contract)
+    echo_source = "https://www.flipkart.com/boat-airdopes-141/p/itmecho99?pid=99"
+    session = FakeSession([json.dumps({"success": 1, "data": echo_source})])
+    aff = Aff(session)
+    result = asyncio.run(aff.convert(echo_source, False, resolved_hint=echo_source))
+    check("a bare merchant-page echo is still refused (and never followed)",
+          result is None and not session.gets, repr(result))
+
+    # (i) our own publisher id on an AMAZON destination needs OUR tag: an untagged
+    #     Amazon page behind a stranger's short link earns nothing.
+    result, _ = convert_with(FakeGet("https://www.amazon.in/dp/B0FPDD9WKP"))
+    check("an Amazon destination without our tag is refused", result is None, repr(result))
+
+
+# ---------------------------------------------------------------------------
 # 3. The API key: account it pays, and the guards built on it
 # ---------------------------------------------------------------------------
 def test_token_claims():
@@ -314,70 +488,105 @@ def test_token_claims():
 # 4. Amazon: EarnKaro first by default, native tag as the fallback
 # ---------------------------------------------------------------------------
 def test_amazon_policy():
-    old_tag, old_switch = bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO
+    """Associates APPROVED (2026-10-04): our own tag FIRST, full commission."""
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
     try:
         bot.OUR_TAG = "mama086-21"
         bot.AMAZON_VIA_EARNKARO = True
-        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz1"})])
-        aff = Aff(session)
-        result = asyncio.run(aff.convert("https://www.amazon.in/dp/B0AMZEK001?psc=1&tag=thief-21", False))
-        check("Amazon converts through EarnKaro by default",
-              bool(result) and "ekaro.in" in result.affiliate, repr(result))
-        check("the Amazon URL is sent with no stranger tag on it",
-              "tag=" not in session.posts[0]["json"]["deal"], session.posts[0]["json"]["deal"])
+        bot.AMAZON_DIRECT_ASSOCIATES = True
 
-        # The network has nothing for it -> the native tagged link, never a
-        # dropped deal and never an untagged one.
-        session2 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})])
-        aff2 = Aff(session2)
-        result2 = asyncio.run(aff2.convert("https://www.amazon.in/dp/B0AMZEK002", False))
-        check("a conversion miss falls back to the native tagged link",
-              bool(result2) and "amazon.in/dp/B0AMZEK002" in result2.affiliate
-              and "tag=mama086-21" in result2.affiliate, repr(result2))
-        check("no Bitly quota is spent on a single native Amazon fallback",
-              all(p["url"] != "https://api-ssl.bitly.com/v4/shorten" for p in session2.posts))
+        # 1. A normal product page: OUR OWN tag, and no API call is spent on it.
+        session = FakeSession([])
+        result = asyncio.run(Aff(session).convert(
+            "https://www.amazon.in/dp/B0AMZDIR01?psc=1&tag=thief-21", False))
+        check("an Amazon product link is published with our OWN Associates tag first",
+              bool(result) and "amazon.in/dp/B0AMZDIR01" in result.affiliate
+              and "tag=mama086-21" in result.affiliate, repr(result))
+        check("and no EarnKaro call is spent (the whole commission is ours)",
+              not session.posts, str(session.posts))
+        check("a stranger's tag never survives the rebuild",
+              bool(result) and "thief-21" not in result.affiliate, repr(result))
 
-        # AMAZON_VIA_EARNKARO=false = the 2026-09-06 behaviour, untouched.
+        # 2. A search/browse page has no ASIN but still pays on the tag path.
+        search = asyncio.run(Aff(FakeSession([])).convert(
+            "https://www.amazon.in/s?k=earbuds&tag=thief-21", False))
+        check("an Amazon search page is tagged too (native path covers it)",
+              bool(search) and "tag=mama086-21" in search.affiliate
+              and "thief-21" not in search.affiliate, repr(search))
+
+        # 3. An Amazon shape the native path cannot build falls through to
+        #    EarnKaro as the second chance - the deal must not lose its link.
+        session2 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz1"})])
+        result2 = asyncio.run(Aff(session2).convert("https://www.amazon.in/dp/B0SHORT", False))
+        check("an Amazon product page without a usable ASIN still converts via the network",
+              bool(result2) and "ekaro.in" in result2.affiliate, repr(result2))
+        check("and that request carries no stranger tag",
+              session2.posts and "tag=" not in session2.posts[0]["json"]["deal"],
+              str(session2.posts[0]["json"]["deal"] if session2.posts else None))
+
+        # 4. AMAZON_DIRECT_ASSOCIATES=false = the 2026-09-24 network-first order.
+        bot.AMAZON_DIRECT_ASSOCIATES = False
+        session3 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz2"})])
+        result3 = asyncio.run(Aff(session3).convert("https://www.amazon.in/dp/B0AMZEK001?psc=1", False))
+        check("with the old order Amazon converts through EarnKaro first",
+              bool(result3) and "ekaro.in" in result3.affiliate, repr(result3))
+        miss = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})])
+        result4 = asyncio.run(Aff(miss).convert("https://www.amazon.in/dp/B0AMZEK002", False))
+        check("a network miss still falls back to the native tagged link",
+              bool(result4) and "amazon.in/dp/B0AMZEK002" in result4.affiliate
+              and "tag=mama086-21" in result4.affiliate, repr(result4))
+
+        # 5. AMAZON_VIA_EARNKARO=false = the 2026-09-06 behaviour, untouched.
+        bot.AMAZON_DIRECT_ASSOCIATES = True
         bot.AMAZON_VIA_EARNKARO = False
-        session3 = FakeSession([])
-        aff3 = Aff(session3)
-        result3 = asyncio.run(aff3.convert("https://www.amazon.in/dp/B0AMZEK003?psc=1", False))
+        session5 = FakeSession([])
+        result5 = asyncio.run(Aff(session5).convert("https://www.amazon.in/dp/B0AMZEK003?psc=1", False))
         check("AMAZON_VIA_EARNKARO=false posts the native tagged link",
-              bool(result3) and "amazon.in/dp/B0AMZEK003" in result3.affiliate
-              and "tag=mama086-21" in result3.affiliate, repr(result3))
-        check("and spends no EarnKaro call on it", not session3.posts, str(session3.posts))
+              bool(result5) and "amazon.in/dp/B0AMZEK003" in result5.affiliate
+              and "tag=mama086-21" in result5.affiliate, repr(result5))
+        check("and spends no EarnKaro call on it", not session5.posts, str(session5.posts))
     finally:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
 
 
-def test_stale_native_amazon_cache_rows_are_reconverted():
-    """Turning AMAZON_VIA_EARNKARO on must not be defeated by the link cache.
+def test_stale_network_amazon_rows_are_upgraded():
+    """The Associates approval must not be defeated by the link cache.
 
-    A row cached while Amazon was tagged natively lives for LINK_CACHE_DAYS
-    (14), so without this the channel would keep posting a link that earns
-    nothing for a fortnight.
+    A link_cache row lives for LINK_CACHE_DAYS (14). A row minted during the
+    network-first era still PAYS US - but it pays the network's share too, and
+    the approval removed the only reason to accept that. An Amazon SOURCE
+    therefore ignores a cached network row and rebuilds the native tagged link.
     """
-    old_tag, old_switch = bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
     try:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = "mama086-21", True
-        source = "https://www.amazon.in/dp/B0CACHE0001?psc=1"
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = \
+            "mama086-21", True, True
+        source = "https://www.amazon.in/dp/B0CACH0002?psc=1"
         asyncio.run(bot.store.cache_link(
-            source, "https://www.amazon.in/dp/B0CACHE0001?tag=mama086-21",
-            "https://www.amazon.in/dp/B0CACHE0001", "ASIN:B0CACHE0001"))
-        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkrcache1"})])
+            source, "https://ekaro.in/enkrcache2", source, "ASIN:B0CACH0002"))
+        session = FakeSession([])
         result = asyncio.run(Aff(session).convert(source, False))
-        check("a cached NATIVE Amazon row is re-converted, not served",
-              bool(result) and "ekaro.in" in result.affiliate, repr(result))
-        check("the re-conversion really asked the API", len(session.posts) == 1, str(session.posts))
+        check("a cached NETWORK row for an Amazon source is upgraded to our own tag",
+              bool(result) and "amazon.in/dp/B0CACH0002" in result.affiliate
+              and "tag=mama086-21" in result.affiliate, repr(result))
+        check("the upgrade costs no API call (the native path is free)",
+              not session.posts, str(session.posts))
 
-        # An EarnKaro row is served from cache: no second API call for the same deal.
-        session2 = FakeSession([])
-        again = asyncio.run(Aff(session2).convert(source, False))
-        check("the freshly cached EarnKaro row is reused",
-              bool(again) and "ekaro.in" in again.affiliate, repr(again))
-        check("no API call was made for the cached row", not session2.posts, str(session2.posts))
+        # With the old order, a cached NATIVE row is re-converted through the
+        # network exactly as before - the 2026-09-24 behaviour is preserved.
+        bot.AMAZON_DIRECT_ASSOCIATES = False
+        source2 = "https://www.amazon.in/dp/B0CACH0003"
+        asyncio.run(bot.store.cache_link(
+            source2, "https://www.amazon.in/dp/B0CACH0003?tag=mama086-21",
+            source2, "ASIN:B0CACH0003"))
+        session2 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkrcache3"})])
+        result2 = asyncio.run(Aff(session2).convert(source2, False))
+        check("with the old order a cached NATIVE row is still re-converted",
+              bool(result2) and "ekaro.in" in result2.affiliate, repr(result2))
+        check("and the re-conversion really asked the API", len(session2.posts) == 1,
+              str(session2.posts))
     finally:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
 
 
 def test_review_channel_expansion_keeps_our_tag():
@@ -709,6 +918,156 @@ def test_hypd_diagnostic_only_shortens_verified_meesho_links():
             setattr(checker, name, value)
 
 
+def test_checker_plan_prints_the_posted_link():
+    """`--plan` answers "what EXACTLY will the channel carry?" with the bot's OWN code.
+
+    "perefctgaa shorten ga convert avvali ... source thikoni mana link ga chesi
+    post cheyali" is only answered by the link the post will actually carry:
+    converted, OURS, and short. A checker that re-implemented those rules would
+    eventually answer with a copy that no longer matches what posts, so the plan
+    mode imports bestgaa/main_bot_new.py and runs its real AffiliateClient.
+    Pinned here in both directions: the answers it must give, and the answers it
+    must never give (a failed link reported as a conversion).
+    """
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "earnkaro_check_plan", Path(__file__).parent / "ops" / "earnkaro_check.py")
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    publisher = bot.OUR_EK_ID
+    check("the plan's publisher proof is the token's own account", bool(publisher), publisher)
+
+    loaded, why = checker.load_bot_module(bot.EK_KEY, "")
+    check("--plan imports the bot module that actually posts (same object as the suites')",
+          loaded is bot or getattr(loaded, "__file__", "") == getattr(bot, "__file__", ""),
+          f"loaded={loaded} why={why}")
+
+    class FakeClient:
+        """The bot's client shape with the network taken out."""
+
+        def __init__(self, results):
+            self.results = list(results)
+            self.multi_flags = []
+            self.resolved = []
+
+        async def resolve(self, url):
+            self.resolved.append(url)
+            return url
+
+        async def convert(self, source_url, multi_link, resolved_hint=None):
+            self.multi_flags.append(multi_link)
+            result = self.results.pop(0)
+            if isinstance(result, Exception):
+                raise result
+            return result
+
+    def link_result(affiliate, resolved="https://www.flipkart.com/x/p/itm1?pid=1"):
+        return bot.LinkResult("https://www.flipkart.com/x/p/itm1?pid=1", resolved,
+                              affiliate, "key")
+
+    def run(client, probes, multi_link=False, whose=None):
+        return asyncio.run(checker.plan_posted_links(
+            client, probes, multi_link=multi_link, publisher=publisher, our_tag="",
+            timeout=5.0, bot=bot,
+            whose=whose or (lambda link, pub, tag, timeout: ("ours", f"affExtParam2={pub}"))))
+
+    ours_link = "https://bitli.in/AbC123"
+    checked = []
+
+    def record_whose(link, pub, tag, timeout):
+        checked.append(link)
+        return "ours", f"affExtParam2={pub}"
+
+    client = FakeClient([link_result(ours_link)])
+    lines, failures = run(client, [("Actual post URL 1", "https://www.flipkart.com/x/p/itm1?pid=1")],
+                          whose=record_whose)
+    joined = "\n".join(lines)
+    check("the plan prints the link the channel will carry", ours_link in joined, joined)
+    check("and proves whose account that posted link pays",
+          f"pays our EarnKaro account {publisher}" in joined, joined)
+    check("the attribution check is run on the POSTED link, not the merchant page",
+          checked == [ours_link], str(checked))
+    check("it says out loud that the link is short (the bot's own short-domain rule)",
+          "SHORT LINK" in joined, joined)
+    check("a converted, ours, short link has nothing to fix", failures == 0, str(failures))
+
+    list_client = FakeClient([link_result(ours_link)])
+    long_link = ("https://www.myntra.com/tshirts/roadster/roadster-men-navy-tshirt/1234567/buy"
+                 "?utm_source=source&utm_campaign=spring")
+    lines, failures = run(list_client,
+                          [("Actual post URL 1", "https://a.example/deal-one"),
+                           ("Actual post URL 2", "https://b.example/deal-two")], multi_link=True)
+    joined = "\n".join(lines)
+    check("a list post's links go through convert() as a list (multi_link=True on each)",
+          list_client.multi_flags == [True, True], str(list_client.multi_flags))
+    check("the plan names it as a list post", "list post" in joined, joined)
+
+    lines, _ = run(FakeClient([link_result(long_link)]),
+                   [("Actual post URL 1", "https://www.myntra.com/x")])
+    joined = "\n".join(lines)
+    check("and it admits when a link could NOT be shortened instead of claiming it was",
+          "NOT on a short domain" in joined, joined)
+
+    lines, failures = run(FakeClient([None]), [("Actual post URL 1", "https://www.myntra.com/x")])
+    joined = "\n".join(lines)
+    check("a store with no campaign is reported as UNMONETIZED, never as a conversion",
+          "UNMONETIZED" in joined and "NOBODY IS PAID" in joined, joined)
+    check("that line names its own fix (Affiliaters selections)",
+          "Selections" in joined, joined)
+    check("and an unmonetized link needs attention", failures == 1, str(failures))
+
+    lines, failures = run(
+        FakeClient([link_result("https://ekaro.in/enkr999")]),
+        [("Actual post URL 1", "https://www.flipkart.com/x")],
+        whose=lambda link, pub, tag, timeout: ("foreign", "affExtParam2=999999"))
+    joined = "\n".join(lines)
+    check("a link paying somebody else is called WRONG ACCOUNT", "WRONG ACCOUNT" in joined, joined)
+    check("and it fails the run", failures == 1, str(failures))
+
+    lines, failures = run(FakeClient([RuntimeError("EarnKaro HTTP 503")]),
+                          [("Actual post URL 1", "https://www.flipkart.com/x")])
+    joined = "\n".join(lines)
+    check("a transient API failure is reported as retryable, not as an unmonetized deal",
+          "would retry" in joined and "UNMONETIZED" not in joined, joined)
+    check("and it needs attention", failures == 1, str(failures))
+
+    # The fallback the bot's OWN gate refuses to call a conversion must not be
+    # dressed up as one here either: Associates is still rejecting the account.
+    our_tag = sorted(bot.OUR_AMAZON_TAGS)[0]
+    native = f"https://www.amazon.in/dp/B0FPDD9WKP?tag={our_tag}"
+    lines, failures = run(FakeClient([link_result(native, native)]),
+                          [("Actual post URL 1", "https://www.amazon.in/dp/B0FPDD9WKP")])
+    joined = "\n".join(lines)
+    check("a native Amazon-tag fallback is NOT reported as an EarnKaro conversion",
+          "NOT an EarnKaro conversion" in joined and "pays our EarnKaro account" not in joined,
+          joined)
+    check("and it says plainly that nothing is earned", "earns NOTHING" in joined, joined)
+    check("the native fallback needs attention too", failures == 1, str(failures))
+
+    hypd_link = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
+    lines, failures = run(FakeClient([link_result(hypd_link, "https://www.meesho.com/x/p/1")]),
+                          [("Actual post URL 1", hypd_link)])
+    joined = "\n".join(lines)
+    check("OUR HYPD link is reported as ours (store 93944), not as a stranger's",
+          "OUR HYPD creator-store link" in joined and str(bot.HYPD_STORE_ID) in joined, joined)
+    check("an ours-HYPD post has nothing to fix", failures == 0, str(failures))
+
+    short_note = checker.shortness_note(bot, "https://ekaro.in/xyz")
+    check("the short-link verdict reads the bot's own short domains",
+          "SHORT LINK" in short_note, short_note)
+    long_note = checker.shortness_note(bot, "https://www.myntra.com/" + "a" * 90)
+    check("and a long merchant link is never called short",
+          "NOT on a short domain" in long_note, long_note)
+
+    source = (Path(__file__).parent / "ops" / "earnkaro_check.py").read_text(encoding="utf-8")
+    check("the checker also accepts the deploy's key file as the key under test",
+          ".earnkaro_key" in source, "")
+    check("--plan refuses to guess when no --deal-url was given (exit 2, no API call)",
+          "needs at least one --deal-url" in source, "")
+
+
 def test_status_report_answers_are_we_converting():
     """"anni perfectga convert chesthunnava ledaa?" must be answerable from data.
 
@@ -758,6 +1117,8 @@ def test_status_report_answers_are_we_converting():
                 resolved_url TEXT, product_key TEXT, created_at REAL);
             CREATE TABLE hypd_wanted (product_url TEXT, product_key TEXT, times INTEGER,
                 first_seen REAL, last_seen REAL);
+            CREATE TABLE queue (id INTEGER PRIMARY KEY, created_at REAL, status TEXT,
+                rendered_text TEXT);
         """)
         now = time.time()
         meesho = "https://www.meesho.com/product/p/mee123"
@@ -774,6 +1135,16 @@ def test_status_report_answers_are_we_converting():
             (meesho, "PID:mee123", 1, now, now),
             (shopsy, "PID:shop123", 1, now, now),
         ])
+        # The post that actually went out: OUR short link (minted into link_cache
+        # above), a clean unmonetizable store page, and one stranger's link - the
+        # three cases the link-perfection line exists to separate. The clean page
+        # is an AJIO page on purpose: a BARE Flipkart/Myntra page is no longer
+        # "clean" since 2026-10-04 - the network's affExtParam2 works there, so it
+        # is counted (and flagged) as 'unattributed': it opens and pays nobody.
+        conn.execute("INSERT INTO queue VALUES(1,?,?,?)", (
+            now, "done",
+            f"boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
+            "https://www.ajio.com/p/442125201\nhttps://www.ajio.com/p/9?tag=rivalpub"))
         conn.commit()
         conn.close()
         scoped = report.db_report(db_path, 24)
@@ -788,6 +1159,17 @@ def test_status_report_answers_are_we_converting():
         scoped_lines, scoped_problems = report.verdict(cfg, scoped, {"markers": {}})
         check("the report warns about the legacy out-of-scope row",
               any("legacy HYPD cache" in p for p in scoped_problems), str(scoped_problems))
+        links = scoped.get("links") or {}
+        check("the report counts every published link with the auditor's own rule",
+              links.get("links") == 3 and links.get("our-short") == 1
+              and links.get("clean-merchant") == 1 and links.get("foreign") == 1
+              and links.get("unattributed") == 0, str(links))
+        check("a foreign link in the window is reported as a problem with its fix",
+              any("NOT ours" in problem and "quality_audit" in problem
+                  for problem in scoped_problems), str(scoped_problems))
+        check("and the verdict says so in one line",
+              any(line.startswith("LINKS") and "NEEDS ATTENTION" in line
+                  for line in scoped_lines), str(scoped_lines))
 
     healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
                           "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
@@ -798,6 +1180,14 @@ def test_status_report_answers_are_we_converting():
           any("WORKING" in l and "5478322" in l for l in lines), str(lines))
     check("it says our hypd links are working",
           any(l.startswith("HYPD") and "WORKING" in l for l in lines), str(lines))
+
+    clean_links = dict(healthy, links={"links": 9, "our-short": 6, "our-publisher": 3,
+                                       "clean-merchant": 0, "foreign": 0})
+    lines, problems = report.verdict(cfg, clean_links, {"markers": {}})
+    check("a window whose links are all ours is reported as WORKING, not silent",
+          any(l.startswith("LINKS") and "WORKING" in l and "all ours" in l for l in lines),
+          str(lines))
+    check("and that window needs no fixing", not problems, str(problems))
 
     broken = dict(healthy)
     broken["hypd_wanted"] = [{"product": "https://www.meesho.com/kurtis/p/none123"}]
@@ -834,15 +1224,121 @@ def test_status_report_answers_are_we_converting():
               legacy.get("EK SUCCESS", {}).get("count") == 1
               and legacy.get("EK MISS", {}).get("count") == 1, str(legacy))
 
+        # USER QUESTIONS 2026-10-04 ("commission asalu ravatledu", "whatsapp lo kuda
+        # correct ga vellali"): the markers that prove a click will PAY us must be
+        # counted by the report - including the bridge's own (lower-case) ones.
+        link_log = Path(td) / "link-health.log"
+        link_log.write_text(
+            "[WARNING] LINK ATTRIBUTED | queue=88 no campaign came back, so the product "
+            "page is posted WITH our publisher id (5478322)\n"
+            "[INFO] AMAZON LINK SHORTENED | https://www.amazon.in/dp/B0X -> https://bitli.in/x\n"
+            "[WARNING] AMAZON SHORT CUT | queue=90 removed 1 Amazon short link(s)\n"
+            "[INFO] AMAZON DIRECT | our own Associates tag mama086-21 on amazon.in - the "
+            "whole commission is ours (account approved 2026-10-04)\n"
+            "[INFO] AMAZON CACHE UPGRADED | cached network row for amazon.in replaced by "
+            "our own Associates link (direct mode; full commission)\n"
+            '{"msg":"provenance cut: stranger wrapper would not resolve; the link is out, '
+            'the post stays"}\n'
+            '{"msg":"provenance rescue: stranger wrapper resolved to the merchant page and '
+            're-tagged as ours"}\n',
+            encoding="utf-8")
+        health = report.log_report(link_log, 24)["markers"]
+        check("the report counts the link-health markers (attributed / Amazon shortened / cut)",
+              health.get("LINK ATTRIBUTED", {}).get("count") == 1
+              and health.get("AMAZON LINK SHORTENED", {}).get("count") == 1
+              and health.get("AMAZON SHORT CUT", {}).get("count") == 1, str(health))
+        # 2026-10-04 approval: the two markers that prove Amazon is being posted
+        # with our OWN tag (and that cached network rows are upgraded).
+        check("the report counts AMAZON DIRECT and AMAZON CACHE UPGRADED too",
+              health.get("AMAZON DIRECT", {}).get("count") == 1
+              and health.get("AMAZON CACHE UPGRADED", {}).get("count") == 1, str(health))
+        check("and the bridge's lower-case provenance markers are counted too",
+              health.get("provenance cut", {}).get("count") == 1
+              and health.get("provenance rescue", {}).get("count") == 1, str(health))
+
+        # 2026-10-04 DEPLOY BUG: the report took the first NON-None path, so the
+        # checkout's own (test-created) DB/log shadowed the deployed ones and the
+        # verdict described a build that was not even live. It must take the first
+        # EXISTING file, and say out loud when it is reading the checkout.
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "deployed.sqlite3"
+            real.write_text("x", encoding="utf-8")
+            picked, note = report.pick_candidate(
+                [Path(td) / "missing.sqlite3", real])
+            check("the report picks the first EXISTING file, not the first named one",
+                  picked == real and note == "", f"{picked} / {note!r}")
+        picked, note = report.pick_candidate([report.REPO_ROOT / "README.md"])
+        check("a file inside the checkout is labelled as test data",
+              picked is not None and "CHECKOUT" in note, f"{picked} / {note!r}")
+        picked, note = report.pick_candidate([Path("/nonexistent/a.sqlite3")],
+                                             explicit="/tmp/explicit.sqlite3")
+        check("an explicit --db still wins outright",
+              str(picked) == "/tmp/explicit.sqlite3" and note == "", f"{picked}")
+
+
+def test_deploy_flow_cannot_silently_skip_again():
+    """The 2026-10-04 deploy attempt: `deploy_fresh.sh` calls
+    `deploy_and_verify.sh --no-pull --with-tests`, and the deploy block was
+    guarded by `[[ "$DO_PULL$DO_DEPLOY" == "11" ]]` - with --no-pull that is
+    "01", so repack + hotfix + restart were SKIPPED and the only symptom was
+    "OLDER build" hash lines further down. The operator saw "deploy ran but
+    nothing changed" while every suite was green.
+    """
+    repo = Path(__file__).parent
+    verify = (repo / "ops" / "deploy_and_verify.sh").read_text(encoding="utf-8")
+    # (the fix's own comment quotes the OLD guard, so only real code lines count)
+    old_guard_lines = [line for line in verify.splitlines()
+                       if "DO_PULL$DO_DEPLOY" in line and not line.strip().startswith("#")]
+    check("the deploy runs whenever DO_DEPLOY=1 (the --no-pull skip bug)",
+          'if [[ "$DO_DEPLOY" == "1" ]]; then' in verify and not old_guard_lines,
+          f"guard missing or old guard back: {old_guard_lines}")
+    check("the suites run against a throwaway DB/log, not the checkout",
+          "SUITE_TMP" in verify and "BOT_LOG_DIR=" in verify,
+          "deploy suites are not isolated from the source tree")
+
+    # The bot must keep its logs/media OUT of the source tree when a tool says so:
+    # a checkout full of test logs is what made conversion_report describe a
+    # build that was not even live.
+    import subprocess as sp
+    with tempfile.TemporaryDirectory() as td:
+        env = dict(os.environ, BOT_LOG_DIR=str(Path(td) / "logs"),
+                   BOT_MEDIA_DIR=str(Path(td) / "media"),
+                   BOT_DB_PATH=str(Path(td) / "x.sqlite3"),
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k")
+        repo_log = repo / "bestgaa" / "logs" / "bot.log"
+        before = repo_log.stat().st_mtime if repo_log.exists() else None
+        proc = sp.run([sys.executable, "-c", "import main_bot_new"],
+                      cwd=str(repo / "bestgaa"), env=env, capture_output=True, text=True)
+        after = repo_log.stat().st_mtime if repo_log.exists() else None
+        check("a tool can import the bot without writing into the source tree",
+              proc.returncode == 0 and (Path(td) / "logs" / "bot.log").exists()
+              and after == before,
+              f"{(proc.stderr or '')[-160:]} | repo log mtime {before} -> {after}")
+
+    report = (repo / "ops" / "conversion_report.py").read_text(encoding="utf-8")
+    check("the live report reads the DEPLOYED files first, never the checkout's",
+          report.index("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3")
+          < report.index('REPO_ROOT / "bestgaa" / "bestgaa.sqlite3"')
+          and "pick_candidate" in report, "candidate order regressed")
+    hypd = (repo / "ops" / "hypd_links.py").read_text(encoding="utf-8")
+    check("hypd_links reads the deployed .env (it crashed on a bare checkout)",
+          "APP_DIR" in hypd and 'BESTGAA_DIR' in hypd, "hypd env fix missing")
+    stable = (repo / "ops" / "deploy_stable.sh").read_text(encoding="utf-8")
+    check("a dropped SSH cannot kill the deploy (tmux wrapper exists)",
+          "tmux new-session" in stable and "nohup" in stable, "deploy_stable.sh broken")
+
 
 def main():
     test_response_shapes()
     test_request_contract()
+    test_an_earnkaro_link_that_names_our_publisher_is_ours()
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
+    test_unknown_affiliate_domain_is_verified_or_refused()
     test_token_claims()
+    test_deploy_flow_cannot_silently_skip_again()
     test_amazon_policy()
-    test_stale_native_amazon_cache_rows_are_reconverted()
+    test_stale_network_amazon_rows_are_upgraded()
     test_review_channel_expansion_keeps_our_tag()
     test_new_first_preference_sources()
     test_first_preference_wins_the_claim()
@@ -850,6 +1346,7 @@ def main():
     test_priority_boost_is_applied()
     test_checker_proves_whose_link()
     test_checker_proves_our_hypd_links_too()
+    test_checker_plan_prints_the_posted_link()
     test_hypd_diagnostic_only_shortens_verified_meesho_links()
     test_status_report_answers_are_we_converting()
     print(f"\nEARNKARO CONVERSION + SOURCE TESTS PASS ({PASS} checks)")

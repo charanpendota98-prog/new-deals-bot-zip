@@ -105,7 +105,7 @@ if ! cmp -s "$LIVE_FILE" "$NEW_FILE"; then
   echo "ERROR: live main_bot.py != bundled main_bot_new.py"
   exit 1
 fi
-if ! tail -n 300 "$APP_DIR/logs/bot.log" | grep -Eq "BestGAA Production Bot v15 starting|LIVE \| sources="; then
+if ! tail -n 300 "$APP_DIR/logs/bot.log" | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
   echo "WARNING: startup marker not yet visible in last 300 lines"
   echo "         (service may still be starting). Continuing but check logs below."
 fi

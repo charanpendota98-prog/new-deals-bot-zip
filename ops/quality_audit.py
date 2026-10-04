@@ -40,15 +40,37 @@ OURS_MARKERS = (
 ANY_LINK = re.compile(r"https?://\S+")
 # What "our link" means for this bot, in the bot's own terms:
 #   * our shortener (the one the user owns) or our EarnKaro / gop.im output,
+#   * a link the bot's OWN link_cache minted for that deal (the runtime Bitly /
+#     is.gd shortener pass and the EarnKaro API both register there),
 #   * an Amazon page carrying OUR tag - the pipeline publishes those when no
 #     shortener/affiliate route was used, and the tag IS the monetization,
+#   * a page carrying OUR EarnKaro publisher id (affExtParam2=5478322),
 #   * a clean merchant page for a store we cannot monetize (a deal must not be
 #     lost because a campaign is missing),
 #   * our own channels and the Loots Family folder.
 # Everything else - the source's own short link, someone else's shortener, a link
 # tagged to another publisher - is a link that should never have been sent.
+#
+# IMPORTANT (2026-10-04): the hardcoded pattern below is HISTORY, and the runtime
+# shorteners are not. Since 2026-09-06 every list post carries OUR Bitly links by
+# design, and the EarnKaro API mints fresh ekaro.in/bitli.in links per deal - none
+# of which that literal can name. So a bare "bit.ly is a third-party shortener"
+# rule flags healthy posts, and a false alarm is exactly how a real one gets
+# ignored. Ownership is therefore judged from the DATA (link_cache + the token's
+# publisher id) instead of from a domain list that can only describe yesterday.
 OUR_SHORTENER = re.compile(r"https?://(?:(?:www\.)?bitli\.in/TqmFyPp|(?:www\.)?bitlyskj\.(?:com|in|net)/)", re.I)
 OUR_HOSTS = re.compile(r"https?://(?:[^/\s]*earnkaro\.com/|gop\.im/)", re.I)
+# Shortener hosts the BOT ITSELF mints at runtime (Bitly with OUR token, is.gd as
+# the outage fallback). A link on one of these is ours only when a link_cache row
+# says the bot produced it: other channels post bit.ly links too.
+OUR_RUNTIME_SHORTENER_HOSTS = ("bit.ly", "is.gd")
+# The affiliate network's OWN short domains (what the EarnKaro/Affiliaters
+# converter mints) and our HYPD share links. These are MONETIZED links, so the
+# summary must not file them under "clean merchant" - that bucket means "kept on
+# purpose, earns nothing".
+OUR_NETWORK_SHORT = re.compile(
+    r"https?://(?:[^/\s]*\.)?(?:ekaro\.(?:in|app)|clnk\.(?:in|app)|bitli\.in|fktr\.in|"
+    r"myntr\.it|ajiio\.in|cuelinks\.com|l\.ead\.me|affiliaters\.in|hypd\.store)/", re.I)
 OUR_T_ME = re.compile(r"https?://t\.me/(?:addlist/|LootZoneIndia11\b|SecretLootIndia1\b)", re.I)
 AMAZON_HOST = re.compile(r"^(?:www\.|m\.)?amazon\.[a-z.]{2,8}$", re.I)
 AMAZON_SHORT = re.compile(r"^(?:www\.)?amzn\.(?:to|in)$", re.I)
@@ -57,8 +79,14 @@ FOREIGN_SHORTENERS = re.compile(
     r"|gpt\.sh|shorturl\.at|is\.gd|rb\.gy|ow\.ly|rebrand\.ly|tly\.in|s\.id/)", re.I)
 # Publisher ids that are never ours. Flipkart's pid= is a PRODUCT id, so it is
 # deliberately absent here.
+# One capture group on purpose: callers use findall() and expect plain strings.
+# The `cmpid=` branch only counts when the campaign is the AFF_ affiliate form
+# (`cmpid=AFF_deals101`, seen live 2026-10-04) - a plain marketing cmpid is not
+# somebody's commission. The value keeps its AFF_ prefix, which no publisher id
+# ever equals, so it can only ever be read as "not ours".
 AFFILIATE_ID_RE = re.compile(
-    r"[?&](?:affid|aff_id|pubid|publisherid|associateid|affextparam2|refid|clickid)=([^&#]*)", re.I)
+    r"[?&](?:(?:affid|aff_id|pubid|publisherid|associateid|affextparam2|refid|clickid)="
+    r"|cmpid=(?=aff[_-]))([^&#]*)", re.I)
 FOREIGN_PROMO = re.compile(r"join\s+(?:this\s+)?channel|subscribe\s+to|t\.me/\+|startapp\.bot", re.I)
 PRICE_RE = re.compile(rf"{RUPEE}\s*(\d[\d,]*)")
 LIST_MARKER_RE = re.compile(r"(?im)^\s*(?:deal\s*\d+|\d+\s*[.)])")
@@ -77,14 +105,88 @@ def link_host(url: str) -> str:
     return (match.group(1) if match else "").lower()
 
 
-def why_not_our_link(url: str, our_tag: str = "") -> str | None:
-    """Why this published link is NOT one of ours (None means it is fine)."""
+# USER REPORT 2026-10-04 ("product open avuthundi kaani adi mana links kaadu
+# ... commission asalu ravatledu"): the Flipkart family accepts the network's
+# own publisher parameter ON the merchant page - `affExtParam2=<publisher>` is
+# exactly the shape the EarnKaro converter returns for this account (the bot's
+# earnkaro_output_kind() accepts it as a conversion). So a Flipkart/Myntra page
+# published WITHOUT it is not "a clean merchant page kept on purpose": it is a
+# link that opens the product and pays nobody, and it can be fixed. Kept in one
+# place so the count and the bot's own stamping rule stay in step.
+EK_ATTRIBUTION_HOSTS = ("flipkart.com", "myntra.com")
+FOREIGN_ATTRIBUTION_PARAMS = frozenset((
+    "affid", "aff_id", "affid1", "affid2", "affextparam1", "affextparam2",
+    "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
+))
+
+
+def _query_pairs(url: str) -> dict[str, list[str]]:
+    pairs: dict[str, list[str]] = {}
+    for chunk in urlparse(url).query.split("&"):
+        if "=" in chunk:
+            key, _, value = chunk.partition("=")
+            pairs.setdefault(key.strip().lower(), []).append(unquote(value.strip()))
+    return pairs
+
+
+def why_unattributed(url: str, our_publisher: str = "",
+                     our_links: "set[str] | tuple[str, ...]" = ()) -> str | None:
+    """A merchant page that CAN pay us but was posted without our id.
+
+    None when the link is not on an attributable host, when it already carries
+    OUR publisher id, when it belongs to somebody else (the foreign rule speaks
+    first), or when the bot's own link_cache minted it. Anything else on these
+    hosts is a click that earns nothing - the exact reason commissions were
+    missing while the product still opened.
+    """
+    if not our_publisher:
+        return None
+    if our_links and url in our_links:
+        return None
+    host = link_host(url)
+    if not any(host == h or host.endswith("." + h) for h in EK_ATTRIBUTION_HOSTS):
+        return None
+    pairs = _query_pairs(url)
+    values = [v for v in pairs.get("affextparam2", []) if v]
+    if our_publisher in values:
+        return None  # already ours
+    foreign = [(key, v) for key in FOREIGN_ATTRIBUTION_PARAMS
+               for v in pairs.get(key, []) if v and v != our_publisher]
+    if not foreign:
+        # `cmpid=AFF_<slug>` is the affiliate campaign of an account (see
+        # AFFILIATE_ID_RE): the page is somebody's, not a page nobody is paid
+        # for. A plain marketing cmpid (cmpid=summer-sale) is not, and the page
+        # keeps counting as unattributed.
+        foreign = [("cmpid", v) for v in pairs.get("cmpid", [])
+                   if re.match(r"aff[_-]", v, re.I)]
+    if foreign or any(v for v in pairs.get("tag", [])):
+        return None  # somebody else's attribution: that is a FOREIGN link
+    return ("can carry our publisher id (%s) but was posted without it - the product "
+            "opens and NOBODY is paid" % our_publisher)
+
+
+def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
+                     our_links: "set[str] | tuple[str, ...]" = ()) -> str | None:
+    """Why this published link is NOT one of ours (None means it is fine).
+
+    `our_links` is the set of affiliate_urls the bot's own link_cache minted, and
+    `our_publisher` is the EarnKaro account the token pays. Both make the verdict
+    a fact about this install rather than a guess from a domain list; both are
+    optional so a caller with only the tag still gets the old, safe answer.
+    """
     if OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url):
+        return None
+    if our_links and url in our_links:
+        # The bot minted this exact link for a deal (Bitly/is.gd/EarnKaro/HYPD/
+        # pass-through) - the same table the pipeline's provenance gate consults.
         return None
     host = link_host(url)
     if AMAZON_SHORT.match(host):
         return "the source's own Amazon short link was posted instead of ours"
     if FOREIGN_SHORTENERS.match(url):
+        if any(host == h or host.endswith("." + h) for h in OUR_RUNTIME_SHORTENER_HOSTS):
+            return ("a %s short link with no link_cache row minting it (either it predates "
+                    "the cache or it is a third-party shortener)" % host)
         return "a third-party shortener leaked into the post"
     query = urlparse(url).query.lower()
     pairs = dict()
@@ -98,7 +200,11 @@ def why_not_our_link(url: str, our_tag: str = "") -> str | None:
         ours = not tags
     else:
         ours = our_tag.lower() in [x.lower() for x in tags]
-    foreign_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
+    all_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
+    # OUR publisher id is attribution, not a stranger's: the EarnKaro API returns
+    # direct Flipkart-family URLs carrying affExtParam2=5478322, and those are
+    # exactly the links we want posted.
+    foreign_ids = [v for v in all_ids if not (our_publisher and v == our_publisher)]
     if AMAZON_HOST.match(host):
         if not ours:
             return "an Amazon link without our tag reached a channel"
@@ -107,9 +213,55 @@ def why_not_our_link(url: str, our_tag: str = "") -> str | None:
         return None
     if tags and not ours:
         return "tagged to somebody else (%s)" % ",".join(sorted(set(tags)))[:40]
+    # USER QUESTION 2026-10-04 ("idi manadenaa link"): an EarnKaro-minted
+    # Flipkart-family link carries affid=<the network's account> and
+    # affExtParam2=<the publisher who is paid> - exactly how Flipkart documents
+    # its affiliate URLs. When that publisher id is OURS the link is ours, and
+    # the network's own affid/cmpid/mcn are the route the commission travels -
+    # not a stranger's id. This is the same verdict whose_link() gives in
+    # ops/earnkaro_check.py ("ours" when affExtParam2 == our publisher), and the
+    # pipeline itself accepts such a link (earnkaro_output_kind -> publisher).
+    # The audit was the only place saying otherwise, so only the audit changes.
+    if foreign_ids and our_publisher and our_publisher in all_ids:
+        return None
     if foreign_ids:
         return "carries somebody else's affiliate id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
+    unattributed = why_unattributed(url, our_publisher, our_links)
+    if unattributed:
+        return unattributed
     return None  # unmonetizable store, clean page: publishing it is the policy
+
+
+def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
+                  our_links: "set[str] | tuple[str, ...]" = ()) -> str:
+    """'our-short' | 'our-publisher' | 'unattributed' | 'clean-merchant' | 'foreign'.
+
+    This is the summary the user actually asks for ("mana links perfectga post
+    chesthunda ledaa?"): every published link is either a short link WE minted,
+    OUR tag/publisher id, a clean merchant page kept on purpose, or a link that
+    should never have left - counted, so the answer is a number, not an opinion.
+    """
+    if why_unattributed(url, our_publisher, our_links):
+        return "unattributed"
+    if why_not_our_link(url, our_tag, our_publisher, our_links):
+        return "foreign"
+    if (OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url)
+            or OUR_NETWORK_SHORT.match(url)):
+        return "our-short"
+    if our_links and url in our_links:
+        return "our-short"
+    if AMAZON_HOST.match(link_host(url)):
+        return "our-publisher"
+    query = urlparse(url).query.lower()
+    pairs = {}
+    for chunk in query.split("&"):
+        if "=" in chunk:
+            key, _, value = chunk.partition("=")
+            pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
+    if pairs.get("tag") or (our_publisher and our_publisher in [v for v in
+                                                               AFFILIATE_ID_RE.findall(unquote(url)) if v]):
+        return "our-publisher"
+    return "clean-merchant"
 
 
 def flag(kind: str, detail: str, queue_id=None, target=None) -> dict:
@@ -489,7 +641,56 @@ def product_signature(text: str) -> str:
     return named
 
 
-def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list[dict], int]:
+def _token_claims(token: str) -> dict:
+    """The EarnKaro/Affiliaters JWT payload, when the token is one."""
+    try:
+        import base64
+        parts = token.split(".")
+        if len(parts) < 2:
+            return {}
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")).decode("utf-8"))
+        return claims if isinstance(claims, dict) else {}
+    except Exception:
+        return {}
+
+
+def ours_publisher_from_env() -> str:
+    """"The EarnKaro account OUR links must pay, read the same way the bot reads it.
+
+    Order: the pinned EARNKARO_PUBLISHER_ID, the token in EARNKARO_API_KEY, then
+    the token file the deploy scripts read (ops/.earnkaro_key). The id is never
+    the secret, so printing it is safe; the token itself is never printed.
+    """
+    pinned = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
+    if pinned:
+        return pinned
+    token = os.getenv("EARNKARO_API_KEY", "").strip()
+    if not token:
+        try:
+            token = (Path(__file__).resolve().parent / ".earnkaro_key").read_text(
+                encoding="utf-8").strip()
+        except OSError:
+            token = ""
+    return str(_token_claims(token).get("earnkaro") or "").strip()
+
+
+def our_minted_links(conn: sqlite3.Connection) -> set[str]:
+    """Every link the bot's own link_cache says IT produced.
+
+    The provenance gate at delivery asks this same table "did we mint this?", so
+    the auditor asking it too is what keeps the two answers identical instead of
+    the auditor inventing a stricter rule and crying wolf on healthy posts.
+    """
+    try:
+        return {str(r[0]) for r in conn.execute(
+            "SELECT affiliate_url FROM link_cache WHERE affiliate_url IS NOT NULL") if r[0]}
+    except sqlite3.OperationalError:
+        return set()
+
+
+def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
+          our_publisher: str = "") -> tuple[list[dict], int, dict]:
     conn.row_factory = sqlite3.Row
     # Every recent row is inspected, including ones that produced no post at all:
     # "we lost a deal" is as much a quality defect as a badly formatted one.
@@ -502,6 +703,9 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list
             "SELECT queue_id, count(*) AS n FROM deliveries WHERE status='sent' GROUP BY queue_id")}
     except sqlite3.OperationalError:
         sent_counts = {}
+    our_links = our_minted_links(conn)
+    link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
+                   "clean-merchant": 0, "foreign": 0}
 
     findings: list[dict] = []
     for row in rows:
@@ -540,7 +744,9 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list
         if not links:
             findings.append(flag("LINKS", "published with no link at all", row["id"]))
         for url in links:
-            why = why_not_our_link(url, our_tag)
+            link_counts["links"] += 1
+            link_counts[classify_link(url, our_tag, our_publisher, our_links)] += 1
+            why = why_not_our_link(url, our_tag, our_publisher, our_links)
             if why:
                 findings.append(flag("LINKS", f"{why}: {url[:80]}", row["id"]))
 
@@ -649,7 +855,7 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "") -> tuple[list
             "SELECT count(*) FROM queue WHERE rendered_text IS NOT NULL").fetchone()[0]
     except sqlite3.OperationalError:
         total_posts = len(rows)
-    return findings, total_posts
+    return findings, total_posts, link_counts
 
 
 def main(argv=None) -> int:
@@ -661,14 +867,41 @@ def main(argv=None) -> int:
     parser.add_argument("--strict", action="store_true", help="exit 1 when anything is found")
     parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
                         help="our Amazon affiliate tag (default: $AMAZON_TAG or mama086-21)")
+    parser.add_argument("--publisher", default="",
+                        help="our EarnKaro publisher id (default: read from "
+                             "$EARNKARO_PUBLISHER_ID, the token, or ops/.earnkaro_key)")
+    parser.add_argument("--check-url", action="append", default=[], metavar="URL",
+                        help="whose link is this? print the bucket and the reason for one "
+                             "URL (repeatable, no database needed) and exit - the answer to "
+                             "'idi manadenaa link'")
     args = parser.parse_args(argv)
+    publisher = (args.publisher or "").strip() or ours_publisher_from_env()
+
+    if args.check_url:
+        tag = (args.tag or "").strip()
+        worst = 0
+        for url in args.check_url:
+            bucket = classify_link(url, tag, publisher)
+            reason = why_not_our_link(url, tag, publisher) or why_unattributed(url, publisher)
+            print(f"{bucket.upper():14s} {url}")
+            if reason:
+                print(f"               reason: {reason}")
+            elif bucket == "clean-merchant":
+                print("               reason: a clean merchant page kept on purpose "
+                      "(this store has no program of ours to attribute it to)")
+            else:
+                print("               reason: ours - our id/tag/short link is on it")
+            worst = max(worst, 2 if bucket == "foreign" else
+                        1 if bucket == "unattributed" else 0)
+        return 1 if worst == 2 else 0
 
     if not args.db.exists():
         print(f"QUALITY AUDIT: no database at {args.db}")
         return 0
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
-        findings, posts = audit(conn, args.limit, (args.tag or "").strip())
+        findings, posts, link_counts = audit(conn, args.limit, (args.tag or "").strip(),
+                                            publisher)
     except sqlite3.OperationalError as exc:  # a schema too old to judge
         print(f"QUALITY AUDIT: database not readable yet ({exc})")
         return 0
@@ -678,10 +911,25 @@ def main(argv=None) -> int:
     by_kind: dict[str, list[dict]] = {}
     for item in findings:
         by_kind.setdefault(item["kind"], []).append(item)
+    summary = (f"LINK PERFECTION | links={link_counts['links']} "
+               f"our-short={link_counts['our-short']} "
+               f"our-publisher={link_counts['our-publisher']} "
+               f"unattributed={link_counts['unattributed']} "
+               f"clean-merchant={link_counts['clean-merchant']} "
+               f"FOREIGN={link_counts['foreign']}")
     if args.json:
-        print(json.dumps({"db": str(args.db), "posts_checked": posts, "findings": findings}))
+        print(json.dumps({"db": str(args.db), "posts_checked": posts,
+                          "link_summary": link_counts, "findings": findings}))
     else:
         print(f"QUALITY AUDIT | db={args.db} posts={posts} findings={len(findings)}")
+        print(f"  {summary}")
+        if link_counts["foreign"] == 0 and link_counts["unattributed"] == 0 and link_counts["links"]:
+            print("  every published link is one of ours (minted by this bot, our tag, "
+                  "or a clean merchant page) - nothing foreign reached a channel")
+        if link_counts["unattributed"]:
+            print("  -> %s link(s) could carry our publisher id and did not (Flipkart/Myntra): "
+                  "they open and pay nobody. Published before the 2026-10-04 attribution fix; "
+                  "new posts stamp affExtParam2 automatically." % link_counts["unattributed"])
         for kind in ("OURS", "LINKS", "TEXTLESS", "MISROUTE", "COVERAGE", "DUPLICATE", "NEAR-DUPE"):
             items = by_kind.get(kind) or []
             print(f"  {kind:<9}: {len(items)}")

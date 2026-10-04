@@ -1,0 +1,127 @@
+EARNKARO — FRESH KEY (2026-10-04) + "THE LINK THE CHANNEL WILL ACTUALLY CARRY"
+================================================================================
+
+USER REQUEST
+  "EARNKARO APIKEY THO CHEYU ... MANA LINK PEREFCTGA SHORTEN GA CONVERT AVVALI
+   ... SOURCETHIKONI MANA LINK GA CHESI POST CHEYALI"
+
+  => with this key: every source link must become OUR link, shortened, and
+     posted. Prove it per link, not per feeling.
+
+
+THE KEY
+==============================================================================
+  token file      : ops/.earnkaro_key            (GITIGNORED - never committed)
+  token shape     : JWT, issued 2026-10-04 05:20 UTC
+  EarnKaro account: publisher 5478322            <- every converted link pays THIS
+  endpoint        : https://ekaro-api.affiliaters.in/api/converter/public
+  convert_option  : convert_only
+
+  The file holds the raw token, one line, mode 600. Two tools use it:
+
+    * ops/apply_dual_hotfix.sh   -> writes EARNKARO_API_KEY into the server .env
+                                    when the token is not already in the
+                                    environment (no token in any log/commit).
+    * ops/earnkaro_check.py      -> now READS it as a key source, after --key,
+                                    --env-file, the environment and bestgaa/.env.
+                                    So the key a deploy would use is the key a
+                                    check tests.
+
+  Rotate it any time (token never printed, .env backed up, service restarted,
+  then verified against the live API):
+
+      cd ~/bestgaa-bot/bestgaa-bot
+      ./set_earnkaro_key.sh '<the token from the Affiliaters/EarnKaro API page>'
+
+
+THE NEW PROOF: --plan (the bot's OWN pipeline, per real link)
+==============================================================================
+  "source thikoni mana link ga chesi post cheyali" is now answerable for one
+  real link, before anyone stares at a channel:
+
+      python3 ops/earnkaro_check.py --plan \
+        --deal-url 'https://www.flipkart.com/<real-product-url>'
+
+      python3 ops/earnkaro_check.py --plan --multi \
+        --deal-url '<link 1>' --deal-url '<link 2>'      # a list post
+
+  It imports bestgaa/main_bot_new.py and runs its real AffiliateClient -
+  resolve -> convert -> shorten - so the answer is the posting code itself, not
+  a second copy of the rules that can drift and then lie. Printed per link:
+
+      source     : the URL you passed
+      resolve    : the merchant page behind any source shortener
+      posted as  : THE EXACT LINK THE CHANNEL WILL CARRY
+      long link  : the destination behind it
+      length     : short verdict, asked of the bot's own short domains/limit
+      attribution: affExtParam2=5478322 -> https://www.flipkart.com/...
+      verdict    : OURS / WRONG ACCOUNT / UNMONETIZED / transient (would retry)
+
+  Blunt on purpose, because each failure needs a DIFFERENT fix:
+    * OURS            the post pays 5478322. Nothing to do.
+    * UNMONETIZED     the network has no campaign for that store/URL. The deal
+                      still posts with a clean merchant link, but NOBODY IS
+                      PAID. Fix: Affiliaters > Affiliate Settings > Networks +
+                      Selections (connect EarnKaro, pick a network per store),
+                      or take the deal from another source link.
+    * NATIVE AMAZON-TAG FALLBACK
+                      EarnKaro had no campaign for that Amazon URL, so the bot
+                      posted its native ?tag= link. The bot's own gate refuses to
+                      call that a conversion and so does this report: Associates
+                      is still rejecting the account, so it earns NOTHING.
+    * OURS (HYPD)     our HYPD creator-store link (store 93944, verified Meesho
+                      only) - our commission link, Bitly-shortened when possible.
+    * WRONG ACCOUNT   the returned link pays somebody else. Rotate the key and
+                      check the selections; the bot's own gate refuses these.
+    * would retry     the API was unreachable: the JOB retries, this is NOT a
+                      deal that earns nothing (never conflate the two).
+    * "NOT on a short domain" -> the shortener (Bitly, then is.gd) was
+                      rate-limited/down, so the longer link posted instead:
+                      a deal is never lost to a shortener outage.
+
+  The plan run points EARNKARO_API_KEY at the key under test (it beats any
+  .env the module loads) and uses a throwaway BOT_DB_PATH, so it cannot touch
+  live queued state. Exit code 1 if any link above needs attention.
+
+
+ON THE SERVER, IN ORDER
+==============================================================================
+  cd ~/bestgaa-bot/bestgaa-bot
+
+  # 1. the key (skip if the deploy already carried ops/.earnkaro_key)
+  ./set_earnkaro_key.sh '<token>'
+
+  # 2. the key alone: claims + live probes + raw API bodies
+  python3 ops/earnkaro_check.py --skip-hypd
+
+  # 3. THE ANSWER THE USER ASKED FOR - the exact posted link, per real deal
+  python3 ops/earnkaro_check.py --plan --deal-url '<source/product link>'
+
+  # 4. after a few minutes live, what is actually converting
+  python3 ops/conversion_report.py
+
+  # 5. watch it happen
+  journalctl -u bestgaa -f | grep -E 'EK SUCCESS|EK MISS|EK AUTH|EK REJECT|EK HTTP|EK NETWORK|EK FALLBACK|UNMONETIZED'
+
+  Full deploy (tests -> bundles -> deploy -> teach -> prove -> report) still:
+      ./ops/deploy_fresh.sh
+
+
+WHERE ELSE THIS IS WIRED IN
+==============================================================================
+  * ops/conversion_report.py  - its "Fixes:" list now points at --plan.
+  * ops/deploy_fresh.sh       - its common-fix list now points at --plan.
+  * README.md                 - "Fresh key (2026-10-04)" section.
+  * test_earnkaro_conversion.py - new suite test_checker_plan_prints_the_posted_
+    link(): a fake client drives the real plan code offline and pins the link
+    it prints, the paying account, the UNMONETIZED / WRONG ACCOUNT verdicts,
+    the "could not be shortened" admission, and the transient-vs-unmonetized
+    distinction (147 checks in this suite, all green).
+
+OFFLINE GATE
+==============================================================================
+  PYTHON=.venv/bin/python ./ops/test_all.sh      -> ALL OFFLINE CHECKS PASSED
+
+  The live conversion proof still has to come from the server: this workspace
+  has no outbound internet (TLS is reset for every host), so --plan here reports
+  a transient network failure - which is the sandbox, not the key.

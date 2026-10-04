@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.3
+"""BestGAA Production Bot v18.9
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -8,10 +8,21 @@ immediately, exactly once, clean":
   insert, dispatched newest-first with an age-out sweeper (never posts stale)
 - concurrent resolve / convert / health-check / shorten per post with cached
   verdicts and hard time budgets, so one slow site cannot delay everything
-- EarnKaro conversion with retry/cache/circuit breaker
+- EarnKaro conversion with retry/cache/circuit breaker; an output on a redirect
+  domain this build does not recognize is FOLLOWED and accepted only when its
+  destination proves it is ours (a new network domain never costs a commission,
+  and a stranger's link is still refused)
 - a dead short link, an unresolvable destination or an oversized photo costs the post
   NOTHING: the offending link is cut and the deal goes out complete (never a retry-until-
   stale, never a skip)
+- a link the network has no campaign for is never posted BARE when the merchant page
+  itself accepts our publisher id (Flipkart/Myntra): affExtParam2 is stamped, the
+  reader still reaches the product, and the click pays US instead of nobody
+- an Amazon SHORT link (amzn.to/amzn.in/a.co) is a wrapper, never a destination: it is
+  resolved to the long product page first, tagged with OUR Associates tag, and then
+  shortened with our own shortener - the short code itself is never posted (gluing a
+  tag onto someone else's short code opens THEIR page and pays nobody). A short link
+  that will not resolve is cut from the post, never republished
 - a source post with a photo and NO link is still a post: it goes out as written (deal
   terms required, nothing invented); a caption with no deal terms is not a deal and stays out
 - the source's photos are posted the way the source posted them: a multi-photo album
@@ -123,9 +134,13 @@ def button_url(button) -> str:
 # Configuration
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "logs"
+# BOT_LOG_DIR / BOT_MEDIA_DIR exist so a TOOL (a test suite, an audit, a deploy
+# check) can import this module without writing logs/media into the source tree.
+# 2026-10-04: the deploy imported the bot from a checkout, the checkout grew a
+# logs/bot.log, and conversion_report then read those test lines as live data.
+LOG_DIR = Path(os.getenv("BOT_LOG_DIR") or (BASE_DIR / "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-MEDIA_DIR = BASE_DIR / "media"
+MEDIA_DIR = Path(os.getenv("BOT_MEDIA_DIR") or (BASE_DIR / "media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -159,6 +174,10 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
+# A realistic desktop UA for outbound API/fetch calls. EarnKaro's endpoint sits
+# behind Cloudflare, which rejects default library UAs with "error code: 1010".
+API_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 # The public converter accepts {"deal": <url or whole post>} plus an optional
 # `convert_option`. "convert_only" is the documented value - convert the link(s)
 # and NOTHING else: never post, never share, never apply an account-level
@@ -235,22 +254,24 @@ if _configured_tag and _configured_tag.lower() not in {t.lower() for t in OUR_AM
     _configured_tag = ""
 OUR_TAG = _configured_tag
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
-# USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
-# so direct-tagging pays nothing. EVERY Amazon link goes through EarnKaro like
-# every other store — no ratio, no env knob, no direct-Associates branch. A
-# stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
-AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
-# USER RULE (2026-09-24): the user pasted a fresh EarnKaro/Affiliaters API
-# token and asked for the EarnKaro links to convert properly on the channels.
-# Amazon Associates is STILL rejecting the account, so a native ?tag=mama086-21
-# link earns nothing while an EarnKaro conversion pays - Amazon product links
-# therefore go to EarnKaro like every other store. The native tagged link stays
-# as the FALLBACK when the network has no campaign for the link, and the review
-# channel still sees the native tagged product page (our short/Ekaro links are
-# expanded back to it at delivery, which is what keeps that channel compliant).
-# Set AMAZON_VIA_EARNKARO=false to restore pure native tagging.
+# AMAZON POLICY, IN ORDER (history kept on purpose - each line was a user rule):
+#   2026-09-03: Associates was rejecting the account, so native tagging paid
+#               nothing and EVERY Amazon link went through EarnKaro. No ratio, no
+#               env knob (a stale AMAZON_EARNKARO_RATIO= line in a server .env
+#               can never re-enable that branch).
+#   2026-09-24: EarnKaro-first stayed (Associates still refusing), with the
+#               native ?tag= link as the FALLBACK.
+#   2026-10-04: "amazin assacite approve chesindi manadi" - the Associates
+#               account is APPROVED for OUR tag (mama086-21). The native tagged
+#               link therefore pays the WHOLE commission to us with no network
+#               share, so it becomes the FIRST choice and EarnKaro becomes the
+#               second chance for a shape the native path cannot build.
+#               AMAZON_DIRECT_ASSOCIATES=false restores the 2026-09-24 order.
+AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees a value
 AMAZON_VIA_EARNKARO = os.getenv(
     "AMAZON_VIA_EARNKARO", "true").strip().lower() not in ("0", "false", "no", "off")
+AMAZON_DIRECT_ASSOCIATES = os.getenv(
+    "AMAZON_DIRECT_ASSOCIATES", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # --- HYPD creator-store affiliate links (USER RULE 2026-09-24) -------------
 # "hypd idi meesho products ni mana link tho convert cheyu ... paina links ni
@@ -687,6 +708,25 @@ def retag_foreign_amazon_links(text: str) -> str:
 AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
 
 
+def is_amazon_short_host(host: str) -> bool:
+    """True for Amazon's OWN short domains - a wrapper, never a destination.
+
+    USER REPORT 2026-10-04: a channel showed `https://amzn.to/4dnF9lU?tag=mama086-21`
+    and opening it served SOMEBODY ELSE'S page. The short code belongs to whoever
+    created it; gluing our tag onto it earns us nothing and reads as a broken link,
+    so these hosts are only ever followed to the real amazon.in page.
+    """
+    return bool(host) and in_domains(host, AMAZON_SHORT_DOMAINS)
+
+
+# USER RULE (2026-10-04, "LONG LINK lo MARCHI SHORTEN GA CHESI POST CHEYALIGAA"): an
+# Amazon link we publish is SHORTENED with our own shortener, not merely compacted to
+# a ~50-char /dp link. The compact tagged form stays the fallback when the shortener
+# cannot answer, so a quota problem never costs the deal (or the commission).
+SHORTEN_AMAZON_LINKS = os.getenv(
+    "SHORTEN_AMAZON_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 def pick_one_product_for_review(text: str) -> str:
     """Reduce a multi-product post to ONE product for the review channel.
 
@@ -789,6 +829,38 @@ def strip_amazon_ratings(text: str) -> str:
         if cleaned.strip() or not line.strip():
             out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
     return "\n".join(out)
+
+
+def cut_amazon_short_links(text: str, affiliate=None) -> tuple[str, list[str]]:
+    """Remove Amazon SHORT links from a finished post; return (text, cut urls).
+
+    LAST-MILE REPAIR (USER REPORT 2026-10-04). A queued row can still hold a render
+    made by an older build - e.g. `https://amzn.to/4dnF9lU?tag=mama086-21`, which
+    opens SOMEBODY ELSE'S page because the short code belongs to its creator. The
+    provenance gate would refuse the whole post for such a link, i.e. lose the deal;
+    instead the link is CUT (the deal text goes out complete, exactly like a dead
+    destination) and the log names it. A short link WE minted is expanded to its own
+    long form first, so nothing of ours is ever cut by this.
+    """
+    out = text or ""
+    cut: list[str] = []
+    if not out:
+        return out, cut
+    reverse = dict(getattr(affiliate, "_short_to_long", {}) or {})
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not is_amazon_short_host(host):
+            continue
+        native = reverse.get(url) or reverse.get(raw) or ""
+        if native and in_domains((urlparse(native).hostname or "").lower(), AMAZON_DOMAINS):
+            out = replace_url_everywhere(out, raw, native)
+            continue
+        out = replace_url_everywhere(out, raw, " ")
+        cut.append(raw)
+    if cut:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+    return out, cut
 
 
 def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
@@ -1099,6 +1171,70 @@ TRACKING_QUERY_KEYS = {
 # chars (btn_ref=srctok-..., ds=, qid=...). Meaningful filters (k, i, rh, s,
 # rnid keeps the filter group) are preserved so Men/Women/Girls/Boys category
 # links stay distinct.
+# ---------------------------------------------------------------------------
+# OUR ATTRIBUTION ON A MERCHANT PAGE (USER REPORT 2026-10-04):
+#   "product open avuthundi kaani adi mana links kaadu ... commission asalu
+#    ravatledu" - the click worked, the deal stayed, and NOBODY was paid.
+#
+# A pass-through (the network answered "no campaign") used to publish the BARE
+# merchant URL. For the Flipkart family the network's attribution parameter also
+# works on a plain product page: `affExtParam2=<publisher>` is exactly what the
+# EarnKaro converter returns for OUR account (see earnkaro_output_kind()'s
+# "publisher" acceptance and ops/earnkaro_check.py's `affExtParam2=5478322`
+# proof), so a passthrough link is published WITH our publisher id instead of
+# bare. Only hosts whose scheme is documented here are touched - Amazon earns
+# through the Associates tag, Meesho through HYPD, and every other store has no
+# direct-attribution contract, so they stay exactly as they were.
+# ---------------------------------------------------------------------------
+EK_ATTRIBUTION_HOSTS = {h.strip().lower() for h in os.getenv(
+    "EK_ATTRIBUTION_HOSTS", "flipkart.com,myntra.com").split(",") if h.strip()}
+ATTRIBUTE_PASSTHROUGH_LINKS = os.getenv(
+    "ATTRIBUTE_PASSTHROUGH_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
+# Attribution parameters that belong to whoever else's link we are rebuilding -
+# they are replaced by ours, never carried along (a kept foreign id pays them).
+FOREIGN_ATTRIBUTION_KEYS = {
+    "affid", "aff_id", "affid1", "affid2", "affextparam1", "affextparam2",
+    "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
+}
+
+# NOTE (USER QUESTION 2026-10-04, "idi manadenaa link"): on a Flipkart-family
+# link `affid` is the AFFILIATE ACCOUNT id - the network's account, exactly as
+# Flipkart documents its own affiliate URLs - and `affExtParam2` is the publisher
+# who gets credited inside it. An EarnKaro-converted link carries BOTH
+# (affid=deals101&cmpid=AFF_deals101&affExtParam1=ENKR...&affExtParam2=OURS) and
+# is OURS: `affExtParam2=5478322` is the id the money is credited to. Those
+# network parameters must never be stripped from a converted link - removing
+# them is the one change that could really lose the commission - so the posting
+# path is deliberately left alone here and the AUDIT is taught whose link it is
+# (see ops/quality_audit.py, which now agrees with whose_link()).
+
+
+def attribute_with_our_publisher(url: str, publisher: str = "") -> str:
+    """OUR EarnKaro publisher id on a Flipkart-family product URL.
+
+    A no-op (the URL comes back unchanged) for any other host, when no publisher
+    is configured, or when ATTRIBUTE_PASSTHROUGH_LINKS=false. Foreign ids are
+    removed first, so the rebuilt link can only ever pay us. `publisher` lets a
+    caller state whose id to stamp (the audit uses its own resolution); the
+    default is this install's EarnKaro account.
+    """
+    publisher = (publisher or OUR_EK_ID).strip()
+    if not (publisher and ATTRIBUTE_PASSTHROUGH_LINKS):
+        return url
+    try:
+        parsed = urlparse(clean_url(url))
+        host = (parsed.hostname or "").lower()
+        if not in_domains(host, EK_ATTRIBUTION_HOSTS):
+            return url
+        pairs = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                 if key.lower() not in FOREIGN_ATTRIBUTION_KEYS]
+        pairs.append(("affExtParam2", publisher))
+        return parsed._replace(scheme="https", netloc=host,
+                               query=urlencode(pairs), fragment="").geturl()
+    except Exception:
+        return url
+
+
 AMAZON_JUNK_QUERY_KEYS = {
     "btn_ref", "btn_type", "ds", "dc", "qid", "sprefix", "crid", "sr",
     "pd_rd_r", "pd_rd_w", "pd_rd_wg", "pf_rd_i", "pf_rd_m", "pf_rd_p",
@@ -1138,14 +1274,13 @@ SHORTENER_HOSTS = (FOREIGN_ECHO_DOMAINS | OUR_RUNTIME_SHORTENER_DOMAINS
                       "tidd.ly", "geni.us", "amzn.to", "amzn.in", "s.click"})
 
 
-def is_unresolvable_short_link(host: str, url: str) -> bool:
-    """True for a link that exists only to redirect and gave us nothing.
+def looks_like_shortener(host: str, url: str) -> bool:
+    """True for a host/shape that exists only to redirect.
 
-    Such a link is not a destination: it has no product page behind it that we could
-    publish, monetize or verify. Retrying the WHOLE post for it (the old behaviour) is how
-    a source post vanished - so the caller cuts the link and posts the deal. The shape does
-    the work here, not a blocklist: any host that is not a known merchant or service store
-    and carries a single short slug is a shortener as far as we are concerned.
+    The shape does the work here, not a blocklist: any host that is not a known
+    merchant or service store and carries a single short slug is a shortener as
+    far as we are concerned. (A source channel posts bit.ly today and
+    bitly.com/74265 tomorrow, so a list could never be complete.)
     """
     if not host or in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, SERVICE_OFFER_DOMAINS):
         return False
@@ -1153,6 +1288,16 @@ def is_unresolvable_short_link(host: str, url: str) -> bool:
         return True
     path = (urlparse(str(url or "")).path or "").strip("/")
     return bool(path) and "/" not in path and len(path) <= 24
+
+
+def is_unresolvable_short_link(host: str, url: str) -> bool:
+    """True for a link that exists only to redirect and gave us nothing.
+
+    Such a link is not a destination: it has no product page behind it that we could
+    publish, monetize or verify. Retrying the WHOLE post for it (the old behaviour) is how
+    a source post vanished - so the caller cuts the link and posts the deal.
+    """
+    return looks_like_shortener(host, url)
 
 
 SHARE_INTENT_DOMAINS = NON_STORE_DOMAINS | {
@@ -6028,6 +6173,97 @@ class AffiliateClient:
         except Exception:
             return None
 
+    async def _verify_unknown_affiliate_output(self, link: str, source_urls: tuple[str, ...],
+                                               resolved: str) -> str | None:
+        """Follow an UNRECOGNIZED converter output and accept it only on evidence.
+
+        `earnkaro_output_kind()` can only call a link ours when it recognizes the
+        network's short domain. Affiliaters adds and renames redirect domains, and
+        the old behaviour for an unknown one was `EK REJECT` + an unmonetized post -
+        a lost commission that looks exactly like "this store has no campaign".
+        So an output that is short-link-SHAPED is followed instead of refused:
+
+          * it must not be a known foreign shortener/echo domain;
+          * its destination must be a real store page, not the source URL;
+          * a foreign `affExtParam2`/tag on that destination is a REFUSAL (somebody
+            else's money must never be posted as ours);
+          * OUR publisher id or OUR tag on the destination is proof -> accept;
+          * a bare store page (attribution travelling server-side, exactly how
+            ekaro.in itself works) is accepted only when the short host is not a
+            known foreign shortener and the destination differs from the source.
+
+        Returns the API's own (short) link, or None - never raises: verification is
+        a bonus on top of the refusal it replaces, never a new way to lose a post.
+        """
+        try:
+            original = clean_url(link)
+            parsed = urlparse(original)
+            host = (parsed.hostname or "").lower()
+            if not host or in_domains(host, FOREIGN_ECHO_DOMAINS):
+                return None
+            if not looks_like_shortener(host, original):
+                # A merchant-page echo keeps its old treatment: a 200 is not a
+                # conversion, and a plain page pays nobody.
+                return None
+            source_keys = {canonical_url(u) for u in source_urls if u}
+            async with self.session.get(
+                original, allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+            ) as response:
+                final = clean_url(str(response.url) or original)
+                raw = await response.content.read(200_000)
+            final_host = (urlparse(final).hostname or "").lower()
+            redirect_seen = bool(final_host) and clean_url(final) != clean_url(original)
+            if redirect_seen:
+                if canonical_url(final) in source_keys:
+                    return None                   # it only led back to the source link
+                if in_domains(final_host, FOREIGN_ECHO_DOMAINS):
+                    return None                   # somebody else's wrapper
+                if (in_domains(final_host, NON_STORE_DOMAINS)
+                        or in_domains(final_host, NON_SHOP_DOMAINS)):
+                    return None                   # a blog / share / app wrapper
+                if in_domains(final_host, AMAZON_DOMAINS):
+                    tags = {str(v).strip() for v in
+                            parse_qs(urlparse(final).query).get("tag", []) if str(v).strip()}
+                    if OUR_TAG and tags == {OUR_TAG}:
+                        log.info("EK VERIFIED | unknown short domain %s -> our Amazon tag on %s",
+                                 host, final_host)
+                        return original
+                    return None
+            destination = final if (redirect_seen
+                                    and in_domains(final_host, KNOWN_MERCHANT_DOMAINS)) else ""
+            if not destination:
+                # A JS redirect page (no HTTP redirect at all) still carries its
+                # target in the markup - read it the way the HYPD destination is.
+                for candidate in URL_RE.findall(raw.decode("utf-8", errors="ignore")):
+                    candidate = clean_url(candidate).replace("\\/", "/")
+                    candidate_host = (urlparse(candidate).hostname or "").lower()
+                    if not in_domains(candidate_host, KNOWN_MERCHANT_DOMAINS):
+                        continue
+                    if canonical_url(candidate) in source_keys:
+                        continue
+                    destination = candidate
+                    final_host = candidate_host
+                    break
+                else:
+                    return None                   # nothing proven: keep the refusal
+            query = {str(k).lower(): v for k, v in parse_qs(urlparse(destination).query).items()}
+            visible_ids = {str(v).strip() for v in query.get("affextparam2", []) if str(v).strip()}
+            if visible_ids and (not OUR_EK_ID or visible_ids != {OUR_EK_ID}):
+                log.error("EK REJECT | unknown short domain %s leads to FOREIGN attribution %s",
+                          host, ",".join(sorted(visible_ids))[:40])
+                return None
+            log.info("EK VERIFIED | unknown short domain %s resolves to %s%s", host, final_host,
+                     " carrying OUR publisher id" if visible_ids else
+                     " (attribution travels in the redirect, as ekaro.in does)")
+            return original
+        except Exception as exc:
+            log.warning("EK VERIFY | could not verify %s (%s: %s); keeping the old refusal",
+                        (urlparse(link).hostname or link)[:60], type(exc).__name__, exc)
+            return None
+
     async def convert(self, source_url: str, multi_link: bool, resolved_hint: str | None = None) -> "LinkResult | None":
         cached = await store.cached_link(source_url)
         if cached:
@@ -6054,14 +6290,30 @@ class AffiliateClient:
                 log.warning("HYPD CACHE INVALIDATED | only Meesho uses our HYPD store; "
                             "re-checking %s through its normal route",
                             cached_resolved_host or "unknown destination")
-            # POLICY SWITCH SAFETY (2026-09-24). link_cache rows live for
-            # LINK_CACHE_DAYS (14) and a row cached while Amazon was tagged
-            # natively would keep pinning the OLD policy - a link that earns
-            # nothing - long after AMAZON_VIA_EARNKARO was turned on. A native
-            # Amazon row is therefore treated as stale and re-converted;
-            # EarnKaro rows (ekaro.in/bitli.in) are still served from cache, so
-            # the API is not called twice for the same deal.
+            # POLICY SWITCH SAFETY. link_cache rows live for LINK_CACHE_DAYS
+            # (14) and a row cached under the OLD policy would keep pinning it
+            # long after the switch - the channel would post yesterday's answer
+            # for a fortnight.
+            #   2026-09-24 (network-first era): a NATIVE Amazon row was stale
+            #   (it earned nothing) and got re-converted through EarnKaro;
+            #   EarnKaro rows were served from cache, so no second API call.
+            #   2026-10-04 (Associates APPROVED): the desired shape for an
+            #   Amazon SOURCE is OUR OWN native tag. A cached NETWORK row for an
+            #   Amazon source is therefore rebuilt natively - it still pays us,
+            #   but it pays the network's share too, and the approval removed
+            #   the only reason to accept that.
             cached_is_amazon_native = in_domains(cached_host, AMAZON_DOMAINS)
+            cached_is_amazon_source = in_domains(cached_resolved_host, AMAZON_DOMAINS)
+            if (cache_is_safe and cached_is_amazon_source
+                    and (AMAZON_DIRECT_ASSOCIATES or not AMAZON_VIA_EARNKARO)
+                    and not cached_is_amazon_native):
+                upgraded = await self._native_amazon_link(
+                    source_url, cached_resolved, cached_resolved, multi_link)
+                if upgraded is not None:
+                    log.info("AMAZON CACHE UPGRADED | cached network row for %s replaced by our "
+                             "own Associates link (direct mode; full commission)",
+                             cached_resolved_host or "an Amazon page")
+                    return upgraded
             if cache_is_safe and not (AMAZON_VIA_EARNKARO and cached_is_amazon_native):
                 # Old cache rows may predate the current policy. Upgrade them
                 # before returning; never leak a long link.
@@ -6154,36 +6406,54 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # AMAZON. Two policies, one switch:
-        #   AMAZON_VIA_EARNKARO=true (user rule 2026-09-24, default) - Amazon
-        #   goes through EarnKaro like every other store, because a native
-        #   ?tag=mama086-21 link earns nothing while Associates keeps rejecting
-        #   the account. The native tagged link is the FALLBACK when the network
-        #   has no campaign for the URL.
+        # AMAZON. Three policies, two switches:
+        #   AMAZON_DIRECT_ASSOCIATES=true (default since the 2026-10-04
+        #   approval) - the NATIVE tagged product link is the FIRST choice: the
+        #   whole Associates commission is ours, no network share. A shape the
+        #   native path cannot build (no usable ASIN) falls through to EarnKaro
+        #   as the second chance, so no Amazon deal loses its monetization.
+        #   AMAZON_DIRECT_ASSOCIATES=false + AMAZON_VIA_EARNKARO=true - the
+        #   2026-09-24 order: EarnKaro first, native tagged link as the fallback.
         #   AMAZON_VIA_EARNKARO=false - the 2026-09-06 behaviour: the native
         #   tagged product URL, never sent to EarnKaro.
         # Amazon SEARCH / hidden-keywords / browse-node links have no single ASIN
-        # but still earn on the tag path, so the native fallback covers them too.
+        # but still earn on the tag path, so the native path covers them too.
         is_amazon = in_domains(host, AMAZON_DOMAINS)
         native_amazon_possible = bool(OUR_TAG) and is_amazon
-        if native_amazon_possible and not AMAZON_VIA_EARNKARO:
-            return await self._native_amazon_link(source_url, clean, resolved, multi_link)
+        native_direct_first = AMAZON_DIRECT_ASSOCIATES or not AMAZON_VIA_EARNKARO
+        native_result: "LinkResult | None" = None
+        if native_amazon_possible and native_direct_first:
+            native_result = await self._native_amazon_link(source_url, clean, resolved, multi_link)
+            if native_result is not None:
+                if AMAZON_VIA_EARNKARO:
+                    log.info("AMAZON DIRECT | our own Associates tag %s on %s - the whole "
+                             "commission is ours (account approved 2026-10-04)",
+                             OUR_TAG, (urlparse(clean).hostname or clean)[:40])
+                return native_result
+            if not AMAZON_VIA_EARNKARO:
+                return None
+        # The native tagged link is still a fallback when it has not been tried yet.
+        native_fallback_possible = native_amazon_possible and not native_direct_first
         earned: "LinkResult | None" = None
-        try:
-            earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
-        except Exception:
-            # Temporary API failures stay retryable unless there is a safe
-            # merchant fallback: native Amazon, or a direct HYPD link whose
-            # non-Meesho destination has already been verified.
-            if not native_amazon_possible and not non_meesho_hypd_destination:
-                raise
-            if native_amazon_possible:
-                log.warning("EK FALLBACK | API unavailable for %s; using the native Amazon tag "
-                            "(not an EarnKaro conversion)",
-                            (urlparse(clean).hostname or clean)[:60])
+        # The Amazon switch must not touch other stores: with
+        # AMAZON_VIA_EARNKARO=false an Amazon link never goes to the network,
+        # but Flipkart/Myntra/... always do (that switch is about Amazon only).
+        if AMAZON_VIA_EARNKARO or not is_amazon:
+            try:
+                earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
+            except Exception:
+                # Temporary API failures stay retryable unless there is a safe
+                # merchant fallback: native Amazon, or a direct HYPD link whose
+                # non-Meesho destination has already been verified.
+                if not (native_fallback_possible or non_meesho_hypd_destination):
+                    raise
+                if native_fallback_possible:
+                    log.warning("EK FALLBACK | API unavailable for %s; using the native Amazon tag "
+                                "(not an EarnKaro conversion)",
+                                (urlparse(clean).hostname or clean)[:60])
         if earned is not None:
             return earned
-        if native_amazon_possible:
+        if native_fallback_possible:
             # The network could not monetize this Amazon link. Dropping it would
             # lose the deal and posting it untagged would earn nothing, so publish
             # the native tagged product URL; delivery strips the tag on every
@@ -6194,15 +6464,23 @@ class AffiliateClient:
             return await self._native_amazon_link(source_url, clean, resolved, multi_link)
         if non_meesho_hypd_destination:
             # The HYPD link was outside the Meesho-only rule. Keep the verified
-            # merchant page clean if EarnKaro has no campaign or is unavailable.
+            # merchant page clean if EarnKaro has no campaign or is unavailable -
+            # but where the page itself accepts our publisher id (Flipkart family),
+            # stamp it: a bare page opens for free and pays nobody (USER REPORT
+            # 2026-10-04: "product open avuthundi kaani adi mana links kaadu").
+            published = attribute_with_our_publisher(non_meesho_hypd_destination)
             key = product_key(non_meesho_hypd_destination)
-            await store.cache_link(source_url, non_meesho_hypd_destination,
-                                   non_meesho_hypd_destination, key)
-            log.warning("UNMONETIZED LINK | HYPD is configured for Meesho only; "
-                        "posting the clean %s destination instead: %s",
-                        host, non_meesho_hypd_destination[:90])
+            await store.cache_link(source_url, published, non_meesho_hypd_destination, key)
+            if published != non_meesho_hypd_destination:
+                log.warning("LINK ATTRIBUTED | HYPD out of scope for %s, so the page is "
+                            "posted WITH our publisher id (%s) instead of a bare link that "
+                            "pays nobody: %s", host or "that store", OUR_EK_ID, published[:90])
+            else:
+                log.warning("UNMONETIZED LINK | HYPD is configured for Meesho only; "
+                            "posting the clean %s destination instead: %s",
+                            host, non_meesho_hypd_destination[:90])
             return LinkResult(source_url, non_meesho_hypd_destination,
-                              non_meesho_hypd_destination, key)
+                              published, key)
         return None
 
     async def _hypd_destination(self, afflink: str) -> str:
@@ -6284,10 +6562,14 @@ class AffiliateClient:
         if asin:
             tagged = apply_amazon_tag(native)
             affiliate = tagged
-            if should_use_bitly(resolved, multi_link):
+            if should_use_bitly(resolved, multi_link) or SHORTEN_AMAZON_LINKS:
                 shortened = await self.shorten(tagged)
                 if shortened:
                     affiliate = shortened
+                    # Delivery expands this pair again for the review channel, so
+                    # the reviewed post still shows the real tagged product page.
+                    log.info("AMAZON LINK SHORTENED | %s -> %s (native tagged form kept "
+                             "for the review channel)", tagged[:70], shortened)
                 else:
                     # Never lose a valid commission link merely because the
                     # cosmetic shortener is unavailable/rate-limited.
@@ -6326,7 +6608,13 @@ class AffiliateClient:
                         # account-default formatting). Sending it explicitly is what
                         # makes the RESPONSE shape predictable.
                         json={"deal": clean, "convert_option": EARNKARO_CONVERT_OPTION},
-                        headers={"Authorization": f"Bearer {EK_KEY}", "Content-Type": "application/json"},
+                        # Cloudflare fronts this API and answers a bare python
+                        # User-Agent with "error code: 1010" (403) - live probe
+                        # 2026-10-04. The UA below is what the rest of this file
+                        # already sends on every fetch.
+                        headers={"Authorization": f"Bearer {EK_KEY}",
+                                 "Content-Type": "application/json",
+                                 "User-Agent": API_USER_AGENT},
                         timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2)),
                     ) as response:
                         body = await response.text()
@@ -6360,10 +6648,24 @@ class AffiliateClient:
                         result = clean_url(result)
                         output_kind = self.earnkaro_output_kind(result)
                         if not output_kind:
-                            log.error("EK REJECT | API response is not an attributable affiliate link "
-                                      "(host=%s); checking Affiliaters network selections and campaigns",
-                                      (urlparse(result).hostname or "unknown").lower())
-                            return None
+                            # A domain this build has never seen is not automatically
+                            # somebody's junk: the network mints new redirect domains,
+                            # and refusing them means the deal posts and earns nothing
+                            # (which looks identical to "store has no campaign"). The
+                            # output is therefore FOLLOWED and accepted only when its
+                            # destination proves it (see _verify_unknown_affiliate_output).
+                            verified = await self._verify_unknown_affiliate_output(
+                                result, (source_url, clean, resolved), resolved)
+                            if verified:
+                                # The returned short link stays the published link
+                                # (the network's attribution travels behind it).
+                                output_kind = "verified"
+                            else:
+                                log.error("EK REJECT | API response is not an attributable affiliate "
+                                          "link (host=%s); checking Affiliaters network selections "
+                                          "and campaigns",
+                                          (urlparse(result).hostname or "unknown").lower())
+                                return None
                         if (result == clean_url(source_url) and output_kind != "publisher"):
                             log.error("EK REJECT | API echoed the source URL instead of converting it "
                                       "(host=%s)", (urlparse(result).hostname or "unknown").lower())
@@ -6380,6 +6682,13 @@ class AffiliateClient:
                                         "or an invalid destination (host=%s)",
                                         (urlparse(result).hostname or "unknown").lower())
                             return None
+                        # The converter's output is published as EarnKaro minted it.
+                        # Its affid/cmpid/mcn parameters are the network's own
+                        # routing; affExtParam1 is the conversion id and
+                        # affExtParam2 is the publisher that is paid - all checked
+                        # by earnkaro_output_kind() just above. See the note on
+                        # FOREIGN_ATTRIBUTION_KEYS: stripping those is what would
+                        # actually break the commission.
                         result = apply_amazon_tag(result)
                         if not await self.link_not_broken(result):
                             return None
@@ -6400,7 +6709,13 @@ class AffiliateClient:
                         # Amazon path an Amazon product link is already short and
                         # never reaches here; on the EarnKaro path every store is
                         # treated the same, which is the whole point.)
-                        if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
+                        if (should_use_bitly(resolved, multi_link)
+                                or len(result) > SHORTEN_MIN_LEN
+                                # Only a link that actually carries OUR tag may be
+                                # shortened: cloaking an untagged Amazon page behind a
+                                # short link is both unmonetized and a policy risk.
+                                or (SHORTEN_AMAZON_LINKS and OUR_TAG and in_domains(
+                                    (urlparse(result).hostname or "").lower(), AMAZON_DOMAINS))):
                             shortened = await self.shorten(result)
                             if shortened:
                                 affiliate = shortened
@@ -7309,10 +7624,31 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         # Subdomain-aware (www.myntra.com must count as myntra.com).
         if not host or not in_domains(host, KNOWN_MERCHANT_DOMAINS):
             return
-        clean_resolved = clean_url(merchant_url(resolved))
-        if not clean_resolved or clean_resolved in {clean_url(r) for _, r in passthrough}:
+        if is_amazon_short_host(host):
+            # Defensive: a passthrough never publishes an Amazon SHORT link. The
+            # short code is somebody's wrapper (see is_amazon_short_host) - our tag
+            # on it earns nothing and the reader lands on THEIR page.
+            log.warning("AMAZON SHORT REFUSED | queue=%s %s is a wrapper, not a "
+                        "destination; it is never posted as-is", row["id"], host)
             return
-        passthrough.append((source_url, clean_resolved))
+        clean_resolved = clean_url(merchant_url(resolved))
+        # USER REPORT (2026-10-04): the bare merchant page opens the product and
+        # pays NOBODY. Where the network's own attribution works on a plain
+        # product page (Flipkart family -> affExtParam2, the same parameter the
+        # converter puts on the links it returns for our account), publish it
+        # WITH our publisher id; a foreign id on the source page is replaced,
+        # never carried along.
+        published = attribute_with_our_publisher(clean_resolved)
+        if not published or published in {clean_url(r) for _, r in passthrough}:
+            return
+        passthrough.append((source_url, published))
+        if published != clean_resolved:
+            log.warning("LINK ATTRIBUTED | queue=%s no campaign came back, so the product "
+                        "page is posted WITH our publisher id (%s) instead of a bare link "
+                        "that pays nobody: %s", row["id"], OUR_EK_ID, published[:80])
+            log.info("PASSTHROUGH | queue=%s attributed merchant link: %s",
+                     row["id"], published[:80])
+            return
         # USER RULE (2026-09-05, "idi manvena?" / "mana links matharem"): a
         # passthrough link is a CLEAN merchant link, not a monetized link of
         # ours - the deal still goes out (that is the point), but it must be
@@ -7806,6 +8142,19 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # the source's own layout is what the target must show.
                 media_target = MEDIA_DIR / f"{row['chat_id']}_{row['msg_id']}"
                 media_path, media_refs = await download_album(client, msg, media_target, row["id"])
+        # LAST-MILE AMAZON SHORT REPAIR (USER REPORT 2026-10-04): a row queued by an
+        # older build may still carry an `amzn.to?...` short link, which opens the
+        # page of whoever created that short code. The link is cut (never the deal)
+        # and the log says so; a short link WE minted expands back to its long form.
+        rendered, short_cut = cut_amazon_short_links(rendered, affiliate)
+        if short_cut:
+            with contextlib.suppress(Exception):
+                await store.update_rendered(row["id"], rendered)
+            log.warning("AMAZON SHORT CUT | queue=%s removed %s Amazon short link(s) - a "
+                        "short code is somebody's wrapper, never our destination: %s",
+                        row["id"], len(short_cut), ", ".join(x[:60] for x in short_cut[:2]))
+            if not rendered.strip() and not row["source"]:
+                raise PermanentSkip("post was only an Amazon short link")
         # Final provenance gate runs again immediately before target delivery.
         owned_candidates = {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
         owned_external = {url for url in owned_candidates if url in rendered}
@@ -8101,7 +8450,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.3 starting "
+    log.info("BestGAA Production Bot v18.9 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
