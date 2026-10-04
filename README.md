@@ -53,6 +53,9 @@ python3 ops/deploy_and_verify.sh --verify-only
 
 # Audit a real or copied database (read-only; --strict exits non-zero on findings)
 python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --strict
+
+# "idi manadenaa link?" - one URL in, one verdict out (no database needed)
+python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
 ```
 
 To run an individual behavior suite, use `python3 test_render_job.py`,
@@ -1126,13 +1129,13 @@ printing exactly what the older build was coded to print). Hashes refreshed
 | `bestgaa/main_bot_new.py` (v18.7) | `15f5e023f4295064470bb21a7acff11eb2d66ac734f5a4ca9c9d918947f4c209` |
 | `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `0d20a024b52180efb98073f035a0bb38b68fccf0374ef84ae94d87e876b38163` |
+| `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `0c4c0af8a0a9872083c249a24262e74e0b4004bf6d137b1e649258aef3d0b08c` |
 | `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
 | `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
-| `test_best_copy.py` | `0724fce2aafc34ed2f7a0c3cde56c7f9da2cbe8fec2f53afd1b26b48f2f1643b` |
+| `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
 | `test_earnkaro_conversion.py` | `8e46e7e1aaf4cdb1b20274e912720da6168a5ad3afd4007e99f84a12935353ed` |
 
 A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
