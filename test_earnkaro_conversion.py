@@ -15,10 +15,12 @@ What this file pins, and why each check exists:
 3.  THE KEY. The token is a JWT naming the EarnKaro publisher that gets paid;
     the bot reads that publisher from the token, pins it (foreign-publisher
     guard) and says out loud which account is earning.
-4.  AMAZON. AMAZON_VIA_EARNKARO=true sends Amazon to EarnKaro like every other
-    store (Associates is still rejecting the account, so a native tag earns
-    nothing); the native tagged link is the fallback, and `=false` restores the
-    2026-09-06 pure-native behaviour.
+4.  AMAZON. The Associates account was APPROVED on 2026-10-04, so the NATIVE
+    tagged link (?tag=mama086-21) is the first choice - the whole commission is
+    ours, no network share - and EarnKaro is the second chance for an Amazon
+    shape the native path cannot build. AMAZON_VIA_EARNKARO=false still means
+    "never EarnKaro for Amazon"; AMAZON_DIRECT_ASSOCIATES=false restores the
+    2026-09-24 network-first order (EarnKaro first, native tag as the fallback).
 5.  THE THREE NEW SOURCES. They fan out to the non-Tricks main targets, are
     recognised as first preference however they are spelled (invite hashes are
     case-carrying), and are claimed before ordinary sources.
@@ -481,70 +483,105 @@ def test_token_claims():
 # 4. Amazon: EarnKaro first by default, native tag as the fallback
 # ---------------------------------------------------------------------------
 def test_amazon_policy():
-    old_tag, old_switch = bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO
+    """Associates APPROVED (2026-10-04): our own tag FIRST, full commission."""
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
     try:
         bot.OUR_TAG = "mama086-21"
         bot.AMAZON_VIA_EARNKARO = True
-        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz1"})])
-        aff = Aff(session)
-        result = asyncio.run(aff.convert("https://www.amazon.in/dp/B0AMZEK001?psc=1&tag=thief-21", False))
-        check("Amazon converts through EarnKaro by default",
-              bool(result) and "ekaro.in" in result.affiliate, repr(result))
-        check("the Amazon URL is sent with no stranger tag on it",
-              "tag=" not in session.posts[0]["json"]["deal"], session.posts[0]["json"]["deal"])
+        bot.AMAZON_DIRECT_ASSOCIATES = True
 
-        # The network has nothing for it -> the native tagged link, never a
-        # dropped deal and never an untagged one.
-        session2 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})])
-        aff2 = Aff(session2)
-        result2 = asyncio.run(aff2.convert("https://www.amazon.in/dp/B0AMZEK002", False))
-        check("a conversion miss falls back to the native tagged link",
-              bool(result2) and "amazon.in/dp/B0AMZEK002" in result2.affiliate
-              and "tag=mama086-21" in result2.affiliate, repr(result2))
-        check("no Bitly quota is spent on a single native Amazon fallback",
-              all(p["url"] != "https://api-ssl.bitly.com/v4/shorten" for p in session2.posts))
+        # 1. A normal product page: OUR OWN tag, and no API call is spent on it.
+        session = FakeSession([])
+        result = asyncio.run(Aff(session).convert(
+            "https://www.amazon.in/dp/B0AMZDIR01?psc=1&tag=thief-21", False))
+        check("an Amazon product link is published with our OWN Associates tag first",
+              bool(result) and "amazon.in/dp/B0AMZDIR01" in result.affiliate
+              and "tag=mama086-21" in result.affiliate, repr(result))
+        check("and no EarnKaro call is spent (the whole commission is ours)",
+              not session.posts, str(session.posts))
+        check("a stranger's tag never survives the rebuild",
+              bool(result) and "thief-21" not in result.affiliate, repr(result))
 
-        # AMAZON_VIA_EARNKARO=false = the 2026-09-06 behaviour, untouched.
+        # 2. A search/browse page has no ASIN but still pays on the tag path.
+        search = asyncio.run(Aff(FakeSession([])).convert(
+            "https://www.amazon.in/s?k=earbuds&tag=thief-21", False))
+        check("an Amazon search page is tagged too (native path covers it)",
+              bool(search) and "tag=mama086-21" in search.affiliate
+              and "thief-21" not in search.affiliate, repr(search))
+
+        # 3. An Amazon shape the native path cannot build falls through to
+        #    EarnKaro as the second chance - the deal must not lose its link.
+        session2 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz1"})])
+        result2 = asyncio.run(Aff(session2).convert("https://www.amazon.in/dp/B0SHORT", False))
+        check("an Amazon product page without a usable ASIN still converts via the network",
+              bool(result2) and "ekaro.in" in result2.affiliate, repr(result2))
+        check("and that request carries no stranger tag",
+              session2.posts and "tag=" not in session2.posts[0]["json"]["deal"],
+              str(session2.posts[0]["json"]["deal"] if session2.posts else None))
+
+        # 4. AMAZON_DIRECT_ASSOCIATES=false = the 2026-09-24 network-first order.
+        bot.AMAZON_DIRECT_ASSOCIATES = False
+        session3 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkramz2"})])
+        result3 = asyncio.run(Aff(session3).convert("https://www.amazon.in/dp/B0AMZEK001?psc=1", False))
+        check("with the old order Amazon converts through EarnKaro first",
+              bool(result3) and "ekaro.in" in result3.affiliate, repr(result3))
+        miss = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})])
+        result4 = asyncio.run(Aff(miss).convert("https://www.amazon.in/dp/B0AMZEK002", False))
+        check("a network miss still falls back to the native tagged link",
+              bool(result4) and "amazon.in/dp/B0AMZEK002" in result4.affiliate
+              and "tag=mama086-21" in result4.affiliate, repr(result4))
+
+        # 5. AMAZON_VIA_EARNKARO=false = the 2026-09-06 behaviour, untouched.
+        bot.AMAZON_DIRECT_ASSOCIATES = True
         bot.AMAZON_VIA_EARNKARO = False
-        session3 = FakeSession([])
-        aff3 = Aff(session3)
-        result3 = asyncio.run(aff3.convert("https://www.amazon.in/dp/B0AMZEK003?psc=1", False))
+        session5 = FakeSession([])
+        result5 = asyncio.run(Aff(session5).convert("https://www.amazon.in/dp/B0AMZEK003?psc=1", False))
         check("AMAZON_VIA_EARNKARO=false posts the native tagged link",
-              bool(result3) and "amazon.in/dp/B0AMZEK003" in result3.affiliate
-              and "tag=mama086-21" in result3.affiliate, repr(result3))
-        check("and spends no EarnKaro call on it", not session3.posts, str(session3.posts))
+              bool(result5) and "amazon.in/dp/B0AMZEK003" in result5.affiliate
+              and "tag=mama086-21" in result5.affiliate, repr(result5))
+        check("and spends no EarnKaro call on it", not session5.posts, str(session5.posts))
     finally:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
 
 
-def test_stale_native_amazon_cache_rows_are_reconverted():
-    """Turning AMAZON_VIA_EARNKARO on must not be defeated by the link cache.
+def test_stale_network_amazon_rows_are_upgraded():
+    """The Associates approval must not be defeated by the link cache.
 
-    A row cached while Amazon was tagged natively lives for LINK_CACHE_DAYS
-    (14), so without this the channel would keep posting a link that earns
-    nothing for a fortnight.
+    A link_cache row lives for LINK_CACHE_DAYS (14). A row minted during the
+    network-first era still PAYS US - but it pays the network's share too, and
+    the approval removed the only reason to accept that. An Amazon SOURCE
+    therefore ignores a cached network row and rebuilds the native tagged link.
     """
-    old_tag, old_switch = bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
     try:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = "mama086-21", True
-        source = "https://www.amazon.in/dp/B0CACHE0001?psc=1"
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = \
+            "mama086-21", True, True
+        source = "https://www.amazon.in/dp/B0CACH0002?psc=1"
         asyncio.run(bot.store.cache_link(
-            source, "https://www.amazon.in/dp/B0CACHE0001?tag=mama086-21",
-            "https://www.amazon.in/dp/B0CACHE0001", "ASIN:B0CACHE0001"))
-        session = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkrcache1"})])
+            source, "https://ekaro.in/enkrcache2", source, "ASIN:B0CACH0002"))
+        session = FakeSession([])
         result = asyncio.run(Aff(session).convert(source, False))
-        check("a cached NATIVE Amazon row is re-converted, not served",
-              bool(result) and "ekaro.in" in result.affiliate, repr(result))
-        check("the re-conversion really asked the API", len(session.posts) == 1, str(session.posts))
+        check("a cached NETWORK row for an Amazon source is upgraded to our own tag",
+              bool(result) and "amazon.in/dp/B0CACH0002" in result.affiliate
+              and "tag=mama086-21" in result.affiliate, repr(result))
+        check("the upgrade costs no API call (the native path is free)",
+              not session.posts, str(session.posts))
 
-        # An EarnKaro row is served from cache: no second API call for the same deal.
-        session2 = FakeSession([])
-        again = asyncio.run(Aff(session2).convert(source, False))
-        check("the freshly cached EarnKaro row is reused",
-              bool(again) and "ekaro.in" in again.affiliate, repr(again))
-        check("no API call was made for the cached row", not session2.posts, str(session2.posts))
+        # With the old order, a cached NATIVE row is re-converted through the
+        # network exactly as before - the 2026-09-24 behaviour is preserved.
+        bot.AMAZON_DIRECT_ASSOCIATES = False
+        source2 = "https://www.amazon.in/dp/B0CACH0003"
+        asyncio.run(bot.store.cache_link(
+            source2, "https://www.amazon.in/dp/B0CACH0003?tag=mama086-21",
+            source2, "ASIN:B0CACH0003"))
+        session2 = FakeSession([json.dumps({"success": 1, "data": "https://ekaro.in/enkrcache3"})])
+        result2 = asyncio.run(Aff(session2).convert(source2, False))
+        check("with the old order a cached NATIVE row is still re-converted",
+              bool(result2) and "ekaro.in" in result2.affiliate, repr(result2))
+        check("and the re-conversion really asked the API", len(session2.posts) == 1,
+              str(session2.posts))
     finally:
-        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO = old_tag, old_switch
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
 
 
 def test_review_channel_expansion_keeps_our_tag():
@@ -1191,6 +1228,10 @@ def test_status_report_answers_are_we_converting():
             "page is posted WITH our publisher id (5478322)\n"
             "[INFO] AMAZON LINK SHORTENED | https://www.amazon.in/dp/B0X -> https://bitli.in/x\n"
             "[WARNING] AMAZON SHORT CUT | queue=90 removed 1 Amazon short link(s)\n"
+            "[INFO] AMAZON DIRECT | our own Associates tag mama086-21 on amazon.in - the "
+            "whole commission is ours (account approved 2026-10-04)\n"
+            "[INFO] AMAZON CACHE UPGRADED | cached network row for amazon.in replaced by "
+            "our own Associates link (direct mode; full commission)\n"
             '{"msg":"provenance cut: stranger wrapper would not resolve; the link is out, '
             'the post stays"}\n'
             '{"msg":"provenance rescue: stranger wrapper resolved to the merchant page and '
@@ -1201,6 +1242,11 @@ def test_status_report_answers_are_we_converting():
               health.get("LINK ATTRIBUTED", {}).get("count") == 1
               and health.get("AMAZON LINK SHORTENED", {}).get("count") == 1
               and health.get("AMAZON SHORT CUT", {}).get("count") == 1, str(health))
+        # 2026-10-04 approval: the two markers that prove Amazon is being posted
+        # with our OWN tag (and that cached network rows are upgraded).
+        check("the report counts AMAZON DIRECT and AMAZON CACHE UPGRADED too",
+              health.get("AMAZON DIRECT", {}).get("count") == 1
+              and health.get("AMAZON CACHE UPGRADED", {}).get("count") == 1, str(health))
         check("and the bridge's lower-case provenance markers are counted too",
               health.get("provenance cut", {}).get("count") == 1
               and health.get("provenance rescue", {}).get("count") == 1, str(health))
@@ -1215,7 +1261,7 @@ def main():
     test_unknown_affiliate_domain_is_verified_or_refused()
     test_token_claims()
     test_amazon_policy()
-    test_stale_native_amazon_cache_rows_are_reconverted()
+    test_stale_network_amazon_rows_are_upgraded()
     test_review_channel_expansion_keeps_our_tag()
     test_new_first_preference_sources()
     test_first_preference_wins_the_claim()

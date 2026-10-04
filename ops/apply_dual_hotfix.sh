@@ -36,11 +36,15 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          'EARNKARO_PUBLISHER_ID':'5478322',
          # The documented converter mode: convert the link, do nothing else.
          'EARNKARO_CONVERT_OPTION':'convert_only',
-         # USER RULE (2026-09-24): Amazon converts through EarnKaro like every
-         # other store (Associates is still rejecting the account, so the native
-         # ?tag= link earns nothing). The native tagged link stays the fallback,
-         # and the reviewed channel still shows the native tagged product page.
-         # Set to 'false' to restore pure native tagging.
+         # USER DECISION (2026-10-04): "amazin assacite approve chesindi manadi".
+         # The Associates account is APPROVED for OUR tag (mama086-21), so the
+         # native tagged link pays the WHOLE commission with no network share:
+         # it is the FIRST choice now. EarnKaro stays the SECOND CHANCE for an
+         # Amazon shape the native path cannot build.
+         'AMAZON_DIRECT_ASSOCIATES':'true',
+         # AMAZON_VIA_EARNKARO=true keeps that second chance available; 'false'
+         # means "never EarnKaro for Amazon" (2026-09-06 behaviour). Setting
+         # AMAZON_DIRECT_ASSOCIATES=false restores the 2026-09-24 order.
          'AMAZON_VIA_EARNKARO':'true',
          # Night quiet 02:00-06:00 IST: posting pauses, deals queue, 06:00 flush.
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
@@ -55,8 +59,11 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          'HYPD_STORE_ID':'93944','HYPD_STORE_SLUG':'smartdeals',
          'HYPD_ALWAYS_BITLY':'true',
          'HYPD_MERCHANT_DOMAINS':'meesho.com',
-         # Highest commission wins: Amazon always direct Associates tag
-         # (EarnKaro takes a cut in the middle; 0.0 = never route via EK).
+         # LEGACY (kept so an old server .env has a value to read): the ratio
+         # branch was removed on 2026-09-03 and the code always ignores this.
+         # Amazon's route is decided by AMAZON_DIRECT_ASSOCIATES (first choice:
+         # our own Associates tag) and AMAZON_VIA_EARNKARO (second chance),
+         # both above.
          'AMAZON_EARNKARO_RATIO':'0.0'}
 for line in lines:
     key=line.split('=',1)[0] if '=' in line else ''

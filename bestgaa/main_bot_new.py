@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.6
+"""BestGAA Production Bot v18.8
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -246,22 +246,24 @@ if _configured_tag and _configured_tag.lower() not in {t.lower() for t in OUR_AM
     _configured_tag = ""
 OUR_TAG = _configured_tag
 BITLY_TOKENS = [x.strip() for x in os.getenv("BITLY_TOKENS", "").split(",") if x.strip()]
-# USER RULE (2026-09-03, FINAL): Amazon Associates keeps rejecting the account,
-# so direct-tagging pays nothing. EVERY Amazon link goes through EarnKaro like
-# every other store — no ratio, no env knob, no direct-Associates branch. A
-# stale AMAZON_EARNKARO_RATIO= line in a server .env can never re-enable it.
-AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees "always EarnKaro"
-# USER RULE (2026-09-24): the user pasted a fresh EarnKaro/Affiliaters API
-# token and asked for the EarnKaro links to convert properly on the channels.
-# Amazon Associates is STILL rejecting the account, so a native ?tag=mama086-21
-# link earns nothing while an EarnKaro conversion pays - Amazon product links
-# therefore go to EarnKaro like every other store. The native tagged link stays
-# as the FALLBACK when the network has no campaign for the link, and the review
-# channel still sees the native tagged product page (our short/Ekaro links are
-# expanded back to it at delivery, which is what keeps that channel compliant).
-# Set AMAZON_VIA_EARNKARO=false to restore pure native tagging.
+# AMAZON POLICY, IN ORDER (history kept on purpose - each line was a user rule):
+#   2026-09-03: Associates was rejecting the account, so native tagging paid
+#               nothing and EVERY Amazon link went through EarnKaro. No ratio, no
+#               env knob (a stale AMAZON_EARNKARO_RATIO= line in a server .env
+#               can never re-enable that branch).
+#   2026-09-24: EarnKaro-first stayed (Associates still refusing), with the
+#               native ?tag= link as the FALLBACK.
+#   2026-10-04: "amazin assacite approve chesindi manadi" - the Associates
+#               account is APPROVED for OUR tag (mama086-21). The native tagged
+#               link therefore pays the WHOLE commission to us with no network
+#               share, so it becomes the FIRST choice and EarnKaro becomes the
+#               second chance for a shape the native path cannot build.
+#               AMAZON_DIRECT_ASSOCIATES=false restores the 2026-09-24 order.
+AMAZON_EARNKARO_RATIO = 1.0  # kept only so external tooling reading it sees a value
 AMAZON_VIA_EARNKARO = os.getenv(
     "AMAZON_VIA_EARNKARO", "true").strip().lower() not in ("0", "false", "no", "off")
+AMAZON_DIRECT_ASSOCIATES = os.getenv(
+    "AMAZON_DIRECT_ASSOCIATES", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # --- HYPD creator-store affiliate links (USER RULE 2026-09-24) -------------
 # "hypd idi meesho products ni mana link tho convert cheyu ... paina links ni
@@ -6280,14 +6282,30 @@ class AffiliateClient:
                 log.warning("HYPD CACHE INVALIDATED | only Meesho uses our HYPD store; "
                             "re-checking %s through its normal route",
                             cached_resolved_host or "unknown destination")
-            # POLICY SWITCH SAFETY (2026-09-24). link_cache rows live for
-            # LINK_CACHE_DAYS (14) and a row cached while Amazon was tagged
-            # natively would keep pinning the OLD policy - a link that earns
-            # nothing - long after AMAZON_VIA_EARNKARO was turned on. A native
-            # Amazon row is therefore treated as stale and re-converted;
-            # EarnKaro rows (ekaro.in/bitli.in) are still served from cache, so
-            # the API is not called twice for the same deal.
+            # POLICY SWITCH SAFETY. link_cache rows live for LINK_CACHE_DAYS
+            # (14) and a row cached under the OLD policy would keep pinning it
+            # long after the switch - the channel would post yesterday's answer
+            # for a fortnight.
+            #   2026-09-24 (network-first era): a NATIVE Amazon row was stale
+            #   (it earned nothing) and got re-converted through EarnKaro;
+            #   EarnKaro rows were served from cache, so no second API call.
+            #   2026-10-04 (Associates APPROVED): the desired shape for an
+            #   Amazon SOURCE is OUR OWN native tag. A cached NETWORK row for an
+            #   Amazon source is therefore rebuilt natively - it still pays us,
+            #   but it pays the network's share too, and the approval removed
+            #   the only reason to accept that.
             cached_is_amazon_native = in_domains(cached_host, AMAZON_DOMAINS)
+            cached_is_amazon_source = in_domains(cached_resolved_host, AMAZON_DOMAINS)
+            if (cache_is_safe and cached_is_amazon_source
+                    and (AMAZON_DIRECT_ASSOCIATES or not AMAZON_VIA_EARNKARO)
+                    and not cached_is_amazon_native):
+                upgraded = await self._native_amazon_link(
+                    source_url, cached_resolved, cached_resolved, multi_link)
+                if upgraded is not None:
+                    log.info("AMAZON CACHE UPGRADED | cached network row for %s replaced by our "
+                             "own Associates link (direct mode; full commission)",
+                             cached_resolved_host or "an Amazon page")
+                    return upgraded
             if cache_is_safe and not (AMAZON_VIA_EARNKARO and cached_is_amazon_native):
                 # Old cache rows may predate the current policy. Upgrade them
                 # before returning; never leak a long link.
@@ -6380,36 +6398,54 @@ class AffiliateClient:
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
             return None
-        # AMAZON. Two policies, one switch:
-        #   AMAZON_VIA_EARNKARO=true (user rule 2026-09-24, default) - Amazon
-        #   goes through EarnKaro like every other store, because a native
-        #   ?tag=mama086-21 link earns nothing while Associates keeps rejecting
-        #   the account. The native tagged link is the FALLBACK when the network
-        #   has no campaign for the URL.
+        # AMAZON. Three policies, two switches:
+        #   AMAZON_DIRECT_ASSOCIATES=true (default since the 2026-10-04
+        #   approval) - the NATIVE tagged product link is the FIRST choice: the
+        #   whole Associates commission is ours, no network share. A shape the
+        #   native path cannot build (no usable ASIN) falls through to EarnKaro
+        #   as the second chance, so no Amazon deal loses its monetization.
+        #   AMAZON_DIRECT_ASSOCIATES=false + AMAZON_VIA_EARNKARO=true - the
+        #   2026-09-24 order: EarnKaro first, native tagged link as the fallback.
         #   AMAZON_VIA_EARNKARO=false - the 2026-09-06 behaviour: the native
         #   tagged product URL, never sent to EarnKaro.
         # Amazon SEARCH / hidden-keywords / browse-node links have no single ASIN
-        # but still earn on the tag path, so the native fallback covers them too.
+        # but still earn on the tag path, so the native path covers them too.
         is_amazon = in_domains(host, AMAZON_DOMAINS)
         native_amazon_possible = bool(OUR_TAG) and is_amazon
-        if native_amazon_possible and not AMAZON_VIA_EARNKARO:
-            return await self._native_amazon_link(source_url, clean, resolved, multi_link)
+        native_direct_first = AMAZON_DIRECT_ASSOCIATES or not AMAZON_VIA_EARNKARO
+        native_result: "LinkResult | None" = None
+        if native_amazon_possible and native_direct_first:
+            native_result = await self._native_amazon_link(source_url, clean, resolved, multi_link)
+            if native_result is not None:
+                if AMAZON_VIA_EARNKARO:
+                    log.info("AMAZON DIRECT | our own Associates tag %s on %s - the whole "
+                             "commission is ours (account approved 2026-10-04)",
+                             OUR_TAG, (urlparse(clean).hostname or clean)[:40])
+                return native_result
+            if not AMAZON_VIA_EARNKARO:
+                return None
+        # The native tagged link is still a fallback when it has not been tried yet.
+        native_fallback_possible = native_amazon_possible and not native_direct_first
         earned: "LinkResult | None" = None
-        try:
-            earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
-        except Exception:
-            # Temporary API failures stay retryable unless there is a safe
-            # merchant fallback: native Amazon, or a direct HYPD link whose
-            # non-Meesho destination has already been verified.
-            if not native_amazon_possible and not non_meesho_hypd_destination:
-                raise
-            if native_amazon_possible:
-                log.warning("EK FALLBACK | API unavailable for %s; using the native Amazon tag "
-                            "(not an EarnKaro conversion)",
-                            (urlparse(clean).hostname or clean)[:60])
+        # The Amazon switch must not touch other stores: with
+        # AMAZON_VIA_EARNKARO=false an Amazon link never goes to the network,
+        # but Flipkart/Myntra/... always do (that switch is about Amazon only).
+        if AMAZON_VIA_EARNKARO or not is_amazon:
+            try:
+                earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
+            except Exception:
+                # Temporary API failures stay retryable unless there is a safe
+                # merchant fallback: native Amazon, or a direct HYPD link whose
+                # non-Meesho destination has already been verified.
+                if not (native_fallback_possible or non_meesho_hypd_destination):
+                    raise
+                if native_fallback_possible:
+                    log.warning("EK FALLBACK | API unavailable for %s; using the native Amazon tag "
+                                "(not an EarnKaro conversion)",
+                                (urlparse(clean).hostname or clean)[:60])
         if earned is not None:
             return earned
-        if native_amazon_possible:
+        if native_fallback_possible:
             # The network could not monetize this Amazon link. Dropping it would
             # lose the deal and posting it untagged would earn nothing, so publish
             # the native tagged product URL; delivery strips the tag on every
@@ -8400,7 +8436,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.6 starting "
+    log.info("BestGAA Production Bot v18.8 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

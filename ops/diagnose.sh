@@ -132,7 +132,8 @@ PY
     fi
   fi
 fi
-echo "  AMAZON_VIA_EARNKARO=$(grep -E '^AMAZON_VIA_EARNKARO=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || echo '<unset: EarnKaro default>')  (true = Amazon converts via EarnKaro with the native tag as fallback)"
+echo "  AMAZON_DIRECT_ASSOCIATES=$(grep -E '^AMAZON_DIRECT_ASSOCIATES=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || echo '<unset: direct default>')  (true = our OWN Associates tag first, FULL commission; false = 2026-09-24 network-first order)"
+echo "  AMAZON_VIA_EARNKARO=$(grep -E '^AMAZON_VIA_EARNKARO=' "$BESTGAA_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '[:space:]' || echo '<unset: true>')  (true = EarnKaro stays as the SECOND CHANCE for an Amazon link the native path cannot build; false = never EarnKaro for Amazon)"
 echo "  live conversion proof: python3 ops/earnkaro_check.py --env-file $BESTGAA_DIR/.env"
 
 echo ""

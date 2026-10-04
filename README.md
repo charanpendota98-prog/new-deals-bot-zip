@@ -262,15 +262,19 @@ destination proves it (`EK VERIFIED`), and refused when it leads back to the
 source, to a foreign shortener, or to a foreign `affExtParam2`. The negatives
 are pinned too (see `test_earnkaro_conversion.py`, section 2b).
 
-**Amazon.** `AMAZON_VIA_EARNKARO=true` (default) sends Amazon product links
-through EarnKaro like every other store: Amazon Associates is still rejecting
-the account, so a native `?tag=mama086-21` link earns nothing while an EarnKaro
-conversion pays. The native tagged link stays as the **fallback** when the
-network answers "no link" (search/browse pages included, which EarnKaro has no
-campaign for), and the channel under Amazon review still shows the direct
-tagged product page — our earned links are expanded back to
-`amazon.in/dp/ASIN?tag=mama086-21` at delivery. Set `AMAZON_VIA_EARNKARO=false`
-to restore the pure native-tag behaviour of 2026-09-06.
+**Amazon — Associates APPROVED (2026-10-04).** Our own tag pays in FULL now, so
+`AMAZON_DIRECT_ASSOCIATES=true` (default) publishes the **native tagged link
+first**: `amazon.in/dp/ASIN?tag=mama086-21`, shortened with our own shortener
+(`AMAZON LINK SHORTENED`), recorded in `_short_to_long` so the channel under
+Amazon review still expands to the direct tagged product page at delivery. No
+network cut is taken. `AMAZON_VIA_EARNKARO=true` keeps EarnKaro as the **second
+chance** for an Amazon shape the native path cannot build (no usable ASIN), so
+no Amazon deal loses its monetization. `AMAZON_VIA_EARNKARO=false` means "never
+EarnKaro for Amazon", and `AMAZON_DIRECT_ASSOCIATES=false` restores the
+2026-09-24 network-first order (EarnKaro first, native tagged link as the
+fallback). A cached network row for an Amazon source is upgraded to our own
+tagged link (`AMAZON CACHE UPGRADED`) instead of being served for its full
+14-day life.
 
 **"Anni perfectga convert chesthunnava ledaa?" — answer it from DATA**:**
 
@@ -1116,7 +1120,7 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.7 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.8 — **not yet deployed to a server**;
 the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
 Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
 changed — see `ops/quality_audit.py`;
@@ -1126,7 +1130,7 @@ printing exactly what the older build was coded to print). Hashes refreshed
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.7) | `15f5e023f4295064470bb21a7acff11eb2d66ac734f5a4ca9c9d918947f4c209` |
+| `bestgaa/main_bot_new.py` (v18.8) | `79d862ce6e1e38c3dd237959413f343a3e3412bb23f26bd2e4dd37dcd7376939` |
 | `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
 | `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
@@ -1136,7 +1140,7 @@ printing exactly what the older build was coded to print). Hashes refreshed
 | `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
-| `test_earnkaro_conversion.py` | `8e46e7e1aaf4cdb1b20274e912720da6168a5ad3afd4007e99f84a12935353ed` |
+| `test_earnkaro_conversion.py` | `115b6ac63d41a9e1619caf0e786f46ccac5ec51a0e418b3f66d52ae191062cc1` |
 
 A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
 tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python

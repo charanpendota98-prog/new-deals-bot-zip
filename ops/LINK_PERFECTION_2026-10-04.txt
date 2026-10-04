@@ -335,3 +335,33 @@ USER REQUEST
      The audit buckets now agree with whose_link() and with the pipeline's own
      classifier (earnkaro_output_kind -> "publisher"), so a converted link is
      never reported foreign for carrying the network's own parameters.
+
+ 10. AMAZON ASSOCIATES APPROVED (2026-10-04) - THE TAG NOW PAYS IN FULL
+
+     USER: "amazin assacite approve chesindi manadi". Decision (asked first):
+     native tag FIRST, tag stays mama086-21.
+
+     What changed (v18.8):
+       * AMAZON_DIRECT_ASSOCIATES=true (default): an Amazon product/search/browse
+         link is published with OUR OWN tagged URL first - the whole Associates
+         commission is ours, no network share. Log: AMAZON DIRECT.
+       * EarnKaro is the SECOND CHANCE, only for an Amazon shape the native path
+         cannot build (no usable ASIN). Nothing about other stores changed: the
+         Amazon switches never gate Flipkart/Myntra (pinned by a regression
+         check after a bug where AMAZON_VIA_EARNKARO=false also stopped them).
+       * The link cache no longer pins the old policy in the other direction:
+         a cached NETWORK row for an Amazon SOURCE is rebuilt as our own tagged
+         link, free, no API call. Log: AMAZON CACHE UPGRADED.
+       * AMAZON_DIRECT_ASSOCIATES=false restores the 2026-09-24 order (EarnKaro
+         first, native tag as the fallback); AMAZON_VIA_EARNKARO=false still
+         means "never EarnKaro for Amazon" (2026-09-06 behaviour).
+
+     PROVE IT ON THE SERVER
+       grep -E 'AMAZON DIRECT|AMAZON CACHE UPGRADED|AMAZON LINK SHORTENED' \
+            <(journalctl -u bestgaa -n 500 --no-pager)
+       python3 ops/conversion_report.py     # markers + amazon_direct_associates
+       python3 ops/diagnose.sh | grep AMAZON_DIRECT_ASSOCIATES
+
+     YOUR SIDE (unchanged, now load-bearing): every channel that carries the tag
+     must be listed in Associates Central with its FULL url, and the account must
+     stay in good standing - the tag is now the money path, not a fallback.

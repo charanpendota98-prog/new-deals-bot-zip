@@ -73,6 +73,10 @@ LOG_MARKERS = (
     ("EK HTTP", "EarnKaro: API returned a non-success HTTP status"),
     ("EK NETWORK", "EarnKaro: API/network retries were exhausted"),
     ("EK FALLBACK", "Amazon used its native tag because EarnKaro did not convert"),
+    ("AMAZON DIRECT", "Amazon published with OUR OWN Associates tag - full commission, "
+                      "no network share (account approved 2026-10-04)"),
+    ("AMAZON CACHE UPGRADED", "a cached network row for an Amazon source was replaced by "
+                              "our own Associates link"),
     ("PROVENANCE rejected", "a link we did not produce was refused"),
     ("UNMONETIZED LINK", "a deal posted with a clean merchant link (earns NOTHING)"),
     ("HYPD LINK", "OUR hypd link published (Bitly) - earns on our store"),
@@ -201,6 +205,7 @@ def config_report(env: dict[str, str]) -> dict:
         "earnkaro_endpoint": env.get("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public"),
         "convert_option": env.get("EARNKARO_CONVERT_OPTION", "convert_only"),
         "amazon_via_earnkaro": env.get("AMAZON_VIA_EARNKARO", "true"),
+        "amazon_direct_associates": env.get("AMAZON_DIRECT_ASSOCIATES", "true"),
         "amazon_tag": env.get("AMAZON_TAG", ""),
         "hypd_store": env.get("HYPD_STORE_ID", "93944"),
         "hypd_slug": env.get("HYPD_STORE_SLUG", "smartdeals"),
