@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.4
+"""BestGAA Production Bot v18.5
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -15,6 +15,9 @@ immediately, exactly once, clean":
 - a dead short link, an unresolvable destination or an oversized photo costs the post
   NOTHING: the offending link is cut and the deal goes out complete (never a retry-until-
   stale, never a skip)
+- a link the network has no campaign for is never posted BARE when the merchant page
+  itself accepts our publisher id (Flipkart/Myntra): affExtParam2 is stamped, the
+  reader still reaches the product, and the click pays US instead of nobody
 - a source post with a photo and NO link is still a post: it goes out as written (deal
   terms required, nothing invented); a caption with no deal terms is not a deal and stays out
 - the source's photos are posted the way the source posted them: a multi-photo album
@@ -1102,6 +1105,59 @@ TRACKING_QUERY_KEYS = {
 # chars (btn_ref=srctok-..., ds=, qid=...). Meaningful filters (k, i, rh, s,
 # rnid keeps the filter group) are preserved so Men/Women/Girls/Boys category
 # links stay distinct.
+# ---------------------------------------------------------------------------
+# OUR ATTRIBUTION ON A MERCHANT PAGE (USER REPORT 2026-10-04):
+#   "product open avuthundi kaani adi mana links kaadu ... commission asalu
+#    ravatledu" - the click worked, the deal stayed, and NOBODY was paid.
+#
+# A pass-through (the network answered "no campaign") used to publish the BARE
+# merchant URL. For the Flipkart family the network's attribution parameter also
+# works on a plain product page: `affExtParam2=<publisher>` is exactly what the
+# EarnKaro converter returns for OUR account (see earnkaro_output_kind()'s
+# "publisher" acceptance and ops/earnkaro_check.py's `affExtParam2=5478322`
+# proof), so a passthrough link is published WITH our publisher id instead of
+# bare. Only hosts whose scheme is documented here are touched - Amazon earns
+# through the Associates tag, Meesho through HYPD, and every other store has no
+# direct-attribution contract, so they stay exactly as they were.
+# ---------------------------------------------------------------------------
+EK_ATTRIBUTION_HOSTS = {h.strip().lower() for h in os.getenv(
+    "EK_ATTRIBUTION_HOSTS", "flipkart.com,myntra.com").split(",") if h.strip()}
+ATTRIBUTE_PASSTHROUGH_LINKS = os.getenv(
+    "ATTRIBUTE_PASSTHROUGH_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
+# Attribution parameters that belong to whoever else's link we are rebuilding -
+# they are replaced by ours, never carried along (a kept foreign id pays them).
+FOREIGN_ATTRIBUTION_KEYS = {
+    "affid", "aff_id", "affid1", "affid2", "affextparam1", "affextparam2",
+    "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
+}
+
+
+def attribute_with_our_publisher(url: str, publisher: str = "") -> str:
+    """OUR EarnKaro publisher id on a Flipkart-family product URL.
+
+    A no-op (the URL comes back unchanged) for any other host, when no publisher
+    is configured, or when ATTRIBUTE_PASSTHROUGH_LINKS=false. Foreign ids are
+    removed first, so the rebuilt link can only ever pay us. `publisher` lets a
+    caller state whose id to stamp (the audit uses its own resolution); the
+    default is this install's EarnKaro account.
+    """
+    publisher = (publisher or OUR_EK_ID).strip()
+    if not (publisher and ATTRIBUTE_PASSTHROUGH_LINKS):
+        return url
+    try:
+        parsed = urlparse(clean_url(url))
+        host = (parsed.hostname or "").lower()
+        if not in_domains(host, EK_ATTRIBUTION_HOSTS):
+            return url
+        pairs = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+                 if key.lower() not in FOREIGN_ATTRIBUTION_KEYS]
+        pairs.append(("affExtParam2", publisher))
+        return parsed._replace(scheme="https", netloc=host,
+                               query=urlencode(pairs), fragment="").geturl()
+    except Exception:
+        return url
+
+
 AMAZON_JUNK_QUERY_KEYS = {
     "btn_ref", "btn_type", "ds", "dc", "qid", "sprefix", "crid", "sr",
     "pd_rd_r", "pd_rd_w", "pd_rd_wg", "pf_rd_i", "pf_rd_m", "pf_rd_p",
@@ -7427,9 +7483,23 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         if not host or not in_domains(host, KNOWN_MERCHANT_DOMAINS):
             return
         clean_resolved = clean_url(merchant_url(resolved))
-        if not clean_resolved or clean_resolved in {clean_url(r) for _, r in passthrough}:
+        # USER REPORT (2026-10-04): the bare merchant page opens the product and
+        # pays NOBODY. Where the network's own attribution works on a plain
+        # product page (Flipkart family -> affExtParam2, the same parameter the
+        # converter puts on the links it returns for our account), publish it
+        # WITH our publisher id; a foreign id on the source page is replaced,
+        # never carried along.
+        published = attribute_with_our_publisher(clean_resolved)
+        if not published or published in {clean_url(r) for _, r in passthrough}:
             return
-        passthrough.append((source_url, clean_resolved))
+        passthrough.append((source_url, published))
+        if published != clean_resolved:
+            log.warning("LINK ATTRIBUTED | queue=%s no campaign came back, so the product "
+                        "page is posted WITH our publisher id (%s) instead of a bare link "
+                        "that pays nobody: %s", row["id"], OUR_EK_ID, published[:80])
+            log.info("PASSTHROUGH | queue=%s attributed merchant link: %s",
+                     row["id"], published[:80])
+            return
         # USER RULE (2026-09-05, "idi manvena?" / "mana links matharem"): a
         # passthrough link is a CLEAN merchant link, not a monetized link of
         # ours - the deal still goes out (that is the point), but it must be
@@ -8218,7 +8288,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.4 starting "
+    log.info("BestGAA Production Bot v18.5 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

@@ -270,6 +270,24 @@ def test_link_ownership_is_data_backed():
     check("classify_link buckets a stranger's tag as foreign",
           qa.classify_link("https://www.ajio.com/p/9?tag=rivalpub", "mama086-21") == "foreign",
           qa.classify_link("https://www.ajio.com/p/9?tag=rivalpub", "mama086-21"))
+    # USER REPORT 2026-10-04 ("product opens but it is not our link ... commission
+    # never comes"): a Flipkart/Myntra page posted WITHOUT our publisher id can
+    # pay us (the network's affExtParam2 works on the page itself), so it is not
+    # a "clean merchant page kept on purpose" - it is a finding, counted apart.
+    check("a Flipkart-family page with no publisher id is reported as unattributed",
+          qa.why_not_our_link("https://www.myntra.com/x/1/detail", "", publisher) is not None
+          and "NOBODY is paid" in (qa.why_not_our_link("https://www.myntra.com/x/1/detail",
+                                                       "", publisher) or ""),
+          str(qa.why_not_our_link("https://www.myntra.com/x/1/detail", "", publisher)))
+    check("classify_link gives it its own bucket, not 'clean-merchant'",
+          qa.classify_link("https://www.myntra.com/x/1/detail", "", publisher) == "unattributed",
+          qa.classify_link("https://www.myntra.com/x/1/detail", "", publisher))
+    check("the same page WITH our publisher id is ours, and stays that way",
+          qa.classify_link(f"https://www.myntra.com/x/1/detail?affExtParam2={publisher}",
+                           "", publisher) == "our-publisher")
+    check("a store with no attribution contract is still a clean merchant page",
+          qa.classify_link("https://www.ajio.com/p/9", "", publisher) == "clean-merchant",
+          qa.classify_link("https://www.ajio.com/p/9", "", publisher))
 
     with tempfile.TemporaryDirectory() as td:
         db = Path(td) / "links.sqlite3"
@@ -311,6 +329,25 @@ def test_link_ownership_is_data_backed():
                                 "--db", str(db)], capture_output=True, text=True)
         check("the human output answers the question in one line",
               "LINK PERFECTION | links=2 our-short=1" in human.stdout, human.stdout[-400:])
+
+        # The 2026-10-04 commission bug, proven from data: a bare Flipkart-family
+        # page opens for the reader and pays nobody. With the publisher id known,
+        # the audit must say so (and --strict must fail) instead of filing it as a
+        # harmless "clean merchant" page.
+        conn = __import__("sqlite3").connect(db)
+        conn.execute("INSERT INTO queue VALUES(2,-1002,12,'lootnow','done',0,'',?,'k',?,?)",
+                     (now, "Kurta Set\n" + R + "799 (60% off)\n"
+                      "https://www.myntra.com/x/2/detail", json.dumps(["LootZoneIndia11"])))
+        conn.execute("INSERT INTO deliveries VALUES(2,'LootZoneIndia11','sent')")
+        conn.commit()
+        conn.close()
+        strict = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
+                                 "--db", str(db), "--publisher", publisher, "--strict"],
+                                capture_output=True, text=True)
+        check("with a publisher id known, a link that pays nobody fails --strict",
+              strict.returncode == 1 and "NOBODY is paid" in strict.stdout, strict.stdout[-500:])
+        check("and the summary counts them in their own bucket (both bare Myntra links)",
+              "unattributed=2" in strict.stdout, strict.stdout[:400])
 
 
 def test_quality_auditor():

@@ -206,7 +206,7 @@ def db_report(db: Path, hours: float) -> dict:
     out: dict = {"db": str(db), "exists": db.exists(), "routes": {}, "passthrough_examples": [],
                  "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0,
                  "links": {"links": 0, "our-short": 0, "our-publisher": 0,
-                           "clean-merchant": 0, "foreign": 0}}
+                           "unattributed": 0, "clean-merchant": 0, "foreign": 0}}
     if not db.exists():
         return out
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -447,6 +447,10 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         problems.append(f"{links['foreign']} published link(s) were NOT ours - run "
                         "`python3 ops/quality_audit.py --strict` (it names the queue ids)")
         lines.append(f"LINKS    : NEEDS ATTENTION - {links['foreign']} foreign link(s) reached a channel")
+    elif links.get("unattributed"):
+        lines.append(f"LINKS    : ATTENTION - {links['links']} link(s), of which "
+                     f"{links['unattributed']} on Flipkart/Myntra pages with NO publisher id: "
+                     "the product opens and pays nobody (fixed in v18.5 for new posts)")
     elif links.get("links"):
         lines.append(f"LINKS    : WORKING - {links['links']} published link(s), all ours "
                      f"({links['our-short']} short, {links['our-publisher']} tagged, "
@@ -506,10 +510,15 @@ def main() -> int:
             print(f"\nLINK PERFECTION (every link printed in this window's posts)")
             print(f"  links={links['links']}  our-short={links['our-short']}  "
                   f"our-publisher={links['our-publisher']}  "
+                  f"unattributed={links.get('unattributed', 0)}  "
                   f"clean-merchant={links['clean-merchant']}  FOREIGN={links['foreign']}")
             if links["foreign"]:
                 print("  -> FOREIGN links reached a channel: "
                       "python3 ops/quality_audit.py --strict  (names the queue ids)")
+            elif links.get("unattributed"):
+                print("  -> Link(s) that CAN pay us but were posted without our publisher "
+                      "id (Flipkart/Myntra): they open and pay nobody. Published before the "
+                      "2026-10-04 attribution fix - new posts stamp it automatically.")
             else:
                 print("  -> every published link is one of ours (minted by this bot, our "
                       "tag/publisher, or a clean merchant page kept on purpose)")

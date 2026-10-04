@@ -1,4 +1,5 @@
-LINK PERFECTION + UNKNOWN REDIRECT DOMAINS (2026-10-04, bot v18.4)
+LINK PERFECTION + UNKNOWN REDIRECT DOMAINS + UNATTRIBUTED LINKS
+(2026-10-04, bot v18.5)
 ===================================================================
 
 USER REQUEST
@@ -29,7 +30,7 @@ USER REQUEST
       python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200
 
       QUALITY AUDIT | db=... posts=200 findings=0
-        LINK PERFECTION | links=137 our-short=88 our-publisher=12 clean-merchant=37 FOREIGN=0
+        LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
         every published link is one of ours (minted by this bot, our tag, or a
         clean merchant page) - nothing foreign reached a channel
 
@@ -46,8 +47,15 @@ USER REQUEST
                      links too. That is the whole point of asking the data.
     our-publisher    our Amazon tag, or our EarnKaro publisher id
                      (affExtParam2=5478322).
-    clean-merchant   an unmonetizable store page kept ON PURPOSE. It earns
-                     nothing and the report says so; it is not a defect.
+    unattributed     a Flipkart or Myntra page with NO publisher id. The product
+                     opens and pays NOBODY - and unlike a clean merchant page it can
+                     be fixed (the network's affExtParam2 works on the page itself).
+                     New posts stamp it automatically (v18.5); this bucket is how the
+                     old, commission-losing posts are still counted and named.
+    clean-merchant   a store page kept ON PURPOSE because the network has no
+                     campaign AND the page itself carries no attribution we may
+                     stamp (e.g. Meesho/AJIO). It earns nothing and the report says
+                     so; it is not a defect.
     FOREIGN          a link that should never have left: the source's own short
                      link, another channel's bit.ly, a stranger's tag or id.
                      `--strict` exits 1 on it; the detail line names why.
@@ -116,5 +124,43 @@ USER REQUEST
 
   The live proof still comes from the server (this workspace has no internet).
   On the next deploy, deploy_and_verify.sh wants the log line
-      BestGAA Production Bot v18.4 starting ...
+      BestGAA Production Bot v18.5 starting ...
   which is exactly how the running build is checked against this source.
+
+
+5. WHY COMMISSIONS WERE MISSING (2026-10-04) - AND WHAT CHANGED (v18.5)
+===========================================================================
+  USER REPORT
+    "CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU RAVATLEUD NDHUKU ANTE
+     LINKS ANNI MARIPOTHUNNAI INVALID LINK SVASTHUNNAI PRODUCT OPEN AVUTHUNDI
+     KAANI ADI MANA LINKS KADU"
+
+  WHAT WAS WRONG (found in the source, not guessed)
+    When the affiliate network answered "no campaign for this store", the bot
+    published the BARE merchant page on purpose (a deal must not be lost). The
+    page opened - and paid nobody. Two places did this:
+      1. bestgaa/main_bot_new.py -> keep_passthrough()  (Telegram channels)
+      2. tg-wa-bridge/bridge.js -> direct-source safety-net jobs that resolve a
+         raw source link and post the merchant page unconverted (WhatsApp)
+    Nobody's id was on the link, so the click was worth zero: "product open
+    avuthundi kaani adi mana links kaadu" - exactly the complaint.
+
+  WHAT CHANGED
+    For the Flipkart family the network's own attribution parameter works on the
+    product page itself: `affExtParam2=<publisher>` is the same shape the
+    EarnKaro converter returns for this account (the bot already treats it as a
+    conversion in earnkaro_output_kind(), and the bridge already treats it as
+    proof of "ours"). So where a page would have gone out bare, the bot and the
+    bridge now STAMP OUR PUBLISHER ID. A stranger's id on the source page is
+    REPLACED, never carried along. Stores with no such contract (Meesho -> HYPD,
+    Amazon -> tag, everyone else -> clean page) are untouched:
+    EK_ATTRIBUTION_HOSTS defaults to `flipkart.com,myntra.com` and can be
+    extended via env ONLY after EarnKaro confirms the store.
+
+  PROOF ON THE SERVER
+      journalctl -u bestgaa -f | grep -E 'LINK ATTRIBUTED|UNMONETIZED LINK'
+      # LINK ATTRIBUTED | queue=... the product page is posted WITH our publisher id
+      #                   (5478322) instead of a bare link that pays nobody: <url>
+      python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+      # unattributed=N counts the OLD posts (pre-v18.5) that opened and paid nobody;
+      # watch it stop growing, then re-post those deals manually if they matter.

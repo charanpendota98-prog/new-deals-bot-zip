@@ -1039,11 +1039,14 @@ def test_status_report_answers_are_we_converting():
         ])
         # The post that actually went out: OUR short link (minted into link_cache
         # above), a clean unmonetizable store page, and one stranger's link - the
-        # three cases the link-perfection line exists to separate.
+        # three cases the link-perfection line exists to separate. The clean page
+        # is an AJIO page on purpose: a BARE Flipkart/Myntra page is no longer
+        # "clean" since 2026-10-04 - the network's affExtParam2 works there, so it
+        # is counted (and flagged) as 'unattributed': it opens and pays nobody.
         conn.execute("INSERT INTO queue VALUES(1,?,?,?)", (
             now, "done",
             f"boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
-            "https://www.myntra.com/tshirt/buy\nhttps://www.ajio.com/p/9?tag=rivalpub"))
+            "https://www.ajio.com/p/442125201\nhttps://www.ajio.com/p/9?tag=rivalpub"))
         conn.commit()
         conn.close()
         scoped = report.db_report(db_path, 24)
@@ -1061,7 +1064,8 @@ def test_status_report_answers_are_we_converting():
         links = scoped.get("links") or {}
         check("the report counts every published link with the auditor's own rule",
               links.get("links") == 3 and links.get("our-short") == 1
-              and links.get("clean-merchant") == 1 and links.get("foreign") == 1, str(links))
+              and links.get("clean-merchant") == 1 and links.get("foreign") == 1
+              and links.get("unattributed") == 0, str(links))
         check("a foreign link in the window is reported as a problem with its fix",
               any("NOT ours" in problem and "quality_audit" in problem
                   for problem in scoped_problems), str(scoped_problems))

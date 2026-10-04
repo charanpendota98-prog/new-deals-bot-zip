@@ -1451,6 +1451,42 @@ function isOurAmazonTagLink(url) {
     return false
   }
 }
+// ---------------------------------------------------------------------------
+// OUR ATTRIBUTION ON A RESOLVED MERCHANT PAGE (USER REPORT 2026-10-04:
+// "product open avuthundi kaani adi mana links kaadu ... commission asalu
+// ravatledu"). A safety-net (direct-source) job resolves a raw source link to
+// the merchant page and posted it BARE - it opens, and pays nobody. For the
+// Flipkart family the network's own parameter works on the plain product page:
+// `affExtParam2=<publisher id>` is exactly the shape EarnKaro's converter
+// returns for OUR account (the bot's earnkaro_output_kind treats it as a
+// conversion, and isOurGeneratedLink already accepts it as proof of "ours"), so
+// the resolved page is published WITH our publisher id. A stranger's id is
+// replaced, never carried along. Amazon earns through the Associates tag and
+// Meesho through HYPD - both keep their own path and are not touched here.
+// ---------------------------------------------------------------------------
+const EK_ATTRIBUTION_HOSTS = new Set((process.env.EK_ATTRIBUTION_HOSTS || 'flipkart.com,myntra.com')
+  .split(',').map(x => x.trim().toLowerCase()).filter(Boolean))
+const ATTRIBUTE_PASSTHROUGH_LINKS = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.ATTRIBUTE_PASSTHROUGH_LINKS || 'true').trim().toLowerCase())
+const FOREIGN_ATTRIBUTION_KEYS = new Set([
+  'affid', 'aff_id', 'affid1', 'affid2', 'affextparam1', 'affextparam2',
+  'affiliate', 'affiliate_id', 'affiliateid', 'subid', 'sub_id',
+])
+function attributeWithOurPublisher(url) {
+  if (!PUBLISHER_ID || !ATTRIBUTE_PASSTHROUGH_LINKS) return url
+  try {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase()
+    if (![...EK_ATTRIBUTION_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return url
+    for (const key of [...u.searchParams.keys()]) {
+      if (FOREIGN_ATTRIBUTION_KEYS.has(key.toLowerCase())) u.searchParams.delete(key)
+    }
+    u.searchParams.set('affExtParam2', PUBLISHER_ID)
+    return u.toString()
+  } catch {
+    return url
+  }
+}
 // Follow known shortener/redirector hosts to the final merchant page (max 5
 // hops). linkredirect.in embeds the destination in its ?dl= param, so it is
 // decoded without any network call. Returns null when resolution fails.
@@ -1534,6 +1570,10 @@ async function prepareDirectJob(job, fetchFn = fetch) {
         u.searchParams.delete('tag')
         u.searchParams.set('tag', AMAZON_TAG)
         resolved = u.toString()
+      } else {
+        // A bare merchant page pays NOBODY. Where the network's attribution
+        // works on the page itself (Flipkart family), publish it WITH ours.
+        resolved = attributeWithOurPublisher(resolved)
       }
     } catch { /* keep resolved as-is */ }
     if (resolved !== url) job.resolvedLinks[url] = resolved
@@ -2835,7 +2875,10 @@ async function verifyJob(job, fetchFn = fetch) {
             u.searchParams.set('tag', AMAZON_TAG)
           }
           job.resolvedLinks ||= {}
-          job.resolvedLinks[url] = u.toString()
+          // The stranger's wrapper is gone; where the network's own attribution
+          // works on the merchant page, OUR publisher id takes its place instead
+          // of publishing a bare link that pays nobody.
+          job.resolvedLinks[url] = attributeWithOurPublisher(u.toString())
           rescued.push(url)
         } catch { /* keep as unrescued */ }
       } else {
@@ -5219,8 +5262,18 @@ https://fktr.in/MANY${i}`,
     const djob = { direct: true, text: 'Direct deal ₹299\nhttps://amzn.to/DEAL1\nAlso https://fkrt.co/DEAL2' }
     await prepareDirectJob(djob, fakeFetch)
     if (djob.resolvedLinks['https://amzn.to/DEAL1'] !== `https://www.amazon.in/dp/B0DIRECT01?ref=src&tag=${AMAZON_TAG}`) throw new Error('raw amazon product page must resolve WITH our tag: ' + djob.resolvedLinks['https://amzn.to/DEAL1'])
-    if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== 'https://www.flipkart.com/direct-item/p/itm77?ref=src') throw new Error('raw flipkart shortener not resolved')
+    if (djob.resolvedLinks['https://fkrt.co/DEAL2'] !== `https://www.flipkart.com/direct-item/p/itm77?ref=src&affExtParam2=${PUBLISHER_ID}`) throw new Error('raw flipkart shortener must resolve WITH our publisher id: ' + djob.resolvedLinks['https://fkrt.co/DEAL2'])
     if (displayUrl(djob, 'https://amzn.to/DEAL1') !== djob.resolvedLinks['https://amzn.to/DEAL1']) throw new Error('displayUrl must prefer the resolved merchant link')
+    // USER REPORT 2026-10-04 ("product opens but it is not our link"): a bare
+    // merchant page must be published WITH our publisher id, a stranger's id is
+    // replaced, and stores with no direct-attribution contract stay untouched.
+    if (attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1?pid=1') !== `https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=${PUBLISHER_ID}`) throw new Error('bare flipkart page must gain our publisher id')
+    if (attributeWithOurPublisher('https://www.myntra.com/mens-tshirts/itm1?track=one') !== `https://www.myntra.com/mens-tshirts/itm1?track=one&affExtParam2=${PUBLISHER_ID}`) throw new Error('bare myntra page must gain our publisher id')
+    if (attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1?affExtParam2=999999&affid=thief') !== `https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) throw new Error('a stranger affiliate id must be replaced, never kept')
+    if (attributeWithOurPublisher(`https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) !== `https://www.flipkart.com/x/p/itm1?affExtParam2=${PUBLISHER_ID}`) throw new Error('attribution must be idempotent')
+    if (attributeWithOurPublisher('https://www.meesho.com/sarees/p/abc') !== 'https://www.meesho.com/sarees/p/abc') throw new Error('meesho must keep its HYPD path')
+    if (attributeWithOurPublisher('https://www.amazon.in/dp/B0X?tag=' + AMAZON_TAG) !== 'https://www.amazon.in/dp/B0X?tag=' + AMAZON_TAG) throw new Error('amazon must keep its Associates tag path')
+    if (!isOurGeneratedLink(attributeWithOurPublisher('https://www.flipkart.com/x/p/itm1'))) throw new Error('an attributed merchant page must read as OURS')
     // Direct jobs never send raw links to the provenance DB; our links do go.
     const prov = urlsForProvenance(djob, ['https://amzn.to/DEAL1', 'https://fktr.in/OURS'])
     if (prov.length !== 1 || prov[0] !== 'https://fktr.in/OURS') throw new Error('direct provenance filter failed')

@@ -215,7 +215,7 @@ network): the link it prints, the account it proves, the UNMONETIZED, native-tag
 fallback and WRONG ACCOUNT verdicts, the HYPD case, and that a transient API
 failure is reported as *retryable* rather than as a deal that earns nothing.
 
-### "Mana links perfectga post chesthunda?" — one number, from data (v18.4)
+### "Mana links perfectga post chesthunda?" — one number, from data (v18.4/v18.5)
 
 Two tools now answer it, and they cannot disagree because they share one
 definition of "our link" (`ops/quality_audit.py`'s, which reads the `link_cache`
@@ -226,7 +226,7 @@ from the token / `ops/.earnkaro_key`):
 # every link in the last N posts, classified; --strict exits 1 on a foreign one
 python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200 --strict
 #   QUALITY AUDIT | db=… posts=200 findings=0
-#     LINK PERFECTION | links=137 our-short=88 our-publisher=12 clean-merchant=37 FOREIGN=0
+#     LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
 #     every published link is one of ours (minted by this bot, our tag, or a clean merchant page)
 
 # the live window, next to the per-route verdict
@@ -236,8 +236,11 @@ python3 ops/conversion_report.py
 
 `our-short` = a link this bot minted (EarnKaro/HYPD/Bitly/is.gd — the Bitly and
 is.gd ones are proven by their `link_cache` row, not by their domain), `our-publisher`
-= our tag or our publisher id, `clean-merchant` = an unmonetizable store page kept
-on purpose (it earns nothing and that is the policy), `FOREIGN` = a link that
+= our tag or our publisher id, `unattributed` = a **Flipkart/Myntra page with no
+publisher id** (the product opens and pays nobody — a defect, and since v18.5 a
+thing new posts can no longer produce), `clean-merchant` = a store page kept on
+purpose because the network has no campaign AND the page carries no attribution we
+may stamp (it earns nothing and that is the policy), `FOREIGN` = a link that
 should never have left (a source short link, a stranger's tag or id). A `bit.ly`
 link some other channel posted is still `FOREIGN` — the difference is the cache
 row, and that is exactly why this is asked of the data instead of a domain list.
@@ -518,6 +521,25 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.5 — a link that opens but pays nobody can no longer leave the building.**
+  User report (2026-10-04): *"CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU
+  RAVATLEUD … PRODUCT OPEN AVUTHUNDI KAANI ADI MANA LINKS KADU"* — the page opened and
+  the commission never came. Two paths published a BARE merchant page when the network
+  answered "no campaign": `keep_passthrough()` in the bot (Telegram channels) and the
+  bridge's direct-source safety-net jobs (WhatsApp). Bare = nobody's id = worth zero.
+  For the **Flipkart family** the network's own attribution parameter works on the
+  product page itself — `affExtParam2=<publisher>` is exactly the shape the EarnKaro
+  converter returns for this account — so both runtimes now **stamp our publisher id**
+  on the resolved page (`attributeWithOurPublisher()` in the bridge,
+  `attribute_with_our_publisher()` in the bot), replacing any stranger's id instead of
+  carrying it. Amazon keeps its tag, Meesho keeps HYPD, other stores keep the clean-page
+  policy; hosts are `EK_ATTRIBUTION_HOSTS` (`flipkart.com,myntra.com`, extend only after
+  EarnKaro confirms a store) and the stamp can be turned off with
+  `ATTRIBUTE_PASSTHROUGH_LINKS=false`. The auditor grew a matching bucket and finding:
+  `unattributed=N` counts the old posts that opened and paid nobody
+  (`can carry our publisher id (…) but was posted without it`), so the live DB shows how
+  many clicks were lost and the number stops growing once v18.5 runs. Logs:
+  `LINK ATTRIBUTED | queue=… the product page is posted WITH our publisher id (5478322)`.
 - **v18.4 — "mana links perfectga post chesthunda?" is now a number, and a new network
   domain can no longer cost a commission.** Two changes, one on each side of the
   question "does the post carry OUR link?":
@@ -1064,28 +1086,29 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.4 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.5 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print). Hashes refreshed
 2026-10-04, so they describe THIS tree:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.4) | `5838ca10ab30ef2d9ad58248e7022b549cb38d22c2a1af0883c405745334bfc9` |
-| `tg-wa-bridge/bridge.js` | `4f06f2fbdee70e32b431f682e58353a217b3cb7c2325b95a0fe76c2884de451a` |
+| `bestgaa/main_bot_new.py` (v18.5) | `90bae1bb8ae8e1037800107358245bc18d4464de5a34e599a2e2198e77b09198` |
+| `tg-wa-bridge/bridge.js` | `64429c6600456bc859d27fae4d25b63190fad753ee048af0135e0d2f66df8640` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `ae0609cbb28e40c824a96363c056b291dcfcb3fbc016a7d543994f5bd0df0fb8` |
+| `ops/quality_audit.py` | `228363e2a2960949f58610718ee1ec1d02e273f76d72a2d4c8613c5bd2a8a51b` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `0c4c0af8a0a9872083c249a24262e74e0b4004bf6d137b1e649258aef3d0b08c` |
 | `test_line_fidelity.py` | `ed49ac09171d5ed42393acfd020ab1e9baa34ef11d7ff0095319263344631ce0` |
-| `test_pipeline_fixes.py` | `4f55df391ebb175625f2047216aa63b06ef65e5291c533df7b75e22bc7bb26e3` |
+| `test_pipeline_fixes.py` | `0c0c099982a76e33212db4330ee2a592fb83b63475ad869edf2f6be4ffdf9c9f` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
-| `test_best_copy.py` | `7da968bd15356b957390565d32b9627b0ae75a527abb5010f4f9f77f6aa5361d` |
+| `test_best_copy.py` | `50b815e17a4d9a6efef89e1c45b308e61604fa2945cab427a9b832596be1c46c` |
 
 `ops/earnkaro_check.py`, `ops/conversion_report.py`, `ops/set_earnkaro_key.sh`,
-`test_earnkaro_conversion.py` and this README carry the 2026-10-04 work
-(`--plan`, `EK VERIFIED`, LINK PERFECTION) — re-hash them with `sha256sum ops/*.py`
-after a deploy if you pin hashes elsewhere.
+`test_earnkaro_conversion.py`, `ops/LINK_PERFECTION_2026-10-04.txt` and this README
+carry the 2026-10-04 work (`--plan`, `EK VERIFIED`, LINK PERFECTION, the
+`unattributed` bucket and the v18.5 publisher-id stamping) — re-hash them with
+`sha256sum ops/*.py` after a deploy if you pin hashes elsewhere.
 
 Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
 `SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,

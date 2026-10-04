@@ -762,8 +762,11 @@ async def test_no_silent_loss(store):
     check("all three rows are in the queue (nothing dropped at intake)", rows == 3)
 
     # EarnKaro has no campaign for a store: the post must still go out, with the
-    # clean untagged merchant link, instead of burning 10 retries and vanishing.
-    src = "https://www.myntra.com/ethnic-men-s-shirts/x/12345/detail"
+    # clean merchant link carrying OUR publisher id, instead of burning 10
+    # retries and vanishing. USER REPORT 2026-10-04: the old bare pass-through
+    # opened the product and paid NOBODY ("adi mana links kaadu").
+    src = ("https://www.myntra.com/ethnic-men-s-shirts/x/12345/detail"
+           "?affExtParam2=999999&affid=thief&utm_source=src")
 
     class FakeMsg:
         def __init__(self, text):
@@ -806,16 +809,30 @@ async def test_no_silent_loss(store):
             check(f"PASSTHROUGH_UNMONETIZED=false skips it as documented ({exc})",
                   "no monetizable URLs" in str(exc))
         bot.PASSTHROUGH_UNMONETIZED = True
-    _msg, rendered, price = await bot.render_job(FakeClient(), NoCampaignAffiliate(), row)
-    check("an unmonetizable store post is still published (was silently lost)",
-          "Regular Fit Shirt" in rendered and "\u20b9599" in rendered)
-    check("the published link is the clean merchant page",
-          "myntra.com" in rendered and "detail" in rendered)
-    check("no foreign affiliate/tag param survives on a pass-through link",
-          not any(k in rendered for k in ("?tag=", "&tag=", "affid=", "utm_", "clickid")))
-    check("the pass-through link has our provenance (verify_generated_text accepts it)",
-          await store.verify_generated_text(rendered, ()))
-    check("price is parsed from the source text, not from a junk token", price == 599)
+    # A passthrough must still EARN: where the network's own attribution works
+    # on the merchant page (Flipkart family -> affExtParam2, the exact shape the
+    # converter returns for our account), ours replaces the source's id. The
+    # test env carries no token, so the publisher id is set as the deployment
+    # would have it.
+    old_publisher = bot.OUR_EK_ID
+    bot.OUR_EK_ID = "5478322"
+    try:
+        _msg, rendered, price = await bot.render_job(FakeClient(), NoCampaignAffiliate(), row)
+        check("an unmonetizable store post is still published (was silently lost)",
+              "Regular Fit Shirt" in rendered and "\u20b9599" in rendered)
+        check("the published link is the merchant product page with OUR publisher id, "
+              "not a bare page that pays nobody",
+              "myntra.com" in rendered and "detail" in rendered
+              and "affExtParam2=5478322" in rendered)
+        check("a stranger's affiliate id is replaced, never carried along",
+              "999999" not in rendered and "thief" not in rendered)
+        check("no foreign affiliate/tag param survives on a pass-through link",
+              not any(k in rendered for k in ("?tag=", "&tag=", "affid=", "utm_", "clickid")))
+        check("the attributed passthrough link has our provenance (verify_generated_text accepts it)",
+              await store.verify_generated_text(rendered, ()))
+        check("price is parsed from the source text, not from a junk token", price == 599)
+    finally:
+        bot.OUR_EK_ID = old_publisher
     store.conn.execute(
         "INSERT INTO queue(chat_id,msg_id,source,created_at,priority,chat_key) "
         "VALUES(?,?,?,?,?,?)",

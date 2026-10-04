@@ -99,6 +99,59 @@ def link_host(url: str) -> str:
     return (match.group(1) if match else "").lower()
 
 
+# USER REPORT 2026-10-04 ("product open avuthundi kaani adi mana links kaadu
+# ... commission asalu ravatledu"): the Flipkart family accepts the network's
+# own publisher parameter ON the merchant page - `affExtParam2=<publisher>` is
+# exactly the shape the EarnKaro converter returns for this account (the bot's
+# earnkaro_output_kind() accepts it as a conversion). So a Flipkart/Myntra page
+# published WITHOUT it is not "a clean merchant page kept on purpose": it is a
+# link that opens the product and pays nobody, and it can be fixed. Kept in one
+# place so the count and the bot's own stamping rule stay in step.
+EK_ATTRIBUTION_HOSTS = ("flipkart.com", "myntra.com")
+FOREIGN_ATTRIBUTION_PARAMS = frozenset((
+    "affid", "aff_id", "affid1", "affid2", "affextparam1", "affextparam2",
+    "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
+))
+
+
+def _query_pairs(url: str) -> dict[str, list[str]]:
+    pairs: dict[str, list[str]] = {}
+    for chunk in urlparse(url).query.split("&"):
+        if "=" in chunk:
+            key, _, value = chunk.partition("=")
+            pairs.setdefault(key.strip().lower(), []).append(unquote(value.strip()))
+    return pairs
+
+
+def why_unattributed(url: str, our_publisher: str = "",
+                     our_links: "set[str] | tuple[str, ...]" = ()) -> str | None:
+    """A merchant page that CAN pay us but was posted without our id.
+
+    None when the link is not on an attributable host, when it already carries
+    OUR publisher id, when it belongs to somebody else (the foreign rule speaks
+    first), or when the bot's own link_cache minted it. Anything else on these
+    hosts is a click that earns nothing - the exact reason commissions were
+    missing while the product still opened.
+    """
+    if not our_publisher:
+        return None
+    if our_links and url in our_links:
+        return None
+    host = link_host(url)
+    if not any(host == h or host.endswith("." + h) for h in EK_ATTRIBUTION_HOSTS):
+        return None
+    pairs = _query_pairs(url)
+    values = [v for v in pairs.get("affextparam2", []) if v]
+    if our_publisher in values:
+        return None  # already ours
+    foreign = [(key, v) for key in FOREIGN_ATTRIBUTION_PARAMS
+               for v in pairs.get(key, []) if v and v != our_publisher]
+    if foreign or any(v for v in pairs.get("tag", [])):
+        return None  # somebody else's attribution: that is a FOREIGN link
+    return ("can carry our publisher id (%s) but was posted without it - the product "
+            "opens and NOBODY is paid" % our_publisher)
+
+
 def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
                      our_links: "set[str] | tuple[str, ...]" = ()) -> str | None:
     """Why this published link is NOT one of ours (None means it is fine).
@@ -149,6 +202,9 @@ def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
         return "tagged to somebody else (%s)" % ",".join(sorted(set(tags)))[:40]
     if foreign_ids:
         return "carries somebody else's affiliate id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
+    unattributed = why_unattributed(url, our_publisher, our_links)
+    if unattributed:
+        return unattributed
     return None  # unmonetizable store, clean page: publishing it is the policy
 
 
@@ -161,6 +217,8 @@ def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
     OUR tag/publisher id, a clean merchant page kept on purpose, or a link that
     should never have left - counted, so the answer is a number, not an opinion.
     """
+    if why_unattributed(url, our_publisher, our_links):
+        return "unattributed"
     if why_not_our_link(url, our_tag, our_publisher, our_links):
         return "foreign"
     if (OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url)
@@ -622,8 +680,8 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
     except sqlite3.OperationalError:
         sent_counts = {}
     our_links = our_minted_links(conn)
-    link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "clean-merchant": 0,
-                   "foreign": 0}
+    link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
+                   "clean-merchant": 0, "foreign": 0}
 
     findings: list[dict] = []
     for row in rows:
@@ -810,6 +868,7 @@ def main(argv=None) -> int:
     summary = (f"LINK PERFECTION | links={link_counts['links']} "
                f"our-short={link_counts['our-short']} "
                f"our-publisher={link_counts['our-publisher']} "
+               f"unattributed={link_counts['unattributed']} "
                f"clean-merchant={link_counts['clean-merchant']} "
                f"FOREIGN={link_counts['foreign']}")
     if args.json:
@@ -818,9 +877,13 @@ def main(argv=None) -> int:
     else:
         print(f"QUALITY AUDIT | db={args.db} posts={posts} findings={len(findings)}")
         print(f"  {summary}")
-        if link_counts["foreign"] == 0 and link_counts["links"]:
+        if link_counts["foreign"] == 0 and link_counts["unattributed"] == 0 and link_counts["links"]:
             print("  every published link is one of ours (minted by this bot, our tag, "
                   "or a clean merchant page) - nothing foreign reached a channel")
+        if link_counts["unattributed"]:
+            print("  -> %s link(s) could carry our publisher id and did not (Flipkart/Myntra): "
+                  "they open and pay nobody. Published before the 2026-10-04 attribution fix; "
+                  "new posts stamp affExtParam2 automatically." % link_counts["unattributed"])
         for kind in ("OURS", "LINKS", "TEXTLESS", "MISROUTE", "COVERAGE", "DUPLICATE", "NEAR-DUPE"):
             items = by_kind.get(kind) or []
             print(f"  {kind:<9}: {len(items)}")
