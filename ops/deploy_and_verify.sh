@@ -41,13 +41,20 @@ info "bridge dir  : $BRIDGE_DIR"
 
 if [[ "$DO_TESTS" == "1" ]]; then
   echo "==== 0.5 THE REPO PROVES ITSELF (suites must be green before shipping) ===="
+  # The suites IMPORT the bot, and importing it creates logs/ and a default DB
+  # next to the source. Run against the checkout (2026-10-04: the deploy did
+  # exactly that) and the checkout fills with test logs/DBs - which is what
+  # conversion_report then read back as "live". Isolate both.
+  SUITE_TMP="$(mktemp -d /tmp/deploy-suites-XXXXXX)"
   for suite in test_pipeline_fixes test_render_job test_best_copy test_duplicate_sim \
                test_line_fidelity test_rescan test_earnkaro_conversion test_hypd_links; do
     if [[ ! -f "$REPO/$suite.py" ]]; then
       warn "$suite.py is missing from $REPO"
       continue
     fi
-    if (cd "$REPO" && timeout 900 python3 "$suite.py" >"/tmp/$suite.deploy.log" 2>&1); then
+    if (cd "$REPO" && BOT_DB_PATH="$SUITE_TMP/$suite.sqlite3" \
+        BOT_LOG_DIR="$SUITE_TMP/logs" BOT_MEDIA_DIR="$SUITE_TMP/media" \
+        timeout 900 python3 "$suite.py" >"/tmp/$suite.deploy.log" 2>&1); then
       ok "$suite"
     else
       warn "$suite failed - last lines: $(tail -3 "/tmp/$suite.deploy.log" | tr '\n' ' ')"
@@ -58,7 +65,9 @@ if [[ "$DO_TESTS" == "1" ]]; then
     # identity rule, generated from bestgaa/main_bot_new.py. If somebody edited one
     # copy and forgot the other, every SAME-PRODUCT finding is fiction - so the
     # gate refuses to ship on a disagreement.
-    if (cd "$REPO" && python3 ops/sync_identity.py --check >/tmp/sync.identity.log 2>&1); then
+    if (cd "$REPO" && BOT_DB_PATH="$SUITE_TMP/sync.sqlite3" \
+        BOT_LOG_DIR="$SUITE_TMP/logs" BOT_MEDIA_DIR="$SUITE_TMP/media" \
+        python3 ops/sync_identity.py --check >/tmp/sync.identity.log 2>&1); then
       ok "auditor identity in sync"
     else
       warn "auditor identity is OUT OF SYNC - run: python3 ops/sync_identity.py"
@@ -79,7 +88,12 @@ if [[ "$DO_TESTS" == "1" ]]; then
   fi
 fi
 
-if [[ "$DO_PULL$DO_DEPLOY" == "11" ]]; then
+# BUG FIX (2026-10-04): this used to read `[[ "$DO_PULL$DO_DEPLOY" == "11" ]]`,
+# so `--no-pull` (which is exactly how ops/deploy_fresh.sh calls this script)
+# silently skipped the ENTIRE deploy: no repack, no hotfix, no restart - and the
+# only symptom was the "OLDER build" hash line further down. The deploy runs
+# whenever DO_DEPLOY=1; the pull inside is already conditional.
+if [[ "$DO_DEPLOY" == "1" ]]; then
   echo "==== 1. DEPLOY ===="
   if [[ "$DO_PULL" == "1" ]]; then
     if [[ -n "$(git -C "$REPO" status --porcelain 2>/dev/null)" ]]; then

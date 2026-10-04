@@ -61,7 +61,23 @@ def load_env(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+# The DEPLOYED install's .env is the truth (BOT_DB_PATH, tokens, HYPD store).
+# 2026-10-04: only the checkout's .env was read, so on the server this tool died
+# with "Missing required environment variable: TELEGRAM_API_ID" before it could
+# learn anything - and it never saw the live BOT_DB_PATH at all.
+APP_DIR = Path(os.getenv("BESTGAA_DIR")
+               or "/home/ubuntu/bestgaa-bot/bestgaa-bot")
+load_env(APP_DIR / ".env")
 load_env(REPO_ROOT / "bestgaa" / ".env")
+
+# Learning a HYPD link writes into the bot's store: never do that against the
+# checkout's throwaway DB when the live one is right there.
+if not os.environ.get("BOT_DB_PATH") and (APP_DIR / "bestgaa.sqlite3").exists():
+    os.environ["BOT_DB_PATH"] = str(APP_DIR / "bestgaa.sqlite3")
+
+# The bot module needs these at import time; this tool never starts Telegram.
+os.environ.setdefault("TELEGRAM_API_ID", "1")
+os.environ.setdefault("TELEGRAM_API_HASH", "hypd-links-ops-tool")
 
 import main_bot_new as bot  # noqa: E402
 

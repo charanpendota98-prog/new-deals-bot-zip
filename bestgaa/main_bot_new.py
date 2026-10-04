@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.8
+"""BestGAA Production Bot v18.9
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -134,9 +134,13 @@ def button_url(button) -> str:
 # Configuration
 # ---------------------------------------------------------------------------
 BASE_DIR = Path(__file__).resolve().parent
-LOG_DIR = BASE_DIR / "logs"
+# BOT_LOG_DIR / BOT_MEDIA_DIR exist so a TOOL (a test suite, an audit, a deploy
+# check) can import this module without writing logs/media into the source tree.
+# 2026-10-04: the deploy imported the bot from a checkout, the checkout grew a
+# logs/bot.log, and conversion_report then read those test lines as live data.
+LOG_DIR = Path(os.getenv("BOT_LOG_DIR") or (BASE_DIR / "logs"))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
-MEDIA_DIR = BASE_DIR / "media"
+MEDIA_DIR = Path(os.getenv("BOT_MEDIA_DIR") or (BASE_DIR / "media"))
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -170,6 +174,10 @@ API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
 EK_KEY = env_required("EARNKARO_API_KEY")
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
+# A realistic desktop UA for outbound API/fetch calls. EarnKaro's endpoint sits
+# behind Cloudflare, which rejects default library UAs with "error code: 1010".
+API_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 # The public converter accepts {"deal": <url or whole post>} plus an optional
 # `convert_option`. "convert_only" is the documented value - convert the link(s)
 # and NOTHING else: never post, never share, never apply an account-level
@@ -6600,7 +6608,13 @@ class AffiliateClient:
                         # account-default formatting). Sending it explicitly is what
                         # makes the RESPONSE shape predictable.
                         json={"deal": clean, "convert_option": EARNKARO_CONVERT_OPTION},
-                        headers={"Authorization": f"Bearer {EK_KEY}", "Content-Type": "application/json"},
+                        # Cloudflare fronts this API and answers a bare python
+                        # User-Agent with "error code: 1010" (403) - live probe
+                        # 2026-10-04. The UA below is what the rest of this file
+                        # already sends on every fetch.
+                        headers={"Authorization": f"Bearer {EK_KEY}",
+                                 "Content-Type": "application/json",
+                                 "User-Agent": API_USER_AGENT},
                         timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2)),
                     ) as response:
                         body = await response.text()
@@ -8436,7 +8450,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.8 starting "
+    log.info("BestGAA Production Bot v18.9 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

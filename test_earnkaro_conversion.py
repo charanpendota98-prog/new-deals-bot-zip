@@ -59,6 +59,11 @@ os.environ.update(
     # A private DB: the link cache is durable, and a cached row from another
     # suite would be returned instead of the link this test's fake API minted.
     BOT_DB_PATH=str(Path(_TMP) / "test.sqlite3"),
+    # ...and private logs/media, so importing the bot never writes into the
+    # source tree (2026-10-04: a checkout full of test logs made the live report
+    # describe a build that was not even running).
+    BOT_LOG_DIR=str(Path(_TMP) / "logs"),
+    BOT_MEDIA_DIR=str(Path(_TMP) / "media"),
 )
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
@@ -1251,6 +1256,77 @@ def test_status_report_answers_are_we_converting():
               health.get("provenance cut", {}).get("count") == 1
               and health.get("provenance rescue", {}).get("count") == 1, str(health))
 
+        # 2026-10-04 DEPLOY BUG: the report took the first NON-None path, so the
+        # checkout's own (test-created) DB/log shadowed the deployed ones and the
+        # verdict described a build that was not even live. It must take the first
+        # EXISTING file, and say out loud when it is reading the checkout.
+        with tempfile.TemporaryDirectory() as td:
+            real = Path(td) / "deployed.sqlite3"
+            real.write_text("x", encoding="utf-8")
+            picked, note = report.pick_candidate(
+                [Path(td) / "missing.sqlite3", real])
+            check("the report picks the first EXISTING file, not the first named one",
+                  picked == real and note == "", f"{picked} / {note!r}")
+        picked, note = report.pick_candidate([report.REPO_ROOT / "README.md"])
+        check("a file inside the checkout is labelled as test data",
+              picked is not None and "CHECKOUT" in note, f"{picked} / {note!r}")
+        picked, note = report.pick_candidate([Path("/nonexistent/a.sqlite3")],
+                                             explicit="/tmp/explicit.sqlite3")
+        check("an explicit --db still wins outright",
+              str(picked) == "/tmp/explicit.sqlite3" and note == "", f"{picked}")
+
+
+def test_deploy_flow_cannot_silently_skip_again():
+    """The 2026-10-04 deploy attempt: `deploy_fresh.sh` calls
+    `deploy_and_verify.sh --no-pull --with-tests`, and the deploy block was
+    guarded by `[[ "$DO_PULL$DO_DEPLOY" == "11" ]]` - with --no-pull that is
+    "01", so repack + hotfix + restart were SKIPPED and the only symptom was
+    "OLDER build" hash lines further down. The operator saw "deploy ran but
+    nothing changed" while every suite was green.
+    """
+    repo = Path(__file__).parent
+    verify = (repo / "ops" / "deploy_and_verify.sh").read_text(encoding="utf-8")
+    # (the fix's own comment quotes the OLD guard, so only real code lines count)
+    old_guard_lines = [line for line in verify.splitlines()
+                       if "DO_PULL$DO_DEPLOY" in line and not line.strip().startswith("#")]
+    check("the deploy runs whenever DO_DEPLOY=1 (the --no-pull skip bug)",
+          'if [[ "$DO_DEPLOY" == "1" ]]; then' in verify and not old_guard_lines,
+          f"guard missing or old guard back: {old_guard_lines}")
+    check("the suites run against a throwaway DB/log, not the checkout",
+          "SUITE_TMP" in verify and "BOT_LOG_DIR=" in verify,
+          "deploy suites are not isolated from the source tree")
+
+    # The bot must keep its logs/media OUT of the source tree when a tool says so:
+    # a checkout full of test logs is what made conversion_report describe a
+    # build that was not even live.
+    import subprocess as sp
+    with tempfile.TemporaryDirectory() as td:
+        env = dict(os.environ, BOT_LOG_DIR=str(Path(td) / "logs"),
+                   BOT_MEDIA_DIR=str(Path(td) / "media"),
+                   BOT_DB_PATH=str(Path(td) / "x.sqlite3"),
+                   TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k")
+        repo_log = repo / "bestgaa" / "logs" / "bot.log"
+        before = repo_log.stat().st_mtime if repo_log.exists() else None
+        proc = sp.run([sys.executable, "-c", "import main_bot_new"],
+                      cwd=str(repo / "bestgaa"), env=env, capture_output=True, text=True)
+        after = repo_log.stat().st_mtime if repo_log.exists() else None
+        check("a tool can import the bot without writing into the source tree",
+              proc.returncode == 0 and (Path(td) / "logs" / "bot.log").exists()
+              and after == before,
+              f"{(proc.stderr or '')[-160:]} | repo log mtime {before} -> {after}")
+
+    report = (repo / "ops" / "conversion_report.py").read_text(encoding="utf-8")
+    check("the live report reads the DEPLOYED files first, never the checkout's",
+          report.index("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3")
+          < report.index('REPO_ROOT / "bestgaa" / "bestgaa.sqlite3"')
+          and "pick_candidate" in report, "candidate order regressed")
+    hypd = (repo / "ops" / "hypd_links.py").read_text(encoding="utf-8")
+    check("hypd_links reads the deployed .env (it crashed on a bare checkout)",
+          "APP_DIR" in hypd and 'BESTGAA_DIR' in hypd, "hypd env fix missing")
+    stable = (repo / "ops" / "deploy_stable.sh").read_text(encoding="utf-8")
+    check("a dropped SSH cannot kill the deploy (tmux wrapper exists)",
+          "tmux new-session" in stable and "nohup" in stable, "deploy_stable.sh broken")
+
 
 def main():
     test_response_shapes()
@@ -1260,6 +1336,7 @@ def main():
     test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_unknown_affiliate_domain_is_verified_or_refused()
     test_token_claims()
+    test_deploy_flow_cannot_silently_skip_again()
     test_amazon_policy()
     test_stale_network_amazon_rows_are_upgraded()
     test_review_channel_expansion_keeps_our_tag()

@@ -41,16 +41,40 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The DEPLOYED files come FIRST, the checkout's own copies last. 2026-10-04: the
+# deploy imported the bot from the checkout, which created logs/bot.log and a
+# default DB there, and this report read those TEST lines as if they were live -
+# "AMAZON DIRECT 4" from a build that was not even deployed. A file inside the
+# checkout is never evidence about the running bot unless the operator asks for it.
 DEFAULT_DB_CANDIDATES = (
     Path(os.getenv("BOT_DB_PATH", "")) if os.getenv("BOT_DB_PATH") else None,
-    REPO_ROOT / "bestgaa" / "bestgaa.sqlite3",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3"),
+    REPO_ROOT / "bestgaa" / "bestgaa.sqlite3",
 )
 DEFAULT_LOG_CANDIDATES = (
     Path(os.getenv("BOT_LOG", "")) if os.getenv("BOT_LOG") else None,
-    REPO_ROOT / "bestgaa" / "logs" / "bot.log",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/logs/bot.log"),
+    REPO_ROOT / "bestgaa" / "logs" / "bot.log",
 )
+
+
+def pick_candidate(candidates, explicit=None):
+    """(path, note): the first EXISTING candidate, and a warning if it is suspect.
+
+    The old code took the first non-None candidate, so on a server the checkout's
+    file shadowed the deployed one even when it did not exist.
+    """
+    if explicit:
+        return Path(explicit), ""
+    for path in candidates:
+        if path and Path(path).exists():
+            note = ("read from the CHECKOUT (test data), not the deployed bot - pass "
+                    "--db/--log for the live files") if str(REPO_ROOT) in str(path) else ""
+            return Path(path), note
+    for path in candidates:                      # nothing exists: name the default
+        if path:
+            return Path(path), ""
+    return None, ""
 ENV_CANDIDATES = (
     REPO_ROOT / "bestgaa" / ".env",
     Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"),
@@ -499,8 +523,8 @@ def main() -> int:
                         help="extra .env file(s) to read (repeatable)")
     args = parser.parse_args()
 
-    db = Path(args.db) if args.db else next((p for p in DEFAULT_DB_CANDIDATES if p), None)
-    log = Path(args.log) if args.log else next((p for p in DEFAULT_LOG_CANDIDATES if p), None)
+    db, db_note = pick_candidate(DEFAULT_DB_CANDIDATES, args.db)
+    log, log_note = pick_candidate(DEFAULT_LOG_CANDIDATES, args.log)
     env = load_env(args.env_file)
 
     cfg = config_report(env)
@@ -513,6 +537,10 @@ def main() -> int:
                           "verdict": lines, "problems": problems}, indent=2))
         return 1 if problems else 0
 
+    if db_note:
+        print(f"NOTE: database {db_note}")
+    if log_note:
+        print(f"NOTE: log {log_note}")
     print("=" * 78)
     print(f"CONVERSION REPORT — last {args.hours:g}h")
     print("=" * 78)

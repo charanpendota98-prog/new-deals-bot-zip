@@ -365,3 +365,40 @@ USER REQUEST
      YOUR SIDE (unchanged, now load-bearing): every channel that carries the tag
      must be listed in Associates Central with its FULL url, and the account must
      stay in good standing - the tag is now the money path, not a fallback.
+
+ 11. THE DEPLOY ITSELF: WHAT WENT WRONG ON 2026-10-04, AND THE FIX (v18.9)
+
+     The first real deploy attempt ran every suite green and deployed NOTHING.
+     Three separate causes, all fixed and pinned by the test suite:
+
+     (a) DEPLOY SKIPPED BY A GUARD. deploy_fresh.sh calls
+         `deploy_and_verify.sh --no-pull --with-tests`, and the deploy block was
+         guarded by `[[ "$DO_PULL$DO_DEPLOY" == "11" ]]` - with --no-pull that
+         string is "01", so repack + hotfix + restart never ran. The only
+         symptom was "main_bot.py is an OLDER build" further down.
+         FIX: the deploy runs whenever DO_DEPLOY=1.
+
+     (b) TEST DATA READ AS LIVE DATA. The suites IMPORT the bot, and importing
+         it creates logs/ and a default DB next to the source; conversion_report
+         then took the FIRST NAMED candidate (the checkout's own file) and
+         reported markers from a build that was not running.
+         FIX: the bot honours BOT_LOG_DIR / BOT_MEDIA_DIR, the deploy and
+         test_all.sh run the suites against a throwaway DB/log, and
+         conversion_report prefers the DEPLOYED paths, picks the first EXISTING
+         file, and prints a NOTE when it is reading the checkout.
+
+     (c) CLOUDFLARE 1010 ON THE API PROBE. earnkaro_check.py got
+         `403 error code: 1010` with urllib's default User-Agent (the live bot
+         was converting fine at the same time - identical requests, different
+         timing). The converter POSTs (bot + probe) now send a browser UA.
+
+     (d) A DROPPED SSH KILLED THE RUN (twice: "client_loop: send disconnect").
+         Use the wrapper - it survives a disconnect:
+
+             ./ops/deploy_stable.sh            # deploy_fresh.sh inside tmux
+             ./ops/deploy_stable.sh --attach   # ... and watch it
+             ./ops/deploy_stable.sh --status   # is it still running?
+
+     SAME RUN ORDER, JUST STABLE:
+         cd ~/dealsbot-src && git pull --ff-only
+         ./ops/deploy_stable.sh            # then: tmux attach -t bestgaa-deploy

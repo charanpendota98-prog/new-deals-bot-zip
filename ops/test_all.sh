@@ -34,6 +34,16 @@ run() {
   "$@"
 }
 
+# Importing the bot creates logs/ and (on first write) a default DB next to the
+# source. Keep the gate's artifacts out of the checkout: a checkout full of test
+# logs is exactly what made conversion_report describe a build that was not live
+# (2026-10-04). Only fills what is not already configured.
+GATE_TMP="$(mktemp -d /tmp/bestgaa-gate-XXXXXX)"
+export BOT_DB_PATH="${BOT_DB_PATH:-$GATE_TMP/gate.sqlite3}"
+export BOT_LOG_DIR="${BOT_LOG_DIR:-$GATE_TMP/logs}"
+export BOT_MEDIA_DIR="${BOT_MEDIA_DIR:-$GATE_TMP/media}"
+trap 'rm -rf "$GATE_TMP"' EXIT
+
 run 'render and routing' "$PYTHON" test_render_job.py
 run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py

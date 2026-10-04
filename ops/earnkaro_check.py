@@ -153,7 +153,12 @@ def convert(token: str, api: str, deal: str, option: str, timeout: float) -> tup
     body = json.dumps({"deal": deal, "convert_option": option}).encode("utf-8")
     request = urllib.request.Request(
         api, data=body, method="POST",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json",
+                 # Cloudflare ("error code: 1010") blocks the default
+                 # "Python-urllib/x.y" agent; the bot sends the same UA.
+                 "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/131.0.0.0 Safari/537.36")},
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

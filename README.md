@@ -51,6 +51,11 @@ PYTHON=.venv/bin/python ./ops/test_all.sh
 # On the deployed server: prove what is live
 python3 ops/deploy_and_verify.sh --verify-only
 
+# Deploy from a checkout WITHOUT fearing a dropped SSH (2026-10-04: two drops
+# killed the deploy mid-suites). Runs deploy_fresh.sh inside tmux, logged:
+./ops/deploy_stable.sh            # watch: tmux attach -t bestgaa-deploy
+./ops/deploy_stable.sh --status   # or: ./ops/deploy_stable.sh --log
+
 # Audit a real or copied database (read-only; --strict exits non-zero on findings)
 python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --strict
 
@@ -1120,7 +1125,7 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.8 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.9 — deploy-flow fixes; **not yet deployed to a server**;
 the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
 Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
 changed — see `ops/quality_audit.py`;
@@ -1130,17 +1135,17 @@ printing exactly what the older build was coded to print). Hashes refreshed
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.8) | `79d862ce6e1e38c3dd237959413f343a3e3412bb23f26bd2e4dd37dcd7376939` |
+| `bestgaa/main_bot_new.py` (v18.9) | `ce43213667197eb1ed4fcb81d66e27d01efd2f43ade7bf8ca2f5559a6197fdf8` |
 | `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
 | `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `0c4c0af8a0a9872083c249a24262e74e0b4004bf6d137b1e649258aef3d0b08c` |
+| `ops/deploy_and_verify.sh` | `8b825b41b4c6a23146635c336cb6db698f773316ae933020559944c2af7fd7bb` |
 | `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
 | `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
-| `test_earnkaro_conversion.py` | `115b6ac63d41a9e1619caf0e786f46ccac5ec51a0e418b3f66d52ae191062cc1` |
+| `test_earnkaro_conversion.py` | `4ed544fc03bd2ec3883c32466d269bd17dfd5915ea23de457f26c28aa878d3b2` |
 
 A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
 tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python
