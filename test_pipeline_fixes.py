@@ -738,6 +738,67 @@ def test_final_text_fidelity():
           bot.normalize_nested_link_markup("**Bold Sale** at *50%* off") == "Bold Sale at 50% off")
 
 
+async def test_amazon_short_links_are_never_posted(store):
+    """USER REPORT 2026-10-04: a channel showed `amzn.to/4dnF9lU?tag=mama086-21`
+    and it opens SOMEBODY ELSE'S page; `amazon.in/dp/...?tag=dv12399-21` is a raw
+    foreign-tagged long link. The rule: resolve the short link, make it OURS,
+    shorten it, and post that - never the short code, never a stranger's tag.
+    """
+    print("\n== an Amazon short link is a wrapper, never a post ==")
+    check("amzn.to is recognised as an Amazon short host", bot.is_amazon_short_host("amzn.to"))
+    check("and so are amzn.in / a.co", bot.is_amazon_short_host("www.amzn.in")
+          and bot.is_amazon_short_host("a.co"))
+    check("a real Amazon page is NOT a short host",
+          not bot.is_amazon_short_host("www.amazon.in"))
+
+    # The exact shape the user pasted: our tag glued onto a short code we never
+    # minted. It must be CUT from a finished post (the deal text stays).
+    cut, cut_urls = bot.cut_amazon_short_links(
+        "boAt Airdopes 141 \u20b91,099\nhttps://amzn.to/4dnF9lU?tag=mama086-21")
+    check("a short code with our tag glued on is cut, never posted",
+          "amzn.to" not in cut and "boAt Airdopes 141" in cut and cut_urls)
+    # A short link WE minted expands back to its own long, tagged page instead.
+    class Aff:
+        _short_to_long = {"https://bitli.in/ours1":
+                          "https://www.amazon.in/dp/B0D9P2M1PB?tag=mama086-21"}
+    kept, none_cut = bot.cut_amazon_short_links("Deal \u20b9599\nhttps://bitli.in/ours1", Aff())
+    check("our OWN short link is left alone by the cut (only source short codes go)",
+          "https://bitli.in/ours1" in kept and not none_cut)
+
+    # The generated link for a single Amazon deal: OUR short link whose long form
+    # is the compact, our-tag product page - never the source's tag, never amzn.to.
+    src = "https://www.amazon.in/dp/B0D9P2M1PB?th=1&smid=AXOGFIT0PZZ7G&tag=dv12399-21"
+
+    class ShortAff:
+        def __init__(self):
+            self._short_to_long, self._short_cache, self._health = {}, {}, {}
+            self.calls = []
+
+        async def shorten(self, url):
+            self.calls.append(url)
+            short = "https://bitli.in/ours9"
+            self._short_to_long[short] = url
+            return short
+
+        async def link_not_broken(self, url):
+            return True
+
+    old_tag, old_shorten = bot.OUR_TAG, bot.SHORTEN_AMAZON_LINKS
+    bot.OUR_TAG, bot.SHORTEN_AMAZON_LINKS = "mama086-21", True
+    try:
+        aff = ShortAff()
+        result = await bot.AffiliateClient._native_amazon_link(aff, src, src, src, False)
+    finally:
+        bot.OUR_TAG, bot.SHORTEN_AMAZON_LINKS = old_tag, old_shorten
+    check("a single Amazon deal is published as OUR short link",
+          result is not None and result.affiliate == "https://bitli.in/ours9")
+    check("and the long form behind it is the compact tag=mama086-21 product page",
+          bool(aff.calls) and "amazon.in/dp/B0D9P2M1PB" in aff.calls[0]
+          and "tag=mama086-21" in aff.calls[0])
+    check("the source's own tag never survives the rebuild",
+          not any("dv12399-21" in line for line in aff.calls))
+
+
 async def test_no_silent_loss(store):
     """No source post may be swallowed by dedup or by an unmonetizable link."""
     print("\n== every source post reaches the channels (no silent loss) ==")
@@ -1602,6 +1663,7 @@ async def main():
         await test_housekeeping(store)
         await test_render_latency(store)
         await test_price_gate_is_a_fallback(store)
+        await test_amazon_short_links_are_never_posted(store)
         await test_no_silent_loss(store)
         await test_edited_source_posts(store)
         await test_passthrough_knob(store)

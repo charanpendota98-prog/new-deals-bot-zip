@@ -2316,12 +2316,21 @@ class Aff(bot.AffiliateClient):
 aff = Aff()
 res = asyncio.run(aff.convert("https://www.amazon.in/dp/B0ALLCHAN1?psc=1", False))
 link = res.affiliate
-check("the generated Amazon link carries our tag", bot.OUR_TAG in link, link)
-check("it is the native product URL, not an ekaro hop", "amazon.in/dp/" in link, link)
+# USER RULE (2026-10-04): the published Amazon link is SHORTENED with our own
+# shortener; the tagged native product page is what it points at. Both forms are
+# acceptable here (the long tagged link is the fallback when the shortener fails),
+# but an ekaro hop never is.
+target = aff._short_to_long.get(link, link)
+check("the generated Amazon link is OUR short link (or the tagged product URL)",
+      link.startswith("https://bitli.in/") or "amazon.in/dp/" in link, link)
+check("the tagged native product page is what the published link points at",
+      "amazon.in/dp/" in target and bot.OUR_TAG in target, link + " -> " + target)
+check("no ekaro hop rides in an Amazon post", "ekaro" not in link, link)
 
-for target in sorted(bot.AMAZON_TAG_TARGETS):
-    out = bot.strip_amazon_tag_for_undeclared("Deal\n" + link, target, aff)
-    check("%s keeps the tag" % target, bot.OUR_TAG in out, out)
+for owned_target in sorted(bot.AMAZON_TAG_TARGETS):
+    out = bot.strip_amazon_tag_for_undeclared("Deal\n" + link, owned_target, aff)
+    check("%s keeps the tag (visible on the link or behind the one we minted)" % owned_target,
+          bot.OUR_TAG in out or link in out, out)
 
 class NoCache:
     _short_to_long = {}
@@ -2443,12 +2452,20 @@ async def main():
     check("the expanded links still carry tag=mama086-21",
           expanded.count("tag=" + bot.OUR_TAG) == 3, expanded)
 
-    # A single Amazon deal: native everywhere, no quota spent.
+    # A single Amazon deal: USER RULE 2026-10-04 - it is SHORTENED with our own
+    # shortener too (the user asked for the short form in the channel), and the
+    # review channel still expands it to the tagged native product page.
     aff2 = Aff()
     r = await aff2.convert("https://www.amazon.in/dp/B0AMZONE01", False)
-    check("a single Amazon deal is native too", "amazon.in/dp/" in r.affiliate, r.affiliate)
-    check("with our tag", bot.OUR_TAG in r.affiliate, r.affiliate)
-    check("no Bitly quota is spent on a single Amazon deal", not aff2.calls, str(aff2.calls))
+    check("a single Amazon deal is our short link", r.affiliate.startswith("https://bitli.in/"),
+          r.affiliate)
+    check("and its long form is the tagged product URL",
+          len(aff2.calls) == 1 and "amazon.in/dp/" in aff2.calls[0]
+          and bot.OUR_TAG in aff2.calls[0], str(aff2.calls))
+    single_expanded = await aff2.expand_our_short_links(r.affiliate)
+    check("the review channel sees the tagged native page for a single deal too",
+          "bitli.in" not in single_expanded and "amazon.in/dp/" in single_expanded
+          and bot.OUR_TAG in single_expanded, single_expanded)
 
     # Non-Amazon links are untouched: they still shorten in a list.
     aff3 = Aff()
@@ -2520,6 +2537,8 @@ class Session:
         return Resp(json.dumps({"success": 1,
                                 "data": "https://ekaro.in/e%d" % random.randint(10**5, 9*10**5)}))
 
+_short_n = [0]   # ONE counter per run: the real shortener never repeats a code
+
 class Aff(bot.AffiliateClient):
     def __init__(self):
         self._health, self._short_cache, self._short_to_long = {}, {}, {}
@@ -2529,12 +2548,14 @@ class Aff(bot.AffiliateClient):
     async def link_not_broken(self, u): return True
     async def shorten(self, u):
         self.calls.append(u)
-        short = "https://bitli.in/S%d" % len(self.calls)
+        _short_n[0] += 1
+        short = "https://bitli.in/S%d" % _short_n[0]
         self._short_to_long[short] = u
         return short
 
 async def deliver(src, target):
     aff = Aff()
+    deliver.last_aff = aff
     text = bot.tidy_post(bot.clean_source_text(src))
     text = bot.split_inline_product_links(text)
     text = bot.format_clustered_product_list(text)
@@ -2585,7 +2606,15 @@ async def main():
     for keep in ("LOOT DEAL", "boAt Rockerz 255 Pro+", "899", "2990", "70% OFF",
                  "Rating 4.2", "12,453", "coupon"):
         check("the loot channel keeps %r" % keep, keep in loot, loot)
-    check("the loot link carries our tag", bot.OUR_TAG in loot, loot)
+    # USER RULE (2026-10-04): the loot channel shows OUR short link and the click
+    # lands on the tagged product page (the tag rides behind the short link).
+    loot_link = next((l.strip() for l in loot.splitlines()
+                      if l.strip().startswith("http")), "")
+    loot_target = deliver.last_aff._short_to_long.get(loot_link, loot_link)
+    check("the loot link is ours and its destination is the tagged product page",
+          ("bitli.in" in loot_link or bot.OUR_TAG in loot_link)
+          and "amazon.in/dp/" in loot_target and bot.OUR_TAG in loot_target,
+          loot_link + " -> " + loot_target)
     check("no disclosure is bolted onto the loot post", "#ad" not in loot, loot)
     check("the source's channel pointer is gone", "LootZone" not in loot, loot)
 

@@ -1487,6 +1487,20 @@ function attributeWithOurPublisher(url) {
     return url
   }
 }
+// Amazon's OWN short domains (2026-10-04). `amzn.to/XXXX?tag=ours` was seen in a
+// channel: the code belongs to whoever created it and opening it serves THEIR
+// page, so it is a wrapper, never a destination. Such a link is followed to the
+// real amazon.in page, tagged with OUR Associates tag, and only then posted.
+const AMAZON_SHORT_HOSTS = new Set(['amzn.to', 'amzn.in', 'amzn.eu', 'a.co'])
+function isAmazonShortHost(host) { return [...AMAZON_SHORT_HOSTS].some(d => host === d || host.endsWith('.' + d)) }
+function isAmazonHost(host) {
+  return host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
+}
+// USER RULE 2026-10-04 ("LONG LINK lo MARCHI SHORTEN GA CHESI POST CHEYALIGAA"):
+// an Amazon link we publish is shortened with our own shortener, not just posted
+// as a long tagged URL. Set WA_SHORTEN_AMAZON_LINKS=false to spend no quota on it.
+const SHORTEN_AMAZON_LINKS = !['0', 'false', 'no', 'off'].includes(
+  String(process.env.WA_SHORTEN_AMAZON_LINKS || 'true').trim().toLowerCase())
 // Follow known shortener/redirector hosts to the final merchant page (max 5
 // hops). linkredirect.in embeds the destination in its ?dl= param, so it is
 // decoded without any network call. Returns null when resolution fails.
@@ -1558,6 +1572,13 @@ async function prepareDirectJob(job, fetchFn = fetch) {
     let resolved = url
     if (REDIRECT_FOLLOW_HOSTS.has(hostOf(url))) {
       resolved = (await resolveUrl(url, fetchFn)) || url
+    }
+    if (isAmazonShortHost(hostOf(url)) && !isAmazonHost(hostOf(resolved))) {
+      // `amzn.to/XXXX?tag=ours` opens whoever created that code - never post it.
+      // prepareAmazonShortLinks has the same rule for every job; this early exit
+      // keeps a failed resolve from being re-fetched here.
+      job.blockedLinks[url] = true
+      continue
     }
     try {
       const u = new URL(resolved)
@@ -2374,6 +2395,10 @@ function needsShortening(url, isList = false) {
   // ugly: product LISTS (2+ links) and genuinely long links. A normal single
   // short amazon dp link posts as-is with our Associates tag.
   if (isList) return true
+  // 2026-10-04: an Amazon link that is OURS (our Associates tag) is shortened
+  // even when it is a single tidy /dp URL, because the user wants the short form
+  // in the channel. The tagged long link remains the fallback if Bitly fails.
+  if (SHORTEN_AMAZON_LINKS && isOurAmazonTagLink(url)) return true
   return url.length > SHORTEN_MIN_LEN
 }
 async function shortenLongUrl(url) {
@@ -2728,8 +2753,20 @@ function validateAffiliateText(job, text) {
     'ajiio.co', 'myntr.in', 'tinyurl.com', 'cutt.ly', 'rb.gy', 't.ly',
   ])
   for (const raw of urls) {
+    // A blocked link is never published (displayUrl returns '' for it): it was
+    // already cut from the post, so it is not an error - the deal goes out.
+    if (job?.blockedLinks?.[raw]) continue
     const u = new URL(raw)
     const host = u.hostname.toLowerCase()
+    if (isAmazonShortHost(host)) {
+      // Only the RESOLVED, our-tag product page may be posted (2026-10-04): the
+      // short code itself belongs to its creator and pays nobody.
+      const resolved = job?.resolvedLinks?.[raw]
+      if (!resolved || !isAmazonHost(hostOf(resolved))) {
+        throw new Error('Amazon short link may not be posted as-is')
+      }
+      continue
+    }
     // Direct-source jobs legitimately carry raw source shorteners: they are
     // resolved to the merchant page before posting (prepareDirectJob).
     if (!direct && [...sourceShorteners].some(domain => host === domain || host.endsWith(`.${domain}`))) {
@@ -2837,6 +2874,41 @@ async function assertLinksHealthy(job, urls) {
     'link health says dead; posting anyway (WA_DROP_DEAD_LINKS=false)')
 }
 
+async function prepareAmazonShortLinks(job, fetchFn = fetch) {
+  // An Amazon SHORT link is never posted as-is (see AMAZON_SHORT_HOSTS). It is
+  // followed to the real amazon.in page and re-tagged with OUR Associates tag; if
+  // it will not resolve, the link is BLOCKED (cut from the post by displayUrl) so
+  // the deal still goes out and the wrapper - which pays nobody - never does.
+  job.blockedLinks ||= {}
+  job.resolvedLinks ||= {}
+  for (const url of urlsIn(job.text || '')) {
+    const host = hostOf(url)
+    if (!isAmazonShortHost(host)) continue
+    if (job.blockedLinks[url] || job.resolvedLinks[url]) continue
+    const resolved = await resolveUrl(url, fetchFn)
+    let finalUrl = resolved || ''
+    if (finalUrl) {
+      try {
+        const u = new URL(finalUrl)
+        if (isAmazonHost(u.hostname.toLowerCase())) {
+          u.searchParams.delete('tag')
+          u.searchParams.set('tag', AMAZON_TAG)
+          finalUrl = u.toString()
+        }
+      } catch { finalUrl = '' }
+    }
+    if (finalUrl && isAmazonHost(hostOf(finalUrl))) {
+      job.resolvedLinks[url] = finalUrl
+      log.info({ id: job.id, from: url.slice(0, 60), to: finalUrl.slice(0, 90) },
+        'AMAZON SHORT RESOLVED | the short code is a wrapper; OUR tagged product page is what gets posted')
+    } else {
+      job.blockedLinks[url] = true
+      log.warn({ id: job.id, url: url.slice(0, 60) },
+        'AMAZON SHORT CUT | the source short link would not resolve to an Amazon page; the link is out, the deal stays')
+    }
+  }
+}
+
 async function verifyJob(job, fetchFn = fetch) {
   // Tag era: repair Amazon tags BEFORE the policy gate - a stranger's tag is
   // deleted, a bare link gains ours, ours passes untouched - so
@@ -2845,6 +2917,7 @@ async function verifyJob(job, fetchFn = fetch) {
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
+  await prepareAmazonShortLinks(job, fetchFn)
   const urls = validateAffiliateText(job, job.text)
   // Service/lifestyle links (Zomato/Swiggy/Zepto/movies/cards) are not in the
   // BestGAA link_cache by design; only monetized store links get the provenance
@@ -2932,7 +3005,7 @@ function isPermanent(error) {
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
   // the correct behaviour too (a retry hours later would still be a dup).
-  return /No URL|Foreign\/source shortener|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Best-deal gate|duplicate product/i.test(error.message)
+  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Best-deal gate|duplicate product/i.test(error.message)
 }
 
 async function resolveNewsletterJid(sock, target) {
@@ -5250,6 +5323,44 @@ https://fktr.in/MANY${i}`,
     const djobProv = { direct: true, resolvedLinks: { 'https://amzn.to/TAGGED': ourTagged } }
     const afterResolve = urlsForProvenance(djobProv, ['https://amzn.to/TAGGED'])
     if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
+  }
+  {
+    // USER REPORT 2026-10-04: `https://amzn.to/XXXX?tag=ours` opens the page of
+    // whoever created that short code. A short Amazon link is a WRAPPER: it is
+    // resolved to the long amazon.in page (re-tagged with OUR Associates tag) and
+    // shortened with our own shortener; if it cannot be resolved, the link is CUT
+    // (the deal text still goes out) instead of being published as-is.
+    if (!isAmazonShortHost('amzn.to') || !isAmazonShortHost('www.amzn.in') || isAmazonShortHost('amazon.in')) {
+      throw new Error('Amazon short-host detection is wrong')
+    }
+    const fakeFetch = async url => {
+      const value = String(url)
+      if (value.includes('amzn.to/GOOD1')) return { url: 'https://www.amazon.in/dp/B0SHORT0001?th=1&smid=AX&tag=dv12399-21', body: { cancel: async () => {} } }
+      throw new Error('no network expected for ' + value)
+    }
+    const good = { id: 'amzShortGood', direct: true, text: 'Deal \u20b9299\nhttps://amzn.to/GOOD1' }
+    await prepareDirectJob(good, fakeFetch)
+    const shown = displayUrl(good, 'https://amzn.to/GOOD1')
+    if (!shown.startsWith('https://www.amazon.in/dp/B0SHORT0001')) throw new Error('an Amazon short link must display as the resolved product page: ' + shown)
+    if (!shown.includes(`tag=${AMAZON_TAG}`)) throw new Error('the resolved Amazon page must carry OUR tag: ' + shown)
+    if (/dv12399-21/.test(shown)) throw new Error("a stranger's tag must not survive resolution: " + shown)
+    if (urlsIn(shown).some(u => isAmazonShortHost(hostOf(u)))) throw new Error('the short code itself must never be the posted URL')
+
+    const dead = { id: 'amzShortDead', direct: true, text: 'Deal \u20b9299\nhttps://amzn.to/SHORTBLOCKED' }
+    await prepareDirectJob(dead, fakeFetch)
+    if (!dead.blockedLinks['https://amzn.to/SHORTBLOCKED']) throw new Error('an unresolvable Amazon short link must be blocked')
+    if (displayUrl(dead, 'https://amzn.to/SHORTBLOCKED') !== '') throw new Error('a blocked Amazon short link must never be displayed')
+    validateAffiliateText(dead, dead.text)  // blocked links are cut, not an error
+
+    // Non-direct (bot-fed) jobs go through the same resolve-or-cut rule.
+    const sourceJob = { id: 'amzShortSource', text: 'Deal \u20b9299\nhttps://amzn.to/GOOD1' }
+    await prepareAmazonShortLinks(sourceJob, fakeFetch)
+    if (!sourceJob.resolvedLinks['https://amzn.to/GOOD1']) throw new Error('a source Amazon short link must be resolved to the product page')
+    validateAffiliateText(sourceJob, sourceJob.text)
+    if (!needsShortening(displayUrl(sourceJob, 'https://amzn.to/GOOD1'))) throw new Error('our Amazon links must be shortened (2026-10-04 user rule)')
+    let rawShortBlocked = false
+    try { validateAffiliateText({}, 'Deal \u20b9299\nhttps://amzn.to/OOPS') } catch { rawShortBlocked = true }
+    if (!rawShortBlocked) throw new Error('an unresolved Amazon short link must be refused, never posted as-is')
   }
   {
     // Raw source links resolve to the merchant page; raw amazon gets OUR tag.

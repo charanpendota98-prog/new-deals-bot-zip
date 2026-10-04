@@ -1,5 +1,5 @@
-LINK PERFECTION + UNKNOWN REDIRECT DOMAINS + UNATTRIBUTED LINKS
-(2026-10-04, bot v18.5)
+LINK PERFECTION + UNKNOWN REDIRECT DOMAINS + UNATTRIBUTED LINKS +
+AMAZON SHORT LINKS (2026-10-04, bot v18.6)
 ===================================================================
 
 USER REQUEST
@@ -124,7 +124,7 @@ USER REQUEST
 
   The live proof still comes from the server (this workspace has no internet).
   On the next deploy, deploy_and_verify.sh wants the log line
-      BestGAA Production Bot v18.5 starting ...
+      BestGAA Production Bot v18.6 starting ...
   which is exactly how the running build is checked against this source.
 
 
@@ -164,3 +164,50 @@ USER REQUEST
       python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
       # unattributed=N counts the OLD posts (pre-v18.5) that opened and paid nobody;
       # watch it stop growing, then re-post those deals manually if they matter.
+
+
+6. "IDI OPEN CHESTHE VERE VALLA LINK VASTHUNDI" - AMAZON SHORT LINKS (v18.6)
+===========================================================================
+  USER REPORT
+    "https://amzn.to/4dnF9lU?tag=mama086-21 ... IDI OPNE CHESTHE VERE VALLA LINK
+     VASTHUNDI. ASALU ALAGA AVODDU. PERFECTGA JUST TAG MARISTHE VUNNA LINK CHETHE
+     ALAGA AKDU - LONG LINK LO MARCHI SHORTEN GA CHESI POST CHEYALIGAA"
+    also: "https://www.amazon.in/dp/B0D9P2M1PB?th=1&smid=...&tag=dv12399-21"
+
+  WHAT WAS WRONG
+    `amzn.to/XXXX` is a short code that belongs to WHOEVER CREATED IT. Our tag glued
+    on the end does not change where it goes: the reader lands on that person's page
+    (their attribution travels in the redirect) and we earn nothing. A raw
+    `amazon.in/...?tag=dv12399-21` is the same disease with the tag visible.
+
+  WHAT CHANGED (both runtimes)
+    * bot: `is_amazon_short_host()` marks amzn.to / amzn.in / amzn.eu / a.co as
+      WRAPPERS. They are resolved to the long amazon.in product page, re-tagged with
+      OUR Associates tag, compacted and then SHORTENED with our own shortener.
+    * bot: `SHORTEN_AMAZON_LINKS=true` (default) - a single Amazon deal is shortened
+      too, not only list links. The fallback when the shortener cannot answer is the
+      compact `amazon.in/dp/ASIN?tag=OURS` page (never the source's short code).
+    * bot: `cut_amazon_short_links()` runs at DELIVERY as well, so a post rendered by
+      an older build still cannot publish a short code: the link is cut, the deal
+      text goes out, and the log says why (`AMAZON SHORT CUT | queue=...`).
+    * bridge (WhatsApp safety-net jobs): `prepareAmazonShortLinks()` resolves or BLOCKS
+      every Amazon short link before the policy gate; an unresolved one is a permanent
+      refusal, so it is never retried and never published. `needsShortening()` now
+      returns true for a link carrying OUR tag, so the channel shows a short link.
+    * a stranger's tag (`dv12399-21`) never survives the rebuild, and only a link that
+      actually carries OUR tag may be shortened (cloaking an untagged page is refused).
+
+  FOR THE REVIEW CHANNEL: `t.me/smartbuyhub11` still sees the DIRECT tagged product
+  page, because every short link we mint is recorded (`_short_to_long`) and expanded
+  back on that one target - a reviewer never has to follow a redirect.
+
+  PROOF ON THE SERVER
+      journalctl -u bestgaa -f | grep -E 'AMAZON LINK SHORTENED|AMAZON SHORT (CUT|REFUSED)'
+      # AMAZON LINK SHORTENED | https://www.amazon.in/dp/ASIN?tag=OURS -> https://bitli.in/XXXX
+      # AMAZON SHORT CUT | queue=... removed 1 Amazon short link(s) (a short code is
+      #   somebody's wrapper, never our destination)
+      python3 ops/quality_audit.py --limit 200 --strict
+      # an amzn.to link in a published post is a LINKS finding ("the source's own
+      # Amazon short link was posted instead of ours") - it must stay at 0
+  Set SHORTEN_AMAZON_LINKS=false / WA_SHORTEN_AMAZON_LINKS=false to spend no
+  shortener quota on Amazon (the compact tagged page is then posted).

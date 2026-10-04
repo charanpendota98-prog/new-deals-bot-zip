@@ -521,6 +521,23 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   product line stay. And if every text line of the post is a banner, the first one
   is kept as the headline: a wall of bare links is worse than a headline with
   hype on it. Mirrored in the bridge (`dropCampaignBanners` in `cleanDealText`).
+- **v18.6 — an Amazon SHORT link is a wrapper, never a post; and Amazon links are short
+  in the channel.** User report (2026-10-04): *"https://amzn.to/4dnF9lU?tag=mama086-21 …
+  IDI OPNE CHESTHE VERE VALLA LINK VASTHUNDI … LONG LINK lo MARCHI SHORTEN ga CHESI POST
+  CHEYALIGAA"*, plus a raw `amazon.in/…?tag=dv12399-21`. An `amzn.to` code belongs to
+  whoever created it — our tag glued on the end does not change where it goes (their
+  attribution travels in the redirect) and we earn nothing. Now: `is_amazon_short_host()`
+  marks amzn.to/amzn.in/amzn.eu/a.co as wrappers, the link is resolved to the long
+  amazon.in product page, re-tagged with OUR Associates tag and **shortened with our own
+  shortener** (`SHORTEN_AMAZON_LINKS=true`, applies to single deals too — the compact
+  tagged page is the fallback when the shortener is unavailable); `cut_amazon_short_links()`
+  runs at delivery so a post rendered by an older build still cannot publish a short code
+  (the link is cut, the deal goes out, the log says `AMAZON SHORT CUT`); the bridge resolves
+  or BLOCKS every Amazon short link before the policy gate (`prepareAmazonShortLinks()`, an
+  unresolved one is a permanent refusal) and shortens the ones carrying our tag. A stranger's
+  tag never survives the rebuild, and only a link that really carries OUR tag may be shortened
+  (cloaking an untagged page stays refused). The review channel still sees the direct tagged
+  product page: every short link is registered and expanded back on that one target.
 - **v18.5 — a link that opens but pays nobody can no longer leave the building.**
   User report (2026-10-04): *"CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU
   RAVATLEUD … PRODUCT OPEN AVUTHUNDI KAANI ADI MANA LINKS KADU"* — the page opened and
@@ -1086,21 +1103,21 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.5 — **not yet deployed to a server**;
+Current **repo source** on this branch (v18.6 — **not yet deployed to a server**;
 until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
 printing exactly what the older build was coded to print). Hashes refreshed
 2026-10-04, so they describe THIS tree:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.5) | `90bae1bb8ae8e1037800107358245bc18d4464de5a34e599a2e2198e77b09198` |
-| `tg-wa-bridge/bridge.js` | `64429c6600456bc859d27fae4d25b63190fad753ee048af0135e0d2f66df8640` |
+| `bestgaa/main_bot_new.py` (v18.6) | `2e65436f462083fbb49ec24d1b6090579596d2f6edb230e3a595a62f023e55ed` |
+| `tg-wa-bridge/bridge.js` | `b5d4446be762849ab18ac0243390c615469bfbdc620ff00b06a01143643f9b3f` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `228363e2a2960949f58610718ee1ec1d02e273f76d72a2d4c8613c5bd2a8a51b` |
+| `ops/quality_audit.py` | `cb576e8bb756194696d48639aee57293099e8775692fb81bdfd4bf31a8ed4408` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/deploy_and_verify.sh` | `0c4c0af8a0a9872083c249a24262e74e0b4004bf6d137b1e649258aef3d0b08c` |
-| `test_line_fidelity.py` | `ed49ac09171d5ed42393acfd020ab1e9baa34ef11d7ff0095319263344631ce0` |
-| `test_pipeline_fixes.py` | `0c0c099982a76e33212db4330ee2a592fb83b63475ad869edf2f6be4ffdf9c9f` |
+| `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
+| `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `50b815e17a4d9a6efef89e1c45b308e61604fa2945cab427a9b832596be1c46c` |
 

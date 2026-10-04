@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.5
+"""BestGAA Production Bot v18.6
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -18,6 +18,11 @@ immediately, exactly once, clean":
 - a link the network has no campaign for is never posted BARE when the merchant page
   itself accepts our publisher id (Flipkart/Myntra): affExtParam2 is stamped, the
   reader still reaches the product, and the click pays US instead of nobody
+- an Amazon SHORT link (amzn.to/amzn.in/a.co) is a wrapper, never a destination: it is
+  resolved to the long product page first, tagged with OUR Associates tag, and then
+  shortened with our own shortener - the short code itself is never posted (gluing a
+  tag onto someone else's short code opens THEIR page and pays nobody). A short link
+  that will not resolve is cut from the post, never republished
 - a source post with a photo and NO link is still a post: it goes out as written (deal
   terms required, nothing invented); a caption with no deal terms is not a deal and stays out
 - the source's photos are posted the way the source posted them: a multi-photo album
@@ -693,6 +698,25 @@ def retag_foreign_amazon_links(text: str) -> str:
 AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
 
 
+def is_amazon_short_host(host: str) -> bool:
+    """True for Amazon's OWN short domains - a wrapper, never a destination.
+
+    USER REPORT 2026-10-04: a channel showed `https://amzn.to/4dnF9lU?tag=mama086-21`
+    and opening it served SOMEBODY ELSE'S page. The short code belongs to whoever
+    created it; gluing our tag onto it earns us nothing and reads as a broken link,
+    so these hosts are only ever followed to the real amazon.in page.
+    """
+    return bool(host) and in_domains(host, AMAZON_SHORT_DOMAINS)
+
+
+# USER RULE (2026-10-04, "LONG LINK lo MARCHI SHORTEN GA CHESI POST CHEYALIGAA"): an
+# Amazon link we publish is SHORTENED with our own shortener, not merely compacted to
+# a ~50-char /dp link. The compact tagged form stays the fallback when the shortener
+# cannot answer, so a quota problem never costs the deal (or the commission).
+SHORTEN_AMAZON_LINKS = os.getenv(
+    "SHORTEN_AMAZON_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
+
+
 def pick_one_product_for_review(text: str) -> str:
     """Reduce a multi-product post to ONE product for the review channel.
 
@@ -795,6 +819,38 @@ def strip_amazon_ratings(text: str) -> str:
         if cleaned.strip() or not line.strip():
             out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
     return "\n".join(out)
+
+
+def cut_amazon_short_links(text: str, affiliate=None) -> tuple[str, list[str]]:
+    """Remove Amazon SHORT links from a finished post; return (text, cut urls).
+
+    LAST-MILE REPAIR (USER REPORT 2026-10-04). A queued row can still hold a render
+    made by an older build - e.g. `https://amzn.to/4dnF9lU?tag=mama086-21`, which
+    opens SOMEBODY ELSE'S page because the short code belongs to its creator. The
+    provenance gate would refuse the whole post for such a link, i.e. lose the deal;
+    instead the link is CUT (the deal text goes out complete, exactly like a dead
+    destination) and the log names it. A short link WE minted is expanded to its own
+    long form first, so nothing of ours is ever cut by this.
+    """
+    out = text or ""
+    cut: list[str] = []
+    if not out:
+        return out, cut
+    reverse = dict(getattr(affiliate, "_short_to_long", {}) or {})
+    for raw in dict.fromkeys(URL_RE.findall(out)):
+        url = clean_url(raw)
+        host = (urlparse(url).hostname or "").lower()
+        if not is_amazon_short_host(host):
+            continue
+        native = reverse.get(url) or reverse.get(raw) or ""
+        if native and in_domains((urlparse(native).hostname or "").lower(), AMAZON_DOMAINS):
+            out = replace_url_everywhere(out, raw, native)
+            continue
+        out = replace_url_everywhere(out, raw, " ")
+        cut.append(raw)
+    if cut:
+        out = re.sub(r"[ \t]{2,}", " ", out)
+    return out, cut
 
 
 def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
@@ -6443,10 +6499,14 @@ class AffiliateClient:
         if asin:
             tagged = apply_amazon_tag(native)
             affiliate = tagged
-            if should_use_bitly(resolved, multi_link):
+            if should_use_bitly(resolved, multi_link) or SHORTEN_AMAZON_LINKS:
                 shortened = await self.shorten(tagged)
                 if shortened:
                     affiliate = shortened
+                    # Delivery expands this pair again for the review channel, so
+                    # the reviewed post still shows the real tagged product page.
+                    log.info("AMAZON LINK SHORTENED | %s -> %s (native tagged form kept "
+                             "for the review channel)", tagged[:70], shortened)
                 else:
                     # Never lose a valid commission link merely because the
                     # cosmetic shortener is unavailable/rate-limited.
@@ -6573,7 +6633,13 @@ class AffiliateClient:
                         # Amazon path an Amazon product link is already short and
                         # never reaches here; on the EarnKaro path every store is
                         # treated the same, which is the whole point.)
-                        if should_use_bitly(resolved, multi_link) or len(result) > SHORTEN_MIN_LEN:
+                        if (should_use_bitly(resolved, multi_link)
+                                or len(result) > SHORTEN_MIN_LEN
+                                # Only a link that actually carries OUR tag may be
+                                # shortened: cloaking an untagged Amazon page behind a
+                                # short link is both unmonetized and a policy risk.
+                                or (SHORTEN_AMAZON_LINKS and OUR_TAG and in_domains(
+                                    (urlparse(result).hostname or "").lower(), AMAZON_DOMAINS))):
                             shortened = await self.shorten(result)
                             if shortened:
                                 affiliate = shortened
@@ -7482,6 +7548,13 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         # Subdomain-aware (www.myntra.com must count as myntra.com).
         if not host or not in_domains(host, KNOWN_MERCHANT_DOMAINS):
             return
+        if is_amazon_short_host(host):
+            # Defensive: a passthrough never publishes an Amazon SHORT link. The
+            # short code is somebody's wrapper (see is_amazon_short_host) - our tag
+            # on it earns nothing and the reader lands on THEIR page.
+            log.warning("AMAZON SHORT REFUSED | queue=%s %s is a wrapper, not a "
+                        "destination; it is never posted as-is", row["id"], host)
+            return
         clean_resolved = clean_url(merchant_url(resolved))
         # USER REPORT (2026-10-04): the bare merchant page opens the product and
         # pays NOBODY. Where the network's own attribution works on a plain
@@ -7993,6 +8066,19 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # the source's own layout is what the target must show.
                 media_target = MEDIA_DIR / f"{row['chat_id']}_{row['msg_id']}"
                 media_path, media_refs = await download_album(client, msg, media_target, row["id"])
+        # LAST-MILE AMAZON SHORT REPAIR (USER REPORT 2026-10-04): a row queued by an
+        # older build may still carry an `amzn.to?...` short link, which opens the
+        # page of whoever created that short code. The link is cut (never the deal)
+        # and the log says so; a short link WE minted expands back to its long form.
+        rendered, short_cut = cut_amazon_short_links(rendered, affiliate)
+        if short_cut:
+            with contextlib.suppress(Exception):
+                await store.update_rendered(row["id"], rendered)
+            log.warning("AMAZON SHORT CUT | queue=%s removed %s Amazon short link(s) - a "
+                        "short code is somebody's wrapper, never our destination: %s",
+                        row["id"], len(short_cut), ", ".join(x[:60] for x in short_cut[:2]))
+            if not rendered.strip() and not row["source"]:
+                raise PermanentSkip("post was only an Amazon short link")
         # Final provenance gate runs again immediately before target delivery.
         owned_candidates = {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
         owned_external = {url for url in owned_candidates if url in rendered}
@@ -8288,7 +8374,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.5 starting "
+    log.info("BestGAA Production Bot v18.6 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)
