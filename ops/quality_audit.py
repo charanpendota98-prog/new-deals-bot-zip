@@ -870,8 +870,30 @@ def main(argv=None) -> int:
     parser.add_argument("--publisher", default="",
                         help="our EarnKaro publisher id (default: read from "
                              "$EARNKARO_PUBLISHER_ID, the token, or ops/.earnkaro_key)")
+    parser.add_argument("--check-url", action="append", default=[], metavar="URL",
+                        help="whose link is this? print the bucket and the reason for one "
+                             "URL (repeatable, no database needed) and exit - the answer to "
+                             "'idi manadenaa link'")
     args = parser.parse_args(argv)
     publisher = (args.publisher or "").strip() or ours_publisher_from_env()
+
+    if args.check_url:
+        tag = (args.tag or "").strip()
+        worst = 0
+        for url in args.check_url:
+            bucket = classify_link(url, tag, publisher)
+            reason = why_not_our_link(url, tag, publisher) or why_unattributed(url, publisher)
+            print(f"{bucket.upper():14s} {url}")
+            if reason:
+                print(f"               reason: {reason}")
+            elif bucket == "clean-merchant":
+                print("               reason: a clean merchant page kept on purpose "
+                      "(this store has no program of ours to attribute it to)")
+            else:
+                print("               reason: ours - our id/tag/short link is on it")
+            worst = max(worst, 2 if bucket == "foreign" else
+                        1 if bucket == "unattributed" else 0)
+        return 1 if worst == 2 else 0
 
     if not args.db.exists():
         print(f"QUALITY AUDIT: no database at {args.db}")

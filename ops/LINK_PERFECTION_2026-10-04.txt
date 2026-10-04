@@ -304,3 +304,34 @@ USER REQUEST
 
       LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
         LINK POSTURE | 12 page(s) stamped with our id; 34 Amazon link(s) shortened; 3 Amazon short code(s) resolved
+
+  9. "IDI MANADENAA LINK?" - ONE URL IN, ONE VERDICT OUT  (2026-10-04)
+
+     The conversion always goes through OUR account: the EarnKaro API is called
+     with our token, so the publisher that gets paid is in the link itself.
+     On Flipkart-family links that is `affExtParam2` - the same field
+     ops/earnkaro_check.py calls the publisher ("ours" when it equals 5478322).
+     `affid` (here `deals101`) is the AFFILIATE ACCOUNT id - the network account
+     the commission is routed through - exactly how Flipkart documents its own
+     affiliate URLs (?affid=..&affExtParam1=..&affExtParam2=..). `cmpid`/`mcn`
+     are that account's campaign/network markers. NEVER strip them from a
+     converted link: they are the route the money travels, and removing them is
+     the one change that could really lose the commission. The posting path
+     therefore publishes EarnKaro's output as minted.
+
+     To ask about any link without a database:
+
+        python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
+
+        OUR-PUBLISHER  ...affExtParam1=ENKR20261004A2196972183&affExtParam2=5478322
+                       reason: ours - our id/tag/short link is on it
+        FOREIGN        ...affExtParam2=999999
+                       reason: carries somebody else's affiliate id (999999,AFF_deals101,deals101)
+        UNATTRIBUTED   https://www.myntra.com/x/1/detail
+                       reason: can carry our publisher id (5478322) but was posted
+                               without it - the product opens and NOBODY is paid
+        (exit 1 when anything is FOREIGN, 0 otherwise - usable in a script)
+
+     The audit buckets now agree with whose_link() and with the pipeline's own
+     classifier (earnkaro_output_kind -> "publisher"), so a converted link is
+     never reported foreign for carrying the network's own parameters.

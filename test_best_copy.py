@@ -471,6 +471,28 @@ def test_quality_auditor():
         check("a missing database is reported, not crashed on",
               empty.returncode == 0 and "no database" in empty.stdout, empty.stdout)
 
+        # USER QUESTION 2026-10-04 ("idi manadenaa link"): one URL in, one verdict
+        # out - no database needed. The EarnKaro-converted Shopsy link the user
+        # pasted is OURS; the same page minted for a stranger is FOREIGN.
+        audits = ROOT / "ops" / "quality_audit.py"
+        pub = "5478322"
+        pasted = ("https://www.shopsy.in/x/p/itm8ad37c08bc9ac?pid=1&mcn=LEHLAH"
+                  "&affid=deals101&cmpid=AFF_deals101"
+                  f"&affExtParam1=ENKR20261004A2196972183&affExtParam2={pub}")
+        mine = subprocess.run(
+            [sys.executable, str(audits), "--publisher", pub, "--tag", "",
+             "--check-url", pasted], capture_output=True, text=True)
+        theirs_url = pasted.replace(f"affExtParam2={pub}", "affExtParam2=999999")
+        theirs = subprocess.run(
+            [sys.executable, str(audits), "--publisher", pub, "--tag", "",
+             "--check-url", theirs_url], capture_output=True, text=True)
+        check("--check-url names the pasted EarnKaro link as OURS",
+              mine.returncode == 0 and mine.stdout.startswith("OUR-PUBLISHER"),
+              mine.stdout[:200])
+        check("--check-url calls the same page minted for a stranger FOREIGN",
+              theirs.returncode == 1 and theirs.stdout.startswith("FOREIGN"),
+              theirs.stdout[:200])
+
 
 if __name__ == "__main__":
     test_product_identity_matching()
