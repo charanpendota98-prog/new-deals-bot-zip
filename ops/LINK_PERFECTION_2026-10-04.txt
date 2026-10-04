@@ -211,3 +211,42 @@ USER REQUEST
       # Amazon short link was posted instead of ours") - it must stay at 0
   Set SHORTEN_AMAZON_LINKS=false / WA_SHORTEN_AMAZON_LINKS=false to spend no
   shortener quota on Amazon (the compact tagged page is then posted).
+
+
+7. "COMMSION ASALU MISS AVODDU" - THE LAST TWO PLACES A CLICK COULD PAY NOBODY
+===========================================================================
+  Two more holes were closed after the v18.6 report; both keep the deal AND the
+  commission:
+
+  (a) HYPD link that turns out NOT to point at Meesho. Our HYPD ID is Meesho-only,
+      so the share link is dropped - and the verified merchant page used to be
+      published BARE. If that page is a Flipkart/Myntra page it now carries our
+      publisher id instead:  LINK ATTRIBUTED | HYPD out of scope for <host> ...
+
+  (b) WhatsApp bridge, BOT-FED posts. A row rendered before v18.5 (or the
+      degraded-post path when the API never answered) can still carry a bare
+      Flipkart/Myntra page. `attributeBareMerchantPages()` now stamps our
+      publisher id on it at display time - the provenance check still sees the
+      URL the bot cached, the deal text is untouched, and the reader lands on the
+      page with OUR id:  LINK ATTRIBUTED | bare merchant page ... not free
+      A page already carrying our id, a stranger's id, a Meesho page and our own
+      short links are all left exactly as they are (pinned by the bridge self-test).
+
+  DEPLOY BOTH RUNTIMES (WhatsApp included)
+      cd ~/bestgaa-bot/bestgaa-bot
+      ./ops/repack_bundles.sh && ./ops/apply_dual_hotfix.sh
+      # apply_dual_hotfix.sh: stops bestgaa + tg-wa-bridge, unpacks both bundles,
+      # runs the bridge self-test, verifies the LIVE bridge.js sha256 == the
+      # bundled one, then `systemctl enable --now` both services. If that hash
+      # check fails, old bridge code is still running - the script refuses to
+      # pretend it deployed.
+
+  PROVE IT AFTERWARDS (Telegram + WhatsApp)
+      printf 'bestgaa: ';     sudo systemctl is-active bestgaa
+      printf 'tg-wa-bridge: '; sudo systemctl is-active tg-wa-bridge
+      journalctl -u bestgaa      -n 200 --no-pager | grep -E 'LINK ATTRIBUTED|AMAZON LINK SHORTENED|AMAZON SHORT CUT|EK SUCCESS|EK REJECT|UNMONETIZED'
+      journalctl -u tg-wa-bridge -n 200 --no-pager | grep -E 'LINK ATTRIBUTED|AMAZON SHORT (RESOLVED|CUT)|provenance (rescue|cut)|Provenance mismatch'
+      python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
+      # want: FOREIGN=0 and unattributed=0 (or a number that stops growing)
+      python3 ops/conversion_report.py
+      # LINKS : WORKING - N published link(s), all ours (a short, b tagged, c clean merchant)

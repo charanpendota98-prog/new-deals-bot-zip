@@ -6409,15 +6409,23 @@ class AffiliateClient:
             return await self._native_amazon_link(source_url, clean, resolved, multi_link)
         if non_meesho_hypd_destination:
             # The HYPD link was outside the Meesho-only rule. Keep the verified
-            # merchant page clean if EarnKaro has no campaign or is unavailable.
+            # merchant page clean if EarnKaro has no campaign or is unavailable -
+            # but where the page itself accepts our publisher id (Flipkart family),
+            # stamp it: a bare page opens for free and pays nobody (USER REPORT
+            # 2026-10-04: "product open avuthundi kaani adi mana links kaadu").
+            published = attribute_with_our_publisher(non_meesho_hypd_destination)
             key = product_key(non_meesho_hypd_destination)
-            await store.cache_link(source_url, non_meesho_hypd_destination,
-                                   non_meesho_hypd_destination, key)
-            log.warning("UNMONETIZED LINK | HYPD is configured for Meesho only; "
-                        "posting the clean %s destination instead: %s",
-                        host, non_meesho_hypd_destination[:90])
+            await store.cache_link(source_url, published, non_meesho_hypd_destination, key)
+            if published != non_meesho_hypd_destination:
+                log.warning("LINK ATTRIBUTED | HYPD out of scope for %s, so the page is "
+                            "posted WITH our publisher id (%s) instead of a bare link that "
+                            "pays nobody: %s", host or "that store", OUR_EK_ID, published[:90])
+            else:
+                log.warning("UNMONETIZED LINK | HYPD is configured for Meesho only; "
+                            "posting the clean %s destination instead: %s",
+                            host, non_meesho_hypd_destination[:90])
             return LinkResult(source_url, non_meesho_hypd_destination,
-                              non_meesho_hypd_destination, key)
+                              published, key)
         return None
 
     async def _hypd_destination(self, afflink: str) -> str:

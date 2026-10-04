@@ -2874,6 +2874,42 @@ async function assertLinksHealthy(job, urls) {
     'link health says dead; posting anyway (WA_DROP_DEAD_LINKS=false)')
 }
 
+function attributeBareMerchantPages(job) {
+  // FINAL MISSING-COMMISSION GUARD (2026-10-04). A bot-fed post can still carry a
+  // BARE Flipkart/Myntra page: a row rendered by a build older than v18.5, or the
+  // degraded-post path when the conversion API never answered. Such a page opens
+  // and pays NOBODY. The stamp is applied at DISPLAY time (resolvedLinks), so the
+  // provenance check still sees the same URL the bot cached, the deal text is
+  // untouched, and the reader gets the page with OUR publisher id.
+  job.resolvedLinks ||= {}
+  for (const url of urlsIn(job.text || '')) {
+    if (job.blockedLinks?.[url] || job.resolvedLinks[url] || job.shortLinks?.[url]) continue
+    if (isOurGeneratedLink(url)) continue
+    const host = hostOf(url)
+    const attributable = [...EK_ATTRIBUTION_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))
+    if (!attributable) continue
+    let u
+    try { u = new URL(url) } catch { continue }
+    // URLSearchParams is case-SENSITIVE: read the URL's own names and compare
+    // lowercased, or `affExtParam2=999999` would read as "no attribution at all"
+    // and a stranger's page would be re-stamped as ours.
+    const nameOf = (k) => k.toLowerCase()
+    const valuesOf = (wanted) => [...u.searchParams.keys()]
+      .filter(k => nameOf(k) === wanted)
+      .flatMap(k => u.searchParams.getAll(k).filter(Boolean))
+    const oursPresent = valuesOf('affextparam2').includes(PUBLISHER_ID)
+    const tags = valuesOf('tag')
+    const foreign = [...FOREIGN_ATTRIBUTION_KEYS].some(k => valuesOf(k).some(v => v !== PUBLISHER_ID))
+    if (oursPresent || tags.length || foreign) continue
+    const stamped = attributeWithOurPublisher(url)
+    if (stamped && stamped !== url) {
+      job.resolvedLinks[url] = stamped
+      log.warn({ id: job.id, url: url.slice(0, 60), as: stamped.slice(0, 90) },
+        'LINK ATTRIBUTED | bare merchant page in a bot-fed post is published WITH our publisher id, not free')
+    }
+  }
+}
+
 async function prepareAmazonShortLinks(job, fetchFn = fetch) {
   // An Amazon SHORT link is never posted as-is (see AMAZON_SHORT_HOSTS). It is
   // followed to the real amazon.in page and re-tagged with OUR Associates tag; if
@@ -2917,6 +2953,7 @@ async function verifyJob(job, fetchFn = fetch) {
   // Direct-source jobs: resolve raw links to the merchant page first, so the
   // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
+  attributeBareMerchantPages(job)
   await prepareAmazonShortLinks(job, fetchFn)
   const urls = validateAffiliateText(job, job.text)
   // Service/lifestyle links (Zomato/Swiggy/Zepto/movies/cards) are not in the
@@ -5323,6 +5360,35 @@ https://fktr.in/MANY${i}`,
     const djobProv = { direct: true, resolvedLinks: { 'https://amzn.to/TAGGED': ourTagged } }
     const afterResolve = urlsForProvenance(djobProv, ['https://amzn.to/TAGGED'])
     if (afterResolve.length !== 0) throw new Error('direct job resolving to our-tag amazon must skip provenance DB')
+  }
+  {
+    // USER REPORT 2026-10-04 ("product open avuthundi kaani adi mana links kaadu"):
+    // a bot-fed post can still carry a BARE Flipkart/Myntra page (a row rendered by
+    // an older build, or the degraded-post path). It must be published WITH our
+    // publisher id - the stamp lands on the DISPLAY url, so the provenance check
+    // still sees the URL the bot cached and the deal text is untouched.
+    const bare = { id: 'bare1', text: 'Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE1?pid=1' }
+    attributeBareMerchantPages(bare)
+    if (displayUrl(bare, 'https://www.flipkart.com/kurta/p/itmBARE1?pid=1') !== `https://www.flipkart.com/kurta/p/itmBARE1?pid=1&affExtParam2=${PUBLISHER_ID}`) {
+      throw new Error('a bare Flipkart page must be published with our publisher id: ' + displayUrl(bare, 'https://www.flipkart.com/kurta/p/itmBARE1?pid=1'))
+    }
+    if (isOurGeneratedLink(bare.text)) throw new Error('job.text must be untouched (provenance reads it)')
+
+    const oursAlready = { id: 'bare2', text: `Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE2?affExtParam2=${PUBLISHER_ID}` }
+    attributeBareMerchantPages(oursAlready)
+    if (Object.keys(oursAlready.resolvedLinks || {}).length) throw new Error('an already-attributed page must not be re-stamped')
+
+    const foreignId = { id: 'bare3', text: 'Kurta \u20b9499\nhttps://www.flipkart.com/kurta/p/itmBARE3?affExtParam2=999999' }
+    attributeBareMerchantPages(foreignId)
+    if (Object.keys(foreignId.resolvedLinks || {}).length) throw new Error("a stranger's id must not be silently re-stamped here")
+
+    const meesho = { id: 'bare4', text: 'Saree \u20b9299\nhttps://www.meesho.com/sarees/p/mee123' }
+    attributeBareMerchantPages(meesho)
+    if (Object.keys(meesho.resolvedLinks || {}).length) throw new Error('Meesho has no affExtParam2 contract and must be untouched')
+
+    const ourShort = { id: 'bare5', text: 'Kurta \u20b9499\nhttps://bitli.in/OURS' }
+    attributeBareMerchantPages(ourShort)
+    if (Object.keys(ourShort.resolvedLinks || {}).length) throw new Error('our own short link must be left alone')
   }
   {
     // USER REPORT 2026-10-04: `https://amzn.to/XXXX?tag=ours` opens the page of

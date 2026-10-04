@@ -538,6 +538,16 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   tag never survives the rebuild, and only a link that really carries OUR tag may be shortened
   (cloaking an untagged page stays refused). The review channel still sees the direct tagged
   product page: every short link is registered and expanded back on that one target.
+  Two more commission holes were closed in the same pass: an **HYPD share link that turns out
+  not to point at Meesho** used to publish its verified merchant page BARE — it now carries our
+  publisher id when the page accepts one (`LINK ATTRIBUTED | HYPD out of scope …`); and the
+  **WhatsApp bridge** now stamps a bare Flipkart/Myntra page found in a *bot-fed* post (a row
+  rendered before v18.5, or the degraded-post path) at display time
+  (`attributeBareMerchantPages()`, `LINK ATTRIBUTED | bare merchant page … not free`), while
+  leaving our own links, a stranger's id, our own short links and Meesho pages untouched.
+  Deploying both runtimes is one command — `ops/repack_bundles.sh && ops/apply_dual_hotfix.sh`
+  restarts `bestgaa` **and** `tg-wa-bridge` and refuses to claim success unless the live
+  `bridge.js` sha256 equals the bundled one.
 - **v18.5 — a link that opens but pays nobody can no longer leave the building.**
   User report (2026-10-04): *"CHALA VARAKU MANAM MISS AVUTHUNNAM COMMSION ASALU
   RAVATLEUD … PRODUCT OPEN AVUTHUNDI KAANI ADI MANA LINKS KADU"* — the page opened and
@@ -1110,8 +1120,8 @@ printing exactly what the older build was coded to print). Hashes refreshed
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.6) | `2e65436f462083fbb49ec24d1b6090579596d2f6edb230e3a595a62f023e55ed` |
-| `tg-wa-bridge/bridge.js` | `b5d4446be762849ab18ac0243390c615469bfbdc620ff00b06a01143643f9b3f` |
+| `bestgaa/main_bot_new.py` (v18.6) | `704cda7c13f89169ca251a1d0dfc7fd9dbdc3463502d932e9b0d1ff9fce1be06` |
+| `tg-wa-bridge/bridge.js` | `cc730296d1afa9bd8fa7c30aa700b712fd61f3d5c9c8445db734525cee8d0e76` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
 | `ops/quality_audit.py` | `cb576e8bb756194696d48639aee57293099e8775692fb81bdfd4bf31a8ed4408` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
