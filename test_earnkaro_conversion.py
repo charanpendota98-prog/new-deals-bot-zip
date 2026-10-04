@@ -1126,6 +1126,29 @@ def test_status_report_answers_are_we_converting():
               legacy.get("EK SUCCESS", {}).get("count") == 1
               and legacy.get("EK MISS", {}).get("count") == 1, str(legacy))
 
+        # USER QUESTIONS 2026-10-04 ("commission asalu ravatledu", "whatsapp lo kuda
+        # correct ga vellali"): the markers that prove a click will PAY us must be
+        # counted by the report - including the bridge's own (lower-case) ones.
+        link_log = Path(td) / "link-health.log"
+        link_log.write_text(
+            "[WARNING] LINK ATTRIBUTED | queue=88 no campaign came back, so the product "
+            "page is posted WITH our publisher id (5478322)\n"
+            "[INFO] AMAZON LINK SHORTENED | https://www.amazon.in/dp/B0X -> https://bitli.in/x\n"
+            "[WARNING] AMAZON SHORT CUT | queue=90 removed 1 Amazon short link(s)\n"
+            '{"msg":"provenance cut: stranger wrapper would not resolve; the link is out, '
+            'the post stays"}\n'
+            '{"msg":"provenance rescue: stranger wrapper resolved to the merchant page and '
+            're-tagged as ours"}\n',
+            encoding="utf-8")
+        health = report.log_report(link_log, 24)["markers"]
+        check("the report counts the link-health markers (attributed / Amazon shortened / cut)",
+              health.get("LINK ATTRIBUTED", {}).get("count") == 1
+              and health.get("AMAZON LINK SHORTENED", {}).get("count") == 1
+              and health.get("AMAZON SHORT CUT", {}).get("count") == 1, str(health))
+        check("and the bridge's lower-case provenance markers are counted too",
+              health.get("provenance cut", {}).get("count") == 1
+              and health.get("provenance rescue", {}).get("count") == 1, str(health))
+
 
 def main():
     test_response_shapes()

@@ -118,7 +118,7 @@ USER REQUEST
 4. TESTS
 ===========================================================================
   python3 test_best_copy.py            # link ownership: data-backed + the CLI summary/exit code
-  python3 test_earnkaro_conversion.py  # 167 checks: plan mode, EK VERIFIED accept/refuse matrix,
+  python3 test_earnkaro_conversion.py  # 169 checks: plan mode, EK VERIFIED accept/refuse matrix,
                                        # the report's LINKS counts and verdict line
   PYTHON=.venv/bin/python ./ops/test_all.sh   -> ALL OFFLINE CHECKS PASSED
 
@@ -260,7 +260,7 @@ USER REQUEST
         PYTHON=.venv/bin/python ./ops/test_all.sh
         -> ALL OFFLINE CHECKS PASSED
         render/routing, rescan+recovery, pipeline fixes (238 checks), best-copy,
-        duplicates, EarnKaro contract (167 checks), HYPD (83 checks), line
+        duplicates, EarnKaro contract (169 checks), HYPD (83 checks), line
         fidelity, WhatsApp bridge self-test, Python syntax.
 
   (2) SYNTAX, every language in the tree:
@@ -297,3 +297,10 @@ USER REQUEST
         cd .. && python3 ops/earnkaro_check.py --skip-hypd
         python3 ops/quality_audit.py --limit 200 --strict --publisher 5478322
         python3 ops/conversion_report.py
+
+  The report now also counts the link-health markers themselves (LINK ATTRIBUTED,
+  AMAZON LINK SHORTENED, AMAZON SHORT RESOLVED/CUT, the bridge's provenance
+  rescue/cut), and prints a one-line POSTURE under LINK PERFECTION:
+
+      LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
+        LINK POSTURE | 12 page(s) stamped with our id; 34 Amazon link(s) shortened; 3 Amazon short code(s) resolved

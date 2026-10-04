@@ -18,7 +18,10 @@ It reads the bot's OWN database and log and reports, per monetization route
                earnkaro / amazon / hypd / affiliate / shortened / PASS-THROUGH
                (a pass-through row is a clean merchant link: it earns NOTHING).
   LOG MARKERS  separate counts for EK SUCCESS, EK MISS, EK AUTH, EK REJECT,
-               EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, etc.
+               EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, plus the
+               link-health markers that answer "will this click pay us?" -
+               LINK ATTRIBUTED, AMAZON LINK SHORTENED, AMAZON SHORT RESOLVED/CUT,
+               DEGRADED POST, and the bridge's provenance rescue/cut lines.
   VERDICT      one line per route: WORKING / NEEDS ATTENTION / IDLE, plus the
                exact command for anything that needs attention.
 
@@ -78,6 +81,28 @@ LOG_MARKERS = (
     ("BITLY unavailable", "shortener outage: the raw link was kept (never unmonetized)"),
     ("BITLY failed", "Bitly call failed (rate limit/token)"),
     ("SHORTENER fallback=is.gd", "is.gd was used because Bitly was unavailable"),
+    # v18.5/v18.6 link-health markers. These are the ones that answer "is a click
+    # about to pay nobody?" - a bare page stamped with our id, an Amazon short code
+    # resolved to the real product page (or cut when it would not resolve), and a
+    # bot-fed post repaired at delivery.
+    ("LINK ATTRIBUTED", "a page that would have paid NOBODY was published WITH our "
+                        "publisher id instead"),
+    ("AMAZON LINK SHORTENED", "Amazon link resolved to the tagged product page, then "
+                              "shortened with our own shortener"),
+    ("AMAZON SHORT RESOLVED", "an Amazon short code (amzn.to) is a wrapper: it was "
+                              "followed to OUR tagged product page"),
+    ("AMAZON SHORT CUT", "an Amazon short code that would not resolve was CUT (the "
+                         "deal text still posted)"),
+    ("AMAZON SHORT REFUSED", "an Amazon short link was refused as a destination"),
+    ("DEGRADED POST", "the API never answered: trusted merchant links were posted "
+                      "(each one attributed)"),
+    ("LINK DROPPED", "a link that never monetizes was cut; the deal still posted"),
+    # WhatsApp bridge (lower case on purpose - the bridge logs them that way).
+    ("provenance rescue", "the bridge resolved a stranger's wrapper to the merchant "
+                          "page and re-attributed it as OURS"),
+    ("provenance cut", "the bridge cut a stranger's wrapper that would not resolve "
+                       "(the deal still posted)"),
+    ("Provenance mismatch", "the bridge refused a link we did not produce"),
 )
 
 
@@ -338,8 +363,9 @@ def log_report(log: Path, hours: float) -> dict:
                 legacy_markers.add("EK MISS")
             elif " -> " in line:
                 legacy_markers.add("EK SUCCESS")
+        lowered = line.lower()
         for marker, _what in LOG_MARKERS:
-            if marker in line or marker in legacy_markers:
+            if marker.lower() in lowered or marker in legacy_markers:
                 bucket = out["markers"].setdefault(marker, {"count": 0, "last": ""})
                 bucket["count"] += 1
                 bucket["last"] = (when or datetime.now()).strftime("%Y-%m-%d %H:%M")
@@ -522,6 +548,17 @@ def main() -> int:
             else:
                 print("  -> every published link is one of ours (minted by this bot, our "
                       "tag/publisher, or a clean merchant page kept on purpose)")
+            posture = []
+            for marker, label in (("LINK ATTRIBUTED", "page(s) stamped with our id"),
+                                  ("AMAZON LINK SHORTENED", "Amazon link(s) shortened"),
+                                  ("AMAZON SHORT RESOLVED", "Amazon short code(s) resolved"),
+                                  ("AMAZON SHORT CUT", "Amazon short code(s) cut"),
+                                  ("DEGRADED POST", "degraded post(s) attributed")):
+                count = (lg_rep.get("markers") or {}).get(marker, {}).get("count")
+                if count:
+                    posture.append(f"{count} {label}")
+            if posture:
+                print("  LINK POSTURE | " + "; ".join(posture))
     else:
         print(f"\nROUTES: database not found ({db}) - run this ON the server")
 
