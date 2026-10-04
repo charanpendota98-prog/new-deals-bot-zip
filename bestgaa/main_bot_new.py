@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.3
+"""BestGAA Production Bot v18.4
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -8,7 +8,10 @@ immediately, exactly once, clean":
   insert, dispatched newest-first with an age-out sweeper (never posts stale)
 - concurrent resolve / convert / health-check / shorten per post with cached
   verdicts and hard time budgets, so one slow site cannot delay everything
-- EarnKaro conversion with retry/cache/circuit breaker
+- EarnKaro conversion with retry/cache/circuit breaker; an output on a redirect
+  domain this build does not recognize is FOLLOWED and accepted only when its
+  destination proves it is ours (a new network domain never costs a commission,
+  and a stranger's link is still refused)
 - a dead short link, an unresolvable destination or an oversized photo costs the post
   NOTHING: the offending link is cut and the deal goes out complete (never a retry-until-
   stale, never a skip)
@@ -1138,14 +1141,13 @@ SHORTENER_HOSTS = (FOREIGN_ECHO_DOMAINS | OUR_RUNTIME_SHORTENER_DOMAINS
                       "tidd.ly", "geni.us", "amzn.to", "amzn.in", "s.click"})
 
 
-def is_unresolvable_short_link(host: str, url: str) -> bool:
-    """True for a link that exists only to redirect and gave us nothing.
+def looks_like_shortener(host: str, url: str) -> bool:
+    """True for a host/shape that exists only to redirect.
 
-    Such a link is not a destination: it has no product page behind it that we could
-    publish, monetize or verify. Retrying the WHOLE post for it (the old behaviour) is how
-    a source post vanished - so the caller cuts the link and posts the deal. The shape does
-    the work here, not a blocklist: any host that is not a known merchant or service store
-    and carries a single short slug is a shortener as far as we are concerned.
+    The shape does the work here, not a blocklist: any host that is not a known
+    merchant or service store and carries a single short slug is a shortener as
+    far as we are concerned. (A source channel posts bit.ly today and
+    bitly.com/74265 tomorrow, so a list could never be complete.)
     """
     if not host or in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, SERVICE_OFFER_DOMAINS):
         return False
@@ -1153,6 +1155,16 @@ def is_unresolvable_short_link(host: str, url: str) -> bool:
         return True
     path = (urlparse(str(url or "")).path or "").strip("/")
     return bool(path) and "/" not in path and len(path) <= 24
+
+
+def is_unresolvable_short_link(host: str, url: str) -> bool:
+    """True for a link that exists only to redirect and gave us nothing.
+
+    Such a link is not a destination: it has no product page behind it that we could
+    publish, monetize or verify. Retrying the WHOLE post for it (the old behaviour) is how
+    a source post vanished - so the caller cuts the link and posts the deal.
+    """
+    return looks_like_shortener(host, url)
 
 
 SHARE_INTENT_DOMAINS = NON_STORE_DOMAINS | {
@@ -6028,6 +6040,97 @@ class AffiliateClient:
         except Exception:
             return None
 
+    async def _verify_unknown_affiliate_output(self, link: str, source_urls: tuple[str, ...],
+                                               resolved: str) -> str | None:
+        """Follow an UNRECOGNIZED converter output and accept it only on evidence.
+
+        `earnkaro_output_kind()` can only call a link ours when it recognizes the
+        network's short domain. Affiliaters adds and renames redirect domains, and
+        the old behaviour for an unknown one was `EK REJECT` + an unmonetized post -
+        a lost commission that looks exactly like "this store has no campaign".
+        So an output that is short-link-SHAPED is followed instead of refused:
+
+          * it must not be a known foreign shortener/echo domain;
+          * its destination must be a real store page, not the source URL;
+          * a foreign `affExtParam2`/tag on that destination is a REFUSAL (somebody
+            else's money must never be posted as ours);
+          * OUR publisher id or OUR tag on the destination is proof -> accept;
+          * a bare store page (attribution travelling server-side, exactly how
+            ekaro.in itself works) is accepted only when the short host is not a
+            known foreign shortener and the destination differs from the source.
+
+        Returns the API's own (short) link, or None - never raises: verification is
+        a bonus on top of the refusal it replaces, never a new way to lose a post.
+        """
+        try:
+            original = clean_url(link)
+            parsed = urlparse(original)
+            host = (parsed.hostname or "").lower()
+            if not host or in_domains(host, FOREIGN_ECHO_DOMAINS):
+                return None
+            if not looks_like_shortener(host, original):
+                # A merchant-page echo keeps its old treatment: a 200 is not a
+                # conversion, and a plain page pays nobody.
+                return None
+            source_keys = {canonical_url(u) for u in source_urls if u}
+            async with self.session.get(
+                original, allow_redirects=True,
+                timeout=aiohttp.ClientTimeout(total=HTTP_TOTAL_TIMEOUT_SECONDS),
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                       "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
+            ) as response:
+                final = clean_url(str(response.url) or original)
+                raw = await response.content.read(200_000)
+            final_host = (urlparse(final).hostname or "").lower()
+            redirect_seen = bool(final_host) and clean_url(final) != clean_url(original)
+            if redirect_seen:
+                if canonical_url(final) in source_keys:
+                    return None                   # it only led back to the source link
+                if in_domains(final_host, FOREIGN_ECHO_DOMAINS):
+                    return None                   # somebody else's wrapper
+                if (in_domains(final_host, NON_STORE_DOMAINS)
+                        or in_domains(final_host, NON_SHOP_DOMAINS)):
+                    return None                   # a blog / share / app wrapper
+                if in_domains(final_host, AMAZON_DOMAINS):
+                    tags = {str(v).strip() for v in
+                            parse_qs(urlparse(final).query).get("tag", []) if str(v).strip()}
+                    if OUR_TAG and tags == {OUR_TAG}:
+                        log.info("EK VERIFIED | unknown short domain %s -> our Amazon tag on %s",
+                                 host, final_host)
+                        return original
+                    return None
+            destination = final if (redirect_seen
+                                    and in_domains(final_host, KNOWN_MERCHANT_DOMAINS)) else ""
+            if not destination:
+                # A JS redirect page (no HTTP redirect at all) still carries its
+                # target in the markup - read it the way the HYPD destination is.
+                for candidate in URL_RE.findall(raw.decode("utf-8", errors="ignore")):
+                    candidate = clean_url(candidate).replace("\\/", "/")
+                    candidate_host = (urlparse(candidate).hostname or "").lower()
+                    if not in_domains(candidate_host, KNOWN_MERCHANT_DOMAINS):
+                        continue
+                    if canonical_url(candidate) in source_keys:
+                        continue
+                    destination = candidate
+                    final_host = candidate_host
+                    break
+                else:
+                    return None                   # nothing proven: keep the refusal
+            query = {str(k).lower(): v for k, v in parse_qs(urlparse(destination).query).items()}
+            visible_ids = {str(v).strip() for v in query.get("affextparam2", []) if str(v).strip()}
+            if visible_ids and (not OUR_EK_ID or visible_ids != {OUR_EK_ID}):
+                log.error("EK REJECT | unknown short domain %s leads to FOREIGN attribution %s",
+                          host, ",".join(sorted(visible_ids))[:40])
+                return None
+            log.info("EK VERIFIED | unknown short domain %s resolves to %s%s", host, final_host,
+                     " carrying OUR publisher id" if visible_ids else
+                     " (attribution travels in the redirect, as ekaro.in does)")
+            return original
+        except Exception as exc:
+            log.warning("EK VERIFY | could not verify %s (%s: %s); keeping the old refusal",
+                        (urlparse(link).hostname or link)[:60], type(exc).__name__, exc)
+            return None
+
     async def convert(self, source_url: str, multi_link: bool, resolved_hint: str | None = None) -> "LinkResult | None":
         cached = await store.cached_link(source_url)
         if cached:
@@ -6360,10 +6463,24 @@ class AffiliateClient:
                         result = clean_url(result)
                         output_kind = self.earnkaro_output_kind(result)
                         if not output_kind:
-                            log.error("EK REJECT | API response is not an attributable affiliate link "
-                                      "(host=%s); checking Affiliaters network selections and campaigns",
-                                      (urlparse(result).hostname or "unknown").lower())
-                            return None
+                            # A domain this build has never seen is not automatically
+                            # somebody's junk: the network mints new redirect domains,
+                            # and refusing them means the deal posts and earns nothing
+                            # (which looks identical to "store has no campaign"). The
+                            # output is therefore FOLLOWED and accepted only when its
+                            # destination proves it (see _verify_unknown_affiliate_output).
+                            verified = await self._verify_unknown_affiliate_output(
+                                result, (source_url, clean, resolved), resolved)
+                            if verified:
+                                # The returned short link stays the published link
+                                # (the network's attribution travels behind it).
+                                output_kind = "verified"
+                            else:
+                                log.error("EK REJECT | API response is not an attributable affiliate "
+                                          "link (host=%s); checking Affiliaters network selections "
+                                          "and campaigns",
+                                          (urlparse(result).hostname or "unknown").lower())
+                                return None
                         if (result == clean_url(source_url) and output_kind != "publisher"):
                             log.error("EK REJECT | API echoed the source URL instead of converting it "
                                       "(host=%s)", (urlparse(result).hostname or "unknown").lower())
@@ -8101,7 +8218,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.3 starting "
+    log.info("BestGAA Production Bot v18.4 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

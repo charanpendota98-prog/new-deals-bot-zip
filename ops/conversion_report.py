@@ -66,6 +66,7 @@ LOG_MARKERS = (
     ("EK MISS", "EarnKaro: API returned no usable converted link"),
     ("EK AUTH", "EarnKaro: the TOKEN was refused (regenerate the key!)"),
     ("EK REJECT", "EarnKaro: extracted API output failed attribution validation"),
+    ("EK VERIFIED", "EarnKaro: an unknown redirect domain was followed and PROVED ours"),
     ("EK HTTP", "EarnKaro: API returned a non-success HTTP status"),
     ("EK NETWORK", "EarnKaro: API/network retries were exhausted"),
     ("EK FALLBACK", "Amazon used its native tag because EarnKaro did not convert"),
@@ -184,9 +185,28 @@ def config_report(env: dict[str, str]) -> dict:
     }
 
 
+def _quality_audit():
+    """The ONE definition of "our link" (ops/quality_audit.py), imported not copied.
+
+    A second copy of the ownership rule would drift, and then this report would
+    disagree with the auditor about the very posts they both describe.
+    """
+    import importlib.util
+    path = Path(__file__).resolve().parent / "quality_audit.py"
+    try:
+        spec = importlib.util.spec_from_file_location("quality_audit_shared", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
 def db_report(db: Path, hours: float) -> dict:
     out: dict = {"db": str(db), "exists": db.exists(), "routes": {}, "passthrough_examples": [],
-                 "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0}
+                 "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0,
+                 "links": {"links": 0, "our-short": 0, "our-publisher": 0,
+                           "clean-merchant": 0, "foreign": 0}}
     if not db.exists():
         return out
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -254,6 +274,25 @@ def db_report(db: Path, hours: float) -> dict:
                 "SELECT product_url, times, last_seen FROM hypd_wanted"
                 " ORDER BY times DESC, last_seen DESC").fetchall()
             if in_hosts(host_of(row["product_url"] or ""), ("meesho.com",))][:10]
+    # LINK PERFECTION: every link in every post of the window, classified with the
+    # auditor's own rule (data-backed: link_cache + our tag/publisher id).
+    qa = _quality_audit()
+    if qa is not None and table_exists("queue"):
+        try:
+            our_links = qa.our_minted_links(conn)
+            publisher = str(os.getenv("EARNKARO_PUBLISHER_ID", "")).strip() or str(
+                token_claims(os.getenv("EARNKARO_API_KEY", "")).get("earnkaro") or "")
+            our_tag = os.getenv("AMAZON_TAG", "").strip()
+            for row in conn.execute(
+                    "SELECT rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
+                    (since,)).fetchall():
+                for url in qa.ANY_LINK.findall(row["rendered_text"] or ""):
+                    url = url.rstrip(")】.,;'\"")
+                    out["links"]["links"] += 1
+                    out["links"][qa.classify_link(url, our_tag, publisher, our_links)] += 1
+        except Exception:
+            pass
+
     if table_exists("posted_deals"):
         out["posted_deals"] = conn.execute(
             "SELECT COUNT(*) AS n FROM posted_deals WHERE posted_at>=?",
@@ -400,6 +439,18 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         problems.append(f"{unmon} deal(s) posted with a clean merchant link "
                         "(no campaign anywhere) - see the pass-through list below")
         lines.append(f"Plain    : {unmon} unmonetized deal(s) in the window")
+    # --- link ownership across every post of the window ("mana links perfectga
+    # post chesthunda?"): counted with the auditor's own data-backed rule, so
+    # this line and `ops/quality_audit.py --strict` can never disagree.
+    links = db.get("links") or {}
+    if links.get("foreign"):
+        problems.append(f"{links['foreign']} published link(s) were NOT ours - run "
+                        "`python3 ops/quality_audit.py --strict` (it names the queue ids)")
+        lines.append(f"LINKS    : NEEDS ATTENTION - {links['foreign']} foreign link(s) reached a channel")
+    elif links.get("links"):
+        lines.append(f"LINKS    : WORKING - {links['links']} published link(s), all ours "
+                     f"({links['our-short']} short, {links['our-publisher']} tagged, "
+                     f"{links['clean-merchant']} clean merchant)")
     return lines, problems
 
 
@@ -450,6 +501,18 @@ def main() -> int:
         for url in db_rep.get("passthrough_examples", []):
             print(f"      unmonetized example: {url[:100]}")
         print(f"  posted_deals in window: {db_rep.get('posted_deals', 0)}")
+        links = db_rep.get("links") or {}
+        if links.get("links"):
+            print(f"\nLINK PERFECTION (every link printed in this window's posts)")
+            print(f"  links={links['links']}  our-short={links['our-short']}  "
+                  f"our-publisher={links['our-publisher']}  "
+                  f"clean-merchant={links['clean-merchant']}  FOREIGN={links['foreign']}")
+            if links["foreign"]:
+                print("  -> FOREIGN links reached a channel: "
+                      "python3 ops/quality_audit.py --strict  (names the queue ids)")
+            else:
+                print("  -> every published link is one of ours (minted by this bot, our "
+                      "tag/publisher, or a clean merchant page kept on purpose)")
     else:
         print(f"\nROUTES: database not found ({db}) - run this ON the server")
 

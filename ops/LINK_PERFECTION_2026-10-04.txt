@@ -1,0 +1,120 @@
+LINK PERFECTION + UNKNOWN REDIRECT DOMAINS (2026-10-04, bot v18.4)
+===================================================================
+
+USER REQUEST
+  "MANA LINKS PEREFCTA POST CHESTHUNDA LEDAA? PEREFCTGA CHEYALI OKAYNAAA
+   ADVANCEDGA BESTGAA MORE AND MORE ADVANCEDGAAA
+   NEATGA ANTHA CHETHA LEKUNDAA BES TGA"
+
+  => two questions in one: (a) prove the posts carry OUR links, and (b) make the
+     pipeline handle the cases where it would otherwise silently earn nothing or
+     cry wolf. Both are answered below with data, not with a domain list.
+
+
+1. ARE OUR LINKS BEING POSTED? - ONE NUMBER, AND IT IS NOW TRUSTWORTHY
+===========================================================================
+  The auditor used to say "bit.ly is a third-party shortener". That literal
+  predates the 2026-09-06 policy under which every list post carries OUR Bitly
+  links by design - so it flagged healthy posts, and `--strict` cried wolf. A
+  false alarm is how a real one gets ignored, so ownership is now read from the
+  DATA:
+
+    * the bot's OWN link_cache (the same rows the pipeline's provenance gate
+      consults when it decides a link is ours), and
+    * our EarnKaro publisher id, read from $EARNKARO_PUBLISHER_ID, the token in
+      $EARNKARO_API_KEY, or the gitignored ops/.earnkaro_key (never printed).
+
+  RUN IT:
+
+      python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200
+
+      QUALITY AUDIT | db=... posts=200 findings=0
+        LINK PERFECTION | links=137 our-short=88 our-publisher=12 clean-merchant=37 FOREIGN=0
+        every published link is one of ours (minted by this bot, our tag, or a
+        clean merchant page) - nothing foreign reached a channel
+
+      python3 ops/conversion_report.py          # the live window, same counts
+        LINKS    : WORKING - 137 published link(s), all ours (88 short, 12 tagged,
+                   37 clean merchant)
+        # or: LINKS    : NEEDS ATTENTION - 2 foreign link(s) reached a channel
+        #     -> python3 ops/quality_audit.py --strict   (it names the queue ids)
+
+  WHAT THE BUCKETS MEAN
+    our-short        a link THIS bot minted (EarnKaro / HYPD / Bitly / is.gd).
+                     Bitly and is.gd links are proven by their link_cache row -
+                     not by their domain - because other channels post bit.ly
+                     links too. That is the whole point of asking the data.
+    our-publisher    our Amazon tag, or our EarnKaro publisher id
+                     (affExtParam2=5478322).
+    clean-merchant   an unmonetizable store page kept ON PURPOSE. It earns
+                     nothing and the report says so; it is not a defect.
+    FOREIGN          a link that should never have left: the source's own short
+                     link, another channel's bit.ly, a stranger's tag or id.
+                     `--strict` exits 1 on it; the detail line names why.
+
+  Exit codes: 0 = clean (or nothing to audit), 1 = findings AND --strict.
+  diagnose.sh section 10 and deploy_and_verify.sh section 5 both run the auditor,
+  so the verdict shows up in the normal deploy/verifications without new commands.
+
+
+2. A NEW REDIRECT DOMAIN NO LONGER COSTS A COMMISSION (EK VERIFIED)
+===========================================================================
+  `earnkaro_output_kind()` can only call a link ours when it recognizes the
+  network's short domain. Affiliaters adds and renames them, and the old answer
+  for an unknown one was:
+
+      EK REJECT | API response is not an attributable affiliate link
+      -> the deal posts with a clean merchant link and earns NOTHING
+
+  - indistinguishable from "this store has no campaign". Now a short-link-SHAPED
+  output is FOLLOWED and accepted only when its destination proves it:
+
+      EK VERIFIED | unknown short domain enkr.link resolves to www.myntra.com
+                  (attribution travels in the redirect, as ekaro.in does)
+      EK VERIFIED | unknown short domain enkr.link resolves to www.flipkart.com
+                  carrying OUR publisher id
+
+  ACCEPTED only when:
+    * the destination is a known merchant/store page (or a JS-redirect page whose
+      markup names one), AND
+    * it is not the source URL, not a foreign shortener/echo domain, not a
+      non-shop wrapper, AND
+    * if it shows an affExtParam2, that id is OURS - and for Amazon, its tag is
+      OUR tag.
+
+  STILL REFUSED (unchanged, and pinned by tests):
+    * a bare merchant-page echo (HTTP 200 is not a conversion),
+    * a destination carrying somebody else's publisher id  -> `EK REJECT ... FOREIGN attribution`
+    * a short link that only leads back to the source URL,
+    * a short link that leads to a foreign shortener (amzn.to etc),
+    * a short link that does not redirect at all (nothing was proven),
+    * an Amazon destination without our tag.
+
+  Watch it live:
+
+      journalctl -u bestgaa -f | grep -E 'EK VERIFIED|EK REJECT|EK SUCCESS|EK MISS'
+      # ops/conversion_report.py also counts EK VERIFIED as its own marker now
+
+
+3. THE COMMANDS THAT ANSWER THE QUESTION END TO END
+===========================================================================
+  cd ~/bestgaa-bot/bestgaa-bot
+
+  python3 ops/earnkaro_check.py --plan --deal-url '<source/product link>'   # exact posted link
+  python3 ops/conversion_report.py                       # is everything converting, right now
+  python3 ops/quality_audit.py --limit 200 --strict      # did our links reach the channels only
+  python3 ops/diagnose.sh                                # deploys + coverage + the quality audit
+  ./ops/deploy_fresh.sh                                  # ship it: tests -> bundles -> serve -> prove -> report
+
+
+4. TESTS
+===========================================================================
+  python3 test_best_copy.py            # link ownership: data-backed + the CLI summary/exit code
+  python3 test_earnkaro_conversion.py  # 167 checks: plan mode, EK VERIFIED accept/refuse matrix,
+                                       # the report's LINKS counts and verdict line
+  PYTHON=.venv/bin/python ./ops/test_all.sh   -> ALL OFFLINE CHECKS PASSED
+
+  The live proof still comes from the server (this workspace has no internet).
+  On the next deploy, deploy_and_verify.sh wants the log line
+      BestGAA Production Bot v18.4 starting ...
+  which is exactly how the running build is checked against this source.

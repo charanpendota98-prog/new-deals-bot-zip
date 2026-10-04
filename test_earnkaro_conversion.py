@@ -22,6 +22,13 @@ What this file pins, and why each check exists:
 5.  THE THREE NEW SOURCES. They fan out to the non-Tricks main targets, are
     recognised as first preference however they are spelled (invite hashes are
     case-carrying), and are claimed before ordinary sources.
+6.  AN UNKNOWN REDIRECT DOMAIN. Affiliaters adds and renames short domains, and
+    refusing one used to mean an unmonetized post - a lost commission that looks
+    exactly like "this store has no campaign". A short-link-shaped output this
+    build does not recognize is therefore FOLLOWED, and accepted only when its
+    destination proves it is ours (a store page, our publisher id, our tag) and
+    never when it leads back to the source, to a foreign shortener, or to a
+    foreign publisher id.
 """
 import asyncio
 import json
@@ -147,17 +154,41 @@ class FakeResponse:
         return False
 
 
+class FakeGet:
+    """A GET that answers with a final URL and a body (the verifier reads both)."""
+
+    def __init__(self, final_url, body=""):
+        self.url = final_url
+        self.content = self
+        self._body = body.encode("utf-8")
+
+    async def read(self, _n=None):
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+
 class FakeSession:
     """Records every POST and answers with the next canned body."""
 
-    def __init__(self, bodies):
+    def __init__(self, bodies, gets=()):
         self.bodies = list(bodies)
         self.posts = []
+        self._gets = list(gets)
+        self.gets = []
 
     def post(self, url, **kwargs):
         self.posts.append({"url": url, **kwargs})
         body = self.bodies.pop(0) if self.bodies else json.dumps({"success": 0, "message": "exhausted"})
         return FakeResponse(body)
+
+    def get(self, url, **kwargs):
+        self.gets.append({"url": url, **kwargs})
+        return self._gets.pop(0) if self._gets else FakeGet(url)
 
 
 class Aff(bot.AffiliateClient):
@@ -279,6 +310,86 @@ def test_echoed_destination_is_not_mistaken_for_a_conversion():
           rendered_url)
     check("and registers the compact affiliate URL before provenance validation",
           provenance_ok, rendered_url)
+
+
+# ---------------------------------------------------------------------------
+# 2b. An UNRECOGNIZED converter output is verified, not thrown away
+# ---------------------------------------------------------------------------
+def test_unknown_affiliate_domain_is_verified_or_refused():
+    """A network redirect domain this build has never seen must not cost a commission.
+
+    `earnkaro_output_kind()` recognizes the short domains it knows. When the
+    Affiliaters/EarnKaro API answers with one it does not (they add and rename
+    them), the old behaviour was `EK REJECT` + an unmonetized post - a lost
+    commission that looks exactly like "this store has no campaign". The bot now
+    follows that output and accepts it only when the destination proves it is
+    ours, and still refuses everything that does not prove it.
+    """
+    unknown = "https://enkr.link/AbC123"
+    source = "https://www.flipkart.com/boat-airdopes-141/p/itm1?pid=1"
+    # Every case gets its OWN source URL: link_cache is durable, so reusing one
+    # would serve case (b)'s accepted link from the cache in case (c).
+    case_no = [0]
+
+    def convert_with(get_result, deal=None, resolved=None):
+        case_no[0] += 1
+        deal = deal or (f"https://www.flipkart.com/boat-airdopes-141/p/itm{case_no[0]}"
+                        f"?pid=1{case_no[0]}")
+        session = FakeSession([json.dumps({"success": 1, "data": unknown})],
+                              gets=[get_result(deal) if callable(get_result) else get_result])
+        aff = Aff(session)
+        return asyncio.run(aff.convert(deal, False, resolved_hint=resolved or deal)), session
+
+    # (a) destination is a real store page, no visible attribution (how ekaro.in works)
+    result, session = convert_with(FakeGet("https://www.myntra.com/x/1/detail"))
+    check("an unknown short domain that leads to a store page IS accepted (verified)",
+          bool(result) and result.affiliate.startswith("https://enkr.link/"), repr(result))
+    check("and the bot actually FOLLOWED it before publishing (one GET)",
+          len(session.gets) == 1 and session.gets[0]["url"] == unknown, str(session.gets))
+
+    # (b) destination carries OUR publisher id -> the strongest proof
+    ours_final = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=5478322"
+    result, _ = convert_with(FakeGet(ours_final))
+    check("a destination carrying OUR publisher id is accepted", bool(result), repr(result))
+
+    # (c) destination carries SOMEBODY ELSE'S publisher id -> refused
+    theirs_final = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=999999"
+    result, _ = convert_with(FakeGet(theirs_final))
+    check("a destination carrying a FOREIGN publisher id is refused", result is None, repr(result))
+
+    # (d) it only leads back to the source link -> refused (an echo, not a conversion)
+    result, _ = convert_with(lambda deal: FakeGet(deal))
+    check("a short link that only leads back to the source URL is refused",
+          result is None, repr(result))
+
+    # (e) it leads to another shortener/echo domain -> refused
+    result, _ = convert_with(FakeGet("https://amzn.to/sourceShort"))
+    check("a short link that leads to a foreign shortener/echo is refused",
+          result is None, repr(result))
+
+    # (f) no redirect at all -> nothing was proven
+    result, _ = convert_with(FakeGet(unknown))
+    check("a short link that does not redirect proves nothing and is refused",
+          result is None, repr(result))
+
+    # (g) a JS redirect page (no HTTP redirect) whose markup carries the store URL
+    body = '<html><script>location.replace("https://www.meesho.com/sarees/p/abc12345")</script></html>'
+    result, _ = convert_with(FakeGet(unknown, body))
+    check("a JS-redirect page is read from its markup and accepted when it names a store",
+          bool(result), repr(result))
+
+    # (h) a bare merchant-page ECHO is still not a conversion (the old contract)
+    echo_source = "https://www.flipkart.com/boat-airdopes-141/p/itmecho99?pid=99"
+    session = FakeSession([json.dumps({"success": 1, "data": echo_source})])
+    aff = Aff(session)
+    result = asyncio.run(aff.convert(echo_source, False, resolved_hint=echo_source))
+    check("a bare merchant-page echo is still refused (and never followed)",
+          result is None and not session.gets, repr(result))
+
+    # (i) our own publisher id on an AMAZON destination needs OUR tag: an untagged
+    #     Amazon page behind a stranger's short link earns nothing.
+    result, _ = convert_with(FakeGet("https://www.amazon.in/dp/B0FPDD9WKP"))
+    check("an Amazon destination without our tag is refused", result is None, repr(result))
 
 
 # ---------------------------------------------------------------------------
@@ -908,6 +1019,8 @@ def test_status_report_answers_are_we_converting():
                 resolved_url TEXT, product_key TEXT, created_at REAL);
             CREATE TABLE hypd_wanted (product_url TEXT, product_key TEXT, times INTEGER,
                 first_seen REAL, last_seen REAL);
+            CREATE TABLE queue (id INTEGER PRIMARY KEY, created_at REAL, status TEXT,
+                rendered_text TEXT);
         """)
         now = time.time()
         meesho = "https://www.meesho.com/product/p/mee123"
@@ -924,6 +1037,13 @@ def test_status_report_answers_are_we_converting():
             (meesho, "PID:mee123", 1, now, now),
             (shopsy, "PID:shop123", 1, now, now),
         ])
+        # The post that actually went out: OUR short link (minted into link_cache
+        # above), a clean unmonetizable store page, and one stranger's link - the
+        # three cases the link-perfection line exists to separate.
+        conn.execute("INSERT INTO queue VALUES(1,?,?,?)", (
+            now, "done",
+            f"boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
+            "https://www.myntra.com/tshirt/buy\nhttps://www.ajio.com/p/9?tag=rivalpub"))
         conn.commit()
         conn.close()
         scoped = report.db_report(db_path, 24)
@@ -938,6 +1058,16 @@ def test_status_report_answers_are_we_converting():
         scoped_lines, scoped_problems = report.verdict(cfg, scoped, {"markers": {}})
         check("the report warns about the legacy out-of-scope row",
               any("legacy HYPD cache" in p for p in scoped_problems), str(scoped_problems))
+        links = scoped.get("links") or {}
+        check("the report counts every published link with the auditor's own rule",
+              links.get("links") == 3 and links.get("our-short") == 1
+              and links.get("clean-merchant") == 1 and links.get("foreign") == 1, str(links))
+        check("a foreign link in the window is reported as a problem with its fix",
+              any("NOT ours" in problem and "quality_audit" in problem
+                  for problem in scoped_problems), str(scoped_problems))
+        check("and the verdict says so in one line",
+              any(line.startswith("LINKS") and "NEEDS ATTENTION" in line
+                  for line in scoped_lines), str(scoped_lines))
 
     healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
                           "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
@@ -948,6 +1078,14 @@ def test_status_report_answers_are_we_converting():
           any("WORKING" in l and "5478322" in l for l in lines), str(lines))
     check("it says our hypd links are working",
           any(l.startswith("HYPD") and "WORKING" in l for l in lines), str(lines))
+
+    clean_links = dict(healthy, links={"links": 9, "our-short": 6, "our-publisher": 3,
+                                       "clean-merchant": 0, "foreign": 0})
+    lines, problems = report.verdict(cfg, clean_links, {"markers": {}})
+    check("a window whose links are all ours is reported as WORKING, not silent",
+          any(l.startswith("LINKS") and "WORKING" in l and "all ours" in l for l in lines),
+          str(lines))
+    check("and that window needs no fixing", not problems, str(problems))
 
     broken = dict(healthy)
     broken["hypd_wanted"] = [{"product": "https://www.meesho.com/kurtis/p/none123"}]
@@ -990,6 +1128,7 @@ def main():
     test_request_contract()
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
+    test_unknown_affiliate_domain_is_verified_or_refused()
     test_token_claims()
     test_amazon_policy()
     test_stale_native_amazon_cache_rows_are_reconverted()
