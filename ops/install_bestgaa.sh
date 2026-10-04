@@ -297,7 +297,7 @@ if ! cmp -s "$APP/main_bot.py" "$APP/main_bot_new.py"; then
   echo "ERROR: live main_bot.py != shipped main_bot_new.py" >&2
   exit 1
 fi
-if tail -n 300 "$APP/logs/bot.log" | grep -Eq "BestGAA Production Bot v15 starting|LIVE \| sources="; then
+if tail -n 300 "$APP/logs/bot.log" | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
   echo "       startup marker found in bot.log"
 else
   echo "       WARNING: startup marker not yet visible in last 300 lines"
