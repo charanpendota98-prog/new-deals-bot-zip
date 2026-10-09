@@ -23,6 +23,9 @@ if [[ -f .env ]]; then
   python3 - <<'PY'
 from pathlib import Path
 p=Path('.env'); lines=p.read_text().splitlines(); out=[]; seen=set()
+# PRICE_DEDUP_SECONDS stays '0' ON PURPOSE (same-price fallback OFF): at common
+# prices the 1-hour hold ate real unidentified deals. Identity dedup + the
+# pinned 24h product window remain the guards - do NOT "restore" 3600 here.
 updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          # EarnKaro / Affiliaters converter token. Without a VALID token every
          # conversion answers 401 and the bot posts clean, UNTAGGED merchant
@@ -83,10 +86,13 @@ PY
     EK_TOKEN="$(tr -d '[:space:]' < "$HERE/.earnkaro_key")"
   fi
   if [[ -n "$EK_TOKEN" ]]; then
-    if grep -qE '^EARNKARO_API_KEY=' "$ENV_FILE"; then
-      sed -i "s|^EARNKARO_API_KEY=.*|EARNKARO_API_KEY=$EK_TOKEN|" "$ENV_FILE"
+    # NOTE: the file is .env in $BESTGAA_DIR (this script cd's there above); an
+    # earlier revision named an $ENV_FILE variable that was never defined, so
+    # under `set -u` ANY deploy carrying a token died with "unbound variable".
+    if grep -qE '^EARNKARO_API_KEY=' .env; then
+      sed -i "s|^EARNKARO_API_KEY=.*|EARNKARO_API_KEY=$EK_TOKEN|" .env
     else
-      echo "EARNKARO_API_KEY=$EK_TOKEN" >> "$ENV_FILE"
+      echo "EARNKARO_API_KEY=$EK_TOKEN" >> .env
     fi
     echo "      EarnKaro API key: updated from the deploy environment"
   else

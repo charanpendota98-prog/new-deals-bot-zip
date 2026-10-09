@@ -655,7 +655,9 @@ async def test_price_gate_is_a_fallback(store):
     # explicitly (an operator's PRICE_DEDUP_IGNORES_IDENTITY=true must not turn this
     # assertion red - the strict-gate case a few lines further down is exactly that mode).
     bot.PRICE_DEDUP_IGNORES_IDENTITY = False
-    bot.PRICE_DEDUP_SECONDS = 3600  # the deployed .env value; code default is off
+    # Opt-in scope for this case only: the live deploy pins 0 and the code
+    # default is off, so the gate is exercised here by setting it explicitly.
+    bot.PRICE_DEDUP_SECONDS = 3600
     # Fresh dedup state for this case only.
     store.conn.execute("DELETE FROM price_posts")
     store.conn.execute("DELETE FROM deal_claims")

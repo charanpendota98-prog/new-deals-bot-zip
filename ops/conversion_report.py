@@ -37,7 +37,7 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -566,7 +566,7 @@ def main() -> int:
         print(f"  posted_deals in window: {db_rep.get('posted_deals', 0)}")
         links = db_rep.get("links") or {}
         if links.get("links"):
-            print(f"\nLINK PERFECTION (every link printed in this window's posts)")
+            print("\nLINK PERFECTION (every link printed in this window's posts)")
             print(f"  links={links['links']}  our-short={links['our-short']}  "
                   f"our-publisher={links['our-publisher']}  "
                   f"unattributed={links.get('unattributed', 0)}  "

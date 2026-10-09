@@ -228,4 +228,4 @@ if ((${#FAILED[@]})); then
   echo "Nothing here is fixed by restarting again - the hash/version line above names the real gap."
   exit 1
 fi
-echo "DEPLOY VERIFY: all good - v$WANT_VERSION is live, posting immediately, and the last posts are clean."
+echo "DEPLOY VERIFY: all good - $WANT_VERSION is live, posting immediately, and the last posts are clean."

@@ -969,8 +969,8 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   and the deal is only skipped when nothing verified remains.
 - **Smart random pacing:** the bridge already posts with randomized gaps,
   hourly break patterns and jitter; the bot spaces multi-target fan-out with a
-  short random gap (`TARGET_FANOUT_GAP_MIN`/`TARGET_FANOUT_GAP_MAX`, default
-  0.4–1.2s; the code never actually had the 3–9s earlier docs claimed) and
+  back-to-back fan-out (`TARGET_FANOUT_GAP_MIN`/`TARGET_FANOUT_GAP_MAX` default
+  0/0 — zero artificial waiting; the knobs are only an escape hatch) and
   never before the first target, so a hot deal is not delayed.
 - **Never-stall pipeline:** bot workers are never-die (a claim or job error is
   logged and the loop continues — a dead worker can no longer silently stop
@@ -1075,7 +1075,7 @@ because every number is clamped into a safe range.
 | Knob | Default | Meaning |
 |---|---|---|
 | `QUEUE_WORKERS` | 8 | concurrent render/deliver workers |
-| `PRICE_DEDUP_SECONDS` / `PRICE_DEDUP_IGNORES_IDENTITY` | server `.env` (3600) / `false` | the one-hour same-price gate is a **fallback for posts with no ASIN/PID**; set it to `true` to also block a *different* product that happens to share an already-posted price |
+| `PRICE_DEDUP_SECONDS` / `PRICE_DEDUP_IGNORES_IDENTITY` | `0` / `false` | the same-price gate is **off** (a common price must never eat a real deal); set `3600` to restore the one-hour hold as a **fallback for posts with no ASIN/PID**, and `true` to also block a *different* product that happens to share an already-posted price |
 | `QUEUE_ORDER` | `newest` | `newest` = a fresh deal is dispatched ahead of backlog; `oldest` restores FIFO |
 | `MAX_JOB_AGE_HOURS` | 6 | pending work older than this is dropped (`STALE DROP`), never posted late |
 | `JOB_RETRY_BASE_SECONDS` / `JOB_RETRY_MAX_SECONDS` | 3 / 20 | retry backoff for an undelivered job (was up to 300s) |

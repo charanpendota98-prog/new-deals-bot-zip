@@ -389,7 +389,6 @@ def test_unknown_affiliate_domain_is_verified_or_refused():
     ours, and still refuses everything that does not prove it.
     """
     unknown = "https://enkr.link/AbC123"
-    source = "https://www.flipkart.com/boat-airdopes-141/p/itm1?pid=1"
     # Every case gets its OWN source URL: link_cache is durable, so reusing one
     # would serve case (b)'s accepted link from the cache in case (c).
     case_no = [0]
@@ -1143,7 +1142,7 @@ def test_status_report_answers_are_we_converting():
         # is counted (and flagged) as 'unattributed': it opens and pays nobody.
         conn.execute("INSERT INTO queue VALUES(1,?,?,?)", (
             now, "done",
-            f"boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
+            "boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
             "https://www.ajio.com/p/442125201\nhttps://www.ajio.com/p/9?tag=rivalpub"))
         conn.commit()
         conn.close()

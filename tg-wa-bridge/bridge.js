@@ -6,18 +6,56 @@ import os from 'node:os'
 import { Readable } from 'node:stream'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
-import pino from 'pino'
-import qrcode from 'qrcode-terminal'
-import makeWASocket, {
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  useMultiFileAuthState,
-  encodeBase64EncodedStringForUpload,
-  encodeNewsletterMessage,
-  generateMessageIDV2,
-  prepareWAMessageMedia,
-  DEFAULT_ORIGIN,
-} from 'baileys'
+// The npm dependencies (pino / qrcode-terminal / baileys) are loaded LAZILY
+// (see loadVendorModules below), never as static imports. Static imports are
+// resolved before a single line of this file runs, so --identity-probe - a
+// pure diagnostic over the dedup rule - used to die with ERR_MODULE_NOT_FOUND
+// on any box without node_modules installed, and the cross-language dedup
+// contract test could never go green there. Probe mode now needs only the
+// node: builtins above; every live path loads the vendors first.
+let pino = null
+let qrcode = null
+let makeWASocket = null
+let DisconnectReason = null
+let fetchLatestBaileysVersion = null
+let useMultiFileAuthState = null
+let encodeBase64EncodedStringForUpload = null
+let encodeNewsletterMessage = null
+let generateMessageIDV2 = null
+let prepareWAMessageMedia = null
+let DEFAULT_ORIGIN = null
+let _vendorsLoaded = false
+async function loadVendorModules() {
+  if (_vendorsLoaded) return
+  let baileys
+  try {
+    const [pinoMod, qrcodeMod, baileysMod] = await Promise.all([
+      import('pino'),
+      import('qrcode-terminal'),
+      import('baileys'),
+    ])
+    pino = pinoMod.default
+    qrcode = qrcodeMod.default
+    baileys = baileysMod
+  } catch (error) {
+    throw new Error(
+      `WhatsApp bridge dependencies are missing (${error.message}). Run: cd tg-wa-bridge && npm install`,
+    )
+  }
+  ;({
+    default: makeWASocket,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState,
+    encodeBase64EncodedStringForUpload,
+    encodeNewsletterMessage,
+    generateMessageIDV2,
+    prepareWAMessageMedia,
+    DEFAULT_ORIGIN,
+  } = baileys)
+  _vendorsLoaded = true
+  _realLog = pino({ level: process.env.LOG_LEVEL || 'info' })
+}
 
 const BASE = path.dirname(new URL(import.meta.url).pathname)
 const ENV_FILE = path.join(BASE, '.env')
@@ -263,9 +301,8 @@ const COMMISSION_RANKING = (process.env.WA_COMMISSION_RANKING || 'true').toLower
 // ---------------------------------------------------------------------------
 // Product-level duplicate protection: the SAME product (ASIN / product slug,
 // not just the exact URL or text) must not be posted again within this window.
-// Floor requested by the user: 3 hours. Default 10 hours — the same window the
-// Telegram bot already uses (PRODUCT_DEDUP_SECONDS=36000), so WhatsApp and
-// Telegram stay consistent.
+// STRICT 24h on both services, pinned (user rule 2026-09-04) — the same window
+// the Telegram bot enforces, so WhatsApp and Telegram stay consistent.
 // ---------------------------------------------------------------------------
 const PRODUCT_DEDUP_HOURS = 24 // STRICT 24h: asalu ravoddu same product 24h — pinned, env override blocked (user rule 2026-09-04)
 // ---------------------------------------------------------------------------
@@ -352,7 +389,27 @@ function isOurHypdLink(url) {
 const SERVICE_OFFER_DOMAINS = (process.env.WA_SERVICE_DOMAINS ||
   'zomato.com,zomato.in,zom.to,swiggy.com,swiggy.in,zepto.com,dominos.in,pizzahut.co.in,pizza-hut.co.in,bookmyshow.com,pvr.in,inoxmovies.com,amctheatres.in,bigcinema.com,phonepe.com,amazonpay.in,paytm.com,magicpin.in')
   .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
-const log = pino({ level: process.env.LOG_LEVEL || 'info' })
+// Console-backed logger shim with the same call shape the code uses
+// (info/warn/error/debug/trace/fatal + child), so every call site works before
+// pino loads; loadVendorModules swaps the target to the real pino logger for
+// production / self-test runs. Probe mode only ever uses the shim.
+let _realLog = null
+const _shimLine = level => (...args) => {
+  const target = _realLog?.[level]?.bind(_realLog)
+  if (target) return target(...args)
+  const line = args.map(part => (typeof part === 'string' ? part : JSON.stringify(part) ?? String(part))).join(' ')
+  const out = (level === 'error' || level === 'warn' || level === 'fatal') ? process.stderr : process.stdout
+  out.write(`${new Date().toISOString()} [${level.toUpperCase()}] ${line}\n`)
+}
+const log = {
+  info: _shimLine('info'),
+  warn: _shimLine('warn'),
+  error: _shimLine('error'),
+  debug: _shimLine('debug'),
+  trace: _shimLine('trace'),
+  fatal: _shimLine('fatal'),
+  child: () => log,
+}
 
 const defaultState = () => ({
   telegramOffset: 0,
@@ -4230,6 +4287,12 @@ if (process.argv.includes('--identity-probe')) {
   }
   process.exit(0)
 }
+
+// Every path below this point is a live run (the startup health probe, the
+// self-test, or the service itself) and needs the real npm dependencies -
+// load them now that the dependency-free diagnostics above have had their
+// chance to exit.
+await loadVendorModules()
 
 {
   // A link-health probe is allowed to make a post honest, never to make it

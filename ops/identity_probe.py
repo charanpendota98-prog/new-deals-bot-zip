@@ -54,6 +54,9 @@ def whatsapp_identity(text: str) -> str | None:
 
 
 def main(argv: list[str]) -> int:
+    if argv[:1] in (["-h"], ["--help"]):
+        print(__doc__)
+        return 0
     if len(argv) not in (1, 2):
         print(__doc__)
         return 2

@@ -46,7 +46,7 @@ cd "$REPO" || exit 1
 if command -v tmux >/dev/null 2>&1; then
   tmux kill-session -t "$SESSION" 2>/dev/null || true
   tmux new-session -d -s "$SESSION" \
-    "cd '$REPO' && ./ops/deploy_fresh.sh 2>&1 | tee '$LOG'; echo; echo \"DEPLOY FINISHED - exit \$? - log: $LOG\"; sleep 120"
+    "set -o pipefail; cd '$REPO' && ./ops/deploy_fresh.sh 2>&1 | tee '$LOG'; echo; echo \"DEPLOY FINISHED - exit \$? - log: $LOG\"; sleep 120"
   echo "Started in tmux session '$SESSION' (SSH drop cannot kill it)."
   echo "  watch : tmux attach -t $SESSION        (detach: Ctrl-B then D)"
   echo "  or    : tail -f $LOG"

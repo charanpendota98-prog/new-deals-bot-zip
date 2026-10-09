@@ -53,6 +53,10 @@ run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test'
+run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py
+if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+fi
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

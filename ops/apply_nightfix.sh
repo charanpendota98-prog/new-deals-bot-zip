@@ -63,7 +63,8 @@ updates = {
     'QUIET_END': '06:00',                  # udayam 6 AM varaku FULL OFF
     'HYBRID_QUIET': 'false',               # aa window lo emi post avvakudadhu
     'WA_DAY_CAP': '2000',                  # 700/day ceiling lift; safety net matrame
-    'WA_NIGHT_QUEUE_BEST_ONLY': 'true',    # 2-6 AM ordinary deals drop; lists/specials keep
+    # (No WA_NIGHT_QUEUE_BEST_ONLY: bridge.js never read it; the 02:00-06:00
+    # full off-window is QUIET_START/QUIET_END + HYBRID_QUIET=false above.)
     'WA_ORDINARY_MAX_AGE_MINUTES': '150',  # ordinary deal 2.5h cross aithe drop (trust)
     'MAX_JOB_AGE_HOURS': '12',
     'WA_WARMUP_DONE': 'true',

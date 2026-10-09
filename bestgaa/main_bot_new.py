@@ -41,9 +41,12 @@ immediately, exactly once, clean":
   or discounts the source never printed (never the post)
 - zero artificial waiting on Telegram: channel fan-out is back-to-back and one
   merchant page probe is capped (a slow site can no longer hold a live deal)
-- per-product 10-hour cross-source dedup, backed by a canonical
-  (chat_key,msg_id) unique index so one source message can never queue twice
-- 1-hour same-price fallback only when product identity is unavailable
+- per-product 24-hour cross-source dedup (pinned; env override blocked),
+  backed by a canonical (chat_key,msg_id) unique index so one source message
+  can never queue twice
+- same-price fallback for unidentified posts is OFF unless opted in
+  (PRICE_DEDUP_SECONDS=0: a common price must never eat a real deal; set 3600
+  to restore the 1-hour hold)
 - dedup committed only after at least one target post succeeds
 - Buy Now/entity/button URL support
 - source promo / channel links / URL residue / dangling CTA labels stripped
@@ -7711,7 +7714,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
 
     # Preserve distinct variant links (colour/gender/size/category filters) inside
     # one source post. Collapse only an exact repeated generated URL. Product-key
-    # reservation still provides global 10-hour dedup across source channels.
+    # reservation still provides global 24-hour dedup across source channels.
     converted = distinct_affiliate_results(converted)
     keys = list(dict.fromkeys(
         [product_key(resolved) for _, resolved in service_pairs]

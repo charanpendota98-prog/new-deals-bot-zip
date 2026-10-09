@@ -50,7 +50,13 @@ def valid(values: dict[str, object]) -> bool:
     return all(values.get(key) for key in ("API_ID", "API_HASH", "EK_KEY", "OUR_TAG"))
 
 
+USAGE = "Usage: python3 migrate_legacy_env.py [/path/to/old_working_main_bot.py]"
+
+
 def find_source() -> tuple[Path, dict[str, object]]:
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        print(__doc__.strip() + "\n\n" + USAGE)
+        raise SystemExit(0)
     explicit = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else None
     if explicit:
         candidates = [explicit]
@@ -113,8 +119,10 @@ def main() -> None:
         "AMAZON_TAG": migrated_tag,
         "BITLY_TOKENS": bitly_tokens,
         "BOT_DB_PATH": str(APP_DIR / "bestgaa.sqlite3"),
-        "PRODUCT_DEDUP_SECONDS": "36000",
-        "PRICE_DEDUP_SECONDS": "3600",
+        # (No PRODUCT_DEDUP_SECONDS: the 24h window is pinned in code, env
+        # override blocked - a value here would be dead config.)
+        # Same-price fallback OFF (0), matching the live deploy + code default.
+        "PRICE_DEDUP_SECONDS": "0",
         "PRICE_DEDUP_IGNORES_IDENTITY": "false",
         "QUEUE_WORKERS": "8",
         "EK_MAX_CONCURRENCY": "8",
@@ -125,15 +133,15 @@ def main() -> None:
         "JOB_RETRY_MAX_SECONDS": "20",
         "HTTP_TOTAL_TIMEOUT_SECONDS": "12",
         "LINK_HEALTH_CACHE_SECONDS": "900",
-        "PRESEND_CHECK_BUDGET_SECONDS": "25",
+        "PRESEND_CHECK_BUDGET_SECONDS": "6",
         "SOURCE_RESCAN_SECONDS": "120",
         "SOURCE_RESCAN_LIMIT": "40",
         "SOURCE_REFRESH_SECONDS": "180",
         "MAX_MEDIA_MB": "45",
         # v17: never lose a post over a store the network cannot monetize.
         "PASSTHROUGH_UNMONETIZED": "true",
-        "TARGET_FANOUT_GAP_MIN": "0.4",
-        "TARGET_FANOUT_GAP_MAX": "1.2",
+        "TARGET_FANOUT_GAP_MIN": "0",
+        "TARGET_FANOUT_GAP_MAX": "0",
     }
     missing = [key for key in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "EARNKARO_API_KEY", "AMAZON_TAG") if not required[key]]
     if missing:

@@ -81,7 +81,8 @@ WA_BEST_OF_COOLDOWN_SECONDS=0
 WA_STRIP_CAMPAIGN_BANNERS=false
 WA_GROUPS=$WA_GROUPS
 WA_BITLY_TOKENS=$WA_BITLY_TOKENS
-WA_PRODUCT_DEDUP_HOURS=10
+# (No WA_PRODUCT_DEDUP_HOURS: the same-product window is pinned to STRICT 24h in
+# bridge.js - env override blocked by user rule - so a value here would be dead.)
 WA_BEST_GATE=true
 WA_BEST_MIN_DISCOUNT=30
 WA_BEST_MAX_PRICE=499

@@ -76,8 +76,12 @@ if not os.environ.get("BOT_DB_PATH") and (APP_DIR / "bestgaa.sqlite3").exists():
     os.environ["BOT_DB_PATH"] = str(APP_DIR / "bestgaa.sqlite3")
 
 # The bot module needs these at import time; this tool never starts Telegram.
+# (Every flag - even --help - used to die on EARNKARO_API_KEY without a live
+# .env, because only the Telegram pair was defaulted. Same placeholder pattern
+# as ops/identity_probe.py; live .env values loaded above always win.)
 os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "hypd-links-ops-tool")
+os.environ.setdefault("EARNKARO_API_KEY", "hypd-links-ops-tool")
 
 import main_bot_new as bot  # noqa: E402
 
