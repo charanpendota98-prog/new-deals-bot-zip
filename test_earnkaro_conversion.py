@@ -494,6 +494,42 @@ def probe_page(final_url, status=200, body="fine"):
     return get
 
 
+def test_native_search_link_shortened_like_product():
+    """Search/browse URLs are the LONGEST Amazon links - they must leave
+    convert() shortened exactly like product links (Bitly working), and fall
+    back to the tagged native URL when the shortener is down (never untagged,
+    never dropped, stranger's tag never surviving)."""
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES,
+           bot.SHORTEN_AMAZON_LINKS)
+    try:
+        bot.OUR_TAG = "mama086-21"
+        bot.AMAZON_VIA_EARNKARO = True
+        bot.AMAZON_DIRECT_ASSOCIATES = True
+        bot.SHORTEN_AMAZON_LINKS = True
+
+        class BitlyUpAff(Aff):
+            async def shorten(self, url):
+                return "https://bit.ly/SEARCH1"
+
+        search = "https://www.amazon.in/s?k=earbuds&tag=thief-21"
+        result = asyncio.run(BitlyUpAff(FakeSession([])).convert(search, False))
+        check("a native search link leaves convert() SHORTENED (Bitly working)",
+              bool(result) and result.affiliate == "https://bit.ly/SEARCH1", repr(result))
+
+        browse = "https://www.amazon.in/b?node=100360008031&tag=shopingdeals03-21"
+        result2 = asyncio.run(BitlyUpAff(FakeSession([])).convert(browse, False))
+        check("a native browse-node link leaves convert() SHORTENED too",
+              bool(result2) and result2.affiliate == "https://bit.ly/SEARCH1", repr(result2))
+
+        fallen = asyncio.run(Aff(FakeSession([])).convert(search, False))
+        check("shortener down: the tagged native search URL is kept (never dropped)",
+              bool(fallen) and "tag=mama086-21" in fallen.affiliate
+              and "thief-21" not in fallen.affiliate, repr(fallen))
+    finally:
+        (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES,
+         bot.SHORTEN_AMAZON_LINKS) = old
+
+
 def test_datacenter_404_never_vetoes_conversion():
     """A bare 404 from OUR IP is not proof a product is dead.
 
@@ -1497,6 +1533,7 @@ def main():
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_unknown_affiliate_domain_is_verified_or_refused()
+    test_native_search_link_shortened_like_product()
     test_datacenter_404_never_vetoes_conversion()
     test_search_links_never_touch_the_cache()
     test_token_claims()

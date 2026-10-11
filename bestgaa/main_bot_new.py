@@ -6602,7 +6602,20 @@ class AffiliateClient:
             # hand the FIRST search link back for every later one. The tag on the
             # URL is self-proving at the provenance gate, so no cache is needed.
             tagged = apply_amazon_tag(clean)
-            return LinkResult(source_url, clean, tagged, product_key(clean))
+            affiliate = tagged
+            if should_use_bitly(clean, multi_link) or SHORTEN_AMAZON_LINKS:
+                shortened = await self.shorten(tagged)
+                if shortened:
+                    affiliate = shortened
+                    # Delivery expands this pair again for the review channel, so
+                    # the reviewed post still shows the real tagged browse page.
+                    log.info("AMAZON LINK SHORTENED | %s -> %s (native tagged form kept "
+                             "for the review channel)", tagged[:70], shortened)
+                else:
+                    # Never lose a valid commission link merely because the
+                    # cosmetic shortener is unavailable/rate-limited.
+                    log.warning("BITLY unavailable; posting the native tagged Amazon link")
+            return LinkResult(source_url, clean, affiliate, product_key(clean))
         return None
 
     async def _earnkaro_link(self, source_url: str, clean: str, resolved: str,
