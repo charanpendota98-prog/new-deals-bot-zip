@@ -9,14 +9,16 @@ Run on the server (this is the honest answer to that question):
     python3 ops/conversion_report.py --json           # machine-readable
 
 It reads the bot's OWN database and log and reports, per monetization route
-(Amazon / EarnKaro / HYPD-Meesho), whether links are actually converting:
+(Amazon / EarnKaro / HYPD-Meesho), observed conversion activity and strict link
+ownership. Route/hostname counts are diagnostics; only native attribution or
+account-bound durable proof is treated as evidence that a link earns for us.
 
   CONFIG       what is configured - EarnKaro token claims (which account gets
                paid), convert_option, Amazon policy + tag, HYPD store, Bitly.
                Secrets are never printed (only counts / claims).
   ROUTES       every link the bot produced in the window, classified by route:
                earnkaro / amazon / hypd / affiliate / shortened / PASS-THROUGH
-               (a pass-through row is a clean merchant link: it earns NOTHING).
+               (a pass-through cache row is a clean merchant URL, not ownership proof).
   LOG MARKERS  separate counts for EK SUCCESS, EK MISS, EK AUTH, EK REJECT,
                EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, plus the
                link-health markers that answer "will this click pay us?" -
@@ -256,7 +258,7 @@ def _quality_audit():
         return None
 
 
-def db_report(db: Path, hours: float) -> dict:
+def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") -> dict:
     out: dict = {"db": str(db), "exists": db.exists(), "routes": {}, "passthrough_examples": [],
                  "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0,
                  "links": {"links": 0, "our-short": 0, "our-publisher": 0,
@@ -333,10 +335,7 @@ def db_report(db: Path, hours: float) -> dict:
     qa = _quality_audit()
     if qa is not None and table_exists("queue"):
         try:
-            our_links = qa.our_minted_links(conn)
-            publisher = str(os.getenv("EARNKARO_PUBLISHER_ID", "")).strip() or str(
-                token_claims(os.getenv("EARNKARO_API_KEY", "")).get("earnkaro") or "")
-            our_tag = os.getenv("AMAZON_TAG", "").strip()
+            our_links = qa.our_minted_links(conn, our_tag, publisher)
             for row in conn.execute(
                     "SELECT rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
                     (since,)).fetchall():
@@ -423,7 +422,7 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         http_errors = markers.get("EK HTTP", {}).get("count", 0)
         network_errors = markers.get("EK NETWORK", {}).get("count", 0)
         cached_route_rows = routes.get("earnkaro", {}).get("count", 0)
-        converted = max(successes, cached_route_rows)
+        converted = successes
         problems_found = rejects + http_errors + network_errors
         if auth:
             problems.append(f"{auth} EarnKaro AUTH failure(s) in the window - "
@@ -445,9 +444,12 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
             problems.append(f"zero successful EarnKaro links and {no_link} API no-link response(s); "
                             "check Affiliaters network selections, connected EarnKaro account, and campaign eligibility")
             lines.append(f"EarnKaro : NOT CONVERTING - {no_link} no-link response(s), 0 attributable links")
+        elif cached_route_rows:
+            lines.append(f"EarnKaro : CACHE ONLY - {cached_route_rows} route-like cache row(s), "
+                         "but no fresh API success; these rows do not prove ownership or conversion")
         else:
             lines.append("EarnKaro : IDLE - no fresh API success/no-link activity in this window; "
-                         "cached links may still be used, so this is not a live conversion proof")
+                         "no live conversion evidence")
 
     # --- Amazon
     tag = cfg["amazon_tag"] or "(none - tagless!)"
@@ -475,9 +477,10 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
                         "they are not valid under the current policy and will be rechecked on use")
         lines.append(f"           {out_of_scope} out-of-scope legacy HYPD cache row(s) detected")
     if wanted:
-        problems.append(f"{len(wanted)} Meesho product(s) posted UNMONETIZED - "
-                        "curate a hypd link and learn it (ops/hypd_links.py)")
-        lines.append(f"           {len(wanted)} product(s) WAITING for curation (earn nothing until then)")
+        problems.append(f"{len(wanted)} Meesho product(s) skipped under strict-all - "
+                        "curate a verified HYPD link and learn it (ops/hypd_links.py)")
+        lines.append(f"           {len(wanted)} product(s) WAITING for curation "
+                     "(strict-all skips them until then)")
 
     # --- Shortener
     if cfg["bitly_tokens"]:
@@ -489,27 +492,30 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
     if bitly_fail:
         lines.append(f"           {bitly_fail} Bitly call(s) failed in the window (rate limit/token)")
 
-    unmon = markers.get("UNMONETIZED LINK", {}).get("count", 0) or routes.get("passthrough", {}).get("count", 0)
+    unmon = markers.get("UNMONETIZED LINK", {}).get("count", 0)
     if unmon:
-        problems.append(f"{unmon} deal(s) posted with a clean merchant link "
-                        "(no campaign anywhere) - see the pass-through list below")
-        lines.append(f"Plain    : {unmon} unmonetized deal(s) in the window")
-    # --- link ownership across every post of the window ("mana links perfectga
-    # post chesthunda?"): counted with the auditor's own data-backed rule, so
-    # this line and `ops/quality_audit.py --strict` can never disagree.
+        problems.append(f"{unmon} logged post(s) contained a clean merchant link "
+                        "with no proven earning attribution")
+        lines.append(f"Plain    : ATTENTION - {unmon} unmonetized post(s) in the log window")
+    # --- link ownership across every rendered post in the window: use the same
+    # data-backed rule as ops/quality_audit.py; cache rows/hostnames never count.
     links = db.get("links") or {}
-    if links.get("foreign"):
-        problems.append(f"{links['foreign']} published link(s) were NOT ours - run "
-                        "`python3 ops/quality_audit.py --strict` (it names the queue ids)")
-        lines.append(f"LINKS    : NEEDS ATTENTION - {links['foreign']} foreign link(s) reached a channel")
-    elif links.get("unattributed"):
-        lines.append(f"LINKS    : ATTENTION - {links['links']} link(s), of which "
-                     f"{links['unattributed']} on Flipkart/Myntra pages with NO publisher id: "
-                     "the product opens and pays nobody (fixed in v18.5 for new posts)")
-    elif links.get("links"):
-        lines.append(f"LINKS    : WORKING - {links['links']} published link(s), all ours "
-                     f"({links['our-short']} short, {links['our-publisher']} tagged, "
-                     f"{links['clean-merchant']} clean merchant)")
+    if links.get("links"):
+        unowned = sum(int(links.get(key, 0) or 0)
+                      for key in ("foreign", "unattributed", "clean-merchant"))
+        if unowned:
+            problems.append(
+                f"{unowned} published link(s) lack verified ownership "
+                f"({links.get('foreign', 0)} foreign, {links.get('unattributed', 0)} "
+                f"without publisher attribution, {links.get('clean-merchant', 0)} "
+                "clean merchant); run `python3 ops/quality_audit.py --strict` for queue ids")
+            lines.append(f"LINKS    : NEEDS ATTENTION - {unowned}/{links['links']} "
+                         "published link(s) lack verified earning attribution")
+        else:
+            lines.append(f"LINKS    : VERIFIED - {links['links']} published link(s) all have "
+                         f"our account attribution ({links['our-short']} short, "
+                         f"{links['our-publisher']} publisher, {links['clean-merchant']} "
+                         "clean merchant)")
     return lines, problems
 
 
@@ -528,7 +534,7 @@ def main() -> int:
     env = load_env(args.env_file)
 
     cfg = config_report(env)
-    db_rep = db_report(db, args.hours) if db else {}
+    db_rep = db_report(db, args.hours, cfg["earnkaro_publisher"], cfg["amazon_tag"]) if db else {}
     lg_rep = log_report(log, args.hours) if log else {}
     lines, problems = verdict(cfg, db_rep or {}, lg_rep or {})
 
@@ -559,10 +565,10 @@ def main() -> int:
             print("  no links produced in this window")
         for route, bucket in sorted(db_rep.get("routes", {}).items(),
                                     key=lambda kv: -kv[1]["count"]):
-            note = "   <- earns NOTHING (no campaign anywhere)" if route == "passthrough" else ""
+            note = "   <- affiliate_url == resolved_url; not proof this row was posted or owned" if route == "passthrough" else ""
             print(f"  {route:<12} {bucket['count']:>6}{note}")
         for url in db_rep.get("passthrough_examples", []):
-            print(f"      unmonetized example: {url[:100]}")
+            print(f"      clean-link cache sample (not ownership proof): {url[:100]}")
         print(f"  posted_deals in window: {db_rep.get('posted_deals', 0)}")
         links = db_rep.get("links") or {}
         if links.get("links"):
@@ -571,16 +577,12 @@ def main() -> int:
                   f"our-publisher={links['our-publisher']}  "
                   f"unattributed={links.get('unattributed', 0)}  "
                   f"clean-merchant={links['clean-merchant']}  FOREIGN={links['foreign']}")
-            if links["foreign"]:
-                print("  -> FOREIGN links reached a channel: "
-                      "python3 ops/quality_audit.py --strict  (names the queue ids)")
-            elif links.get("unattributed"):
-                print("  -> Link(s) that CAN pay us but were posted without our publisher "
-                      "id (Flipkart/Myntra): they open and pay nobody. Published before the "
-                      "2026-10-04 attribution fix - new posts stamp it automatically.")
+            if links.get("foreign") or links.get("unattributed") or links.get("clean-merchant"):
+                print("  -> one or more published links have no verified earning proof; "
+                      "cache rows and clean merchant URLs are not proof. Run "
+                      "python3 ops/quality_audit.py --strict for queue ids.")
             else:
-                print("  -> every published link is one of ours (minted by this bot, our "
-                      "tag/publisher, or a clean merchant page kept on purpose)")
+                print("  -> every published link has verified account-bound or native attribution")
             posture = []
             for marker, label in (("LINK ATTRIBUTED", "page(s) stamped with our id"),
                                   ("AMAZON LINK SHORTENED", "Amazon link(s) shortened"),

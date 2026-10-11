@@ -25,6 +25,9 @@ CATEGORY-WISE CHANNELS (optional, configured after channel creation)
 The bot now supports six additive category mirrors. A deal still appears on the
 Main feed; a high-confidence single category adds one matching channel. Mixed or
 unclear posts remain on Main rather than being guessed into the wrong shelf.
+Routing uses product text and readable clues in incoming/resolved URL paths and
+selected search/title query terms. It does not fetch merchant-page HTML; opaque
+ASIN/product IDs alone are insufficient, so those posts stay on Main.
 
 1) Create the Telegram channels you want (Footwear, Fashion, Electronics,
    Home & Kitchen, Beauty, Grocery) and grant the Telethon session account
@@ -47,6 +50,19 @@ unclear posts remain on Main rather than being guessed into the wrong shelf.
    WA_AMAZON_TAG_CATEGORY_TARGETS.
 5) Restart bestgaa and tg-wa-bridge. Category routing/classification rules are
    versioned in category_rules.json alongside each service bundle.
+
+STRICT MONETIZATION (pinned on)
+- Only a verified affiliate link that earns for this account may be published.
+- Unsupported stores, service-offer URLs, and completed conversions with no
+  affiliate URL are skipped; transient API failures retry before the job is
+  refused. There is no clean merchant-link fallback.
+- If any product in a list has no owned link, the whole post is withheld so
+  product names/prices never become separated from their correct links.
+- Amazon posts are withheld per target unless that destination is declared and
+  included in AMAZON_TAG_TARGETS / AMAZON_TAG_CATEGORY_TARGETS. Never strip our
+  tag and send the untagged copy.
+- Do not set PASSTHROUGH_UNMONETIZED=true; the legacy knob cannot override the
+  strict policy.
 
 Expected final output:
    DEPLOY SUCCESS

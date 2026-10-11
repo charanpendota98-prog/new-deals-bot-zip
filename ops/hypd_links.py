@@ -18,8 +18,8 @@ Run on the server (or anywhere with internet) from the bot directory:
         Which of OUR HYPD links (if any) covers this product page?
 
     python3 ops/hypd_links.py --wanted
-        Products the bot had to post UNMONETIZED because no HYPD link exists for
-        them yet (Meesho: use our HYPD store). Create the link
+        Products strict-all skipped because no HYPD link exists yet (Meesho: use
+        our HYPD store). Create the link
         for one of them in the HYPD app, learn it with this tool, and every later
         post of that product earns on it.
 
@@ -133,7 +133,7 @@ async def main() -> int:
         if not rows:
             print("Every Meesho product seen so far has OUR HYPD link. Nothing pending.")
             return 0
-        print(f"{len(rows)} product(s) posted UNMONETIZED - no HYPD link curated yet:\n")
+        print(f"{len(rows)} product(s) skipped - no HYPD link curated yet:\n")
         for row in rows:
             print(f"  {row['product_url']}")
             print(f"    seen {row['times']}x   product key: {row['product_key'] or '(unknown)'}")

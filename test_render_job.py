@@ -16,6 +16,10 @@ os.environ.update(
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
+# Legacy renderer-shape cases below intentionally exercise the old optional
+# clean-link passthrough. Production pins strict-all on; dedicated regressions
+# temporarily enable it and prove those paths are refused.
+bot.STRICT_OUR_LINKS = False
 
 # This suite checks how a post is RENDERED, and its link fixtures were written for the
 # documented SHORTEN_MIN_LEN. The threshold's own behaviour (over the limit = shortened,
@@ -92,7 +96,7 @@ async def queue_row(store, text, source="some_source", msg_id=1):
 
 async def case(store, name, text, resolve_map, convert_map, expect_exception=None,
                expect_render_contains=(), expect_targets_superset=(), msg_id=1,
-               source="some_source"):
+               source="some_source", expect_render_not_contains=()):
     print(f"\n== {name} ==")
     row = await queue_row(store, text, source=source, msg_id=msg_id)
     client = FakeClient(FakeMsg(text))
@@ -112,9 +116,148 @@ async def case(store, name, text, resolve_map, convert_map, expect_exception=Non
     check("render returned text with URLs", bool(rendered and bot.URL_RE.search(rendered)))
     for fragment in expect_render_contains:
         check(f"rendered contains {fragment[:60]!r}", fragment in rendered)
+    for fragment in expect_render_not_contains:
+        check(f"rendered omits {fragment[:60]!r}", fragment not in rendered)
     for target in expect_targets_superset:
         check(f"routed to {target}", target in targets)
     return targets
+
+
+async def test_strict_owned_link_policy(store):
+    saved_strict = bot.STRICT_OUR_LINKS
+    saved_tag = bot.OUR_TAG
+    saved_publisher = bot.OUR_EK_ID
+    saved_targets = set(bot.AMAZON_TAG_TARGET_KEYS)
+    bot.STRICT_OUR_LINKS = True
+    bot.OUR_TAG = "mama086-21"
+    bot.OUR_EK_ID = "5478322"
+    try:
+        service_url = "https://zom.to/strict-service"
+        await case(
+            store, "strict-all refuses an unmonetized service offer",
+            "Zomato 50% OFF today.\n" + service_url,
+            {service_url: "https://www.zomato.in/offer"}, {},
+            expect_exception=bot.PermanentSkip, msg_id=9901,
+        )
+
+        social_only = "https://www.youtube.com/watch?v=promo-only"
+        await case(
+            store, "strict-all skips a promo-only social post",
+            "Join our channel for offers\n" + social_only,
+            {social_only: social_only}, {},
+            expect_exception=bot.PermanentSkip, msg_id=9908,
+        )
+
+        photo_row = await queue_row(store, "Mixer grinder ₹1,299", msg_id=9909)
+        photo_client = FakeClient(FakeMsg("Mixer grinder ₹1,299"))
+        photo_client.msg.media = object()
+        try:
+            await bot.render_job(photo_client, FakeAffiliate({}, {}), photo_row)
+        except bot.PermanentSkip:
+            check("strict-all skips photo-only product posts with no owned link", True)
+        else:
+            check("strict-all skips photo-only product posts with no owned link", False)
+
+        merchant_url = "https://www.myntra.com/women-kurtas/itm-strict"
+        await case(
+            store, "strict-all refuses an unsupported merchant fallback",
+            "Women Kurta ₹499 60% OFF\n" + merchant_url,
+            {merchant_url: merchant_url}, {},
+            expect_exception=bot.PermanentSkip, msg_id=9902,
+        )
+
+        paid_source = "https://amzn.to/strict-paid"
+        paid_destination = "https://www.amazon.in/dp/B0STRICT0001"
+        unsupported_source = "https://www.myntra.com/kurta/itm-unsupported"
+        paid_affiliate = paid_destination + "?tag=mama086-21"
+        await case(
+            store, "a mixed list is withheld when any item has no owned link",
+            "boAt Earbuds ₹999\n" + paid_source + "\n"
+            "Myntra Kurta ₹499\n" + unsupported_source,
+            {paid_source: paid_destination, unsupported_source: unsupported_source},
+            {paid_source: bot.LinkResult(
+                source=paid_source, resolved=paid_destination, affiliate=paid_affiliate,
+                deal_key="amazon:B0STRICT0001")},
+            expect_exception=bot.PermanentSkip, msg_id=9903,
+        )
+
+        legacy_clean = "https://www.myntra.com/legacy-clean-cache"
+        await store.cache_link(legacy_clean, legacy_clean, legacy_clean, "URL:legacy-clean")
+        check("strict-all rejects a legacy clean-merchant cache row",
+              not await store.verify_generated_text("Deal ₹399\n" + legacy_clean))
+
+        generic_short = "https://bit.ly/strict-generic-only"
+        generic_destination = "https://www.myntra.com/generic-only"
+        await store.cache_link(generic_destination, generic_short, generic_destination,
+                               "URL:generic-only")
+        check("a generic shortener hostname alone is not affiliate proof",
+              not await store.verify_generated_text("Deal ₹399\n" + generic_short))
+
+        earned_short = "https://bit.ly/strict-earned-link"
+        await store.cache_link("https://www.myntra.com/earned-source", earned_short,
+                               "https://www.myntra.com/earned-product", "PID:earned")
+        await store.remember_owned_link_proof(
+            earned_short, "https://fktr.in/verified-network-link", "earnkaro_api")
+        check("a shortened link with persisted verified network provenance passes",
+              await store.verify_generated_text("Deal ₹399\n" + earned_short))
+
+        native_search_short = "https://bit.ly/strict-amazon-search"
+        await store.remember_owned_link_proof(
+            native_search_short,
+            "https://www.amazon.in/s?k=wireless+headphones&tag=mama086-21",
+            "amazon_native")
+        check("a tagged Amazon search short passes without a canonical link-cache row",
+              await store.verify_generated_text("Headphones\\n" + native_search_short))
+        check("our channel/folder promo URLs never pass strict final verification",
+              not await store.verify_generated_text(
+                  "Deal ₹399\n" + bot.OUR_FOLDER_LINK))
+
+        accepted_source = "https://amzn.to/strict-owned"
+        accepted_dest = "https://www.amazon.in/dp/B0STRICT0002"
+        await case(
+            store, "strict-all accepts our verified Amazon-tagged link",
+            "Headphones ₹799 50% OFF\n" + accepted_source,
+            {accepted_source: accepted_dest},
+            {accepted_source: bot.LinkResult(
+                source=accepted_source, resolved=accepted_dest,
+                affiliate=accepted_dest + "?tag=mama086-21",
+                deal_key="amazon:B0STRICT0002")},
+            expect_render_contains=["tag=mama086-21"], msg_id=9904,
+        )
+
+        social_product_source = "https://amzn.to/strict-product-with-promo"
+        social_product_dest = "https://www.amazon.in/dp/B0SOCI0001"
+        source_promo = "https://t.me/OtherDealChannel"
+        await case(
+            store, "strict-all keeps the owned product and strips foreign family promo",
+            "Sneakers ₹899\n" + social_product_source + "\n" + source_promo,
+            {social_product_source: social_product_dest, source_promo: source_promo},
+            {social_product_source: bot.LinkResult(
+                source=social_product_source, resolved=social_product_dest,
+                affiliate=social_product_dest + "?tag=mama086-21",
+                deal_key="amazon:B0SOCI0001")},
+            expect_render_contains=["tag=mama086-21"], msg_id=9907,
+            expect_render_not_contains=(source_promo, bot.OUR_FOLDER_LINK,
+                                        *bot.OUR_MAIN_CHANNEL_LINKS),
+        )
+
+        hidden = "https://bit.ly/strict-amazon"
+        tagged = "https://www.amazon.in/dp/B0STRICT0003?tag=mama086-21"
+        affiliate = FakeAffiliate({}, {})
+        affiliate._short_to_long = {hidden: tagged}
+        bot.AMAZON_TAG_TARGET_KEYS = {"approvedchannel"}
+        unapproved = bot.strip_amazon_tag_for_undeclared(
+            "Product ₹199\n" + hidden, "LootZoneIndia11", affiliate)
+        approved = bot.strip_amazon_tag_for_undeclared(
+            "Product ₹199\n" + hidden, "ApprovedChannel", affiliate)
+        check("undeclared Amazon target would lose our tag (so strict send skips it)",
+              unapproved != "Product ₹199\n" + hidden and "tag=mama086-21" not in unapproved)
+        check("declared Amazon target retains our earning link", approved == "Product ₹199\n" + hidden)
+    finally:
+        bot.STRICT_OUR_LINKS = saved_strict
+        bot.OUR_TAG = saved_tag
+        bot.OUR_EK_ID = saved_publisher
+        bot.AMAZON_TAG_TARGET_KEYS = saved_targets
 
 
 def test_category_classifier():
@@ -127,6 +270,11 @@ def test_category_classifier():
         ("Organic basmati rice 5kg", "grocery"),
         ("Wooden shoe rack organizer", "home_kitchen"),
         ("చెప్పులు offer", "footwear"),
+        ("Price drop https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itmABC123456?pid=PID123456", "electronics"),
+        ("Deal https://www.myntra.com/puma-men-running-shoes/1234567/buy", "footwear"),
+        ("Search offer https://www.amazon.in/s?k=wireless+earbuds", "electronics"),
+        ("Unlabelled product https://www.amazon.in/dp/B0ASIN1234", None),
+        ("Mixed https://shop.test/puma-running-shoes/123456 and https://shop.test/boat-wireless-earbuds/654321", None),
         ("Samsung phone, lipstick and running shoes", None),
         ("Mystery deal at a great price", None),
     ]
@@ -134,6 +282,12 @@ def test_category_classifier():
         got = bot.classify_deal_category(text)
         check(f"category {expected or 'unclear'} for {text!r} "
               f"(got {got!r})", got == expected)
+    from_resolved_link = bot.classify_deal_category(
+        "Special price ₹499\nhttps://bit.ly/opaque-product-link",
+        ["https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itmABC123456?pid=PID123456"],
+    )
+    check("a shortened incoming link routes from its resolved product slug",
+          from_resolved_link == "electronics")
 
 
 AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR"
@@ -153,12 +307,14 @@ async def main():
         store = bot.Store(Path(td) / "t.sqlite3")
         bot.store = store  # render_job uses the module-level store
         test_category_classifier()
+        await test_strict_owned_link_policy(store)
 
         # Category routing is additive: the same confident product stays on the
         # Main feed and gets exactly one configured category destination. An
         # unclear title must never be guessed into a category shelf.
         saved_category_targets = dict(bot.CATEGORY_TARGETS)
         bot.CATEGORY_TARGETS["footwear"] = "TestFootwearDeals"
+        bot.CATEGORY_TARGETS["electronics"] = "TestElectronicsDeals"
         try:
             shoe_url = "https://amzn.to/catshoes001"
             shoe_destination = "https://www.amazon.in/dp/B0CATSHOE1"
@@ -174,6 +330,19 @@ async def main():
             )
             check("footwear target is delivered exactly once",
                   shoe_targets.count("TestFootwearDeals") == 1)
+
+            hidden_source = "https://bit.ly/route-opaque-001"
+            hidden_product = "https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itmCATROUTE001?pid=PIDCATROUTE001"
+            hidden_result = bot.LinkResult(
+                hidden_source, hidden_product,
+                "https://ekaro.in/enkr-category-route-001", "flipkart:itmcatroute001")
+            await case(
+                store, "product-link slug routes an opaque short link to Electronics",
+                "Special price ₹1,299\n" + hidden_source,
+                {hidden_source: hidden_product}, {hidden_source: hidden_result},
+                expect_targets_superset=["LootZoneIndia11", "TestElectronicsDeals"],
+                msg_id=9504,
+            )
 
             unknown_url = "https://amzn.to/catunknown001"
             unknown_destination = "https://www.amazon.in/dp/B0UNCLASS1"
@@ -435,15 +604,23 @@ async def main():
         # self-proving — it passes the final provenance gate even though the
         # link_cache (empty store here) never saw a conversion-API row for it.
         # A foreign-tag Amazon link must still be rejected.
-        our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE"
-        foreign_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=thief-21"
-        check("is_our_amazon_tag_link recognises our tag", bot.Store.is_our_amazon_tag_link(our_tag) is True)
-        check("is_our_amazon_tag_link rejects foreign tag", bot.Store.is_our_amazon_tag_link(foreign_tag) is False)
-        check("is_our_amazon_tag_link rejects non-amazon", bot.Store.is_our_amazon_tag_link("https://fktr.in/x") is False)
-        check("our-tag amazon link passes provenance with EMPTY cache",
-              await store.verify_generated_text(f"Deal {our_tag}") is True)
-        check("foreign-tag amazon link still fails provenance with empty cache",
-              await store.verify_generated_text(f"Deal {foreign_tag}") is False)
+        previous_tag = bot.OUR_TAG
+        bot.OUR_TAG = "mama086-21"
+        try:
+            our_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=mama086-21"
+            foreign_tag = "https://www.amazon.in/dp/B0TAGPROVENANCE?tag=thief-21"
+            check("is_our_amazon_tag_link recognises our actual tag",
+                  bot.Store.is_our_amazon_tag_link(our_tag) is True)
+            check("is_our_amazon_tag_link rejects foreign tag",
+                  bot.Store.is_our_amazon_tag_link(foreign_tag) is False)
+            check("is_our_amazon_tag_link rejects non-amazon",
+                  bot.Store.is_our_amazon_tag_link("https://fktr.in/x") is False)
+            check("our-tag amazon link passes provenance with EMPTY cache",
+                  await store.verify_generated_text(f"Deal {our_tag}") is True)
+            check("foreign-tag amazon link still fails provenance with empty cache",
+                  await store.verify_generated_text(f"Deal {foreign_tag}") is False)
+        finally:
+            bot.OUR_TAG = previous_tag
 
         # 9. Promo/footer noise (join/follow/share/notify, t.me self-promo,
         # handles, emoji-only) is stripped; real deal content survives.

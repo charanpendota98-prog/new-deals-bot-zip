@@ -304,18 +304,22 @@ def test_shopsy_is_not_routed_through_our_hypd_store():
                   getattr(session, "ek_calls", 0) == 1
                   and not any("bitly" in p["url"] for p in session.posts), str(session.posts))
 
-            # If a source itself supplies an OUR HYPD share link for Shopsy, strip
-            # the out-of-scope HYPD hop, try the ordinary network, and keep a clean
-            # merchant fallback rather than publishing our HYPD link or dropping it.
+            # A source-supplied HYPD link to Shopsy is outside the configured
+            # HYPD scope. If EarnKaro has no campaign and Shopsy exposes no native
+            # publisher attribution, strict-all must skip instead of passing the
+            # clean merchant page through.
             direct_session = FakeSession(
                 hypd_destination=shopsy, bitly="https://bit.ly/must-not-use-hypd")
             direct = asyncio.run(Aff(direct_session).convert(OUR_LINK, False))
-            check("a direct HYPD link to Shopsy is replaced with the clean merchant URL",
-                  bool(direct) and direct.affiliate.startswith("https://www.shopsy.in/")
-                  and "hypd.store" not in direct.affiliate and "bit.ly" not in direct.affiliate,
-                  repr(direct))
-            check("the direct Shopsy HYPD link never enters our product map",
-                  not bot.store.recent_hypd_links(), str(bot.store.recent_hypd_links()))
+            check("an out-of-scope Shopsy HYPD fallback is skipped without owned attribution",
+                  direct is None, repr(direct))
+            check("the direct Shopsy HYPD link never enters our product map or cache",
+                  not bot.store.recent_hypd_links()
+                  and bot.store.conn.execute(
+                      "SELECT 1 FROM link_cache WHERE source_url=? AND affiliate_url=?",
+                      (bot.canonical_url(OUR_LINK), shopsy),
+                  ).fetchone() is None,
+                  str(bot.store.recent_hypd_links()))
             check("store learning rejects non-Meesho destinations",
                   not asyncio.run(bot.store.remember_hypd_link(OUR_LINK, shopsy, key)), "")
         finally:

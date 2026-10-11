@@ -38,36 +38,20 @@ OURS_MARKERS = (
     "UNDER ₹499 •", "BANK / CARD OFFER", "LOOT ZONE — INDIA",
 )
 ANY_LINK = re.compile(r"https?://\S+")
-# What "our link" means for this bot, in the bot's own terms:
-#   * our shortener (the one the user owns) or our EarnKaro / gop.im output,
-#   * a link the bot's OWN link_cache minted for that deal (the runtime Bitly /
-#     is.gd shortener pass and the EarnKaro API both register there),
-#   * an Amazon page carrying OUR tag - the pipeline publishes those when no
-#     shortener/affiliate route was used, and the tag IS the monetization,
-#   * a page carrying OUR EarnKaro publisher id (affExtParam2=5478322),
-#   * a clean merchant page for a store we cannot monetize (a deal must not be
-#     lost because a campaign is missing),
-#   * our own channels and the Loots Family folder.
-# Everything else - the source's own short link, someone else's shortener, a link
-# tagged to another publisher - is a link that should never have been sent.
-#
-# IMPORTANT (2026-10-04): the hardcoded pattern below is HISTORY, and the runtime
-# shorteners are not. Since 2026-09-06 every list post carries OUR Bitly links by
-# design, and the EarnKaro API mints fresh ekaro.in/bitli.in links per deal - none
-# of which that literal can name. So a bare "bit.ly is a third-party shortener"
-# rule flags healthy posts, and a false alarm is exactly how a real one gets
-# ignored. Ownership is therefore judged from the DATA (link_cache + the token's
-# publisher id) instead of from a domain list that can only describe yesterday.
+# Strict-all ownership is evidence-based, never hostname-based. A URL is ours only
+# when it carries our native Amazon/EarnKaro attribution or an exact link-cache
+# entry is backed by owned_link_proofs / a verified HYPD-to-Meesho mapping. A row
+# for a bare merchant URL is not evidence, and family/channel promos are not paid
+# links. Generic Bitly/is.gd links must point to that recorded evidence.
 OUR_SHORTENER = re.compile(r"https?://(?:(?:www\.)?bitli\.in/TqmFyPp|(?:www\.)?bitlyskj\.(?:com|in|net)/)", re.I)
 OUR_HOSTS = re.compile(r"https?://(?:[^/\s]*earnkaro\.com/|gop\.im/)", re.I)
 # Shortener hosts the BOT ITSELF mints at runtime (Bitly with OUR token, is.gd as
 # the outage fallback). A link on one of these is ours only when a link_cache row
 # says the bot produced it: other channels post bit.ly links too.
 OUR_RUNTIME_SHORTENER_HOSTS = ("bit.ly", "is.gd")
-# The affiliate network's OWN short domains (what the EarnKaro/Affiliaters
-# converter mints) and our HYPD share links. These are MONETIZED links, so the
-# summary must not file them under "clean merchant" - that bucket means "kept on
-# purpose, earns nothing".
+# Domains used by the affiliate network and HYPD. This pattern is diagnostic
+# only: a URL on one of these hosts is refused unless an exact durable proof or
+# verified HYPD mapping appears in `our_minted_links()`.
 OUR_NETWORK_SHORT = re.compile(
     r"https?://(?:[^/\s]*\.)?(?:ekaro\.(?:in|app)|clnk\.(?:in|app)|bitli\.in|fktr\.in|"
     r"myntr\.it|ajiio\.in|cuelinks\.com|l\.ead\.me|affiliaters\.in|hypd\.store)/", re.I)
@@ -114,6 +98,13 @@ def link_host(url: str) -> str:
 # link that opens the product and pays nobody, and it can be fixed. Kept in one
 # place so the count and the bot's own stamping rule stay in step.
 EK_ATTRIBUTION_HOSTS = ("flipkart.com", "myntra.com")
+SERVICE_OFFER_DOMAINS = (
+    "zomato.com", "zomato.in", "zom.to", "swiggy.com", "swiggy.in",
+    "zepto.com", "dominos.in", "pizzahut.co.in", "pizzahut.com",
+    "pizza-hut.co.in", "bookmyshow.com", "pvr.in", "inoxmovies.com",
+    "amctheatres.in", "bigcinema.com", "phonepe.com", "amazonpay.in",
+    "paytm.com", "magicpin.in",
+)
 FOREIGN_ATTRIBUTION_PARAMS = frozenset((
     "affid", "aff_id", "affid1", "affid2", "affextparam1", "affextparam2",
     "affiliate", "affiliate_id", "affiliateid", "subid", "sub_id",
@@ -165,103 +156,118 @@ def why_unattributed(url: str, our_publisher: str = "",
             "opens and NOBODY is paid" % our_publisher)
 
 
+def _has_native_owned_attribution(url: str, our_tag: str = "",
+                                  our_publisher: str = "") -> bool:
+    """Attribution visible on the destination itself; host names never suffice."""
+    host = link_host(url)
+    pairs = _query_pairs(url)
+    if AMAZON_HOST.match(host):
+        tags = [value.strip() for value in pairs.get("tag", []) if value.strip()]
+        return bool(our_tag and tags) and all(value == our_tag for value in tags)
+    if our_publisher and any(host == domain or host.endswith("." + domain)
+                             for domain in EK_ATTRIBUTION_HOSTS):
+        publisher_ids = [value.strip() for value in pairs.get("affextparam2", [])
+                         if value.strip()]
+        return bool(publisher_ids) and all(value == our_publisher for value in publisher_ids)
+    return False
+
+
+def _is_non_monetizable_url(url: str) -> bool:
+    host = link_host(url)
+    if host == "t.me" or host.endswith(".t.me") or host in {
+            "telegram.org", "whatsapp.com"}:
+        return True
+    return any(host == domain or host.endswith("." + domain)
+               for domain in SERVICE_OFFER_DOMAINS)
+
+
 def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
                      our_links: "set[str] | tuple[str, ...]" = ()) -> str | None:
-    """Why this published link is NOT one of ours (None means it is fine).
-
-    `our_links` is the set of affiliate_urls the bot's own link_cache minted, and
-    `our_publisher` is the EarnKaro account the token pays. Both make the verdict
-    a fact about this install rather than a guess from a domain list; both are
-    optional so a caller with only the tag still gets the old, safe answer.
-    """
-    if OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url):
-        return None
-    if our_links and url in our_links:
-        # The bot minted this exact link for a deal (Bitly/is.gd/EarnKaro/HYPD/
-        # pass-through) - the same table the pipeline's provenance gate consults.
-        return None
+    """Return a refusal reason unless native attribution or stored proof exists."""
     host = link_host(url)
     if AMAZON_SHORT.match(host):
         return "the source's own Amazon short link was posted instead of ours"
+    if _is_non_monetizable_url(url):
+        return "a service/family/channel link is not a monetized product URL"
+
+    pairs = _query_pairs(url)
+    tags = [value.strip() for value in pairs.get("tag", []) if value.strip()]
+    if AMAZON_HOST.match(host):
+        if not our_tag or not tags or any(value != our_tag for value in tags):
+            return "an Amazon link without our exact Associates tag reached a channel"
+        ids = [value for value in AFFILIATE_ID_RE.findall(unquote(url)) if value]
+        foreign_ids = [value for value in ids if not (our_publisher and value == our_publisher)]
+        if foreign_ids:
+            return "our tag is combined with foreign affiliate attribution (%s)" % \
+                ",".join(sorted(set(foreign_ids)))[:40]
+        return None
+
+    publisher_ids = [value.strip() for value in pairs.get("affextparam2", []) if value.strip()]
+    if publisher_ids:
+        if our_publisher and all(value == our_publisher for value in publisher_ids):
+            return None
+        return "the page carries a foreign or unconfigured EarnKaro publisher id"
+    if tags:
+        return "tagged to somebody else or an unverified affiliate account (%s)" % \
+            ",".join(sorted(set(tags)))[:40]
+    # Durable proof is considered only after refusing service, family, Amazon
+    # short, wrong-tag, and explicitly foreign-publisher URLs above.
+    if our_links and url in our_links:
+        return None
     if FOREIGN_SHORTENERS.match(url):
         if any(host == h or host.endswith("." + h) for h in OUR_RUNTIME_SHORTENER_HOSTS):
-            return ("a %s short link with no link_cache row minting it (either it predates "
-                    "the cache or it is a third-party shortener)" % host)
+            return ("a %s short link has no stored proof that it wraps our affiliate destination" % host)
         return "a third-party shortener leaked into the post"
-    query = urlparse(url).query.lower()
-    pairs = dict()
-    for chunk in query.split("&"):
-        if "=" in chunk:
-            key, _, value = chunk.partition("=")
-            pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
-    tags = [v for v in pairs.get("tag", []) if v]
-    if not our_tag:
-        # TAGLESS: clean Amazon link (no tag) is ours, any tag is foreign
-        ours = not tags
-    else:
-        ours = our_tag.lower() in [x.lower() for x in tags]
-    all_ids = [v for v in AFFILIATE_ID_RE.findall(unquote(url)) if v]
-    # OUR publisher id is attribution, not a stranger's: the EarnKaro API returns
-    # direct Flipkart-family URLs carrying affExtParam2=5478322, and those are
-    # exactly the links we want posted.
-    foreign_ids = [v for v in all_ids if not (our_publisher and v == our_publisher)]
-    if AMAZON_HOST.match(host):
-        if not ours:
-            return "an Amazon link without our tag reached a channel"
-        if foreign_ids:
-            return "our tag glued to somebody else's id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
-        return None
-    if tags and not ours:
-        return "tagged to somebody else (%s)" % ",".join(sorted(set(tags)))[:40]
-    # USER QUESTION 2026-10-04 ("idi manadenaa link"): an EarnKaro-minted
-    # Flipkart-family link carries affid=<the network's account> and
-    # affExtParam2=<the publisher who is paid> - exactly how Flipkart documents
-    # its affiliate URLs. When that publisher id is OURS the link is ours, and
-    # the network's own affid/cmpid/mcn are the route the commission travels -
-    # not a stranger's id. This is the same verdict whose_link() gives in
-    # ops/earnkaro_check.py ("ours" when affExtParam2 == our publisher), and the
-    # pipeline itself accepts such a link (earnkaro_output_kind -> publisher).
-    # The audit was the only place saying otherwise, so only the audit changes.
-    if foreign_ids and our_publisher and our_publisher in all_ids:
-        return None
-    if foreign_ids:
-        return "carries somebody else's affiliate id (%s)" % ",".join(sorted(set(foreign_ids)))[:40]
+    all_ids = [value for value in AFFILIATE_ID_RE.findall(unquote(url)) if value]
+    if all_ids:
+        return "carries affiliate identifiers without proof they pay our account (%s)" % \
+            ",".join(sorted(set(all_ids)))[:40]
     unattributed = why_unattributed(url, our_publisher, our_links)
     if unattributed:
         return unattributed
-    return None  # unmonetizable store, clean page: publishing it is the policy
+    if OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_NETWORK_SHORT.match(url):
+        return "an affiliate/network-looking hostname is not proof of ownership"
+    return "no verified native attribution or persisted owned-link proof"
 
 
 def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
                   our_links: "set[str] | tuple[str, ...]" = ()) -> str:
-    """'our-short' | 'our-publisher' | 'unattributed' | 'clean-merchant' | 'foreign'.
-
-    This is the summary the user actually asks for ("mana links perfectga post
-    chesthunda ledaa?"): every published link is either a short link WE minted,
-    OUR tag/publisher id, a clean merchant page kept on purpose, or a link that
-    should never have left - counted, so the answer is a number, not an opinion.
-    """
+    """Classify a link as proven-owned, legacy-unmonetized, or foreign."""
     if why_unattributed(url, our_publisher, our_links):
         return "unattributed"
-    if why_not_our_link(url, our_tag, our_publisher, our_links):
+    reason = why_not_our_link(url, our_tag, our_publisher, our_links)
+    if not reason:
+        pairs = _query_pairs(url)
+        publisher_ids = [value.strip() for value in pairs.get("affextparam2", [])
+                         if value.strip()]
+        if (AMAZON_HOST.match(link_host(url))
+                or _has_native_owned_attribution(url, our_tag, our_publisher)
+                or (our_publisher and publisher_ids
+                    and all(value == our_publisher for value in publisher_ids))):
+            return "our-publisher"
+        return "our-short"
+    if any(term in reason.lower() for term in (
+            "somebody else", "foreign", "affiliate identifier", "shortener",
+            "source's own", "promo", "publisher id", "associates tag")):
         return "foreign"
-    if (OUR_SHORTENER.match(url) or OUR_HOSTS.match(url) or OUR_T_ME.match(url)
-            or OUR_NETWORK_SHORT.match(url)):
-        return "our-short"
-    if our_links and url in our_links:
-        return "our-short"
-    if AMAZON_HOST.match(link_host(url)):
-        return "our-publisher"
-    query = urlparse(url).query.lower()
-    pairs = {}
-    for chunk in query.split("&"):
-        if "=" in chunk:
-            key, _, value = chunk.partition("=")
-            pairs.setdefault(key.strip(), []).append(unquote(value.strip()))
-    if pairs.get("tag") or (our_publisher and our_publisher in [v for v in
-                                                               AFFILIATE_ID_RE.findall(unquote(url)) if v]):
-        return "our-publisher"
-    return "clean-merchant"
+
+    # Keep the legacy clean-merchant bucket for reporting only. It is still a
+    # refusal under strict-all and therefore receives a finding in audit().
+    host = link_host(url)
+    known_merchants = (
+        "amazon.in", "amazon.com", "flipkart.com", "myntra.com", "ajio.com",
+        "meesho.com", "shopsy.in", "tatacliq.com", "nykaa.com", "croma.com",
+        "reliancedigital.in", "jiomart.com", "firstcry.com", "snapdeal.com",
+        "decathlon.in", "pepperfry.com", "limeroad.com", "paytmmall.com",
+    )
+    if AMAZON_HOST.match(host):
+        return "foreign"
+    pairs = _query_pairs(url)
+    if any(pairs.get(key) for key in FOREIGN_ATTRIBUTION_PARAMS) or pairs.get("tag"):
+        return "foreign"
+    if any(host == domain or host.endswith("." + domain) for domain in known_merchants):
+        return "clean-merchant"
+    return "foreign"
 
 
 def flag(kind: str, detail: str, queue_id=None, target=None) -> dict:
@@ -675,18 +681,74 @@ def ours_publisher_from_env() -> str:
     return str(_token_claims(token).get("earnkaro") or "").strip()
 
 
-def our_minted_links(conn: sqlite3.Connection) -> set[str]:
-    """Every link the bot's own link_cache says IT produced.
+def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
+                     our_publisher: str = "") -> set[str]:
+    """Return only cached URLs whose destination has durable ownership proof.
 
-    The provenance gate at delivery asks this same table "did we mint this?", so
-    the auditor asking it too is what keeps the two answers identical instead of
-    the auditor inventing a stricter rule and crying wolf on healthy posts.
+    A `link_cache` row alone can be a legacy clean-merchant pass-through, so it is
+    not enough. Native attribution, a verified converter proof, or a verified
+    HYPD mapping is required; generic Bitly/is.gd hostnames never count by themselves.
     """
     try:
-        return {str(r[0]) for r in conn.execute(
-            "SELECT affiliate_url FROM link_cache WHERE affiliate_url IS NOT NULL") if r[0]}
+        cache_rows = conn.execute(
+            "SELECT affiliate_url,resolved_url,deal_key FROM link_cache "
+            "WHERE affiliate_url IS NOT NULL").fetchall()
     except sqlite3.OperationalError:
-        return set()
+        cache_rows = []
+    proof_urls: set[str] = set()
+    try:
+        proof_columns = {str(row[1]) for row in conn.execute(
+            "PRAGMA table_info(owned_link_proofs)")}
+        publisher_expr = "publisher_id" if "publisher_id" in proof_columns else "''"
+        proof_rows = conn.execute(
+            "SELECT affiliate_url,destination_url,proof_type,%s FROM owned_link_proofs "
+            "WHERE proof_type IN ('earnkaro_api','amazon_native')" % publisher_expr
+        ).fetchall()
+        for affiliate, destination, proof_type, publisher_id in proof_rows:
+            affiliate = str(affiliate or "")
+            destination = str(destination or "")
+            if not affiliate or _is_non_monetizable_url(affiliate) or \
+                    _is_non_monetizable_url(destination):
+                continue
+            if proof_type == "amazon_native":
+                if _has_native_owned_attribution(destination, our_tag, our_publisher):
+                    proof_urls.add(affiliate)
+            elif proof_type == "earnkaro_api":
+                account_matches = bool(our_publisher and str(publisher_id or "") == our_publisher)
+                native_matches = _has_native_owned_attribution(
+                    destination, our_tag, our_publisher)
+                if account_matches or native_matches:
+                    proof_urls.add(affiliate)
+    except sqlite3.OperationalError:
+        # Older databases may predate durable proofs; those links fail closed.
+        pass
+    try:
+        hypd_rows = conn.execute(
+            "SELECT afflink_url,resolved_url,product_key FROM hypd_links").fetchall()
+    except sqlite3.OperationalError:
+        hypd_rows = []
+
+    def is_meesho(url: str) -> bool:
+        host = link_host(url)
+        return host == "meesho.com" or host.endswith(".meesho.com")
+
+    verified_hypd_urls = {str(row[0]) for row in hypd_rows
+                          if row[0] and is_meesho(str(row[1] or ""))}
+    verified_hypd_keys = {str(row[2]) for row in hypd_rows
+                          if row[2] and is_meesho(str(row[1] or ""))}
+    owned: set[str] = set(proof_urls)
+    for affiliate, resolved, deal_key in cache_rows:
+        affiliate = str(affiliate or "")
+        resolved = str(resolved or "")
+        if not affiliate:
+            continue
+        if (_has_native_owned_attribution(affiliate, our_tag, our_publisher)
+                or _has_native_owned_attribution(resolved, our_tag, our_publisher)
+                or affiliate in proof_urls or resolved in proof_urls
+                or affiliate in verified_hypd_urls
+                or (deal_key and str(deal_key) in verified_hypd_keys)):
+            owned.add(affiliate)
+    return owned
 
 
 def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
@@ -703,7 +765,7 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
             "SELECT queue_id, count(*) AS n FROM deliveries WHERE status='sent' GROUP BY queue_id")}
     except sqlite3.OperationalError:
         sent_counts = {}
-    our_links = our_minted_links(conn)
+    our_links = our_minted_links(conn, our_tag, our_publisher)
     link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
                    "clean-merchant": 0, "foreign": 0}
 
@@ -891,7 +953,7 @@ def main(argv=None) -> int:
                       "(this store has no program of ours to attribute it to)")
             else:
                 print("               reason: ours - our id/tag/short link is on it")
-            worst = max(worst, 2 if bucket == "foreign" else
+            worst = max(worst, 2 if bucket in {"foreign", "clean-merchant"} else
                         1 if bucket == "unattributed" else 0)
         return 1 if worst == 2 else 0
 
@@ -923,9 +985,10 @@ def main(argv=None) -> int:
     else:
         print(f"QUALITY AUDIT | db={args.db} posts={posts} findings={len(findings)}")
         print(f"  {summary}")
-        if link_counts["foreign"] == 0 and link_counts["unattributed"] == 0 and link_counts["links"]:
-            print("  every published link is one of ours (minted by this bot, our tag, "
-                  "or a clean merchant page) - nothing foreign reached a channel")
+        if (link_counts["foreign"] == 0 and link_counts["unattributed"] == 0
+                and link_counts["clean-merchant"] == 0 and link_counts["links"]):
+            print("  every published link has verified owned attribution; no unmonetized or "
+                  "foreign links reached a channel")
         if link_counts["unattributed"]:
             print("  -> %s link(s) could carry our publisher id and did not (Flipkart/Myntra): "
                   "they open and pay nobody. Published before the 2026-10-04 attribution fix; "

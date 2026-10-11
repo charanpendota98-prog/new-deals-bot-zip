@@ -37,6 +37,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
+# Simulation fixtures cover legacy passthrough modes; strict-all is tested separately.
+bot.STRICT_OUR_LINKS = False
+
 R = "\u20b9"
 FAILS: list[str] = []
 SOURCE = "dealsvelocity"          # fans out to every non-Tricks channel
@@ -102,10 +105,18 @@ class FakeAffiliate:
         host = (re.sub(r"^https?://", "", resolved or "") or "").split("/")[0]
         if "amazon" not in host and "amzn" not in (source or "") and "bitli" not in (source or ""):
             return None
-        return bot.LinkResult(source, "https://www.amazon.in/dp/B0SIMPRODUCT", self.link, self.deal_key)
+        result = bot.LinkResult(
+            source, "https://www.amazon.in/dp/B0SIMPRODUCT", self.link, self.deal_key)
+        await self.cache_link(result.source, result.affiliate, result.resolved, result.deal_key)
+        return result
 
-    async def cache_link(self, *args, **kwargs):
-        return None
+    async def cache_link(self, source_url, affiliate, resolved, key):
+        # The delivery worker's final provenance check runs in this legacy-mode
+        # simulation too. Persist the fake converter's output so the fixture
+        # models an actual generated link, rather than bypassing the gate.
+        active_store = getattr(bot, "store", None)
+        if active_store is not None:
+            await active_store.cache_link(source_url, affiliate, resolved, key)
 
     async def shorten_long_urls_in_text(self, text):
         return text
@@ -152,9 +163,11 @@ class HalfDeadAffiliate(FakeAffiliate):
 
     async def convert(self, source, multi_link, resolved=None):
         slug = (resolved or "").split("/dp/")[-1].split("?")[0] or "B0GOOD1"
-        return bot.LinkResult(source, f"https://www.amazon.in/dp/{slug}",
-                              f"https://www.amazon.in/dp/{slug}?tag={bot.OUR_TAG}",
-                              f"ASIN:{slug}")
+        result = bot.LinkResult(source, f"https://www.amazon.in/dp/{slug}",
+                                f"https://www.amazon.in/dp/{slug}?tag={bot.OUR_TAG}",
+                                f"ASIN:{slug}")
+        await self.cache_link(result.source, result.affiliate, result.resolved, result.deal_key)
+        return result
 
     async def link_not_broken(self, url):
         return "DEAD" not in (url or "")

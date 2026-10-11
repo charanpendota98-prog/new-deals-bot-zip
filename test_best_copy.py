@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
+# These cases validate copy quality independently of strict-all link refusal tests.
+bot.STRICT_OUR_LINKS = False
+
 R = "\u20b9"
 FAILS = []
 
@@ -167,49 +170,48 @@ def test_numeric_fidelity_gate():
 
 
 def test_link_policy():
-    """What counts as OUR link, and what must never leave a channel."""
-    print("\n== link ownership policy ==")
+    """Only native attribution or exact persisted proof counts as ours."""
+    print("\n== strict link ownership policy ==")
     import importlib.util
     spec = importlib.util.spec_from_file_location("quality_audit", ROOT / "ops" / "quality_audit.py")
     qa = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(qa)
-    tag = ""
+    tag, publisher = "mama086-21", "5478322"
+    proven_short = "https://bit.ly/proven-link"
+    proven_network = "https://ekaro.in/enkr123"
+    proven_hypd = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
+    minted = {proven_short, proven_network, proven_hypd}
     ours = [
-        "https://bitli.in/TqmFyPp/AbC1",
-        "https://www.bitlyskj.com/zz",
-        "https://www.amazon.in/dp/B0TAGGED001",
-        "https://www.amazon.in/dp/B0TAGGED002",
-        "https://www.myntra.com/x/1/detail",              # unmonetizable store, clean page
-        "https://www.flipkart.com/pride/p/itcx?pids=flipkart_karos_offers_sphome.7264141.p1",
-        "https://t.me/addlist/abcDEF",                      # our Loots Family folder
-        "https://d7zd1k.earnkaro.com/s/click-link/xyz",
-        "https://www.amazon.in/dp/B0NOTAGGED01",            # TAGLESS: clean is ours
+        "https://www.amazon.in/dp/B0TAGGED001?tag=mama086-21",
+        "https://www.flipkart.com/x/p/itm1?affExtParam2=5478322",
+        proven_short, proven_network, proven_hypd,
     ]
     theirs = [
         "https://amzn.to/sourceShort",                      # the source's own link
+        "https://www.amazon.in/dp/B0X",                    # no Associates tag
         "https://www.amazon.in/dp/B0X?tag=competitor",
-        "https://www.amazon.in/dp/B0X?tag=deals0911-21",   # TAGLESS: ex-our tag is foreign
-        "https://bitly.com/sponsorOnly",
+        "https://www.amazon.in/dp/B0X?tag=MAMA086-21",    # tag matching is exact/case-sensitive
+        "https://bit.ly/sponsorOnly",                      # generic host, no proof
+        "https://www.ekaro.in/enkr-not-verified",           # network-like host, no proof
         "https://www.flipkart.com/buy/p?affid=otherpub",
-        "https://www.amazon.in/dp/B0X?tag=deals0911-21&affid=zz",
-        "https://www.amazon.in/dp/B0TAGGED001?tag=deals0911-21", # TAGLESS: any tag is foreign
+        "https://www.myntra.com/x/1/detail",                # clean merchant fallback
+        "https://t.me/addlist/abcDEF",                      # family promo, not monetized
     ]
     for url in ours:
-        check(f"accepted as ours: {url[:44]}", qa.why_not_our_link(url, tag) is None,
-              str(qa.why_not_our_link(url, tag)))
+        check(f"accepted only with own attribution/proof: {url[:44]}",
+              qa.why_not_our_link(url, tag, publisher, minted) is None,
+              str(qa.why_not_our_link(url, tag, publisher, minted)))
     for url in theirs:
-        check(f"refused as not ours: {url[:44]}", qa.why_not_our_link(url, tag) is not None)
+        check(f"refused as not our verified link: {url[:44]}",
+              qa.why_not_our_link(url, tag, publisher, minted) is not None)
 
 
 def test_link_ownership_is_data_backed():
-    """OUR link is decided from the bot's OWN data, not from a domain list.
+    """Cache rows and shortener hostnames alone are never ownership proof.
 
-    The auditor used to say "bit.ly is a third-party shortener" - which, since
-    the 2026-09-06 policy (every list post carries OUR Bitly links), means it
-    flagged our own healthy posts and `--strict` cried wolf. A false alarm is how
-    a real one gets ignored, so ownership is now read from the table the
-    pipeline's provenance gate reads (link_cache) plus the token's publisher id.
-    Pinned here in both directions: ours accepted, foreign still refused.
+    The auditor mirrors strict-all: native attribution or a durable converter,
+    Amazon, or HYPD proof is accepted; clean legacy rows and generic short links
+    without evidence are refused.
     """
     print("\n== link ownership: our runtime links are ours, strangers' are not ==")
     import importlib.util
@@ -220,7 +222,9 @@ def test_link_ownership_is_data_backed():
     ours_bitly = "https://bit.ly/3xYzAbC"
     ours_isgd = "https://is.gd/Mint7"
     foreign_bitly = "https://bit.ly/sponsorOnly"
-    minted = {ours_bitly, ours_isgd}
+    ours_network = "https://ekaro.in/enkr123"
+    ours_hypd = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
+    minted = {ours_bitly, ours_isgd, ours_network, ours_hypd}
 
     check("our own Bitly link is ours when the cache minted it",
           qa.why_not_our_link(ours_bitly, "", "", minted) is None,
@@ -231,8 +235,8 @@ def test_link_ownership_is_data_backed():
     check("somebody else's bit.ly link is still refused",
           qa.why_not_our_link(foreign_bitly, "", "", minted) is not None,
           str(qa.why_not_our_link(foreign_bitly, "", "", minted)))
-    check("a short link with no cache row explains WHY it is suspect",
-          "no link_cache row" in (qa.why_not_our_link(foreign_bitly, "", "", minted) or ""),
+    check("a short link without durable proof explains WHY it is suspect",
+          "no stored proof" in (qa.why_not_our_link(foreign_bitly, "", "", minted) or ""),
           str(qa.why_not_our_link(foreign_bitly, "", "", minted)))
     check("a host we never mint on keeps the plain third-party verdict",
           qa.why_not_our_link("https://tinyurl.com/x", "", "", minted) ==
@@ -275,11 +279,13 @@ def test_link_ownership_is_data_backed():
     check("classify_link buckets our publisher id as our-publisher",
           qa.classify_link(direct_ours, "", publisher) == "our-publisher",
           qa.classify_link(direct_ours, "", publisher))
-    check("classify_link buckets a network/HYPD short link as our-short, not clean-merchant",
-          qa.classify_link("https://ekaro.in/enkr123") == "our-short"
-          and qa.classify_link("https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0") == "our-short",
-          f"{qa.classify_link('https://ekaro.in/enkr123')} / "
-          f"{qa.classify_link('https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0')}")
+    check("network/HYPD short links are ours only when the exact URL has proof",
+          qa.classify_link(ours_network, "", "", minted) == "our-short"
+          and qa.classify_link(ours_hypd, "", "", minted) == "our-short"
+          and qa.classify_link("https://ekaro.in/unverified") == "foreign",
+          f"{qa.classify_link(ours_network, '', '', minted)} / "
+          f"{qa.classify_link(ours_hypd, '', '', minted)} / "
+          f"{qa.classify_link('https://ekaro.in/unverified')}")
     check("classify_link buckets a clean unmonetizable store page as clean-merchant",
           qa.classify_link("https://www.myntra.com/x/1/detail") == "clean-merchant",
           qa.classify_link("https://www.myntra.com/x/1/detail"))
@@ -314,37 +320,57 @@ def test_link_ownership_is_data_backed():
             " chat_key TEXT, rendered_text TEXT, targets_json TEXT);"
             "CREATE TABLE deliveries(queue_id INTEGER, target TEXT, status TEXT);"
             "CREATE TABLE link_cache(source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,"
-            " resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);")
+            " resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);"
+            "CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,"
+            " destination_url TEXT NOT NULL, proof_type TEXT NOT NULL,"
+            " publisher_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);")
         now = time.time()
-        good_post = (f"boAt Airdopes 141 TWS Earbuds\n{R}1,099 (78% off)\n{ours_bitly}\n"
-                     f"https://www.myntra.com/x/1/detail")
+        good_post = f"boAt Airdopes 141 TWS Earbuds\n{R}1,099 (78% off)\n{ours_bitly}"
         conn.execute("INSERT INTO queue VALUES(1,-1001,11,'lootnow','done',0,'',?,'k',?,?)",
                      (now, good_post, json.dumps(["LootZoneIndia11"])))
         conn.execute("INSERT INTO deliveries VALUES(1,'LootZoneIndia11','sent')")
         conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)",
                      ("https://www.flipkart.com/x/p/itm1", ours_bitly,
                       "https://www.flipkart.com/x/p/itm1", "k", now))
+        proof_row = (ours_bitly, "https://ekaro.in/enkr-verified", "earnkaro_api", publisher, now)
+        insert_proof = (
+            "INSERT INTO owned_link_proofs "
+            "(affiliate_url,destination_url,proof_type,publisher_id,created_at) VALUES(?,?,?,?,?)")
+        conn.execute(insert_proof, proof_row)
+        conn.execute("DELETE FROM owned_link_proofs")
+        check("a link_cache row alone does not prove this short is ours",
+              ours_bitly not in qa.our_minted_links(conn, "mama086-21", publisher))
+        conn.execute(insert_proof, proof_row)
+        check("a durable converter proof for a different publisher is refused",
+              ours_bitly not in qa.our_minted_links(conn, "mama086-21", "9999999"))
+        conn.execute(insert_proof, (
+            "https://bit.ly/service-proof", "https://zomato.com/order/123",
+            "earnkaro_api", publisher, now))
+        check("a service destination is refused even if a bad proof row exists",
+              "https://bit.ly/service-proof" not in qa.our_minted_links(
+                  conn, "mama086-21", publisher))
         conn.commit()
         conn.close()
 
         out = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
-                              "--db", str(db), "--json"], capture_output=True, text=True)
+                              "--db", str(db), "--tag", "mama086-21", "--publisher", publisher, "--json"],
+                             capture_output=True, text=True)
         report = json.loads(out.stdout)
         summary = report["link_summary"]
-        check("the audit reports a link-perfection summary from data",
-              summary["links"] == 2 and summary["our-short"] == 1
-              and summary["clean-merchant"] == 1 and summary["foreign"] == 0, str(summary))
+        check("the audit accepts the generated short only because durable proof exists",
+              summary["links"] == 1 and summary["our-short"] == 1
+              and summary["clean-merchant"] == 0 and summary["foreign"] == 0, str(summary))
         check("our own Bitly link produces NO finding any more",
               not [f for f in report["findings"] if f["kind"] == "LINKS"],
               str([f for f in report["findings"] if f["kind"] == "LINKS"]))
         strict = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
-                                 "--db", str(db), "--strict"], capture_output=True, text=True)
+                                 "--db", str(db), "--tag", "mama086-21", "--publisher", publisher, "--strict"], capture_output=True, text=True)
         check("--strict no longer fails a healthy post that carries OUR short link",
               strict.returncode == 0, strict.stdout[-300:])
         human = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
-                                "--db", str(db)], capture_output=True, text=True)
+                                "--db", str(db), "--tag", "mama086-21", "--publisher", publisher], capture_output=True, text=True)
         check("the human output answers the question in one line",
-              "LINK PERFECTION | links=2 our-short=1" in human.stdout, human.stdout[-400:])
+              "LINK PERFECTION | links=1 our-short=1" in human.stdout, human.stdout[-400:])
 
         # The 2026-10-04 commission bug, proven from data: a bare Flipkart-family
         # page opens for the reader and pays nobody. With the publisher id known,
@@ -362,8 +388,8 @@ def test_link_ownership_is_data_backed():
                                 capture_output=True, text=True)
         check("with a publisher id known, a link that pays nobody fails --strict",
               strict.returncode == 1 and "NOBODY is paid" in strict.stdout, strict.stdout[-500:])
-        check("and the summary counts them in their own bucket (both bare Myntra links)",
-              "unattributed=2" in strict.stdout, strict.stdout[:400])
+        check("and the summary counts the bare Myntra link in its own bucket",
+              "unattributed=1" in strict.stdout, strict.stdout[:400])
 
 
 def test_quality_auditor():
@@ -372,6 +398,7 @@ def test_quality_auditor():
         db = Path(td) / "audit.sqlite3"
         store = bot.Store(db)
         now = time.time()
+        publisher = "5478322"
 
         def put(queue_id: int, source: str, msg_id: int, text: str, targets, status="done",
                 error="", sent=1, extra_ids=None):
@@ -389,7 +416,7 @@ def test_quality_auditor():
 
         clean_post = (f"Prestige 2L Pressure Cooker ({R}899)\n"
                       f"MRP {R}1,999 | 55% off\nhttps://bitli.in/TqmFyPp/Cook99\n"
-                      f"https://www.amazon.in/dp/{ASIN}")
+                      f"https://www.amazon.in/dp/{ASIN}?tag=mama086-21")
         put(1, "lootnow", 101, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(2, "lootnow", 102, clean_post, ["LootZoneIndia11"], extra_ids=[f"amazon:{ASIN}"])
         put(3, "under499loots", 103,
@@ -418,11 +445,24 @@ def test_quality_auditor():
         put(9, "lootnow", 109,
             f"Sony WH-CH720N Wireless Headphones\nNow {R}6,490 (MRP {R}10,990)\n"
             f"https://bitli.in/TqmFyPp/Sony9", ["LootZoneIndia11"])
+        # A short hostname is accepted only with an exact durable converter proof.
+        for short in (
+            "https://bitli.in/TqmFyPp/Cook99", "https://bitli.in/TqmFyPp/x1",
+            "https://bitli.in/TqmFyPp/Sony7", "https://bitli.in/TqmFyPp/Sony9",
+            "https://bitli.in/TqmFyPp/Tv10", "https://bitli.in/TqmFyPp/Tv11",
+        ):
+            store.conn.execute(
+                "INSERT INTO owned_link_proofs "
+                "(affiliate_url,destination_url,proof_type,publisher_id,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (short, "https://ekaro.in/verified-converter-output", "earnkaro_api", "5478322", now),
+            )
         store.conn.commit()
         store.conn.close()
 
         out = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
-                              "--db", str(db), "--limit", "50", "--json"],
+                              "--db", str(db), "--limit", "50", "--tag", "mama086-21",
+                              "--publisher", publisher, "--json"],
                              capture_output=True, text=True)
         check("auditor runs clean on the database", out.returncode == 0, out.stderr[-300:])
         report = json.loads(out.stdout)
@@ -435,7 +475,8 @@ def test_quality_auditor():
               len(kinds.get("OURS", [])) >= 2, str(kinds.get("OURS")))
         link_details = " | ".join(item["detail"] for item in kinds.get("LINKS", []))
         check("a third-party shortener is caught", "shortener" in link_details, link_details)
-        check("an Amazon link without our tag is caught", "without our tag" in link_details, link_details)
+        check("an Amazon link without our tag is caught",
+              "without our exact Associates tag" in link_details, link_details)
         check("a link tagged to another publisher is caught",
               "somebody else" in link_details, link_details)
         check("a price-tier misroute is caught", "MISROUTE" in kinds, str(kinds.get("MISROUTE")))
@@ -457,9 +498,11 @@ def test_quality_auditor():
               str([item for item in report["findings"] if item.get("queue_id") == 1]))
 
         strict = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"),
-                                 "--db", str(db), "--strict"], capture_output=True, text=True)
+                                 "--db", str(db), "--tag", "mama086-21", "--publisher", publisher, "--strict"],
+                                capture_output=True, text=True)
         check("--strict exits non-zero so diagnose can alert", strict.returncode == 1, strict.stdout[-200:])
-        human = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"), "--db", str(db)],
+        human = subprocess.run([sys.executable, str(ROOT / "ops" / "quality_audit.py"), "--db", str(db),
+                                "--tag", "mama086-21", "--publisher", publisher],
                                capture_output=True, text=True)
         check("human output summarises each category",
               all(line in human.stdout for line in ("QUALITY AUDIT", "OURS", "LINKS", "DUPLICATE")),

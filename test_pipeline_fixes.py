@@ -26,6 +26,10 @@ os.environ.update(
 sys.path.insert(0, str(Path(__file__).parent / "bestgaa"))
 import main_bot_new as bot  # noqa: E402
 
+# This suite explicitly exercises the retired passthrough toggle and formatter
+# behavior; strict-all production behavior has separate focused regressions.
+bot.STRICT_OUR_LINKS = False
+
 PASS = 0
 FAIL = 0
 

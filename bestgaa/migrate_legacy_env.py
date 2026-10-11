@@ -138,8 +138,8 @@ def main() -> None:
         "SOURCE_RESCAN_LIMIT": "40",
         "SOURCE_REFRESH_SECONDS": "180",
         "MAX_MEDIA_MB": "45",
-        # v17: never lose a post over a store the network cannot monetize.
-        "PASSTHROUGH_UNMONETIZED": "true",
+        # Strict-all is pinned in the bot; legacy passthrough stays disabled.
+        "PASSTHROUGH_UNMONETIZED": "false",
         "TARGET_FANOUT_GAP_MIN": "0",
         "TARGET_FANOUT_GAP_MAX": "0",
     }

@@ -656,6 +656,63 @@ def test_search_links_never_touch_the_cache():
         bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
 
 
+def test_owned_link_proofs_are_bound_to_active_identity():
+    """Durable shorts must still belong to the configured account and tag."""
+    print("\n== durable own-link proof is identity-bound ==")
+    old_publisher, old_tag = bot.OUR_EK_ID, bot.OUR_TAG
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "proofs.sqlite3"
+            legacy = __import__("sqlite3").connect(path)
+            legacy.execute(
+                "CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,"
+                "destination_url TEXT NOT NULL,proof_type TEXT NOT NULL,created_at REAL NOT NULL)")
+            legacy.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?)",
+                           ("https://bit.ly/legacy", "https://ekaro.in/old", "earnkaro_api", 1))
+            legacy.commit()
+            legacy.close()
+            store = bot.Store(path)
+            columns = {row[1] for row in store.conn.execute(
+                "PRAGMA table_info(owned_link_proofs)")}
+            check("legacy proof schema gets the account-binding migration",
+                  "publisher_id" in columns, str(columns))
+            check("legacy network proof without an account is refused",
+                  not store._strict_cache_pair_is_owned("https://bit.ly/legacy", ""))
+
+            bot.OUR_EK_ID, bot.OUR_TAG = "5478322", "mama086-21"
+            earned_short = "https://bit.ly/current-account"
+            await store.remember_owned_link_proof(
+                earned_short, "https://ekaro.in/account-bound", "earnkaro_api")
+            saved = store.conn.execute(
+                "SELECT publisher_id FROM owned_link_proofs WHERE affiliate_url=?",
+                (earned_short,),
+            ).fetchone()
+            check("converter proof records the token publisher id",
+                  saved["publisher_id"] == bot.OUR_EK_ID, str(saved["publisher_id"]))
+            check("a short backed by this account's proof is accepted",
+                  await store.cached_link_is_owned(earned_short, ""))
+            bot.OUR_EK_ID = "9999999"
+            check("the same short is refused after the active publisher changes",
+                  not await store.cached_link_is_owned(earned_short, ""))
+            bot.OUR_EK_ID = "5478322"
+
+            amazon_short = "https://bit.ly/current-amazon"
+            await store.remember_owned_link_proof(
+                amazon_short, "https://www.amazon.in/dp/B0TAG?tag=mama086-21", "amazon_native")
+            check("Amazon proof is accepted while its destination has our exact tag",
+                  await store.cached_link_is_owned(amazon_short, ""))
+            bot.OUR_TAG = "rotated-tag"
+            check("Amazon proof is refused after the Associates tag changes",
+                  not await store.cached_link_is_owned(amazon_short, ""))
+            store.conn.close()
+
+    try:
+        asyncio.run(run())
+    finally:
+        bot.OUR_EK_ID, bot.OUR_TAG = old_publisher, old_tag
+
+
 def test_token_claims():
     # The token literal lives next to the env block at the top: the suite must not
     # read a real .env, so it hands the bot its own token.
@@ -1210,8 +1267,9 @@ def test_checker_plan_prints_the_posted_link():
 
     lines, failures = run(FakeClient([None]), [("Actual post URL 1", "https://www.myntra.com/x")])
     joined = "\n".join(lines)
-    check("a store with no campaign is reported as UNMONETIZED, never as a conversion",
-          "UNMONETIZED" in joined and "NOBODY IS PAID" in joined, joined)
+    check("a store with no campaign is reported as UNMONETIZED and strict-all skips it",
+          "UNMONETIZED" in joined and "Strict-all skips this item/post" in joined
+          and "no clean merchant link is sent" in joined, joined)
     check("that line names its own fix (Affiliaters selections)",
           "Selections" in joined, joined)
     check("and an unmonetized link needs attention", failures == 1, str(failures))
@@ -1362,17 +1420,56 @@ def test_status_report_answers_are_we_converting():
               links.get("links") == 3 and links.get("our-short") == 1
               and links.get("clean-merchant") == 1 and links.get("foreign") == 1
               and links.get("unattributed") == 0, str(links))
-        check("a foreign link in the window is reported as a problem with its fix",
-              any("NOT ours" in problem and "quality_audit" in problem
+        check("unowned published links are reported with a quality-audit command",
+              any("lack verified ownership" in problem and "quality_audit" in problem
                   for problem in scoped_problems), str(scoped_problems))
         check("and the verdict says so in one line",
               any(line.startswith("LINKS") and "NEEDS ATTENTION" in line
                   for line in scoped_lines), str(scoped_lines))
 
+    # The report must pass the configured active publisher to the same proof
+    # reader; a durable converter short changes from ours to foreign if identity
+    # changes, even when its link_cache row remains untouched.
+    with tempfile.TemporaryDirectory() as td:
+        proof_db = Path(td) / "report-proof.sqlite3"
+        proof_conn = sqlite3.connect(proof_db)
+        proof_conn.executescript("""
+            CREATE TABLE link_cache(source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+                resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+            CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,
+                destination_url TEXT NOT NULL, proof_type TEXT NOT NULL,
+                publisher_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);
+            CREATE TABLE queue(id INTEGER PRIMARY KEY, created_at REAL, rendered_text TEXT);
+        """)
+        stamp = time.time()
+        proof_short = "https://bit.ly/report-account-bound"
+        proof_conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+            "https://www.myntra.com/x/verified", proof_short,
+            "https://www.myntra.com/x/verified", "PID:report", stamp))
+        proof_conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+            proof_short, "https://ekaro.in/enkr-report-proof", "earnkaro_api",
+            cfg["earnkaro_publisher"], stamp))
+        proof_conn.execute("INSERT INTO queue VALUES(1,?,?)", (
+            stamp, "Verified product\n" + proof_short))
+        proof_conn.commit()
+        proof_conn.close()
+        active_proof = report.db_report(
+            proof_db, 24, cfg["earnkaro_publisher"], cfg["amazon_tag"])
+        wrong_identity = report.db_report(
+            proof_db, 24, "9999999", cfg["amazon_tag"])
+        check("conversion report recognizes a short only under its active publisher proof",
+              active_proof["links"].get("our-short") == 1
+              and active_proof["links"].get("foreign") == 0, str(active_proof["links"]))
+        check("conversion report rejects that same proof after publisher rotation",
+              wrong_identity["links"].get("our-short") == 0
+              and wrong_identity["links"].get("foreign") == 1,
+              str(wrong_identity["links"]))
+
     healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
                           "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
                "hypd_learned": [{"afflink": "x"}], "hypd_wanted": [], "posted_deals": 7}
-    lines, problems = report.verdict(cfg, healthy, {"markers": {}})
+    fresh_earnkaro_log = {"markers": {"EK SUCCESS": {"count": 5, "last": "now"}}}
+    lines, problems = report.verdict(cfg, healthy, fresh_earnkaro_log)
     check("a healthy window reports nothing to fix", not problems, str(problems))
     check("and it says EarnKaro is working and which account is paid",
           any("WORKING" in l and "5478322" in l for l in lines), str(lines))
@@ -1381,21 +1478,27 @@ def test_status_report_answers_are_we_converting():
 
     clean_links = dict(healthy, links={"links": 9, "our-short": 6, "our-publisher": 3,
                                        "clean-merchant": 0, "foreign": 0})
-    lines, problems = report.verdict(cfg, clean_links, {"markers": {}})
-    check("a window whose links are all ours is reported as WORKING, not silent",
-          any(l.startswith("LINKS") and "WORKING" in l and "all ours" in l for l in lines),
-          str(lines))
+    lines, problems = report.verdict(cfg, clean_links, fresh_earnkaro_log)
+    check("a window whose links are all proven ours is explicitly VERIFIED",
+          any(l.startswith("LINKS") and "VERIFIED" in l for l in lines), str(lines))
     check("and that window needs no fixing", not problems, str(problems))
+
+    cache_only_lines, _ = report.verdict(cfg, healthy, {"markers": {}})
+    check("route-like cache rows alone are not called live EarnKaro conversions",
+          any(line.startswith("EarnKaro") and "CACHE ONLY" in line for line in cache_only_lines),
+          str(cache_only_lines))
 
     broken = dict(healthy)
     broken["hypd_wanted"] = [{"product": "https://www.meesho.com/kurtis/p/none123"}]
     broken["routes"] = {"passthrough": {"count": 3, "examples": []}}
     lines, problems = report.verdict(cfg, broken,
-                                     {"markers": {"EK AUTH": {"count": 2, "last": "now"}}})
+                                     {"markers": {"EK AUTH": {"count": 2, "last": "now"},
+                                                  "UNMONETIZED LINK": {"count": 1}}})
     joined = " ".join(problems)
     check("a refused EarnKaro token is reported as BROKEN", "AUTH" in joined, joined)
     check("products waiting for a hypd link are reported", "hypd link" in joined.lower(), joined)
-    check("unmonetized deals are reported", "clean merchant link" in joined, joined)
+    check("logged unmonetized posts are reported without inferring from cache rows",
+          "logged post(s) contained a clean merchant link" in joined, joined)
 
     auth_lines, _ = report.verdict(cfg, healthy, {"markers": {"EK AUTH": {"count": 1}}})
     check("and the verdict names the fix when the key is refused",
@@ -1536,6 +1639,7 @@ def main():
     test_native_search_link_shortened_like_product()
     test_datacenter_404_never_vetoes_conversion()
     test_search_links_never_touch_the_cache()
+    test_owned_link_proofs_are_bound_to_active_identity()
     test_token_claims()
     test_deploy_flow_cannot_silently_skip_again()
     test_amazon_policy()

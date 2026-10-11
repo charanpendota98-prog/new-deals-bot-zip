@@ -37,6 +37,8 @@ import main_bot_new as bot  # noqa: E402
 # which is exactly what PASSTHROUGH_UNMONETIZED controls. Pin it here (that knob's own
 # behaviour is tested in test_pipeline_fixes / test_duplicate_sim), so running this file
 # under PASSTHROUGH_UNMONETIZED=false compares the same text instead of erroring out.
+# Strict-all refusal paths are covered separately; this suite isolates text fidelity.
+bot.STRICT_OUR_LINKS = False
 bot.PASSTHROUGH_UNMONETIZED = True
 
 R = "\u20b9"
@@ -1697,7 +1699,7 @@ def test_only_the_review_channel_is_restricted():
     # And the per-channel policy switches are all keyed to SHOPPING_TARGET.
     deliver = src[src.index("async def process_job"):]
     strict_block = deliver[deliver.index("if target == SHOPPING_TARGET:"):]
-    strict_block = strict_block[:strict_block.index("target_text = strip_amazon_tag_for_undeclared")]
+    strict_block = strict_block[:strict_block.index("tagless_copy = strip_amazon_tag_for_undeclared")]
     for rule in ("affiliate_safe_text", "has_amazon_trademark", "add_link_disclosure",
                  "shopping_quota_left", "shopping_pace_wait"):
         check("%s sits inside the SHOPPING_TARGET branch" % rule, rule in strict_block,

@@ -153,8 +153,8 @@ EARNKARO_API_KEY=$EK_KEY
 EARNKARO_API_URL=https://ekaro-api.affiliaters.in/api/converter/public
 EARNKARO_PUBLISHER_ID=$EK_PUB
 # The documented converter mode: convert the link and do nothing else. Sending
-# it explicitly keeps the RESPONSE shape predictable (an unreadable response is
-# a post that goes out unmonetized, not a lost post).
+# it explicitly keeps the RESPONSE shape predictable; strict-all refuses a post
+# if the response does not prove an owned affiliate URL.
 EARNKARO_CONVERT_OPTION=convert_only
 # USER DECISION (2026-10-04): the Amazon Associates account is APPROVED for our
 # tag, so the NATIVE tagged link (?tag=mama086-21) is the FIRST choice - the
@@ -222,10 +222,9 @@ MAX_MEDIA_MB=45
 # Zero artificial waiting: channel fan-out is back-to-back by default.
 TARGET_FANOUT_GAP_MIN=0
 TARGET_FANOUT_GAP_MAX=0
-# v17: publish a store link EarnKaro cannot monetize as a clean untagged
-# merchant link instead of losing the post. false = old behaviour (retry, then
-# skip - that deal never reaches the channels).
-PASSTHROUGH_UNMONETIZED=true
+# Strict-all is pinned in the bot: only a verified affiliate link may be sent.
+# Keep the legacy knob false so old settings cannot imply clean-link passthrough.
+PASSTHROUGH_UNMONETIZED=false
 # Source fidelity: publish what the source published (its own hype header
 # included). Set true to ALSO drop pure campaign banner lines.
 STRIP_CAMPAIGN_BANNERS=false
