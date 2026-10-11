@@ -356,9 +356,11 @@ const ALREADY_SHORT_HOSTS = new Set([
 // Requires the bridge's Telegram bot to be an admin in those channels.
 // TG_DIRECT_SOURCES: unset = default list below; empty value = disabled.
 // ---------------------------------------------------------------------------
-const DEFAULT_DIRECT_SOURCES = 'deals,powerloot,loot_alerts,TeluguTechworld,icoolzTricks,SB_Loots_And_Deals,Flipkarthiik,HiddenDeals1,idoffers,Magixdeals_Magix,dealsvelocity,pricehistory,telugutechtvdeals,indian_online_offer,idoffers2,DealsUnder99_com,under_99_loot_deals,Mobile_phone_offers_tv_ac_deals,Mobile_phone_offers_tv_ac_dealsk,techglaredeals,iamprasadtech,hidden_loot_deals_amazon,dealdost,rapiddeals_unlimited,amazinglootsdealsoffers,realearnkaro,CKoffers,LootDealsPortal,LOOTS_DEAL_OFFER_ONLINE_SHOPPING,RealShoppingDeals,rebeldealss,Only_discount_Deals,GrabOnIndiaOfficial,myntra_Ajio_Sale_Deals_offers_li,BiggestLootDeals,lootping,Shopping_Loot_Fashion_Deals,msho_shpsy_offers,Myntra_Ajio_Deals_Shopsy,vaasutechdeals,lootsxpert'
+const DEFAULT_DIRECT_SOURCES = 'deals,powerloot,loot_alerts,TeluguTechworld,icoolzTricks,SB_Loots_And_Deals,Flipkarthiik,HiddenDeals1,idoffers,Magixdeals_Magix,dealsvelocity,pricehistory,telugutechtvdeals,indian_online_offer,idoffers2,DealsUnder99_com,under_99_loot_deals,Mobile_phone_offers_tv_ac_deals,Mobile_phone_offers_tv_ac_dealsk,techglaredeals,hidden_loot_deals_amazon,dealdost,rapiddeals_unlimited,amazinglootsdealsoffers,realearnkaro,CKoffers,LootDealsPortal,LOOTS_DEAL_OFFER_ONLINE_SHOPPING,RealShoppingDeals,rebeldealss,Only_discount_Deals,GrabOnIndiaOfficial,myntra_Ajio_Sale_Deals_offers_li,BiggestLootDeals,lootping,Shopping_Loot_Fashion_Deals,msho_shpsy_offers,Myntra_Ajio_Deals_Shopsy,vaasutechdeals,lootsxpert'
+const BLOCKED_DIRECT_SOURCES = new Set(['iamprasadtech'])
 const DIRECT_SOURCES = new Set((process.env.TG_DIRECT_SOURCES === undefined ? DEFAULT_DIRECT_SOURCES : process.env.TG_DIRECT_SOURCES)
-  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
+  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase())
+  .filter(x => x && !BLOCKED_DIRECT_SOURCES.has(x)))
 // Hosts safe to follow for redirect resolution on direct-source links (known
 // shorteners/redirectors only — never arbitrary merchant pages).
 const REDIRECT_FOLLOW_HOSTS = new Set([
@@ -5682,6 +5684,10 @@ https://fktr.in/MANY${i}`,
   // DIRECT SOURCE SAFETY NET: deals the Telegram bot missed still reach
   // WhatsApp — smartly (resolve, monetize amazon, dedup against our channels).
   // -------------------------------------------------------------------------
+  if (DEFAULT_DIRECT_SOURCES.split(',').map(x => x.trim().toLowerCase()).includes('iamprasadtech')
+      || !BLOCKED_DIRECT_SOURCES.has('iamprasadtech') || DIRECT_SOURCES.has('iamprasadtech')) {
+    throw new Error('iamprasadtech must be excluded from default and env-configured direct sources')
+  }
   if (classifySource({ chat: { username: 'under499loots' } }) !== 'source') throw new Error('own channel must classify as source')
   if (DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== 'direct') throw new Error('raw deal channel must classify as direct')
   if (!DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== null) throw new Error('TG_DIRECT_SOURCES= (empty) must disable direct sources')

@@ -736,13 +736,15 @@ async def main():
             "Flipkarthiik", "telugutechtvdeals", "indian_online_offer",
             "powerloot", "idoffers", "idoffers2", "icoolzTricks",
             "TeluguTechworld", "https://t.me/+LP6MYEpCwi0zOGYx",
-            "dealsvelocity", "iamprasadtech", "tech24deals", "Offer_Xpress",
+            "dealsvelocity", "tech24deals", "Offer_Xpress",
             "https://t.me/+qhlEwwkhb2hlNWZl",
         )
         for src in user_sources:
             check(f"source {src} -> non-tricks main targets",
                   src in bot.SOURCE_TO_TARGETS
                   and bot.SOURCE_TO_TARGETS[src] == list(bot.NO_TRICKS_TARGETS))
+        check("iamprasadtech is not configured as a deal source",
+              "iamprasadtech" not in bot.SOURCE_TO_TARGETS)
         check("Under99Deals11 is a TARGET, not a source",
               "Under99Deals11" in bot.ALL_OWNED_TARGETS
               and "Under99Deals11" not in bot.SOURCE_TO_TARGETS)

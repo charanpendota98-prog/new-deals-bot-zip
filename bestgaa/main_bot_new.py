@@ -1050,7 +1050,6 @@ SOURCE_TO_TARGETS: dict[str, list[str]] = {
     "Mobile_phone_offers_tv_ac_dealsk": list(LZI_SECRET),
     "https://t.me/+qhlEwwkhb2hlNWZl": list(LZI_SECRET),
     "techglaredeals": list(MAIN_TARGETS),
-    "iamprasadtech": ["LootZoneIndia11"],  # source only, never forced target
     "https://t.me/+uV5wcTkUWJEwM2Y1": ["LootzoneTricks"],
     "hidden_loot_deals_amazon": ["LootzoneTricks"],
     "dealdost": list(NO_TRICKS_TARGETS),
@@ -1099,7 +1098,6 @@ for _source in (
     # had EMPTY target lists (dead sources) or an older partial route.
     "deals", "powerloot", "pricehistory", "telugutechtvdeals",
     "indian_online_offer", "idoffers2", "https://t.me/+LP6MYEpCwi0zOGYx",
-    "iamprasadtech",
     # 2026-08-30 (source list pt.2): fresh sources + the +qhlEwwkhb2hlNWZl
     # private channel (user wants it feeding LootZone + PowerLoots + the
     # under-₹99 / under-₹499 price channels, which layer on automatically).
