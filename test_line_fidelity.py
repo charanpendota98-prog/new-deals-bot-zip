@@ -2212,6 +2212,38 @@ def test_every_list_shape_reads_name_above_its_own_link():
           got == [(g[0], g[1]) for g in got] and "Boat" in got[0][0]
           and "Samsung" in got[1][0] and "Milton" in got[2][0], str(got))
 
+    # SHAPE 4 - some sources put one-word product names on their own lines,
+    # then list prices, then dump the links at the bottom. These are real names
+    # (Dove/Mivi/Harpic), not orphan URL fragments; cleanup must not erase them.
+    names_before_prices = (
+        "TODAY'S BEST DEALS\nDove\nMivi\nHarpic\n"
+        "Deal Price: ₹99\nDeal Price: ₹499\nDeal Price: ₹149\n"
+        "https://amzn.to/dove\nhttps://amzn.to/mivi\nhttps://amzn.to/harpic"
+    )
+    got_names = pipeline(names_before_prices)
+    for name in ("Dove", "Mivi", "Harpic"):
+        check("a short product name survives a multi-product list: %s" % name,
+              name in got_names, got_names)
+    ordered_items = [
+        "Dove", "Deal Price: ₹99", "https://amzn.to/dove",
+        "Mivi", "Deal Price: ₹499", "https://amzn.to/mivi",
+        "Harpic", "Deal Price: ₹149", "https://amzn.to/harpic",
+    ]
+    item_positions = [got_names.find(item) for item in ordered_items]
+    check("name-first, price-first, link-last lists become neat matched item blocks",
+          all(position >= 0 for position in item_positions)
+          and item_positions == sorted(item_positions), got_names)
+
+    names_with_items = (
+        "Dove\nDeal Price: ₹99\nhttps://amzn.to/dove\n"
+        "Mivi\nDeal Price: ₹499\nhttps://amzn.to/mivi\n"
+        "Harpic\nDeal Price: ₹149\nhttps://amzn.to/harpic"
+    )
+    got_items = pipeline(names_with_items)
+    for name in ("Dove", "Mivi", "Harpic"):
+        check("a separated item name survives beside its price/link: %s" % name,
+              name in got_items, got_items)
+
     # A NEAT SOURCE MUST COME OUT UNCHANGED - we never "fix" what is already right.
     neat = ("\U0001f525 Deals\n\n1) Boat 141 @ 899\nhttps://amzn.to/a\n\n"
             "2) Samsung M14 @ 9999\nhttps://amzn.to/b")

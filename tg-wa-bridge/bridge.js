@@ -953,6 +953,13 @@ function stripFlipkartShareTitle(text) {
   }).join('\n')
 }
 
+const SHORT_LIST_NON_PRODUCT_TOKENS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'by', 'with', 'from', 'for',
+  'deal', 'deals', 'offer', 'offers', 'sale', 'sales', 'loot', 'loots', 'price', 'mrp',
+  'discount', 'off', 'coupon', 'coupons', 'code', 'buy', 'shop', 'order', 'grab', 'click',
+  'tap', 'now', 'here', 'below', 'join', 'follow', 'subscribe', 'share', 'forward', 'hurry',
+  'today', 'daily', 'new', 'top', 'hot', 'free', 'max', 'quantity', 'qty', 'more', 'link', 'links',
+])
 function cleanDealText(text) {
   const noise = /^(?:\s*(?:🔥\s*LOOT\s+ZONE\s*[—-]\s*India|🚨\s*SPECIAL\s+OFFER|✅\s*Verified\s*•\s*Enjoy\s*\(Grab\s*fast\)|.*deal\s*time\s*:.*(?:IST)?|.*\bloot\s+fa+s+\s*t+\b.*|.*(?:@GrabOnIndiaOfficial|50\+\s*loots\s*daily).*|(?:h|ht|htt|https?|ttp|ttps|tps?:\/\/|s:\/\/|:\/\/|uy)|👉.*(?:https\s*:\s*are)|💰?\s*want\s+real\s+cash\s*back\s+too\??|forward\s+to\s+@cashkarolink_?bot|#(?:myntra|flipkart|amazon|ajio))\s*)$/i
   const fragments = new Set(['h','ht','htt','http','https','ttp','ttps','tps://','tp://','s://','://','uy'])
@@ -960,6 +967,10 @@ function cleanDealText(text) {
   const sourceLines = stripFlipkartShareTitle(
     normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '')
   ).split(/\r?\n/)
+  const sourceUrlCount = new Set(sourceLines.flatMap(line =>
+    (line.match(/https?:\/\/[^\s<>\[\](){}"']+/giu) || []).map(cleanUrl)
+  )).size
+  const multiProductContext = sourceUrlCount >= 2
   // Branding always goes; the channel's own hype header only when the operator
   // opted into WA_STRIP_CAMPAIGN_BANNERS.
   const prepared = STRIP_CAMPAIGN_BANNERS
@@ -1029,11 +1040,21 @@ function cleanDealText(text) {
     const token = line.trim()
     if (!/^[A-Za-z0-9_-]{1,12}$/.test(token)) return true
     const lower = token.toLowerCase()
+    const core = token.replace(/[^A-Za-z:/]/g, '').toLowerCase()
     const previous = index ? lines[index - 1].trim() : ''
     const next = index + 1 < lines.length ? lines[index + 1].trim() : ''
     const adjacentUrl = /^https?:\/\//i.test(previous) || /^https?:\/\//i.test(next)
     const couponContext = /use\s*code\s*:?$/i.test(previous)
-    return meaningful.has(lower) || adjacentUrl || couponContext
+    const adjacentDeal = [previous, next].some(candidate =>
+      /(?:₹|\b(?:rs\.?|inr)\s*\d|\b\d[\d,]*\s*%|\bmrp\b)/i.test(candidate)
+    )
+    const shortProductLabel = (multiProductContext || adjacentDeal)
+      && /^[A-Za-z][A-Za-z0-9+&._'-]{1,29}$/.test(token)
+      && !SHORT_LIST_NON_PRODUCT_TOKENS.has(lower)
+      && !SHORT_LIST_NON_PRODUCT_TOKENS.has(core)
+      && !fragments.has(core)
+      && !isPromoNoiseLine(line)
+    return meaningful.has(lower) || adjacentUrl || couponContext || shortProductLabel
   })
   return strict.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
@@ -2000,6 +2021,104 @@ function keepSourceSpacing(body, sourceText) {
   return body.replace(/\n{2,}/g, '\n')
 }
 
+// Reflow a list only when the source puts 3+ bare links together at the end.
+// Names may be interleaved with prices or grouped before the price run; pair
+// each item and URL by source order, and leave already-neat posts untouched.
+const LIST_PRICE_LABEL_RE = /(?:₹|\brs\.?|\binr)\s*[\d,]{2,}|(?:\bat|@)\s*[\d,]{2,}|\b[\d,]{2,}\s*\/-/i
+const LIST_NON_PRODUCT_TOKENS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'by', 'with', 'from', 'for',
+  'deal', 'deals', 'offer', 'offers', 'sale', 'sales', 'loot', 'loots', 'price', 'mrp',
+  'discount', 'off', 'coupon', 'coupons', 'code', 'buy', 'shop', 'order', 'grab', 'click',
+  'tap', 'now', 'here', 'below', 'join', 'follow', 'subscribe', 'share', 'forward', 'hurry',
+  'today', 'daily', 'new', 'top', 'hot', 'free', 'max', 'quantity', 'qty', 'more', 'link', 'links',
+  'todaysbestdeals', 'todaysoffers', 'bestdeals', 'bestoffers', 'topdeals',
+])
+function listProductLabel(value) {
+  const label = String(value || '').replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/^[^\p{L}\p{N}₹]+/u, '').replace(/[\s:|*•-]+$/g, '').trim()
+  if (!label || /https?:\/\//i.test(label) || LIST_PRICE_LABEL_RE.test(label)) return ''
+  if (isPromoNoiseLine(label) || /^(?:apply\s+coupon|use\s+code|coupon|code|buy\s+max|max\s+quantity|click\s+here|shop\s+now|buy\s+now)\b/i.test(label)) return ''
+  const normalized = label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  if (LIST_NON_PRODUCT_TOKENS.has(normalized)) return ''
+  return label
+}
+function productNameOnPriceLine(line) {
+  let candidate = String(line || '').replace(LIST_PRICE_LABEL_RE, ' ')
+    .replace(/\b\d[\d,]*\s*%\s*(?:off|discount)?\b/gi, ' ')
+    .replace(/\b(?:deal|price|mrp|regular|original|list|only|just|from|now|off|discount|flat|save|rs\.?|inr|rupees?)\b/gi, ' ')
+  return listProductLabel(candidate)
+}
+function formatBottomDumpedProductList(text) {
+  const original = String(text || '')
+  const lines = original.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const isBareUrl = line => /^https?:\/\/\S+$/i.test(line)
+  const urlPositions = lines.flatMap((line, index) => isBareUrl(line) ? [index] : [])
+  if (urlPositions.length < 3) return original
+  const firstUrl = urlPositions[0]
+  if (lines.slice(firstUrl).some(line => !isBareUrl(line))) return original
+  const head = lines.slice(0, firstUrl)
+  const itemPricePositions = []
+  for (let index = 0; index < head.length; index++) {
+    const line = head[index]
+    if (!LIST_PRICE_LABEL_RE.test(line)) continue
+    const hasInlineName = Boolean(productNameOnPriceLine(line))
+    const referenceOnly = /\b(?:mrp|regular\s+price|original\s+price|list\s+price)\b/i.test(line)
+      && !hasInlineName && !/\b(?:deal\s+price|offer\s+price|now|only)\b/i.test(line)
+    if (!referenceOnly) itemPricePositions.push(index)
+  }
+  if (itemPricePositions.length < 3) return original
+  const priceNames = itemPricePositions.map(index => productNameOnPriceLine(head[index]))
+  const prePriceLabels = []
+  for (let index = 0; index < itemPricePositions[0]; index++) {
+    if (listProductLabel(head[index])) prePriceLabels.push(index)
+  }
+  const groupedNamesFirst = priceNames.every(name => !name)
+    && prePriceLabels.length >= itemPricePositions.length
+  let preamble = []
+  const blocks = []
+  if (groupedNamesFirst) {
+    const selected = prePriceLabels.slice(-itemPricePositions.length)
+    preamble = head.slice(0, selected[0])
+    for (let index = 0; index < selected.length; index++) {
+      const nextLabel = index + 1 < selected.length ? selected[index + 1] : itemPricePositions[0]
+      const priceAt = itemPricePositions[index]
+      const nextPrice = index + 1 < itemPricePositions.length ? itemPricePositions[index + 1] : head.length
+      blocks.push([...head.slice(selected[index], nextLabel), ...head.slice(priceAt, nextPrice)])
+    }
+  } else {
+    const starts = []
+    let previousPrice = -1
+    for (let index = 0; index < itemPricePositions.length; index++) {
+      const priceAt = itemPricePositions[index]
+      let start = priceAt
+      if (!priceNames[index]) {
+        const candidates = []
+        for (let candidate = previousPrice + 1; candidate < priceAt; candidate++) {
+          if (listProductLabel(head[candidate])) candidates.push(candidate)
+        }
+        if (candidates.length) start = candidates[candidates.length - 1]
+      }
+      starts.push(start)
+      previousPrice = priceAt
+    }
+    preamble = head.slice(0, starts[0])
+    for (let index = 0; index < starts.length; index++) {
+      const end = index + 1 < starts.length ? starts[index + 1] : head.length
+      blocks.push(head.slice(starts[index], end))
+    }
+  }
+  const urls = urlPositions.map(index => lines[index])
+  const pairCount = Math.min(blocks.length, urls.length)
+  const out = [...preamble]
+  for (let index = 0; index < pairCount; index++) {
+    if (out.length) out.push('')
+    out.push(...blocks[index], urls[index])
+  }
+  for (const extra of urls.slice(pairCount)) out.push(extra)
+  for (const leftover of blocks.slice(pairCount)) out.push('', ...leftover)
+  return out.join('\n').trim()
+}
+
 function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // v17.5 - the WhatsApp post IS the source post: cleaned, never rewritten.
   //
@@ -2015,7 +2134,8 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // tokens, orphan URL fragments) via cleanDealText + cleanBodyLine, and every
   // link becomes OUR monetized link, one per line.
   const raw = job.text || ''
-  const cleaned = cleanDealText(raw) || ''
+  const sourceOrdered = formatBottomDumpedProductList(raw)
+  const cleaned = cleanDealText(sourceOrdered) || ''
   const out = []
   for (const lineRaw of cleaned.split(/\r?\n/)) {
     const line = lineRaw.trim()
@@ -3864,7 +3984,7 @@ function buildLargeListChunks(job) {
   // ours is bolted on. `header` stays as an empty string so the chunking loop
   // below keeps working unchanged.
   const header = ''
-  const cleaned = cleanDealText(job.text)
+  const cleaned = cleanDealText(formatBottomDumpedProductList(job.text))
     .replace(/\b(?:buy\s+now|shop\s+now)\b/gi, '')
     .replace(/^[-–—_=]{3,}$/gm, '').replace(/\*\*/g, '').replace(/\n{3,}/g, '\n\n').trim()
   const lines = cleaned.split(/\n/)
@@ -4586,6 +4706,59 @@ if (process.argv.includes('--self-test')) {
     if (/^💰\s*₹/m.test(listPost)) throw new Error('no badge line may be added to a list:\n' + listPost)
     for (const line of ['Mega Sale', 'A ₹299', 'B ₹399', 'C ₹499', 'D ₹599']) {
       if (!listPost.includes(line)) throw new Error(`list source line lost: ${line}\n${listPost}`)
+    }
+    const separatedNameList = [
+      'Dove', 'Deal Price: ₹99',
+      'Mivi', 'Deal Price: ₹499',
+      'Harpic', 'Deal Price: ₹149',
+      'https://a.test/dove', 'https://a.test/mivi', 'https://a.test/harpic',
+    ].join('\n')
+    const separatedNamePost = formatWhatsAppPost({ text: separatedNameList })
+    for (const name of ['Dove', 'Mivi', 'Harpic']) {
+      if (!separatedNamePost.includes(name)) throw new Error('multi-product list lost short product name ' + name + ':\n' + separatedNamePost)
+    }
+    for (const [name, price, url] of [
+      ['Dove', 'Deal Price: ₹99', 'https://a.test/dove'],
+      ['Mivi', 'Deal Price: ₹499', 'https://a.test/mivi'],
+      ['Harpic', 'Deal Price: ₹149', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = separatedNamePost.indexOf(name)
+      const priceAt = separatedNamePost.indexOf(price)
+      const urlAt = separatedNamePost.indexOf(url)
+      if (!(nameAt >= 0 && priceAt > nameAt && urlAt > priceAt)) {
+        throw new Error('bottom-dumped list item is not kept together: ' + name + '\n' + separatedNamePost)
+      }
+    }
+    const groupedNameList = [
+      'Dove', 'Mivi', 'Harpic',
+      'Deal Price: ₹99', 'Deal Price: ₹499', 'Deal Price: ₹149',
+      'https://a.test/dove', 'https://a.test/mivi', 'https://a.test/harpic',
+    ].join('\n')
+    const groupedNamePost = formatWhatsAppPost({ text: groupedNameList })
+    for (const [name, price, url] of [
+      ['Dove', 'Deal Price: ₹99', 'https://a.test/dove'],
+      ['Mivi', 'Deal Price: ₹499', 'https://a.test/mivi'],
+      ['Harpic', 'Deal Price: ₹149', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = groupedNamePost.indexOf(name)
+      const priceAt = groupedNamePost.indexOf(price)
+      const urlAt = groupedNamePost.indexOf(url)
+      if (!(nameAt >= 0 && priceAt > nameAt && urlAt > priceAt)) {
+        throw new Error('grouped names/prices were not paired in source order: ' + name + '\n' + groupedNamePost)
+      }
+    }
+    const largeListChunks = buildLargeListChunks({ text: groupedNameList, largeList: true, media: [] })
+    const largeListBody = largeListChunks.join('\n')
+    for (const [name, , url] of [
+      ['Dove', '', 'https://a.test/dove'],
+      ['Mivi', '', 'https://a.test/mivi'],
+      ['Harpic', '', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = largeListBody.indexOf(name)
+      const urlAt = largeListBody.indexOf(url)
+      if (!(nameAt >= 0 && urlAt > nameAt)) {
+        throw new Error('large-list chunks lost/reordered a named item: ' + name + '\n' + largeListBody)
+      }
     }
     const singlePost = formatWhatsAppPost({ text: 'Single Shirt\nDeal Price: ₹699\nhttps://a.test/1' })
     if (singlePost.includes('💰')) throw new Error('no synthetic price badge may be added:\n' + singlePost)

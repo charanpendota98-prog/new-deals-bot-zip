@@ -3836,6 +3836,12 @@ DANGLING_CTA_WORDS = {
     "orderhere", "view", "viewdeal", "deal", "offer", "purchase", "product", "url",
     "affiliate", "affiliatepartner", "ad", "ads", "promo", "sponsored",
 }
+_SHORT_LIST_NON_PRODUCT_WORDS = frozenset("""
+    a an the and or of to in on at by with from for deal deals offer offers sale sales
+    loot loots price mrp discount off coupon coupons code buy shop order grab click tap
+    now here below join follow subscribe share forward hurry today daily new top hot free
+    max quantity qty more link links
+""".split())
 
 
 def remove_dangling_cta_lines(text: str) -> str:
@@ -3854,14 +3860,21 @@ def remove_dangling_cta_lines(text: str) -> str:
     return "\n".join(kept)
 
 
-def strict_orphan_token_cleanup(text: str) -> str:
-    """Remove any isolated random short token, not just previously seen examples."""
+def strict_orphan_token_cleanup(text: str, *, list_context: bool = False) -> str:
+    """Remove random short tokens without deleting short product names in lists.
+
+    One-word labels such as "Dove" or "Mivi" were mistaken for URL debris when
+    they were separated from their price/link by other list items. Preserve a
+    plausible short label when the post contains multiple links or its neighbour
+    carries a price/discount; known CTA, promo and URL-fragment tokens still go.
+    """
     text = remove_trailing_url_tokens(text)
     # A source post can carry a dangling protocol fragment right next to a real
     # link on the same line, e.g. `https://ajio.in/XXX https://`. Mask the real
     # URLs, drop the orphan protocol/domain fragment, then restore the links so
     # a genuine generated URL is never mutated.
     real_urls = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text or "")))
+    list_context = list_context or len(real_urls) >= 2
     masked = text
     for i, url in enumerate(real_urls):
         masked = masked.replace(url, f"\x01U{i}\x02")
@@ -3896,7 +3909,22 @@ def strict_orphan_token_cleanup(text: str) -> str:
             next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
             adjacent_url = bool(URL_RE.fullmatch(previous) or URL_RE.fullmatch(next_line))
             coupon_context = bool(re.search(r"(?i)use\s*code\s*: ?$", previous))
-            if lower not in MEANINGFUL_SINGLE_LABELS and not adjacent_url and not coupon_context:
+            adjacent_deal = any(
+                candidate and (
+                    PRICE_LABEL_RE.search(candidate)
+                    or re.search(r"(?i)\b\d{1,3}\s*%\s*(?:off|discount)?\b", candidate)
+                )
+                for candidate in (previous, next_line)
+            )
+            short_product_label = bool(
+                (list_context or adjacent_deal)
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9+&._'’-]{1,29}", stripped)
+                and lower not in _SHORT_LIST_NON_PRODUCT_WORDS
+                and lower not in DANGLING_CTA_WORDS
+                and not is_promo_noise_line(stripped)
+            )
+            if (lower not in MEANINGFUL_SINGLE_LABELS and not adjacent_url
+                    and not coupon_context and not short_product_label):
                 continue
         # Remove malformed protocol-like words wherever they appear outside a
         # real URL (real URLs are normally on their own and fail this pattern).
@@ -4070,6 +4098,34 @@ PRICE_LABEL_RE = re.compile(
 )
 
 
+def _list_product_label(line: str) -> str:
+    """A conservative product-name candidate for a bottom-linked roundup."""
+    label = _product_label(line)
+    if not label or URL_RE.search(label) or PRICE_LABEL_RE.search(label):
+        return ""
+    if is_campaign_banner_line(label) or is_promo_noise_line(label):
+        return ""
+    if re.search(r"(?i)\b(?:apply\s+coupon|use\s+code|coupon|code|buy\s+max|"
+                 r"max\s+quantity|click\s+here|shop\s+now|buy\s+now)\b", label):
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "", label.lower())
+    if (normalized in _SHORT_LIST_NON_PRODUCT_WORDS
+            or normalized in {"todaysbestdeals", "todaysoffers", "bestdeals", "bestoffers", "topdeals"}):
+        return ""
+    return label
+
+
+def _product_name_from_price_line(line: str) -> str:
+    """Return a real name from a line such as "Dove Deal Price ₹99", else empty."""
+    candidate = PRICE_LABEL_RE.sub(" ", line or "")
+    candidate = re.sub(r"(?i)\b\d[\d,]*\s*%\s*(?:off|discount)?\b", " ", candidate)
+    candidate = re.sub(
+        r"(?i)\b(?:deal|price|mrp|regular|original|list|only|just|from|now|"
+        r"off|discount|flat|save|rs\.?|inr|rupees?)\b", " ", candidate,
+    )
+    return _list_product_label(candidate)
+
+
 def split_inline_product_links(text: str) -> str:
     """Put each product on its own line with its link underneath it.
 
@@ -4163,12 +4219,11 @@ def split_inline_product_links(text: str) -> str:
 def format_clustered_product_list(text: str) -> str:
     """Pair 3+ product/price labels with a trailing block of generated URLs.
 
-    The source writes the list as "name + price" blocks (often with a note line
-    such as "Buy Max Quantity") and then dumps every link at the bottom. Read
-    that way it is unreadable: the reader cannot tell which link is which deal.
-    Here each block keeps its own note lines and gets its own link directly
-    under it, in the source's own order. Nothing is invented, nothing is
-    dropped, nothing is reordered.
+    Sources may interleave each product name and price, group all names before
+    all prices, or write name + price on the same line, then dump links at the
+    bottom. Reflow those shapes into source-order item blocks, keeping each
+    product's notes and pairing its link by list order. Nothing is invented or
+    dropped; only the layout is changed where the source left links detached.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     url_positions = [i for i, line in enumerate(lines) if URL_RE.fullmatch(line)]
@@ -4179,19 +4234,73 @@ def format_clustered_product_list(text: str) -> str:
     if any(not URL_RE.fullmatch(line) for line in lines[first_url:]):
         return text
     head = lines[:first_url]
-    # Split the head into blocks: a new block starts on every price-bearing
-    # label; anything after it (a note, an MRP line) belongs to that block.
+    item_price_positions = []
+    for index, line in enumerate(head):
+        if not PRICE_LABEL_RE.search(line):
+            continue
+        has_inline_name = bool(_product_name_from_price_line(line))
+        reference_only = bool(
+            re.search(r"(?i)\b(?:mrp|regular\s+price|original\s+price|list\s+price)\b", line)
+            and not has_inline_name
+            and not re.search(r"(?i)\b(?:deal\s+price|offer\s+price|now|only)\b", line)
+        )
+        if not reference_only:
+            item_price_positions.append(index)
+    if len(item_price_positions) < 3:
+        return text
+
+    price_names = [_product_name_from_price_line(head[index]) for index in item_price_positions]
+    pre_price_labels = [
+        index for index in range(item_price_positions[0])
+        if _list_product_label(head[index])
+    ]
+    # Some sources group all names first, then all prices, then all links. Pair
+    # those three ordered runs by index rather than attaching every price to the
+    # last name seen (which both lost names and mismatched items).
+    grouped_names_first = (
+        not any(price_names)
+        and len(pre_price_labels) >= len(item_price_positions)
+    )
     preamble: list[str] = []
     blocks: list[list[str]] = []
-    for line in head:
-        if PRICE_LABEL_RE.search(line):
-            blocks.append([line])
-        elif blocks:
-            blocks[-1].append(line)
-        else:
-            preamble.append(line)
-    if len(blocks) < 3:
-        return text
+    if grouped_names_first:
+        selected_labels = pre_price_labels[-len(item_price_positions):]
+        first_label = selected_labels[0]
+        first_price = item_price_positions[0]
+        preamble = head[:first_label]
+        for index, label_at in enumerate(selected_labels):
+            next_label = (selected_labels[index + 1]
+                          if index + 1 < len(selected_labels) else first_price)
+            price_at = item_price_positions[index]
+            next_price = (item_price_positions[index + 1]
+                          if index + 1 < len(item_price_positions) else len(head))
+            name_lines = head[label_at:next_label]
+            price_lines = head[price_at:next_price]
+            blocks.append(name_lines + price_lines)
+    else:
+        # Interleaved lists may put a short name on one line and its price on
+        # the next. Start each block at that nearest unused name; inline name +
+        # price lines start their own block. CTA/MRP notes remain with the item.
+        starts: list[int] = []
+        previous_price = -1
+        for price_at, inline_name in zip(item_price_positions, price_names):
+            start = price_at
+            if not inline_name:
+                candidates = [
+                    index for index in range(previous_price + 1, price_at)
+                    if _list_product_label(head[index])
+                ]
+                if candidates:
+                    start = candidates[-1]
+            starts.append(start)
+            previous_price = price_at
+        if len(starts) < 3:
+            return text
+        preamble = head[:starts[0]]
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(head)
+            blocks.append(head[start:end])
+
     urls = [lines[i] for i in url_positions]
     pair_count = min(len(blocks), len(urls))
     output = list(preamble)
@@ -7962,7 +8071,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     multi_product_list = len(converted) >= 3
     if multi_product_list:
         rendered = format_clustered_product_list(rendered)
-    rendered = strict_orphan_token_cleanup(rendered)
+    rendered = strict_orphan_token_cleanup(
+        rendered, list_context=len({clean_url(url) for url in source_urls}) >= 2
+    )
     # Cut the dead short links out of the copy itself. Leaving them in would publish a
     # foreign, unverified link (the provenance rule); removing them must not remove the
     # deal, so a post whose only link was dead goes out as complete text instead of
@@ -8252,6 +8363,7 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
 
 
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
+    stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
     # a list of files (with their Telegram refs) when the source posted an album
     media_path: list[str] = []
     media_refs: list = []
@@ -8293,7 +8405,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 rendered = tidy_post(clean_source_text(rendered))
                 rendered = split_inline_product_links(rendered)
                 rendered = format_clustered_product_list(rendered)
-                rendered = strict_orphan_token_cleanup(rendered)
+                rendered = strict_orphan_token_cleanup(
+                    rendered,
+                    list_context=(len(set(URL_RE.findall(stored_copy))) >= 2
+                                  or len(set(URL_RE.findall(rendered))) >= 2),
+                )
                 rendered = sanitize_outbound_text(rendered)
                 if rendered != row["rendered_text"]:
                     with contextlib.suppress(Exception):

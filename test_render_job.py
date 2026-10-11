@@ -193,6 +193,52 @@ async def main():
             bot.CATEGORY_TARGETS.clear()
             bot.CATEGORY_TARGETS.update(saved_category_targets)
 
+        # Regression: separate one-word product labels must survive cleanup and
+        # be paired with their own price/link when a source groups names, then
+        # prices, then links at the bottom.
+        grouped_names = ["Dove", "Mivi", "Harpic"]
+        grouped_asins = ["B0DOVE0001", "B0MIVI0001", "B0HARPIC01"]
+        grouped_urls = [f"https://amzn.to/list-{name.lower()}" for name in grouped_names]
+        grouped_destinations = [f"https://www.amazon.in/dp/{asin}"
+                                for asin in grouped_asins]
+        grouped_resolve = dict(zip(grouped_urls, grouped_destinations))
+        grouped_convert = {
+            source_url: bot.LinkResult(
+                source=source_url, resolved=destination,
+                affiliate=destination + "?tag=mama086-21",
+                deal_key=f"amazon:{asin}",
+            )
+            for source_url, destination, asin in zip(
+                grouped_urls, grouped_destinations, grouped_asins
+            )
+        }
+        grouped_list = (
+            "TODAY'S BEST DEALS\nDove\nMivi\nHarpic\n"
+            "Deal Price: ₹99\nDeal Price: ₹499\nDeal Price: ₹149\n"
+            + "\n".join(grouped_urls)
+        )
+        await case(
+            store, "one-word names survive a name-first product list",
+            grouped_list, grouped_resolve, grouped_convert,
+            expect_render_contains=grouped_names,
+            msg_id=9503,
+        )
+        grouped_row = store.conn.execute(
+            "SELECT rendered_text FROM queue WHERE msg_id=?", (9503,)
+        ).fetchone()
+        grouped_rendered = grouped_row["rendered_text"] if grouped_row else ""
+        if grouped_rendered:
+            expected_order = [
+                "Dove", "Deal Price: ₹99", grouped_convert[grouped_urls[0]].affiliate,
+                "Mivi", "Deal Price: ₹499", grouped_convert[grouped_urls[1]].affiliate,
+                "Harpic", "Deal Price: ₹149", grouped_convert[grouped_urls[2]].affiliate,
+            ]
+            positions = [grouped_rendered.find(part) for part in expected_order]
+            check("full renderer keeps each name, price and link in source order: "
+                  + grouped_rendered.replace("\n", " | "),
+                  all(position >= 0 for position in positions)
+                  and positions == sorted(positions))
+
         # 1. Service-only (Zomato short link): pass-through, fanned out.
         await case(
             store, "service-only Zomato",
