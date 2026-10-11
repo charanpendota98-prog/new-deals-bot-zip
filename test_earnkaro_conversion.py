@@ -31,6 +31,11 @@ What this file pins, and why each check exists:
     destination proves it is ours (a store page, our publisher id, our tag) and
     never when it leads back to the source, to a foreign shortener, or to a
     foreign publisher id.
+7.  A DATACENTER 404 IS NOT PROOF. Amazon/Flipkart 404 live products to a
+    datacenter IP all day; only the page's own dead words veto a conversion
+    (before the API call and after it). Amazon /s? searches never touch the
+    link cache - every search shares one canonical key, so caching would hand
+    one search's link back for all the others.
 """
 import asyncio
 import json
@@ -389,7 +394,6 @@ def test_unknown_affiliate_domain_is_verified_or_refused():
     ours, and still refuses everything that does not prove it.
     """
     unknown = "https://enkr.link/AbC123"
-    source = "https://www.flipkart.com/boat-airdopes-141/p/itm1?pid=1"
     # Every case gets its OWN source URL: link_cache is durable, so reusing one
     # would serve case (b)'s accepted link from the cache in case (c).
     case_no = [0]
@@ -458,6 +462,257 @@ def test_unknown_affiliate_domain_is_verified_or_refused():
 # ---------------------------------------------------------------------------
 # 3. The API key: account it pays, and the guards built on it
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 7. USER REPORT 2026-10-11 ("mana links ravatledu, convert correctga cheyatledu")
+# ---------------------------------------------------------------------------
+class LiveProbeAff(bot.AffiliateClient):
+    """The real client with only the API/DB/shortener taken out.
+
+    Unlike Aff above, the page-health probe is REAL here: the whole point of
+    this section is proving what a datacenter-404 does to conversion, so the
+    probe must run against the fake session's canned pages.
+    """
+
+    def __init__(self, session):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.session = session
+        self.cached = []
+
+    async def cache_link(self, *args):
+        self.cached.append(args)
+
+    async def resolve(self, url):
+        return url
+
+    async def shorten(self, url):
+        return None
+
+
+def probe_page(final_url, status=200, body="fine"):
+    get = FakeGet(final_url, body)
+    get.status, get.charset = status, "utf-8"
+    return get
+
+
+def test_native_search_link_shortened_like_product():
+    """Search/browse URLs are the LONGEST Amazon links - they must leave
+    convert() shortened exactly like product links (Bitly working), and fall
+    back to the tagged native URL when the shortener is down (never untagged,
+    never dropped, stranger's tag never surviving)."""
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES,
+           bot.SHORTEN_AMAZON_LINKS)
+    try:
+        bot.OUR_TAG = "mama086-21"
+        bot.AMAZON_VIA_EARNKARO = True
+        bot.AMAZON_DIRECT_ASSOCIATES = True
+        bot.SHORTEN_AMAZON_LINKS = True
+
+        class BitlyUpAff(Aff):
+            async def shorten(self, url):
+                return "https://bit.ly/SEARCH1"
+
+        search = "https://www.amazon.in/s?k=earbuds&tag=thief-21"
+        result = asyncio.run(BitlyUpAff(FakeSession([])).convert(search, False))
+        check("a native search link leaves convert() SHORTENED (Bitly working)",
+              bool(result) and result.affiliate == "https://bit.ly/SEARCH1", repr(result))
+
+        browse = "https://www.amazon.in/b?node=100360008031&tag=shopingdeals03-21"
+        result2 = asyncio.run(BitlyUpAff(FakeSession([])).convert(browse, False))
+        check("a native browse-node link leaves convert() SHORTENED too",
+              bool(result2) and result2.affiliate == "https://bit.ly/SEARCH1", repr(result2))
+
+        fallen = asyncio.run(Aff(FakeSession([])).convert(search, False))
+        check("shortener down: the tagged native search URL is kept (never dropped)",
+              bool(fallen) and "tag=mama086-21" in fallen.affiliate
+              and "thief-21" not in fallen.affiliate, repr(fallen))
+    finally:
+        (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES,
+         bot.SHORTEN_AMAZON_LINKS) = old
+
+
+def test_datacenter_404_never_vetoes_conversion():
+    """A bare 404 from OUR IP is not proof a product is dead.
+
+    Amazon and Flipkart serve 404/repair pages to datacenter IPs all day for
+    products that are live for every real customer. The old rule treated that
+    404 as definitive: conversion was vetoed BEFORE the API was even called
+    (no EK SUCCESS, no EK MISS - invisible in the log), and a PROVEN
+    conversion was discarded AFTER it. Live deals posted WITHOUT our links -
+    exactly this report. Only the page's own dead words veto now; the API is
+    the authority on campaigns.
+    """
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+    # The rule itself, all four corners.
+    check("a bare 404 with a clean body is NOT a dead page",
+          bot.looks_broken_page(404, "<html>a live product page</html>") is False)
+    check("a 200 carrying the repair text still is",
+          bot.looks_broken_page(200, "Just a quick repair needed") is True)
+    check("a 404 WITH dead words still is",
+          bot.looks_broken_page(404, "the page you requested cannot be found") is True)
+    check("a normal 200 is not",
+          bot.looks_broken_page(200, "fine") is False)
+
+    flipkart = "https://www.flipkart.com/boat-rockerz-255/p/itmDATACENTER1?pid=PIDDC1"
+    clean = bot.merchant_url(flipkart)
+
+    # (a) Merchant page 404s to us, no dead words: the API is STILL called.
+    session = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER1"})],
+        gets=[probe_page(clean, 404, "<html>live for customers</html>"),
+              probe_page("https://ekaro.in/enkrDATACENTER1", 200, "ok")])
+    result = asyncio.run(LiveProbeAff(session).convert(flipkart, False))
+    check("a datacenter-404 does not stop the API call",
+          len(session.posts) == 1, f"posts={len(session.posts)}")
+    check("and the converted link is published",
+          bool(result) and result.affiliate == "https://ekaro.in/enkrDATACENTER1",
+          repr(result))
+
+    # (b) The repair page still vetoes - and the API is never touched.
+    dead_shop = "https://www.flipkart.com/dead-product/p/itmDEADREPAIR?pid=PIDDC2"
+    session2 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/should-never-be-minted"})],
+        gets=[probe_page(bot.merchant_url(dead_shop), 200,
+                         "Just a quick repair needed, we are fixing it")])
+    result2 = asyncio.run(LiveProbeAff(session2).convert(dead_shop, False))
+    check("an explicit repair page still vetoes conversion", result2 is None, repr(result2))
+    check("and the API is never called for it",
+          len(session2.posts) == 0, f"posts={len(session2.posts)}")
+
+    # (c) A PROVEN conversion survives a bare-404 on its own verify probe.
+    flipkart3 = "https://www.flipkart.com/noise-buds-pro/p/itmDATACENTER3?pid=PIDDC3"
+    session3 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER3"})],
+        gets=[probe_page(bot.merchant_url(flipkart3), 200, "fine"),
+              probe_page("https://ekaro.in/enkrDATACENTER3", 404, "<html>live</html>")])
+    result3 = asyncio.run(LiveProbeAff(session3).convert(flipkart3, False))
+    check("a proven conversion is kept when its page only 404s to us",
+          bool(result3) and result3.affiliate == "https://ekaro.in/enkrDATACENTER3",
+          repr(result3))
+
+    # (d) ...but a converted link opening a truly dead page is still dropped.
+    flipkart4 = "https://www.flipkart.com/gone-product/p/itmDATACENTER4?pid=PIDDC4"
+    session4 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER4"})],
+        gets=[probe_page(bot.merchant_url(flipkart4), 200, "fine"),
+              probe_page("https://ekaro.in/enkrDATACENTER4", 200,
+                         "this product is no longer available")])
+    result4 = asyncio.run(LiveProbeAff(session4).convert(flipkart4, False))
+    check("a converted link to an explicitly dead page is still discarded",
+          result4 is None, repr(result4))
+
+    # (e) A "fail" flag is a failure, never a shape to mine for links.
+    got, reason = bot.parse_earnkaro_response(
+        json.dumps({"success": "fail", "data": "https://ekaro.in/enkrNEVER", "message": "no"}))
+    check('success="fail" is refused like success=0',
+          got is None and bool(reason), f"got={got!r} reason={reason!r}")
+    got, _ = bot.parse_earnkaro_response(
+        json.dumps({"status": "fail", "data": "https://ekaro.in/enkrNEVER"}))
+    check('status="fail" is refused like status=error', got is None, f"got={got!r}")
+
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+def test_search_links_never_touch_the_cache():
+    """Every Amazon /s? search shares one canonical cache key.
+
+    canonical_url() keeps only pid/asin/node query keys, so /s?k=headphones
+    and /s?k=laptop collapse to the SAME key. Caching one search's converted
+    link would hand it back for every later search - a WRONG product link
+    wearing our attribution. Searches convert fresh every time (the native
+    path already refused to cache them; the EarnKaro path and the cache
+    lookup now match it).
+    """
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+    try:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = "", True, True
+        first = "https://www.amazon.in/s?k=headphones+under+2000"
+        second = "https://www.amazon.in/s?k=laptop+stand+metal"
+        check("the two searches really do share one canonical key",
+              bot.canonical_url(first) == bot.canonical_url(second),
+              f"{bot.canonical_url(first)!r} vs {bot.canonical_url(second)!r}")
+        session = FakeSession(
+            [json.dumps({"success": 1, "data": "https://ekaro.in/enkrSEARCH1"}),
+             json.dumps({"success": 1, "data": "https://ekaro.in/enkrSEARCH2"})],
+            gets=[probe_page(bot.merchant_url(first), 200, "fine"),
+                  probe_page("https://ekaro.in/enkrSEARCH1", 200, "ok"),
+                  probe_page(bot.merchant_url(second), 200, "fine"),
+                  probe_page("https://ekaro.in/enkrSEARCH2", 200, "ok")])
+        aff = LiveProbeAff(session)
+        one = asyncio.run(aff.convert(first, False))
+        two = asyncio.run(aff.convert(second, False))
+        check("each search calls the API (no collapsed cache hit)",
+              len(session.posts) == 2, f"posts={len(session.posts)}")
+        check("each search keeps its own converted link",
+              bool(one) and bool(two) and one.affiliate == "https://ekaro.in/enkrSEARCH1"
+              and two.affiliate == "https://ekaro.in/enkrSEARCH2",
+              f"{one!r} / {two!r}")
+        check("nothing is stored under the collapsed key",
+              asyncio.run(bot.store.cached_link(first)) is None
+              and asyncio.run(bot.store.cached_link(second)) is None)
+    finally:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
+        bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+def test_owned_link_proofs_are_bound_to_active_identity():
+    """Durable shorts must still belong to the configured account and tag."""
+    print("\n== durable own-link proof is identity-bound ==")
+    old_publisher, old_tag = bot.OUR_EK_ID, bot.OUR_TAG
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "proofs.sqlite3"
+            legacy = __import__("sqlite3").connect(path)
+            legacy.execute(
+                "CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,"
+                "destination_url TEXT NOT NULL,proof_type TEXT NOT NULL,created_at REAL NOT NULL)")
+            legacy.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?)",
+                           ("https://bit.ly/legacy", "https://ekaro.in/old", "earnkaro_api", 1))
+            legacy.commit()
+            legacy.close()
+            store = bot.Store(path)
+            columns = {row[1] for row in store.conn.execute(
+                "PRAGMA table_info(owned_link_proofs)")}
+            check("legacy proof schema gets the account-binding migration",
+                  "publisher_id" in columns, str(columns))
+            check("legacy network proof without an account is refused",
+                  not store._strict_cache_pair_is_owned("https://bit.ly/legacy", ""))
+
+            bot.OUR_EK_ID, bot.OUR_TAG = "5478322", "mama086-21"
+            earned_short = "https://bit.ly/current-account"
+            await store.remember_owned_link_proof(
+                earned_short, "https://ekaro.in/account-bound", "earnkaro_api")
+            saved = store.conn.execute(
+                "SELECT publisher_id FROM owned_link_proofs WHERE affiliate_url=?",
+                (earned_short,),
+            ).fetchone()
+            check("converter proof records the token publisher id",
+                  saved["publisher_id"] == bot.OUR_EK_ID, str(saved["publisher_id"]))
+            check("a short backed by this account's proof is accepted",
+                  await store.cached_link_is_owned(earned_short, ""))
+            bot.OUR_EK_ID = "9999999"
+            check("the same short is refused after the active publisher changes",
+                  not await store.cached_link_is_owned(earned_short, ""))
+            bot.OUR_EK_ID = "5478322"
+
+            amazon_short = "https://bit.ly/current-amazon"
+            await store.remember_owned_link_proof(
+                amazon_short, "https://www.amazon.in/dp/B0TAG?tag=mama086-21", "amazon_native")
+            check("Amazon proof is accepted while its destination has our exact tag",
+                  await store.cached_link_is_owned(amazon_short, ""))
+            bot.OUR_TAG = "rotated-tag"
+            check("Amazon proof is refused after the Associates tag changes",
+                  not await store.cached_link_is_owned(amazon_short, ""))
+            store.conn.close()
+
+    try:
+        asyncio.run(run())
+    finally:
+        bot.OUR_EK_ID, bot.OUR_TAG = old_publisher, old_tag
+
+
 def test_token_claims():
     # The token literal lives next to the env block at the top: the suite must not
     # read a real .env, so it hands the bot its own token.
@@ -1012,8 +1267,9 @@ def test_checker_plan_prints_the_posted_link():
 
     lines, failures = run(FakeClient([None]), [("Actual post URL 1", "https://www.myntra.com/x")])
     joined = "\n".join(lines)
-    check("a store with no campaign is reported as UNMONETIZED, never as a conversion",
-          "UNMONETIZED" in joined and "NOBODY IS PAID" in joined, joined)
+    check("a store with no campaign is reported as UNMONETIZED and strict-all skips it",
+          "UNMONETIZED" in joined and "Strict-all skips this item/post" in joined
+          and "no clean merchant link is sent" in joined, joined)
     check("that line names its own fix (Affiliaters selections)",
           "Selections" in joined, joined)
     check("and an unmonetized link needs attention", failures == 1, str(failures))
@@ -1143,7 +1399,7 @@ def test_status_report_answers_are_we_converting():
         # is counted (and flagged) as 'unattributed': it opens and pays nobody.
         conn.execute("INSERT INTO queue VALUES(1,?,?,?)", (
             now, "done",
-            f"boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
+            "boAt Airdopes 141\n\u20b91,099\nhttps://bit.ly/meesho\n"
             "https://www.ajio.com/p/442125201\nhttps://www.ajio.com/p/9?tag=rivalpub"))
         conn.commit()
         conn.close()
@@ -1164,17 +1420,56 @@ def test_status_report_answers_are_we_converting():
               links.get("links") == 3 and links.get("our-short") == 1
               and links.get("clean-merchant") == 1 and links.get("foreign") == 1
               and links.get("unattributed") == 0, str(links))
-        check("a foreign link in the window is reported as a problem with its fix",
-              any("NOT ours" in problem and "quality_audit" in problem
+        check("unowned published links are reported with a quality-audit command",
+              any("lack verified ownership" in problem and "quality_audit" in problem
                   for problem in scoped_problems), str(scoped_problems))
         check("and the verdict says so in one line",
               any(line.startswith("LINKS") and "NEEDS ATTENTION" in line
                   for line in scoped_lines), str(scoped_lines))
 
+    # The report must pass the configured active publisher to the same proof
+    # reader; a durable converter short changes from ours to foreign if identity
+    # changes, even when its link_cache row remains untouched.
+    with tempfile.TemporaryDirectory() as td:
+        proof_db = Path(td) / "report-proof.sqlite3"
+        proof_conn = sqlite3.connect(proof_db)
+        proof_conn.executescript("""
+            CREATE TABLE link_cache(source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+                resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+            CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,
+                destination_url TEXT NOT NULL, proof_type TEXT NOT NULL,
+                publisher_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);
+            CREATE TABLE queue(id INTEGER PRIMARY KEY, created_at REAL, rendered_text TEXT);
+        """)
+        stamp = time.time()
+        proof_short = "https://bit.ly/report-account-bound"
+        proof_conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+            "https://www.myntra.com/x/verified", proof_short,
+            "https://www.myntra.com/x/verified", "PID:report", stamp))
+        proof_conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+            proof_short, "https://ekaro.in/enkr-report-proof", "earnkaro_api",
+            cfg["earnkaro_publisher"], stamp))
+        proof_conn.execute("INSERT INTO queue VALUES(1,?,?)", (
+            stamp, "Verified product\n" + proof_short))
+        proof_conn.commit()
+        proof_conn.close()
+        active_proof = report.db_report(
+            proof_db, 24, cfg["earnkaro_publisher"], cfg["amazon_tag"])
+        wrong_identity = report.db_report(
+            proof_db, 24, "9999999", cfg["amazon_tag"])
+        check("conversion report recognizes a short only under its active publisher proof",
+              active_proof["links"].get("our-short") == 1
+              and active_proof["links"].get("foreign") == 0, str(active_proof["links"]))
+        check("conversion report rejects that same proof after publisher rotation",
+              wrong_identity["links"].get("our-short") == 0
+              and wrong_identity["links"].get("foreign") == 1,
+              str(wrong_identity["links"]))
+
     healthy = {"routes": {"earnkaro": {"count": 5, "examples": []},
                           "hypd": {"count": 2, "examples": []}, "passthrough": {"count": 0}},
                "hypd_learned": [{"afflink": "x"}], "hypd_wanted": [], "posted_deals": 7}
-    lines, problems = report.verdict(cfg, healthy, {"markers": {}})
+    fresh_earnkaro_log = {"markers": {"EK SUCCESS": {"count": 5, "last": "now"}}}
+    lines, problems = report.verdict(cfg, healthy, fresh_earnkaro_log)
     check("a healthy window reports nothing to fix", not problems, str(problems))
     check("and it says EarnKaro is working and which account is paid",
           any("WORKING" in l and "5478322" in l for l in lines), str(lines))
@@ -1183,21 +1478,27 @@ def test_status_report_answers_are_we_converting():
 
     clean_links = dict(healthy, links={"links": 9, "our-short": 6, "our-publisher": 3,
                                        "clean-merchant": 0, "foreign": 0})
-    lines, problems = report.verdict(cfg, clean_links, {"markers": {}})
-    check("a window whose links are all ours is reported as WORKING, not silent",
-          any(l.startswith("LINKS") and "WORKING" in l and "all ours" in l for l in lines),
-          str(lines))
+    lines, problems = report.verdict(cfg, clean_links, fresh_earnkaro_log)
+    check("a window whose links are all proven ours is explicitly VERIFIED",
+          any(l.startswith("LINKS") and "VERIFIED" in l for l in lines), str(lines))
     check("and that window needs no fixing", not problems, str(problems))
+
+    cache_only_lines, _ = report.verdict(cfg, healthy, {"markers": {}})
+    check("route-like cache rows alone are not called live EarnKaro conversions",
+          any(line.startswith("EarnKaro") and "CACHE ONLY" in line for line in cache_only_lines),
+          str(cache_only_lines))
 
     broken = dict(healthy)
     broken["hypd_wanted"] = [{"product": "https://www.meesho.com/kurtis/p/none123"}]
     broken["routes"] = {"passthrough": {"count": 3, "examples": []}}
     lines, problems = report.verdict(cfg, broken,
-                                     {"markers": {"EK AUTH": {"count": 2, "last": "now"}}})
+                                     {"markers": {"EK AUTH": {"count": 2, "last": "now"},
+                                                  "UNMONETIZED LINK": {"count": 1}}})
     joined = " ".join(problems)
     check("a refused EarnKaro token is reported as BROKEN", "AUTH" in joined, joined)
     check("products waiting for a hypd link are reported", "hypd link" in joined.lower(), joined)
-    check("unmonetized deals are reported", "clean merchant link" in joined, joined)
+    check("logged unmonetized posts are reported without inferring from cache rows",
+          "logged post(s) contained a clean merchant link" in joined, joined)
 
     auth_lines, _ = report.verdict(cfg, healthy, {"markers": {"EK AUTH": {"count": 1}}})
     check("and the verdict names the fix when the key is refused",
@@ -1335,6 +1636,10 @@ def main():
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_unknown_affiliate_domain_is_verified_or_refused()
+    test_native_search_link_shortened_like_product()
+    test_datacenter_404_never_vetoes_conversion()
+    test_search_links_never_touch_the_cache()
+    test_owned_link_proofs_are_bound_to_active_identity()
     test_token_claims()
     test_deploy_flow_cannot_silently_skip_again()
     test_amazon_policy()

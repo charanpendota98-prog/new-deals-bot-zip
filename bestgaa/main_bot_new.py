@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.9
+"""BestGAA Production Bot v19.0
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -41,9 +41,12 @@ immediately, exactly once, clean":
   or discounts the source never printed (never the post)
 - zero artificial waiting on Telegram: channel fan-out is back-to-back and one
   merchant page probe is capped (a slow site can no longer hold a live deal)
-- per-product 10-hour cross-source dedup, backed by a canonical
-  (chat_key,msg_id) unique index so one source message can never queue twice
-- 1-hour same-price fallback only when product identity is unavailable
+- per-product 24-hour cross-source dedup (pinned; env override blocked),
+  backed by a canonical (chat_key,msg_id) unique index so one source message
+  can never queue twice
+- same-price fallback for unidentified posts is OFF unless opted in
+  (PRICE_DEDUP_SECONDS=0: a common price must never eat a real deal; set 3600
+  to restore the 1-hour hold)
 - dedup committed only after at least one target post succeeds
 - Buy Now/entity/button URL support
 - source promo / channel links / URL residue / dangling CTA labels stripped
@@ -52,14 +55,18 @@ immediately, exactly once, clean":
   ("₹260tG7oChgiQuTgS25b"), an empty "()" or a corrupted link of our own
 - v17: campaign fingerprint includes the prices, so products that share one
   banner line are no longer mistaken for duplicates of each other
-- v17: links the affiliate network cannot monetize post as clean untagged
-  merchant links instead of burning the retry budget and vanishing; a genuine
-  API outage degrades the same way on the last attempt (never a missing post)
+- v17 legacy behavior (superseded by strict-all): a merchant pass-through could
+  be posted after an affiliate miss. Current production rendering skips that
+  item/post unless a verified owned link can be produced; outages fail closed.
 - v17: an edited source post that never reached a target is re-queued
 - long caption/message chunking
 - Under-99 / Under-499 price routing: single deals are band-checked, a product
   LIST reaches both price channels whatever its item prices, bank/card offers fan
-  out to every owned channel, and Premium keeps only the best-scored deals
+  out to core owned channels, and Premium keeps only the best-scored deals
+- v19 category mirrors: confidence-scored multilingual product phrases route a
+  deal to exactly one configured Footwear/Fashion/Electronics/Home & Kitchen/
+  Beauty/Grocery Telegram target while keeping the Main feed; ambiguous roundups
+  stay Main-only and new Amazon-tag channels require an explicit Associates allowlist
 """
 from __future__ import annotations
 
@@ -78,6 +85,7 @@ import signal
 import sqlite3
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -228,9 +236,9 @@ if EK_TOKEN_PUBLISHER:
 else:
     logging.getLogger("bestgaa").warning(
         "EARNKARO_API_KEY does not look like the EarnKaro/Affiliaters API token "
-        "(a JWT carrying the 'earnkaro' publisher id). Conversion will answer 401/403 "
-        "and the bot will fall back to untagged links (zero commission). Get the token "
-        "from the Affiliaters/EarnKaro API page and re-run ops/set_earnkaro_key.sh.")
+        "(a JWT carrying the 'earnkaro' publisher id). Conversion may answer 401/403; "
+        "strict-all will skip any deal without a verified owned affiliate link. Get "
+        "the token from the Affiliaters/EarnKaro API page and re-run ops/set_earnkaro_key.sh.")
 if EK_TOKEN_PUBLISHER and _env_ek_id and EK_TOKEN_PUBLISHER != _env_ek_id:
     logging.getLogger("bestgaa").warning(
         "EARNKARO_PUBLISHER_ID=%s in .env disagrees with the token's publisher %s - "
@@ -364,11 +372,14 @@ MAX_JOB_AGE_HOURS = _num("MAX_JOB_AGE_HOURS", 6, 0.25, 72)
 JOB_RETRY_BASE_SECONDS = _num("JOB_RETRY_BASE_SECONDS", 3, 1, 60)
 JOB_RETRY_MAX_SECONDS = _num("JOB_RETRY_MAX_SECONDS", 20, 2, 300)
 JOB_MAX_ATTEMPTS = max(3, int(os.getenv("JOB_MAX_ATTEMPTS", "10")))
-# When the affiliate network has no campaign for a store, publish the CLEAN
-# merchant link (tracking/affiliate params stripped, registered as ours) instead
-# of losing the post: "source lo unna post mana channel lo undali" outranks the
-# commission on those links. Set to false to restore the old behaviour (retry the
-# job and skip the deal when nothing is monetizable).
+# Strict monetization policy (user-confirmed): every published URL must be an
+# affiliate destination we can verify earns for this account. Unsupported stores,
+# service-offer URLs, dead/unknown shorteners, and plain merchant fallbacks are
+# refused; a post with no verified owned link is skipped. This is pinned ON so a
+# stale .env setting cannot silently re-enable source/unmonetized links.
+STRICT_OUR_LINKS = True
+# Retained only for the isolated legacy-formatting tests; production rendering
+# ignores this opt-in whenever STRICT_OUR_LINKS is on.
 PASSTHROUGH_UNMONETIZED = os.getenv("PASSTHROUGH_UNMONETIZED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 # SOURCE FIDELITY (the user's standing rule): publish what the source published,
@@ -475,6 +486,43 @@ TRICKS_TARGET = "LootzoneTricks"
 # link - no loot/urgency wording, no "buy max quantity", no unverifiable claim).
 # Defined here so routing and the safe-copy renderer share one name.
 SHOPPING_TARGET = "smartbuyhub11"
+
+# Optional product-category Telegram destinations. Every valid deal still reaches
+# LootZoneIndia11; a confident product classification adds exactly one category
+# target. The target values are Telegram usernames (with or without @), created
+# by the operator and reachable by the Telethon session account.
+CATEGORY_RULES_PATH = BASE_DIR / "category_rules.json"
+try:
+    CATEGORY_RULES = json.loads(CATEGORY_RULES_PATH.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    # A missing rules file must never stop the core feed; categories degrade to
+    # main-feed-only and emit a visible startup warning.
+    CATEGORY_RULES = {"version": 0, "min_score": 3, "min_margin": 2, "categories": []}
+    logging.getLogger("bestgaa").warning(
+        "CATEGORY ROUTING DISABLED | %s could not be loaded: %s", CATEGORY_RULES_PATH, exc)
+CATEGORY_DEFINITIONS = {
+    item["key"]: item for item in CATEGORY_RULES.get("categories", [])
+    if isinstance(item, dict) and item.get("key")
+}
+CATEGORY_TARGETS = {
+    key: os.getenv(f"TG_CATEGORY_{key.upper()}_TARGET", "").strip().lstrip("@")
+    for key in CATEGORY_DEFINITIONS
+}
+_category_names: dict[str, list[str]] = {}
+for _category_key, _category_target in CATEGORY_TARGETS.items():
+    if _category_target:
+        _category_names.setdefault(_category_target.strip().lower(), []).append(_category_key)
+CATEGORY_TARGET_COLLISIONS = {
+    target: tuple(categories) for target, categories in _category_names.items()
+    if len(categories) > 1
+}
+for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
+    for _category_key in _category_keys:
+        CATEGORY_TARGETS[_category_key] = ""
+AMAZON_TAG_CATEGORY_TARGETS = {
+    value.strip().lstrip("@") for value in
+    os.getenv("AMAZON_TAG_CATEGORY_TARGETS", "").split(",") if value.strip()
+}
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
@@ -525,8 +573,9 @@ PRIORITY_SOURCES.add("under_99_loot_deals")
 # invite hash is case-sensitive to Telegram but not to the queue lookup).
 PRIORITY_SOURCES.update(normalize_source_name(s) for s in FIRST_PREFERENCE_SOURCES)
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
-# Every channel owner controls. Card/bank-offer posts fan out across all of
-# these so a bank/card deal is never missed, and get the folder link appended.
+# Core owned channels used by card/service wide fan-out. Category targets are
+# deliberately excluded here: the classifier adds only one matched shelf so a
+# bank/card deal is never copied indiscriminately to every category.
 # USER RULE (2026-09-06): the user added the new channel's own link as a
 # SOURCE. A channel that is both a source and a target feeds its own posts back
 # into the queue: the bot would re-read what it just published, re-shorten the
@@ -538,8 +587,9 @@ def is_own_channel_source(source: str) -> bool:
     if not name:
         return False
     owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
-             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET}
-    return name in {t.lower() for t in owned}
+             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET,
+             *CATEGORY_TARGETS.values()}
+    return name in {t.lower() for t in owned if t}
 
 
 ALL_OWNED_TARGETS = list(dict.fromkeys(
@@ -564,20 +614,35 @@ SHOPPING_TARGET_ENABLED = os.getenv(
 # Amazon's own rule is that a channel carrying the tag must be DECLARED in
 # Associates Central. Both can be true at once, so this is one switch:
 #
-#   AMAZON_TAG_TARGETS=all   -> tag on every owned channel. Use this only AFTER
-#                               the account is approved AND every channel below
-#                               is listed in Associates Central. Undeclared
-#                               channels carrying the tag can close the account.
+#   AMAZON_TAG_TARGETS=all   -> tag on the core owned channels only. Use this
+#                               only AFTER those channels are listed in
+#                               Associates Central. New category mirrors are
+#                               excluded until explicitly declared and listed in
+#                               AMAZON_TAG_CATEGORY_TARGETS.
 #   (unset)                  -> tag on the review channel only (safe default,
 #                               correct while the application is pending).
 #   a,b,c                    -> exactly those channels.
+def normalize_channel_target_name(value: str) -> str:
+    """Compare public Telegram handles consistently (case and @ do not matter)."""
+    return str(value or "").strip().lstrip("@").lower()
+
+
 _tag_targets_env = os.getenv("AMAZON_TAG_TARGETS", "").strip()
+# Newly-created category channels are deliberately NOT swept in by `all`:
+# Amazon Associates requires every tagged channel to be declared first. Add
+# their exact Telegram usernames to AMAZON_TAG_CATEGORY_TARGETS only after the
+# channels have been added to the Associates site list.
 if _tag_targets_env.lower() in ("all", "*"):
-    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS}
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS,
+                          *AMAZON_TAG_CATEGORY_TARGETS}
 elif _tag_targets_env:
-    AMAZON_TAG_TARGETS = {t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()}
+    AMAZON_TAG_TARGETS = {
+        *(t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()),
+        *AMAZON_TAG_CATEGORY_TARGETS,
+    }
 else:
-    AMAZON_TAG_TARGETS = {SHOPPING_TARGET}
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *AMAZON_TAG_CATEGORY_TARGETS}
+AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
 # --- Review-channel posting policy (t.me/smartbuyhub11) ---------------------
 # USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
 # Three programme rules decide what this channel may publish:
@@ -881,7 +946,8 @@ def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> s
     Only our own tag is touched. The product, the price and the link still work,
     so the reader of that channel loses nothing.
     """
-    if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
+    if (not text or not OUR_TAG
+            or normalize_channel_target_name(target) in AMAZON_TAG_TARGET_KEYS):
         return text
     out = text
     # Pass 1: our tag hidden behind a shortener we created.
@@ -987,7 +1053,6 @@ SOURCE_TO_TARGETS: dict[str, list[str]] = {
     "Mobile_phone_offers_tv_ac_dealsk": list(LZI_SECRET),
     "https://t.me/+qhlEwwkhb2hlNWZl": list(LZI_SECRET),
     "techglaredeals": list(MAIN_TARGETS),
-    "iamprasadtech": ["LootZoneIndia11"],  # source only, never forced target
     "https://t.me/+uV5wcTkUWJEwM2Y1": ["LootzoneTricks"],
     "hidden_loot_deals_amazon": ["LootzoneTricks"],
     "dealdost": list(NO_TRICKS_TARGETS),
@@ -1036,7 +1101,6 @@ for _source in (
     # had EMPTY target lists (dead sources) or an older partial route.
     "deals", "powerloot", "pricehistory", "telugutechtvdeals",
     "indian_online_offer", "idoffers2", "https://t.me/+LP6MYEpCwi0zOGYx",
-    "iamprasadtech",
     # 2026-08-30 (source list pt.2): fresh sources + the +qhlEwwkhb2hlNWZl
     # private channel (user wants it feeding LootZone + PowerLoots + the
     # under-₹99 / under-₹499 price channels, which layer on automatically).
@@ -1111,11 +1175,131 @@ rotating = logging.handlers.RotatingFileHandler(
 rotating.setFormatter(formatter)
 log.addHandler(console)
 log.addHandler(rotating)
+for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
+    log.warning("CATEGORY TARGET COLLISION | @%s is assigned to %s; those category routes are disabled",
+                _target_name, ", ".join(_category_keys))
 
 # ---------------------------------------------------------------------------
 # Domain and parsing helpers
 # ---------------------------------------------------------------------------
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
+
+
+def _normalize_category_phrase(value: str) -> str:
+    value = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
+    return re.sub(r"[\W_]+", " ", value, flags=re.UNICODE).strip()
+
+
+CATEGORY_MATCH_RULES = tuple(
+    (key, tuple((_normalize_category_phrase(alias), int(weight))
+                for alias, weight in definition.get("aliases", [])
+                if _normalize_category_phrase(alias)))
+    for key, definition in CATEGORY_DEFINITIONS.items()
+)
+
+
+CATEGORY_QUERY_KEYS = frozenset({
+    "k", "q", "keyword", "keywords", "search", "searchterm", "query",
+    "title", "name", "product", "productname", "category",
+})
+CATEGORY_URL_STOP_SEGMENTS = frozenset({
+    "", "dp", "gp", "aw", "s", "b", "p", "product", "products", "item",
+    "items", "detail", "details", "buy", "shop", "offers", "offer", "ref",
+})
+
+
+def category_words_from_url(url: str) -> str:
+    """Extract readable product/search words from a URL, never opaque IDs/tokens."""
+    try:
+        parsed = urlparse(html.unescape(str(url or "").strip()))
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return ""
+        words: list[str] = []
+        for raw_segment in unquote(parsed.path or "").split("/"):
+            segment = raw_segment.replace("-", " ").replace("_", " ").strip()
+            normalized = _normalize_category_phrase(segment)
+            if not normalized or normalized in CATEGORY_URL_STOP_SEGMENTS:
+                continue
+            if re.fullmatch(r"\d{4,}", segment):
+                continue
+            if re.fullmatch(r"(?i)(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}", raw_segment):
+                continue
+            if re.fullmatch(r"(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+", raw_segment):
+                continue
+            words.append(normalized)
+        for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
+            if key.lower() in CATEGORY_QUERY_KEYS:
+                words.extend(_normalize_category_phrase(value) for value in values if value)
+        return " ".join(word for word in words if word)
+    except Exception:
+        return ""
+
+
+def classify_deal_category(text: str | None,
+                           link_context: Iterable[str] = ()) -> str | None:
+    """Return one high-confidence category from product copy and link content.
+
+    Classification combines the source's product text with readable slugs and
+    search terms extracted from its incoming/resolved merchant URLs. It does not
+    fetch or claim to inspect merchant-page HTML. Mixed/unclear roundups stay on
+    Main rather than being confidently misfiled into one category.
+    """
+    if not text or not CATEGORY_MATCH_RULES:
+        return None
+    text = str(text)
+    urls = list(URL_RE.findall(text))
+    if isinstance(link_context, str):
+        link_context = (link_context,)
+    for value in link_context or ():
+        candidate = str(value or "").strip()
+        if not candidate:
+            continue
+        extracted = URL_RE.findall(candidate)
+        urls.extend(extracted or ([candidate] if candidate.startswith(("http://", "https://")) else []))
+    link_terms = " ".join(
+        category_words_from_url(url) for url in dict.fromkeys(urls)
+    )
+    content = URL_RE.sub(" ", text) + " " + link_terms
+    normalized = " " + _normalize_category_phrase(content) + " "
+    if normalized.strip() == "":
+        return None
+    matched_rules: list[tuple[str, str, int, int]] = []
+    for key, aliases in CATEGORY_MATCH_RULES:
+        for alias, weight in aliases:
+            hits = min(2, normalized.count(f" {alias} "))
+            if hits:
+                matched_rules.append((key, alias, weight, hits))
+    if not matched_rules:
+        return None
+    category_scores: dict[str, int] = {}
+    for key, alias, weight, hits in matched_rules:
+        # Do not score the same phrase twice: "running shoes" should not get
+        # an extra boost from nested "shoes". This also avoids reading "shoe"
+        # in "shoe rack" as a second footwear product across category rules.
+        nested_in_stronger = any(
+            alias != other_alias and f" {alias} " in f" {other_alias} "
+            and other_weight >= weight
+            for _, other_alias, other_weight, _ in matched_rules
+        )
+        if not nested_in_stronger:
+            category_scores[key] = category_scores.get(key, 0) + hits * weight
+    scores = sorted(((score, key) for key, score in category_scores.items() if score),
+                    reverse=True)
+    if not scores:
+        return None
+    best_score, best_key = scores[0]
+    min_score = max(1, int(CATEGORY_RULES.get("min_score", 3)))
+    min_margin = max(0, int(CATEGORY_RULES.get("min_margin", 2)))
+    runner_up = scores[1][0] if len(scores) > 1 else 0
+    # Two independently strong categories mean a mixed roundup/post. Keep it
+    # on Main instead of picking whichever label happened to score a point more.
+    strong_categories = sum(score >= min_score for score, _ in scores)
+    if (best_score < min_score or strong_categories > 1
+            or best_score - runner_up < min_margin):
+        return None
+    return best_key
+
+
 # Same pattern but with a CAPTURE group: re.split drops the separator itself,
 # while a capturing group keeps every URL inside the split parts (odd index),
 # so text-side cleanup can mask URLs and never touch query chars like '+'.
@@ -1176,15 +1360,13 @@ TRACKING_QUERY_KEYS = {
 #   "product open avuthundi kaani adi mana links kaadu ... commission asalu
 #    ravatledu" - the click worked, the deal stayed, and NOBODY was paid.
 #
-# A pass-through (the network answered "no campaign") used to publish the BARE
-# merchant URL. For the Flipkart family the network's attribution parameter also
-# works on a plain product page: `affExtParam2=<publisher>` is exactly what the
-# EarnKaro converter returns for OUR account (see earnkaro_output_kind()'s
-# "publisher" acceptance and ops/earnkaro_check.py's `affExtParam2=5478322`
-# proof), so a passthrough link is published WITH our publisher id instead of
-# bare. Only hosts whose scheme is documented here are touched - Amazon earns
-# through the Associates tag, Meesho through HYPD, and every other store has no
-# direct-attribution contract, so they stay exactly as they were.
+# A pass-through (the network answered "no campaign") used to publish a BARE
+# merchant URL. Strict-all now skips that item/post unless it can be attributed.
+# For the documented Flipkart family, `affExtParam2=<publisher>` is the native
+# form returned by EarnKaro for OUR account (also validated by earnkaro_check.py),
+# so eligible callers can rebuild that page with our exact publisher id. Amazon
+# uses the Associates tag, Meesho uses a verified HYPD mapping, and no other store
+# may be promoted as ours merely because its product page opens.
 # ---------------------------------------------------------------------------
 EK_ATTRIBUTION_HOSTS = {h.strip().lower() for h in os.getenv(
     "EK_ATTRIBUTION_HOSTS", "flipkart.com,myntra.com").split(",") if h.strip()}
@@ -1335,11 +1517,21 @@ BROKEN_PAGE_MARKERS = (
 
 
 def looks_broken_page(status: int, body: str) -> bool:
-    """Recognize explicit dead/error destinations without mistaking bot-blocks for dead deals."""
+    """True ONLY when the page's own words say it is gone.
+
+    A bare 4xx/5xx status from OUR datacenter IP proves nothing: Amazon and
+    Flipkart serve 404/repair pages to datacenter IPs all day long for
+    products that are live for every real customer (USER REPORT 2026-10-11:
+    "mana links ravatledu" - live deals posted WITHOUT our links because a
+    datacenter-404 vetoed the conversion before the API was even called, and
+    discarded proven conversions after it). The veto needs the page's own
+    dead words (Flipkart's repair text, "no longer available", ...); `status`
+    stays in the signature for the caller's log line but never decides alone.
+    Doubt always resolves toward attempting the conversion - the EarnKaro API
+    (not our probe) is the authority on whether a campaign exists.
+    """
     text = (body or "").lower()
-    if any(marker in text for marker in BROKEN_PAGE_MARKERS):
-        return True
-    return status in {400, 404, 410, 451}
+    return any(marker in text for marker in BROKEN_PAGE_MARKERS)
 
 
 def host_matches(host: str, domain: str) -> bool:
@@ -1391,8 +1583,8 @@ def hypd_product_keys(value: str) -> list[str]:
 
     A source writes the same product page as a bare link, with HYPD's own
     tracking still on it, or with session parameters - all three must find the
-    same HYPD share link, otherwise the deal posts unmonetized while we already
-    hold a commission link for it.
+    same HYPD share link, otherwise strict-all has to skip a deal for which we
+    already hold a verified commission link.
     """
     url = clean_url(value or "")
     if not url:
@@ -2380,9 +2572,8 @@ def has_card_offer(text: str) -> bool:
 
 # Service / lifestyle offers: food delivery, movies, quick commerce, payment
 # apps and bank/card promo pages. They are NOT EarnKaro-monetizable store
-# products, so their links pass through unconverted (and never poison the
-# EarnKaro conversion of store links in the same post) while the post itself
-# is fanned out to every owned channel like a bank offer.
+# products. Strict-all refuses these link-bearing posts; the legacy formatting
+# path keeps the classifier isolated so service URLs never enter store conversion.
 SERVICE_OFFER_DOMAINS = {
     "zomato.com", "zomato.in", "zom.to", "swiggy.com", "swiggy.in",
     "zepto.com", "dominos.in", "pizzahut.co.in", "pizzahut.com",
@@ -3694,6 +3885,12 @@ DANGLING_CTA_WORDS = {
     "orderhere", "view", "viewdeal", "deal", "offer", "purchase", "product", "url",
     "affiliate", "affiliatepartner", "ad", "ads", "promo", "sponsored",
 }
+_SHORT_LIST_NON_PRODUCT_WORDS = frozenset("""
+    a an the and or of to in on at by with from for deal deals offer offers sale sales
+    loot loots price mrp discount off coupon coupons code buy shop order grab click tap
+    now here below join follow subscribe share forward hurry today daily new top hot free
+    max quantity qty more link links
+""".split())
 
 
 def remove_dangling_cta_lines(text: str) -> str:
@@ -3712,14 +3909,21 @@ def remove_dangling_cta_lines(text: str) -> str:
     return "\n".join(kept)
 
 
-def strict_orphan_token_cleanup(text: str) -> str:
-    """Remove any isolated random short token, not just previously seen examples."""
+def strict_orphan_token_cleanup(text: str, *, list_context: bool = False) -> str:
+    """Remove random short tokens without deleting short product names in lists.
+
+    One-word labels such as "Dove" or "Mivi" were mistaken for URL debris when
+    they were separated from their price/link by other list items. Preserve a
+    plausible short label when the post contains multiple links or its neighbour
+    carries a price/discount; known CTA, promo and URL-fragment tokens still go.
+    """
     text = remove_trailing_url_tokens(text)
     # A source post can carry a dangling protocol fragment right next to a real
     # link on the same line, e.g. `https://ajio.in/XXX https://`. Mask the real
     # URLs, drop the orphan protocol/domain fragment, then restore the links so
     # a genuine generated URL is never mutated.
     real_urls = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text or "")))
+    list_context = list_context or len(real_urls) >= 2
     masked = text
     for i, url in enumerate(real_urls):
         masked = masked.replace(url, f"\x01U{i}\x02")
@@ -3754,7 +3958,22 @@ def strict_orphan_token_cleanup(text: str) -> str:
             next_line = lines[index + 1].strip() if index + 1 < len(lines) else ""
             adjacent_url = bool(URL_RE.fullmatch(previous) or URL_RE.fullmatch(next_line))
             coupon_context = bool(re.search(r"(?i)use\s*code\s*: ?$", previous))
-            if lower not in MEANINGFUL_SINGLE_LABELS and not adjacent_url and not coupon_context:
+            adjacent_deal = any(
+                candidate and (
+                    PRICE_LABEL_RE.search(candidate)
+                    or re.search(r"(?i)\b\d{1,3}\s*%\s*(?:off|discount)?\b", candidate)
+                )
+                for candidate in (previous, next_line)
+            )
+            short_product_label = bool(
+                (list_context or adjacent_deal)
+                and re.fullmatch(r"[A-Za-z][A-Za-z0-9+&._'’-]{1,29}", stripped)
+                and lower not in _SHORT_LIST_NON_PRODUCT_WORDS
+                and lower not in DANGLING_CTA_WORDS
+                and not is_promo_noise_line(stripped)
+            )
+            if (lower not in MEANINGFUL_SINGLE_LABELS and not adjacent_url
+                    and not coupon_context and not short_product_label):
                 continue
         # Remove malformed protocol-like words wherever they appear outside a
         # real URL (real URLs are normally on their own and fail this pattern).
@@ -3928,6 +4147,34 @@ PRICE_LABEL_RE = re.compile(
 )
 
 
+def _list_product_label(line: str) -> str:
+    """A conservative product-name candidate for a bottom-linked roundup."""
+    label = _product_label(line)
+    if not label or URL_RE.search(label) or PRICE_LABEL_RE.search(label):
+        return ""
+    if is_campaign_banner_line(label) or is_promo_noise_line(label):
+        return ""
+    if re.search(r"(?i)\b(?:apply\s+coupon|use\s+code|coupon|code|buy\s+max|"
+                 r"max\s+quantity|click\s+here|shop\s+now|buy\s+now)\b", label):
+        return ""
+    normalized = re.sub(r"[^a-z0-9]+", "", label.lower())
+    if (normalized in _SHORT_LIST_NON_PRODUCT_WORDS
+            or normalized in {"todaysbestdeals", "todaysoffers", "bestdeals", "bestoffers", "topdeals"}):
+        return ""
+    return label
+
+
+def _product_name_from_price_line(line: str) -> str:
+    """Return a real name from a line such as "Dove Deal Price ₹99", else empty."""
+    candidate = PRICE_LABEL_RE.sub(" ", line or "")
+    candidate = re.sub(r"(?i)\b\d[\d,]*\s*%\s*(?:off|discount)?\b", " ", candidate)
+    candidate = re.sub(
+        r"(?i)\b(?:deal|price|mrp|regular|original|list|only|just|from|now|"
+        r"off|discount|flat|save|rs\.?|inr|rupees?)\b", " ", candidate,
+    )
+    return _list_product_label(candidate)
+
+
 def split_inline_product_links(text: str) -> str:
     """Put each product on its own line with its link underneath it.
 
@@ -4021,12 +4268,11 @@ def split_inline_product_links(text: str) -> str:
 def format_clustered_product_list(text: str) -> str:
     """Pair 3+ product/price labels with a trailing block of generated URLs.
 
-    The source writes the list as "name + price" blocks (often with a note line
-    such as "Buy Max Quantity") and then dumps every link at the bottom. Read
-    that way it is unreadable: the reader cannot tell which link is which deal.
-    Here each block keeps its own note lines and gets its own link directly
-    under it, in the source's own order. Nothing is invented, nothing is
-    dropped, nothing is reordered.
+    Sources may interleave each product name and price, group all names before
+    all prices, or write name + price on the same line, then dump links at the
+    bottom. Reflow those shapes into source-order item blocks, keeping each
+    product's notes and pairing its link by list order. Nothing is invented or
+    dropped; only the layout is changed where the source left links detached.
     """
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     url_positions = [i for i, line in enumerate(lines) if URL_RE.fullmatch(line)]
@@ -4037,19 +4283,73 @@ def format_clustered_product_list(text: str) -> str:
     if any(not URL_RE.fullmatch(line) for line in lines[first_url:]):
         return text
     head = lines[:first_url]
-    # Split the head into blocks: a new block starts on every price-bearing
-    # label; anything after it (a note, an MRP line) belongs to that block.
+    item_price_positions = []
+    for index, line in enumerate(head):
+        if not PRICE_LABEL_RE.search(line):
+            continue
+        has_inline_name = bool(_product_name_from_price_line(line))
+        reference_only = bool(
+            re.search(r"(?i)\b(?:mrp|regular\s+price|original\s+price|list\s+price)\b", line)
+            and not has_inline_name
+            and not re.search(r"(?i)\b(?:deal\s+price|offer\s+price|now|only)\b", line)
+        )
+        if not reference_only:
+            item_price_positions.append(index)
+    if len(item_price_positions) < 3:
+        return text
+
+    price_names = [_product_name_from_price_line(head[index]) for index in item_price_positions]
+    pre_price_labels = [
+        index for index in range(item_price_positions[0])
+        if _list_product_label(head[index])
+    ]
+    # Some sources group all names first, then all prices, then all links. Pair
+    # those three ordered runs by index rather than attaching every price to the
+    # last name seen (which both lost names and mismatched items).
+    grouped_names_first = (
+        not any(price_names)
+        and len(pre_price_labels) >= len(item_price_positions)
+    )
     preamble: list[str] = []
     blocks: list[list[str]] = []
-    for line in head:
-        if PRICE_LABEL_RE.search(line):
-            blocks.append([line])
-        elif blocks:
-            blocks[-1].append(line)
-        else:
-            preamble.append(line)
-    if len(blocks) < 3:
-        return text
+    if grouped_names_first:
+        selected_labels = pre_price_labels[-len(item_price_positions):]
+        first_label = selected_labels[0]
+        first_price = item_price_positions[0]
+        preamble = head[:first_label]
+        for index, label_at in enumerate(selected_labels):
+            next_label = (selected_labels[index + 1]
+                          if index + 1 < len(selected_labels) else first_price)
+            price_at = item_price_positions[index]
+            next_price = (item_price_positions[index + 1]
+                          if index + 1 < len(item_price_positions) else len(head))
+            name_lines = head[label_at:next_label]
+            price_lines = head[price_at:next_price]
+            blocks.append(name_lines + price_lines)
+    else:
+        # Interleaved lists may put a short name on one line and its price on
+        # the next. Start each block at that nearest unused name; inline name +
+        # price lines start their own block. CTA/MRP notes remain with the item.
+        starts: list[int] = []
+        previous_price = -1
+        for price_at, inline_name in zip(item_price_positions, price_names):
+            start = price_at
+            if not inline_name:
+                candidates = [
+                    index for index in range(previous_price + 1, price_at)
+                    if _list_product_label(head[index])
+                ]
+                if candidates:
+                    start = candidates[-1]
+            starts.append(start)
+            previous_price = price_at
+        if len(starts) < 3:
+            return text
+        preamble = head[:starts[0]]
+        for index, start in enumerate(starts):
+            end = starts[index + 1] if index + 1 < len(starts) else len(head)
+            blocks.append(head[start:end])
+
     urls = [lines[i] for i in url_positions]
     pair_count = min(len(blocks), len(urls))
     output = list(preamble)
@@ -4527,6 +4827,16 @@ class Store:
           deal_key TEXT,
           created_at REAL NOT NULL
         );
+        -- Durable proof when our authenticated network URL was shortened through
+        -- Bitly/is.gd. The product destination remains in link_cache.resolved_url;
+        -- this table records the actual owned URL hidden behind our generated hop.
+        CREATE TABLE IF NOT EXISTS owned_link_proofs (
+          affiliate_url TEXT PRIMARY KEY,
+          destination_url TEXT NOT NULL,
+          proof_type TEXT NOT NULL,
+          publisher_id TEXT NOT NULL DEFAULT '',
+          created_at REAL NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS hypd_links (
             token TEXT PRIMARY KEY,
             store TEXT NOT NULL,
@@ -4535,8 +4845,8 @@ class Store:
             product_key TEXT,
             created_at REAL NOT NULL
         );
-        -- Meesho products that had to post UNMONETIZED because no Meesho HYPD
-        -- share link has been curated yet. This is the operator's to-do list:
+        -- Meesho products skipped because no verified HYPD link has been
+        -- curated yet. This is the operator's to-do list:
         -- create the link in the HYPD
         -- app, learn it once with ops/hypd_links.py, and every later post of
         -- that product earns on it.
@@ -4565,6 +4875,14 @@ class Store:
         );
         """)
         # Backward-compatible migrations.
+        proof_columns = {row[1] for row in self.conn.execute(
+            "PRAGMA table_info(owned_link_proofs)")}
+        if "publisher_id" not in proof_columns:
+            # Network proof is account-specific. Legacy rows without the
+            # publisher identity must fail closed until regenerated; Amazon
+            # native proof is still checked against its tagged destination.
+            self.conn.execute(
+                "ALTER TABLE owned_link_proofs ADD COLUMN publisher_id TEXT NOT NULL DEFAULT ''")
         quota_columns = {row[1] for row in self.conn.execute("PRAGMA table_info(shopping_quota)")}
         if "last_sent_at" not in quota_columns:
             self.conn.execute("ALTER TABLE shopping_quota ADD COLUMN last_sent_at REAL NOT NULL DEFAULT 0")
@@ -5255,6 +5573,24 @@ class Store:
             )
             self.conn.commit()
 
+    async def remember_owned_link_proof(self, affiliate_url: str, destination_url: str,
+                                        proof_type: str) -> None:
+        """Persist provenance for a generated link, including its hidden network hop."""
+        affiliate = clean_url(affiliate_url)
+        destination = clean_url(destination_url)
+        if (not affiliate or not destination
+                or proof_type not in {"earnkaro_api", "amazon_native"}):
+            return
+        async with self.lock:
+            publisher_id = OUR_EK_ID if proof_type == "earnkaro_api" else ""
+            self.conn.execute(
+                "INSERT OR REPLACE INTO owned_link_proofs "
+                "(affiliate_url,destination_url,proof_type,publisher_id,created_at) "
+                "VALUES(?,?,?,?,?)",
+                (affiliate, destination, proof_type, publisher_id, time.time()),
+            )
+            self.conn.commit()
+
     @staticmethod
     def is_our_amazon_tag_link(url: str) -> bool:
         """An Amazon URL carrying OUR Associates tag is self-proving.
@@ -5272,33 +5608,133 @@ class Store:
         try:
             parsed = urlparse(url)
             host = (parsed.hostname or "").lower()
-            if not in_domains(host, AMAZON_DOMAINS):
+            if not OUR_TAG or not in_domains(host, AMAZON_DOMAINS):
                 return False
             query = {str(k).lower(): v for k, v in parse_qs(parsed.query).items()}
-            return query.get("tag", [""])[0] == OUR_TAG
+            tags = query.get("tag", [])
+            return bool(tags) and all(str(tag).strip() == OUR_TAG for tag in tags)
         except Exception:
             return False
 
+    @staticmethod
+    def has_native_owned_attribution(url: str) -> bool:
+        """Proof carried by the native merchant URL itself, not by its hostname."""
+        if Store.is_our_amazon_tag_link(url):
+            return True
+        try:
+            parsed = urlparse(clean_url(url))
+            host = (parsed.hostname or "").lower()
+            if not in_domains(host, EK_ATTRIBUTION_HOSTS) or not OUR_EK_ID:
+                return False
+            ids = [value for key, values in parse_qs(parsed.query).items()
+                   if key.lower() == "affextparam2" for value in values]
+            return bool(ids) and all(str(value).strip() == OUR_EK_ID for value in ids)
+        except Exception:
+            return False
+
+    def _strict_cache_pair_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
+        """Reject legacy clean-link rows; accept only verified network/native links."""
+        affiliate_url = clean_url(affiliate_url)
+        resolved_url = clean_url(resolved_url)
+        if self.has_native_owned_attribution(affiliate_url):
+            return True
+        if self.has_native_owned_attribution(resolved_url):
+            return True
+        affiliate_host = (urlparse(affiliate_url).hostname or "").lower()
+        proof = self.conn.execute(
+            "SELECT destination_url,proof_type,publisher_id FROM owned_link_proofs "
+            "WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1",
+            (affiliate_url, resolved_url),
+        ).fetchone()
+        proof_type = str(proof["proof_type"] or "") if proof else ""
+        if proof_type == "amazon_native":
+            # A shortened Amazon browse/search URL is only ours while the exact
+            # destination still carries the currently configured Associates tag.
+            return self.is_our_amazon_tag_link(str(proof["destination_url"] or ""))
+        if proof_type == "earnkaro_api":
+            # Network short domains are account-specific but may not expose the
+            # paid publisher in the URL. Bind the durable proof to the publisher
+            # from the authenticated token; stale proofs from another account (or
+            # legacy rows without an identity) fail closed.
+            proof_publisher = str(proof["publisher_id"] or "") if proof else ""
+            return bool(OUR_EK_ID and proof_publisher == OUR_EK_ID)
+        hypd_candidate = next((value for value in (affiliate_url, resolved_url)
+                               if is_our_hypd_link(value)), "")
+        if hypd_candidate:
+            token = hypd_afflink_token(hypd_candidate)
+            row = self.conn.execute(
+                "SELECT resolved_url FROM hypd_links WHERE token=? AND store=?",
+                (token, hypd_store_of(hypd_candidate)),
+            ).fetchone()
+            if row and in_domains((urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower(),
+                                  HYPD_MERCHANT_DOMAINS):
+                return True
+        if affiliate_host in OUR_RUNTIME_SHORTENER_DOMAINS:
+            # Bitly/is.gd are generic services: the recorded pair must show the
+            # destination we minted was itself an owned network/native link or
+            # a product page covered by a verified HYPD mapping.
+            hypd_page = clean_url(merchant_url(resolved_url))
+            hypd_key = product_key(hypd_page)
+            verified_hypd = self.conn.execute(
+                "SELECT resolved_url FROM hypd_links WHERE resolved_url=? OR product_key=? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (hypd_page, hypd_key),
+            ).fetchone()
+            verified_hypd = bool(verified_hypd and in_domains(
+                (urlparse(clean_url(verified_hypd["resolved_url"] or "")).hostname or "").lower(),
+                HYPD_MERCHANT_DOMAINS))
+            return (self.has_native_owned_attribution(resolved_url)
+                    or verified_hypd
+                    or bool(hypd_candidate and self.conn.execute(
+                        "SELECT 1 FROM hypd_links WHERE afflink_url=? AND resolved_url=? LIMIT 1",
+                        (clean_url(hypd_candidate), clean_url(resolved_url)),
+                    ).fetchone()))
+        return False
+
+    async def cached_link_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
+        """Check cached link provenance under the same lock as the final gate."""
+        async with self.lock:
+            return self._strict_cache_pair_is_owned(affiliate_url, resolved_url)
+
     async def verify_generated_text(self, text: str,
                                     allowed_external: Iterable[str] = ()) -> bool:
-        """Recheck every URL against conversion cache or an exact owned-link allowlist."""
+        """Recheck every URL; strict mode accepts only native or verified affiliate proof."""
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
         if not urls:
             return False
+        if STRICT_OUR_LINKS:
+            # Service offers and family-channel promo links are not monetized.
+            if any(in_domains((urlparse(url).hostname or "").lower(), SERVICE_OFFER_DOMAINS)
+                   or url in {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
+                   for url in urls):
+                return False
+            async with self.lock:
+                for url in urls:
+                    if self.has_native_owned_attribution(url):
+                        continue
+                    row = self.conn.execute(
+                        "SELECT affiliate_url,resolved_url FROM link_cache "
+                        "WHERE affiliate_url=? ORDER BY created_at DESC LIMIT 1", (url,),
+                    ).fetchone()
+                    if row:
+                        if not self._strict_cache_pair_is_owned(
+                                row["affiliate_url"], row["resolved_url"] or ""):
+                            return False
+                    elif not self._strict_cache_pair_is_owned(url, ""):
+                        # Amazon search/browse links deliberately avoid link_cache
+                        # because canonical_url() collapses distinct searches. A
+                        # separately persisted native-tag proof covers their Bitly
+                        # form without creating an unsafe shared cache key.
+                        return False
+            return True
+
         allowed = {clean_url(x) for x in allowed_external}
         check_urls = [url for url in urls if url not in allowed]
-        # Service/lifestyle offer links (Zomato/Swiggy/Zepto/movies/cards) are
-        # not EarnKaro-monetized and never reach link_cache: exempt them while
-        # every monetized store link keeps the full generated-link check.
-        # Amazon links carrying OUR Associates tag are self-proving too (see
-        # is_our_amazon_tag_link): the cache stores conversion-API output, not
-        # our direct Associates links, so the DB check must not gate them.
-        check_urls = [
-            url for url in check_urls
-            if not in_domains((urlparse(url).hostname or "").lower(), SERVICE_OFFER_DOMAINS)
-            and not self.is_our_amazon_tag_link(url)
-        ]
-        # linkredirect.in is a source affiliate wrapper, never an allowed final URL.
+        # Legacy-only behavior: service links are ignored and an exact promo
+        # allowlist is honored only when strict-all is explicitly disabled.
+        check_urls = [url for url in check_urls
+                      if not in_domains((urlparse(url).hostname or "").lower(), SERVICE_OFFER_DOMAINS)
+                      and not self.is_our_amazon_tag_link(url)]
         if any(in_domains((urlparse(url).hostname or "").lower(), FOREIGN_ECHO_DOMAINS)
                and not in_domains((urlparse(url).hostname or "").lower(), OUR_RUNTIME_SHORTENER_DOMAINS)
                for url in check_urls):
@@ -5836,7 +6272,7 @@ def _response_flag_failed(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value <= 0
     return str(value).strip().lower() in {
-        "0", "false", "no", "failed", "failure", "error", "unsuccessful", "not_ok",
+        "0", "false", "no", "fail", "failed", "failure", "error", "unsuccessful", "not_ok",
     }
 
 
@@ -5924,7 +6360,7 @@ def parse_earnkaro_response(body: str,
             or (status is not None and _response_flag_failed(status))):
         reason = message or str(payload.get("data") or payload.get("result") or "API marked conversion unsuccessful")
         return None, f"success={success!r} message={reason[:140]!r}"
-    if isinstance(status, str) and status.strip().lower() in {"failed", "failure", "error"}:
+    if isinstance(status, str) and status.strip().lower() in {"fail", "failed", "failure", "error"}:
         return None, f"status={status!r} message={message[:140]!r}"
     if "data" in payload:
         data = payload.get("data")
@@ -6139,7 +6575,8 @@ class AffiliateClient:
         if OUR_EK_ID and visible_ids and any(str(v) != OUR_EK_ID for v in visible_ids):
             return False
         if in_domains(host, AMAZON_DOMAINS):
-            return query.get("tag", [""])[0] == OUR_TAG
+            tags = query.get("tag", [])
+            return bool(OUR_TAG and tags) and all(str(tag).strip() == OUR_TAG for tag in tags)
         if in_domains(host, FOREIGN_ECHO_DOMAINS):
             return False
         return bool(host)
@@ -6266,6 +6703,12 @@ class AffiliateClient:
 
     async def convert(self, source_url: str, multi_link: bool, resolved_hint: str | None = None) -> "LinkResult | None":
         cached = await store.cached_link(source_url)
+        if cached and is_amazon_search_or_browse_link(source_url):
+            # canonical_url() collapses EVERY /s? search to one cache key (the
+            # query carries no pid/asin/node), so a row under it belongs to the
+            # FIRST search cached, never this one. Searches are never served
+            # from (or written to) the cache - the tag/API answer is always fresh.
+            cached = None
         if cached:
             cached_url = clean_url(cached["affiliate_url"])
             cached_resolved = cached["resolved_url"] or resolved_hint or source_url
@@ -6275,10 +6718,17 @@ class AffiliateClient:
                 source_url, cached_resolved, canonical_url(cached_resolved),
                 product_key(cached_resolved), include_outside_meesho=True)
             cached_is_hypd = bool(cached_hypd_link) or is_our_hypd_link(cached_url)
+            if STRICT_OUR_LINKS:
+                cache_attribution_proven = await store.cached_link_is_owned(
+                    cached_url, cached_resolved)
+            else:
+                cache_attribution_proven = (
+                    in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
+                    or self.valid_generated(cached_url)
+                )
             cache_is_safe = (
                 clean_url(cached_url) != clean_url(source_url)
-                and (in_domains(cached_host, OUR_RUNTIME_SHORTENER_DOMAINS)
-                     or self.valid_generated(cached_url))
+                and cache_attribution_proven
             )
             # Old releases cached Shopsy->HYPD results. Do not keep serving them
             # after the Meesho-only policy change; remove the stale product map and
@@ -6396,7 +6846,7 @@ class AffiliateClient:
             if first_time:
                 log.warning(
                     "HYPD MISSING | no curated HYPD link for this Meesho product yet, "
-                    "so it posts UNMONETIZED: %s | fix: create the link in the HYPD app, then "
+                    "so strict-all skips it: %s | fix: create the link in the HYPD app, then "
                     "run: python3 ops/hypd_links.py '<that link>'",
                     clean_url(resolved)[:90])
                 log.info("HYPD WANTED | added to the curation list (%s product(s) pending)",
@@ -6442,10 +6892,19 @@ class AffiliateClient:
             try:
                 earned = await self._earnkaro_link(source_url, clean, resolved, multi_link)
             except Exception:
-                # Temporary API failures stay retryable unless there is a safe
-                # merchant fallback: native Amazon, or a direct HYPD link whose
-                # non-Meesho destination has already been verified.
-                if not (native_fallback_possible or non_meesho_hypd_destination):
+                # Temporary API failures stay retryable unless strict-all can
+                # construct a genuine native affiliate destination (Amazon tag
+                # or supported publisher ID). A clean Shopsy/Myntra page is not
+                # a fallback merely because the HYPD destination was resolved.
+                publisher_fallback = bool(
+                    non_meesho_hypd_destination
+                    and attribute_with_our_publisher(non_meesho_hypd_destination)
+                    != non_meesho_hypd_destination
+                )
+                if STRICT_OUR_LINKS:
+                    if not (native_fallback_possible or publisher_fallback):
+                        raise
+                elif not (native_fallback_possible or non_meesho_hypd_destination):
                     raise
                 if native_fallback_possible:
                     log.warning("EK FALLBACK | API unavailable for %s; using the native Amazon tag "
@@ -6463,12 +6922,18 @@ class AffiliateClient:
                         (urlparse(clean).hostname or clean)[:60], AMAZON_VIA_EARNKARO)
             return await self._native_amazon_link(source_url, clean, resolved, multi_link)
         if non_meesho_hypd_destination:
-            # The HYPD link was outside the Meesho-only rule. Keep the verified
-            # merchant page clean if EarnKaro has no campaign or is unavailable -
-            # but where the page itself accepts our publisher id (Flipkart family),
-            # stamp it: a bare page opens for free and pays nobody (USER REPORT
-            # 2026-10-04: "product open avuthundi kaani adi mana links kaadu").
+            # The HYPD link was outside the Meesho-only rule. Rebuild a native
+            # publisher-attributed Flipkart-family link when supported; strict-all
+            # skips every clean/unattributed fallback. Only legacy mode may still
+            # publish that clean merchant page (USER REPORT 2026-10-04: a bare page
+            # opens for free and pays nobody).
             published = attribute_with_our_publisher(non_meesho_hypd_destination)
+            if (STRICT_OUR_LINKS and published == non_meesho_hypd_destination
+                    and not Store.has_native_owned_attribution(published)):
+                log.warning("OWN-LINK SKIP | HYPD is scoped to Meesho and %s has no verified "
+                            "EarnKaro publisher attribution: %s", host or "that store",
+                            non_meesho_hypd_destination[:90])
+                return None
             key = product_key(non_meesho_hypd_destination)
             await store.cache_link(source_url, published, non_meesho_hypd_destination, key)
             if published != non_meesho_hypd_destination:
@@ -6476,8 +6941,8 @@ class AffiliateClient:
                             "posted WITH our publisher id (%s) instead of a bare link that "
                             "pays nobody: %s", host or "that store", OUR_EK_ID, published[:90])
             else:
-                log.warning("UNMONETIZED LINK | HYPD is configured for Meesho only; "
-                            "posting the clean %s destination instead: %s",
+                log.warning("UNMONETIZED LINK | legacy mode only; HYPD is configured for "
+                            "Meesho only, so posting the clean %s destination: %s",
                             host, non_meesho_hypd_destination[:90])
             return LinkResult(source_url, non_meesho_hypd_destination,
                               published, key)
@@ -6575,7 +7040,9 @@ class AffiliateClient:
                     # cosmetic shortener is unavailable/rate-limited.
                     log.warning("BITLY unavailable; posting the native tagged Amazon link")
             key = product_key(clean)
-            await store.cache_link(source_url, affiliate, clean, key)
+            # Keep the verified tagged destination beside any minted short URL;
+            # a bare page in resolved_url would make strict provenance ambiguous.
+            await store.cache_link(source_url, affiliate, tagged, key)
             return LinkResult(source_url, clean, affiliate, key)
         if is_amazon_search_or_browse_link(clean):
             # No cache entry: canonical_url() collapses every /s? search link to
@@ -6583,7 +7050,26 @@ class AffiliateClient:
             # hand the FIRST search link back for every later one. The tag on the
             # URL is self-proving at the provenance gate, so no cache is needed.
             tagged = apply_amazon_tag(clean)
-            return LinkResult(source_url, clean, tagged, product_key(clean))
+            affiliate = tagged
+            if should_use_bitly(clean, multi_link) or SHORTEN_AMAZON_LINKS:
+                shortened = await self.shorten(tagged)
+                if shortened:
+                    affiliate = shortened
+                    # Search/browse URLs avoid link_cache because canonical_url()
+                    # collapses distinct queries. Persist this proof by exact short
+                    # URL so strict verification survives a restart without a
+                    # shared cache key.
+                    await store.remember_owned_link_proof(
+                        affiliate, tagged, "amazon_native")
+                    # Delivery expands this pair again for the review channel, so
+                    # the reviewed post still shows the real tagged browse page.
+                    log.info("AMAZON LINK SHORTENED | %s -> %s (native tagged form kept "
+                             "for the review channel)", tagged[:70], shortened)
+                else:
+                    # Never lose a valid commission link merely because the
+                    # cosmetic shortener is unavailable/rate-limited.
+                    log.warning("BITLY unavailable; posting the native tagged Amazon link")
+            return LinkResult(source_url, clean, affiliate, product_key(clean))
         return None
 
     async def _earnkaro_link(self, source_url: str, clean: str, resolved: str,
@@ -6724,7 +7210,17 @@ class AffiliateClient:
                                 # the cosmetic shortener is unavailable/rate-limited.
                                 log.warning("BITLY unavailable; using verified EarnKaro fallback")
                         key = product_key(resolved)
-                        await store.cache_link(source_url, affiliate, resolved, key)
+                        if not is_amazon_search_or_browse_link(source_url):
+                            await store.cache_link(source_url, affiliate, resolved, key)
+                            # Preserve the actual authenticated converter URL when
+                            # the public link was wrapped in generic Bitly/is.gd.
+                            # resolved remains the merchant page for identity and
+                            # routing; ownership proof lives in its own table.
+                            await store.remember_owned_link_proof(
+                                affiliate, result, "earnkaro_api")
+                        # (Search links are deliberately NOT cached: every /s?
+                        # search shares one canonical key, so storing here would
+                        # hand this search's link back for every later one.)
                         EK_BREAKER.success()
                         # One line per monetized link: this is how an operator
                         # answers "are the EarnKaro links actually converting?"
@@ -7036,6 +7532,7 @@ async def build_maps(client: TelegramClient):
     target_map: dict[str, Any] = {}
     all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET,
                                       SHOPPING_TARGET])
+    all_targets.update(target for target in CATEGORY_TARGETS.values() if target)
     for targets in SOURCE_TO_TARGETS.values():
         all_targets.update(targets)
     for target in sorted(all_targets):
@@ -7550,12 +8047,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     if had_social_promo and not has_merchant_candidate:
         return await render_trick_promo(row, msg, raw_text)
 
-    # A photo/video post with no link is still a post the source published, and the
-    # reader can still see the product: the old `no URLs` skip deleted those. Such a post
-    # now goes out exactly as the source wrote it (text + media, no invented link), because
-    # "source lo vasthundi, mana target lo raledu" is the bug and a missing link is not a
-    # reason for it. A TEXT-only message with nothing to buy stays skipped.
-    link_free_post = bool(link_free_candidate)
+    # Legacy-only path: photo-only products may be posted without inventing a link,
+    # but strict-all requires a verified commission link and disables this exception.
+    # The legacy renderer still supports a photo-only post, but strict-all may
+    # publish only an item whose link itself proves our commission attribution.
+    link_free_post = bool(link_free_candidate) and not STRICT_OUR_LINKS
     if not source_urls and not link_free_post:
         raise PermanentSkip("no URLs")
 
@@ -7583,9 +8079,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         raise PermanentSkip("no monetizable URLs")
 
     # Service/lifestyle offers (Zomato, Swiggy, Zepto, movies, payment-app and
-    # card offers) are NOT EarnKaro-monetizable store products. Split them out:
-    # they pass through unconverted (never poisoning the EarnKaro conversion of
-    # the store links in the same post) and the post is still published.
+    # card offers) are not affiliate products. Keep their classification separate
+    # from store conversion, then strict-all below refuses the post instead of
+    # passing through an unmonetized service URL.
     service_pairs: list[tuple[str, str]] = []
     store_candidates: list[tuple[str, str]] = []
     for source_url, resolved in candidates:
@@ -7596,6 +8092,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 service_pairs.append((source_url, clean_resolved))
         else:
             store_candidates.append((source_url, resolved))
+    if STRICT_OUR_LINKS and service_pairs:
+        raise PermanentSkip("service/non-affiliate URLs are not owned monetized links")
     if not store_candidates and not service_pairs and not link_free_post:
         raise PermanentSkip("no monetizable URLs")
 
@@ -7609,16 +8107,14 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         *(affiliate.convert(url, multi_link, resolved) for url, resolved in store_candidates),
         return_exceptions=True,
     )) if store_candidates else []
-    # Links the affiliate network simply cannot monetize (no campaign for that
-    # store, e.g. Myntra/Ajio/Meesho, or an expired Flipkart program) are NOT a
-    # transient failure. The old code retried them ten times and then threw the
-    # whole post away - that is how source posts silently went missing. They are
-    # kept as clean merchant links instead: foreign tracking/affiliate params are
-    # stripped by merchant_url() and the link is registered as one we produced.
+    # A completed conversion with no output means this account cannot monetize
+    # the URL; strict-all records it as unsupported and skips the post. The old
+    # clean-merchant fallback remains unreachable in production and exists only
+    # for isolated legacy-renderer tests.
     passthrough: list[tuple[str, str]] = []
 
     def keep_passthrough(source_url: str, resolved: str) -> None:
-        if not PASSTHROUGH_UNMONETIZED:
+        if STRICT_OUR_LINKS or not PASSTHROUGH_UNMONETIZED:
             return
         host = (urlparse(str(resolved or "")).hostname or "").lower()
         # Subdomain-aware (www.myntra.com must count as myntra.com).
@@ -7667,12 +8163,37 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             transient_errors.append(str(result))
             log.warning("CONVERT failed %s: %s", source_url[:60], result)
         elif result:
+            if STRICT_OUR_LINKS:
+                generated_url = clean_url(result.affiliate)
+                generated_host = (urlparse(generated_url).hostname or "").lower()
+                hidden_amazon = (getattr(affiliate, "_short_to_long", {}) or {}).get(generated_url, "")
+                hidden_host = (urlparse(clean_url(hidden_amazon)).hostname or "").lower()
+                amazon_link_is_ours = (
+                    not is_amazon_short_host(generated_host)
+                    and (not in_domains(generated_host, AMAZON_DOMAINS)
+                         or Store.is_our_amazon_tag_link(generated_url))
+                    and (not in_domains(hidden_host, AMAZON_DOMAINS)
+                         or Store.is_our_amazon_tag_link(hidden_amazon))
+                )
+                if not amazon_link_is_ours:
+                    unresolvable.append(source_url)
+                    log.warning("OWN-LINK SKIP | queue=%s Amazon output lacks our Associates "
+                                "tag/provenance: %s", row["id"], generated_url[:80])
+                    continue
             converted.append(result)
         else:
             resolved_host = (urlparse(resolved).hostname or "").lower()
             before = len(passthrough)
             keep_passthrough(source_url, resolved)
             if len(passthrough) > before:
+                continue
+            if STRICT_OUR_LINKS:
+                # A completed conversion response with no affiliate URL is not
+                # ours. Treat it as unsupported and fail closed immediately;
+                # only exceptions above use retry/backoff for a transient API.
+                unresolvable.append(source_url)
+                log.warning("OWN-LINK SKIP | queue=%s converter returned no paid link for %s",
+                            row["id"], resolved_host or source_url[:70])
                 continue
             if (in_domains(resolved_host, NON_SHOP_DOMAINS)
                     or (is_unresolvable_short_link(resolved_host, source_url)
@@ -7690,14 +8211,12 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 f"affiliate conversion returned no link: {resolved_host or 'unknown'}"
             )
     if transient_errors and row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
-        # A temporary API/Bitly/network failure must retry the whole job so a
-        # monetizable link is not silently lost.
+        # A temporary API/Bitly/network failure retries before making a decision.
         raise RuntimeError("conversion retry required: " + "; ".join(transient_errors[:3]))
+    if transient_errors and STRICT_OUR_LINKS:
+        raise PermanentSkip("affiliate conversion did not verify an owned link")
     if transient_errors:
-        # Final attempt: publish the clean merchant destination for every link
-        # the API never answered instead of dropping the deal. "Source has it,
-        # our channel does not" was the bug; a slightly-less-monetized post is
-        # the fix (only trusted merchant domains qualify).
+        # Legacy-only mode: final attempt may use a clean merchant fallback.
         already = {clean_url(r.source) for r in converted}
         log.warning("DEGRADED POST | queue=%s attempt=%s %s link(s) unresolved: %s",
                     row["id"], row["attempts"] + 1, len(transient_errors),
@@ -7705,13 +8224,15 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         for source_url, resolved in store_candidates:
             if clean_url(source_url) not in already:
                 keep_passthrough(source_url, resolved)
+    if STRICT_OUR_LINKS and unresolvable:
+        raise PermanentSkip("source link is dead, unknown, or not monetized by us")
     if (not converted and not service_pairs and not passthrough
             and not unresolvable and not link_free_post):
         raise PermanentSkip("no monetizable URLs")
 
     # Preserve distinct variant links (colour/gender/size/category filters) inside
     # one source post. Collapse only an exact repeated generated URL. Product-key
-    # reservation still provides global 10-hour dedup across source channels.
+    # reservation still provides global 24-hour dedup across source channels.
     converted = distinct_affiliate_results(converted)
     keys = list(dict.fromkeys(
         [product_key(resolved) for _, resolved in service_pairs]
@@ -7787,7 +8308,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     for _source_url, resolved in service_pairs:
         if resolved not in rendered:
             rendered = (rendered.rstrip() + "\n" + resolved).strip()
-    if row["source"] in TRICKS_SOURCES or (had_social_promo and ADD_OUR_CHANNEL_FOOTER):
+    if (not STRICT_OUR_LINKS
+            and (row["source"] in TRICKS_SOURCES or (had_social_promo and ADD_OUR_CHANNEL_FOOTER))):
         rendered = f"{rendered.rstrip()}\n\n{tricks_footer()}"
     rendered = tidy_post(rendered)
     # A source that wrote the whole list on one line is split first, so the two
@@ -7796,7 +8318,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     multi_product_list = len(converted) >= 3
     if multi_product_list:
         rendered = format_clustered_product_list(rendered)
-    rendered = strict_orphan_token_cleanup(rendered)
+    rendered = strict_orphan_token_cleanup(
+        rendered, list_context=len({clean_url(url) for url in source_urls}) >= 2
+    )
     # Cut the dead short links out of the copy itself. Leaving them in would publish a
     # foreign, unverified link (the provenance rule); removing them must not remove the
     # deal, so a post whose only link was dead goes out as complete text instead of
@@ -7818,7 +8342,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Card / bank offers: user wants them on EVERY owned channel at once plus
     # the premium channel, with the Loots Family folder link appended. These
     # are the strongest, most time-sensitive deals, so fanning out is correct.
-    if card_offer and ADD_OUR_CHANNEL_FOOTER and OUR_FOLDER_LINK not in rendered:
+    if (not STRICT_OUR_LINKS and card_offer and ADD_OUR_CHANNEL_FOOTER
+            and OUR_FOLDER_LINK not in rendered):
         # "nothing of ours in the post" - the folder link is our own promo text,
         # so it only rides along when the operator asks for it. The card offer
         # itself is published complete either way.
@@ -7827,14 +8352,16 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Final provenance guard: every URL must be an exact generated output.
     generated = {r.affiliate for r in converted}
     allowed_final_urls = set(generated)
-    if row["source"] in TRICKS_SOURCES or had_social_promo:
-        allowed_final_urls.update({OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS})
-    if card_offer:
-        allowed_final_urls.add(OUR_FOLDER_LINK)
-    if service_pairs:
-        allowed_final_urls.update(resolved for _, resolved in service_pairs)
-    if passthrough:
-        allowed_final_urls.update(resolved for _, resolved in passthrough)
+    if not STRICT_OUR_LINKS:
+        if row["source"] in TRICKS_SOURCES or had_social_promo:
+            allowed_final_urls.update({OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS})
+        if card_offer:
+            allowed_final_urls.add(OUR_FOLDER_LINK)
+    if not STRICT_OUR_LINKS:
+        if service_pairs:
+            allowed_final_urls.update(resolved for _, resolved in service_pairs)
+        if passthrough:
+            allowed_final_urls.update(resolved for _, resolved in passthrough)
     # GUARANTEE: the source's link is gone, only OUR link remains. A single
     # leftover foreign/shortener link used to throw the whole deal away
     # ("foreign URL survived") - that is how posts silently went missing. The
@@ -7842,6 +8369,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # something that carries no verified link at all.
     leftover = [raw for raw in dict.fromkeys(URL_RE.findall(rendered))
                 if clean_url(raw) not in allowed_final_urls]
+    if leftover and STRICT_OUR_LINKS:
+        # Removing only a URL from a list can leave its name/price stranded.
+        # Fail the post as a unit when the final render contains any unverified
+        # link that did not come from our converter.
+        raise PermanentSkip("unverified link would break the product name/price/link association")
     if leftover:
         for raw in leftover:
             rendered = rendered.replace(raw, " ")
@@ -7948,6 +8480,28 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             base_targets = [target for target in base_targets if target != UNDER99_TARGET]
     if guaranteed not in base_targets:
         base_targets.append(guaranteed)
+    # Category shelves are an additive mirror: a confident product always
+    # remains on the Main feed and adds exactly one category target. This also
+    # brings a genuine product out of a Tricks source into Main; unclassified
+    # Tricks posts and service promos keep their existing routing.
+    if not service_pairs:
+        # The category shelf follows the product, not just caption keywords:
+        # include source, resolved merchant, and final affiliate URLs. Readable
+        # slugs/search terms survive even when the incoming link was shortened.
+        category_link_context = [
+            value for result in converted
+            for value in (result.source, result.resolved, result.affiliate)
+            if value
+        ]
+        category = classify_deal_category(text, category_link_context)
+        category_target = CATEGORY_TARGETS.get(category or "", "")
+        if category_target:
+            if "LootZoneIndia11" not in base_targets:
+                base_targets.append("LootZoneIndia11")
+            if category_target not in base_targets:
+                base_targets.append(category_target)
+            log.info("CATEGORY ROUTE | %s -> @%s | queue=%s",
+                     CATEGORY_DEFINITIONS[category]["label"], category_target, row["id"])
     # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
     # same PRODUCT deals every other channel takes, in the programme-safe form
     # rendered at delivery time (name + price + link). A trick/recharge/app promo
@@ -8061,6 +8615,8 @@ def sanitize_trick_promo(text: str) -> str:
 
 
 async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
+    if STRICT_OUR_LINKS:
+        raise PermanentSkip("promo-only post has no verified monetized product link")
     body = sanitize_trick_promo(raw_text)
     rendered = f"{body}\n\n{tricks_footer()}"
     key = "URL:" + hashlib.sha256(("TRICK:" + body.lower()).encode()).hexdigest()
@@ -8072,6 +8628,7 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
 
 
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
+    stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
     # a list of files (with their Telegram refs) when the source posted an album
     media_path: list[str] = []
     media_refs: list = []
@@ -8113,7 +8670,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 rendered = tidy_post(clean_source_text(rendered))
                 rendered = split_inline_product_links(rendered)
                 rendered = format_clustered_product_list(rendered)
-                rendered = strict_orphan_token_cleanup(rendered)
+                rendered = strict_orphan_token_cleanup(
+                    rendered,
+                    list_context=(len(set(URL_RE.findall(stored_copy))) >= 2
+                                  or len(set(URL_RE.findall(rendered))) >= 2),
+                )
                 rendered = sanitize_outbound_text(rendered)
                 if rendered != row["rendered_text"]:
                     with contextlib.suppress(Exception):
@@ -8147,6 +8708,8 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         # page of whoever created that short code. The link is cut (never the deal)
         # and the log says so; a short link WE minted expands back to its long form.
         rendered, short_cut = cut_amazon_short_links(rendered, affiliate)
+        if short_cut and STRICT_OUR_LINKS:
+            raise PermanentSkip("legacy render contains an unowned Amazon short link")
         if short_cut:
             with contextlib.suppress(Exception):
                 await store.update_rendered(row["id"], rendered)
@@ -8156,7 +8719,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if not rendered.strip() and not row["source"]:
                 raise PermanentSkip("post was only an Amazon short link")
         # Final provenance gate runs again immediately before target delivery.
-        owned_candidates = {OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS}
+        owned_candidates = set() if STRICT_OUR_LINKS else {
+            OUR_FOLDER_LINK, *OUR_MAIN_CHANNEL_LINKS
+        }
         owned_external = {url for url in owned_candidates if url in rendered}
         # A post with no URL at all has nothing to prove (this happens only when every
         # link the source wrote was a dead short link, cut above): the deal text still
@@ -8244,6 +8809,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     log.warning("SHOPPING TARGET UNRESOLVED | @%s not reachable; the deal "
                                 "still goes to every other channel", target)
                     await store.delivery(row["id"], target, True, "shopping target unresolved")
+                    continue
+                if target in {value for value in CATEGORY_TARGETS.values() if value}:
+                    log.warning("CATEGORY TARGET UNRESOLVED | @%s not reachable; the deal "
+                                "still goes to the Main feed and other channels", target)
+                    await store.delivery(row["id"], target, True, "category target unresolved")
                     continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
@@ -8378,9 +8948,21 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # ratings, review counts, coupons, emoji and photos all intact.
             # Round 23's ratings strip was applied to every tagged channel and
             # is therefore removed here; it lives in the review branch only.
-            target_text = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
+            tagless_copy = strip_amazon_tag_for_undeclared(target_text, target, affiliate)
+            if STRICT_OUR_LINKS and tagless_copy != target_text:
+                # Never publish a plain Amazon URL merely because Associates has
+                # not declared this destination. Keep the tagged deal on its
+                # approved targets and skip this target rather than leak a link
+                # that does not earn for us.
+                log.warning("TARGET SKIP | queue=%s @%s is not approved for our Amazon tag; "
+                            "no untagged fallback will be posted", row["id"], target)
+                await store.delivery(row["id"], target, True,
+                                     "our Amazon affiliate link is not approved for this target")
+                continue
+            target_text = tagless_copy
             allow_preview = await store.preview_allowed(target_text)
-            if (ADD_OUR_CHANNEL_LINK_TOP and row["source"] not in TRICKS_SOURCES
+            if (not STRICT_OUR_LINKS and ADD_OUR_CHANNEL_LINK_TOP
+                    and row["source"] not in TRICKS_SOURCES
                     and target != SHOPPING_TARGET):
                 # Never on the review channel: that header is a link into the
                 # loot-channel folder, which is precisely what a marketplace
@@ -8450,7 +9032,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.9 starting "
+    log.info("BestGAA Production Bot v19.0 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

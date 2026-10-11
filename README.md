@@ -26,6 +26,43 @@ tg-wa-bridge.service (Node, Baileys 7.0.0-rc14)   ← own BotFather listener,
 WhatsApp Channel (unofficial Baileys client — NOT the Meta Business API)
 ```
 
+## Current strict monetization policy
+
+The active policy is **our verified earning links only** (`STRICT_OUR_LINKS` is
+pinned on in both services and is not an environment opt-out):
+
+- Telegram publishes only affiliate URLs returned and verified by the configured
+  converter, our native Amazon Associates link, or another recorded owned link.
+  Service/lifestyle URLs and unsupported/no-campaign merchant links are skipped;
+  a transient API exception retries, then the post is skipped if ownership still
+  cannot be verified. There is no clean merchant-URL fallback.
+- The WhatsApp bridge does not trust `bit.ly`, `fktr.in`, `ekaro.in`, or any other
+  shortener hostname or BestGAA `link_cache` row by itself. Links need our native
+  Amazon tag, an accepted native publisher ID, account-bound `owned_link_proofs`,
+  or an exact verified HYPD-to-Meesho mapping. Foreign wrappers, service links,
+  and unsupported/unattributed destinations are withheld.
+- Amazon Associates links are target-specific. If a Telegram destination is not
+  configured to receive our tag, only that target copy is skipped; the bot never
+  removes the tag and publishes a zero-commission Amazon URL. Declare a channel
+  in Associates Central first, then configure `AMAZON_TAG_TARGETS` or the
+  category allowlist. WhatsApp category copies are likewise withheld until their
+  Amazon-tag allowance is explicitly configured.
+- Product-list items keep their name, price, and link together. If strict
+  verification cannot provide our own link for an item, the affected post/list is
+  skipped as a unit rather than leaving an orphaned name or price behind.
+
+Category mirrors use both product text and link-derived clues: readable URL path
+slugs and selected search/title query terms from incoming links and known resolved
+product destinations. An opaque ASIN/product ID by itself is not a category clue,
+so unclear or mixed-product posts stay on Main. The classifier does not fetch or
+inspect merchant-page HTML; it routes only when the available text/link terms are
+confident and unambiguous.
+
+The historical `PASSTHROUGH_UNMONETIZED` setting is retained only so old test and
+migration fixtures remain readable; it cannot override the pinned strict policy.
+The source does not auto-deploy or restart services; production rollout is a
+separate operator-controlled step.
+
 ## Repository layout
 
 | Path | What it is |
@@ -206,17 +243,16 @@ python3 ops/earnkaro_check.py --plan --multi --deal-url '<link 1>' --deal-url '<
   verdict   : OURS - this post pays our EarnKaro account 5478322
 ```
 
-The verdicts are deliberately blunt: **UNMONETIZED** (the network has no
-campaign for that store — the deal still posts, with a clean merchant link and
-no commission), **NATIVE AMAZON-TAG FALLBACK** (the bot's own gate refuses to
-call that an EarnKaro conversion, and neither does this report: with Associates
-still rejecting the account it earns nothing), **WRONG ACCOUNT** (it pays
-somebody else), **OUR HYPD creator-store link** (store 93944, Meesho only), and
-a length line that admits when the shortener was unavailable and the longer
-link posted instead (a deal is never lost to a shortener outage). Exit code 1
-if any link needs attention; every line names its own fix. The plan run uses a throwaway
-queue database and points `EARNKARO_API_KEY` at the key under test, so it can
-never disturb live state.
+The verdicts are deliberately blunt: **UNMONETIZED** (no owned affiliate link
+was produced, so strict-all skips that product/post; older database rows may
+still appear in historical reports), **NATIVE AMAZON TAG** (our Associates tag
+is the earning attribution and is verified separately from EarnKaro), **WRONG
+ACCOUNT** (it pays somebody else), **OUR HYPD creator-store link** (store 93944,
+Meesho only), and a length line that admits when a cosmetic shortener was
+unavailable while the verified affiliate destination remained intact. Exit code
+1 if any link needs attention; every line names its own fix. The plan run uses a
+throwaway queue database and points `EARNKARO_API_KEY` at the key under test, so
+it can never disturb live state.
 
 The plan mode itself is pinned by `test_earnkaro_conversion.py` (fake client, no
 network): the link it prints, the account it proves, the UNMONETIZED, native-tag
@@ -225,40 +261,39 @@ failure is reported as *retryable* rather than as a deal that earns nothing.
 
 ### "Mana links perfectga post chesthunda?" — one number, from data (v18.4/v18.5)
 
-Two tools now answer it, and they cannot disagree because they share one
-definition of "our link" (`ops/quality_audit.py`'s, which reads the `link_cache`
-rows the pipeline's own provenance gate trusts plus the EarnKaro publisher id
-from the token / `ops/.earnkaro_key`):
+Two tools answer it using the same strict proof model: native Amazon/EarnKaro
+attribution, exact `owned_link_proofs` records, or verified HYPD-to-Meesho mappings.
+A `link_cache` row or shortener hostname alone is not proof; the publisher ID comes
+from the token / `ops/.earnkaro_key` when available.
 
 ```bash
-# every link in the last N posts, classified; --strict exits 1 on a foreign one
+# every link in the last N posts, classified; --strict exits 1 on any finding
 python3 ops/quality_audit.py --db bestgaa/bestgaa.sqlite3 --limit 200 --strict
-#   QUALITY AUDIT | db=… posts=200 findings=0
-#     LINK PERFECTION | links=137 our-short=88 our-publisher=12 unattributed=0 clean-merchant=37 FOREIGN=0
-#     every published link is one of ours (minted by this bot, our tag, or a clean merchant page)
+#   QUALITY AUDIT | db=… posts=N findings=0
+#     LINK PERFECTION | links=N our-short=N our-publisher=N unattributed=0 clean-merchant=0 FOREIGN=0
+#     every published link has verified owned attribution; no unmonetized or foreign links reached a channel
 
 # the live window, next to the per-route verdict
 python3 ops/conversion_report.py
-#   LINKS    : WORKING - 137 published link(s), all ours (88 short, 12 tagged, 37 clean merchant)
+#   LINKS    : VERIFIED - N published link(s) all have our account attribution
 ```
 
-`our-short` = a link this bot minted (EarnKaro/HYPD/Bitly/is.gd — the Bitly and
-is.gd ones are proven by their `link_cache` row, not by their domain), `our-publisher`
-= our tag or our publisher id, `unattributed` = a **Flipkart/Myntra page with no
-publisher id** (the product opens and pays nobody — a defect, and since v18.5 a
-thing new posts can no longer produce), `clean-merchant` = a store page kept on
-purpose because the network has no campaign AND the page carries no attribution we
-may stamp (it earns nothing and that is the policy), `FOREIGN` = a link that
-should never have left (a source short link, a stranger's tag or id). A `bit.ly`
-link some other channel posted is still `FOREIGN` — the difference is the cache
-row, and that is exactly why this is asked of the data instead of a domain list.
+`our-short` = an exact link backed by a durable converter/shortener proof or a
+verified HYPD mapping; hostname and `link_cache` presence alone never qualify.
+`our-publisher` = an Amazon link carrying our exact configured tag or a supported
+native EarnKaro publisher ID, `unattributed` = a **Flipkart/Myntra page with no
+publisher ID** (strict-all skips the post), and `clean-merchant` = a clean-looking
+merchant page with no earning proof (strict-all refuses it just like any other
+unowned link). `FOREIGN` = a source short link, foreign affiliate tag/ID, family
+promo or other unverified wrapper. An otherwise familiar `bit.ly` URL is refused
+unless its exact URL has durable proof; a cache row by itself is not enough.
 
-**Why this changed:** the auditor's hardcoded "bit.ly is a third-party shortener"
-rule predates the 2026-09-06 Bitly policy, so it flagged our own healthy list
-posts and `--strict` cried wolf — and a false alarm is how a real one gets
-ignored. Both `test_best_copy.py` (link ownership + the CLI's summary line and
-exit code) and `test_earnkaro_conversion.py` (the report's counts and verdict
-line) pin the new behaviour in both directions.
+**Why this changed:** hostname allowlists and bare `link_cache` rows can falsely
+claim an affiliate URL earns for this account. Strict-all now requires persisted
+proof for minted links and exact native attribution for merchant links; unsupported
+products are skipped instead of sent with a clean-but-unmonetized URL. Both
+`test_best_copy.py` and `test_earnkaro_conversion.py` pin the positive and negative
+cases, including the CLI's summary and exit code.
 
 **And when the converter answers on a domain this build has never seen** — an
 EarnKaro/Affiliaters redirect the bot cannot name — the deal is no longer
@@ -294,8 +329,8 @@ separate `EK SUCCESS`, `EK MISS`, `EK AUTH`, and `EK REJECT` markers. EarnKaro c
 report `WORKING`, `PARTIAL`, `NOT CONVERTING`, `NEEDS REVIEW`, or `IDLE`; it no
 longer counts every `EK CONVERT` line as a failed conversion. Amazon's native
 fallback count is shown separately and is never labelled EarnKaro commission.
-It also classifies links in the window (`passthrough` = posted UNMONETIZED) and
-ends with `NEEDS ATTENTION` + suggested fixes. Exit code 1 when something needs
+It also classifies links in the window (`passthrough` identifies legacy clean-merchant
+rows, which strict-all refuses to publish) and ends with `NEEDS ATTENTION` + suggested fixes. Exit code 1 when something needs
 attention, so a cron job can alert on it.
 
 **Prove it in one command** (on the server, which has internet):
@@ -345,8 +380,8 @@ Behaviour (pinned by `test_hypd_links.py`):
 |---|---|
 | A source posts our `hypd.store/93944/afflink/…` link and it resolves to Meesho | Published as **our** link: never stripped, not sent to EarnKaro, and Bitly-shortened |
 | A bare Meesho product has a matching, verified HYPD mapping | The bot swaps in our curated Meesho HYPD link and shortens it |
-| A Meesho product has no known HYPD mapping | It is recorded as `HYPD MISSING` / `HYPD WANTED`; no link is invented, and the post may be unmonetized |
-| Shopsy, or an HYPD link whose destination is Shopsy | **Never** routed through HYPD; it follows the ordinary affiliate path or uses a clean merchant fallback |
+| A Meesho product has no known HYPD mapping | It is recorded as `HYPD MISSING` / `HYPD WANTED`; strict-all skips the product/post until a verified link is curated |
+| Shopsy, or an HYPD link whose destination is Shopsy | **Never** routed through HYPD; it follows the ordinary affiliate path and is skipped if no owned link can be verified |
 | An HYPD link has an unknown destination | Not learned or published as a Meesho link; the tool reports that it could not verify the merchant |
 | Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours; it would pay them |
 
@@ -390,6 +425,11 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
 `BITLY unavailable; posting OUR HYPD link as it is` (outage fallback).
 
 ## Key behaviour (see `ops/` notes for full detail)
+
+> **Historical release notes:** the version entries below describe behavior at the time
+> of each release. The current strict monetization policy at the top of this file
+> supersedes legacy acceptance of clean merchant pass-throughs, family/channel promo
+> URLs, and other non-earning links; those are now refused or skipped.
 
 - **Routing** (`ops/LATEST_ROUTING_NOTES.txt`): per-target source allowlists, dedicated LootzoneTricks sources, Premium target with ≥85% OFF / ≤₹99 / ₹100–499 ≥70% filter, IST posting windows.
 - **WhatsApp media fix** (`ops/WHATSAPP_MEDIA_FIX_NOTES.txt`): works around the Baileys 7.0.0-rc14 newsletter-media bug (issue #2199) with a custom `/newsletter/newsletter-*` upload path + `server_thumb_gen=1`, ack watching so "sent but invisible" can't happen silently, text-only fallback after 3 failed media attempts. Kill switch: `NEWSLETTER_MEDIA_FIX=false`.
@@ -592,15 +632,12 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
      leads back to the source URL, to a foreign shortener, or to somebody else's
      `affExtParam2`. A bare merchant-page echo keeps its old treatment (`looks_like_shortener()`
      is the shape test `is_unresolvable_short_link()` now delegates to, so nothing else moved).
-  2. **`ops/quality_audit.py` stopped crying wolf about our own Bitly links.** Its
-     "bit.ly is a third-party shortener" literal predates the 2026-09-06 policy, under which
-     every list post carries OUR Bitly links by design — so `--strict` flagged healthy posts,
-     and a false alarm is how a real one gets ignored. Ownership is now read from the DATA
-     (the `link_cache` rows the bot's own provenance gate trusts, plus our EarnKaro publisher
-     id from the token/`ops/.earnkaro_key`), the report prints a single
-     `LINK PERFECTION | links=… our-short=… our-publisher=… clean-merchant=… FOREIGN=…`
-     line, `ops/conversion_report.py` shows the same counts for the live window (and says
-     `LINKS : WORKING`, or names the fix when a foreign link did reach a channel).
+  2. **Historical v18.4 behavior — superseded by the strict proof model above.**
+     The quality auditor stopped treating every `bit.ly` URL as foreign and reported
+     link ownership using the then-current cache/publisher model. That cache-row-only
+     part is no longer valid: current ownership requires native attribution, an
+     account-bound proof record, or a verified HYPD-to-Meesho mapping. The report's
+     current verified/unowned semantics are documented in the section above.
 - **v18.3 — a post is not its source message, and the bridge's own tests stopped
   depending on the clock.** Two fixes of the same class as v18.2's, both found by asking
   "can a post that reached intake still fail to appear?" of paths nobody had probed:
@@ -969,8 +1006,8 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   and the deal is only skipped when nothing verified remains.
 - **Smart random pacing:** the bridge already posts with randomized gaps,
   hourly break patterns and jitter; the bot spaces multi-target fan-out with a
-  short random gap (`TARGET_FANOUT_GAP_MIN`/`TARGET_FANOUT_GAP_MAX`, default
-  0.4–1.2s; the code never actually had the 3–9s earlier docs claimed) and
+  back-to-back fan-out (`TARGET_FANOUT_GAP_MIN`/`TARGET_FANOUT_GAP_MAX` default
+  0/0 — zero artificial waiting; the knobs are only an escape hatch) and
   never before the first target, so a hot deal is not delayed.
 - **Never-stall pipeline:** bot workers are never-die (a claim or job error is
   logged and the loop continues — a dead worker can no longer silently stop
@@ -1065,7 +1102,7 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   `ops/repack_bundles.sh` + `ops/apply_dual_hotfix.sh` (bot + bridge) or
   `bestgaa/deploy_bestgaa.sh` (bot only) so both services come from tracked
   source.
-- **Link safety:** every outgoing URL must exist as an authenticated generated `affiliate_url` in BestGAA's SQLite `link_cache`; foreign/shortener links are blocked.
+- **Link safety (superseded by strict-all):** the earlier gate required an `affiliate_url` cache row. Current publishing requires account-bound durable converter proof or exact native attribution; a cache row/shortener hostname alone is never sufficient.
 
 ## Posting-immediacy / dedup knobs (`.env`, all optional, all clamped)
 
@@ -1075,7 +1112,7 @@ because every number is clamped into a safe range.
 | Knob | Default | Meaning |
 |---|---|---|
 | `QUEUE_WORKERS` | 8 | concurrent render/deliver workers |
-| `PRICE_DEDUP_SECONDS` / `PRICE_DEDUP_IGNORES_IDENTITY` | server `.env` (3600) / `false` | the one-hour same-price gate is a **fallback for posts with no ASIN/PID**; set it to `true` to also block a *different* product that happens to share an already-posted price |
+| `PRICE_DEDUP_SECONDS` / `PRICE_DEDUP_IGNORES_IDENTITY` | `0` / `false` | the same-price gate is **off** (a common price must never eat a real deal); set `3600` to restore the one-hour hold as a **fallback for posts with no ASIN/PID**, and `true` to also block a *different* product that happens to share an already-posted price |
 | `QUEUE_ORDER` | `newest` | `newest` = a fresh deal is dispatched ahead of backlog; `oldest` restores FIFO |
 | `MAX_JOB_AGE_HOURS` | 6 | pending work older than this is dropped (`STALE DROP`), never posted late |
 | `JOB_RETRY_BASE_SECONDS` / `JOB_RETRY_MAX_SECONDS` | 3 / 20 | retry backoff for an undelivered job (was up to 300s) |
@@ -1088,9 +1125,10 @@ because every number is clamped into a safe range.
 | `SOURCE_RESCAN_SECONDS` / `SOURCE_RESCAN_LIMIT` / `SOURCE_RESCAN_CONCURRENCY` | 120 / 40 / 4 | ingest dead-man's switch cadence |
 | `SOURCE_REFRESH_SECONDS` | 180 | retry joining sources that failed at startup |
 | `TARGET_FANOUT_GAP_MIN` / `TARGET_FANOUT_GAP_MAX` | 0 / 0 (max clamped to 60, min to 30) | no gap by default — Telegram never waits (round 9); these exist only as an escape hatch for a target that rate-limits us |
-| `PASSTHROUGH_UNMONETIZED` | true | publish a store link the affiliate network cannot monetize as a clean untagged merchant link (false = retry then skip, i.e. lose the deal) |
+| `STRICT_OUR_LINKS` | pinned `true` | publish only links verified to earn for this account; unsupported merchant/service links and unsupported items/posts are skipped |
+| `PASSTHROUGH_UNMONETIZED` | legacy-only | cannot override strict-all; clean unmonetized merchant links are not published |
 | `DROP_DEAD_LINKS` / `WA_DROP_DEAD_LINKS` | false | a link probe may make a post honest, never make it disappear: `true` refuses a post whose every destination answered as a confirmed dead merchant page (the pre-v18.0 behaviour) |
-| `ADD_OUR_CHANNEL_LINK_TOP` | true | the ONE line of ours that may sit above a deal: our own folder/channel link on the top line, added at delivery, never twice, never on Tricks posts |
+| `ADD_OUR_CHANNEL_LINK_TOP` | legacy-only | strict-all never injects family/folder promo URLs because they do not earn; the setting applies only when strict mode is explicitly disabled in isolated legacy tests |
 | `MAX_ALBUM_PHOTOS` | 10 | how many photos of a source album we repost as one grid (Telegram's own album ceiling) |
 | `PREMIUM_MAX_PER_NIGHT` / `PREMIUM_GAP_MIN_SECONDS` / `PREMIUM_GAP_MAX_SECONDS` | 12 / 900 / 2100 | Premium channel curation (the only place the bot intentionally waits) |
 | `WA_BEST_GATE` etc. | see bridge | WhatsApp best-deal gate, unchanged |
@@ -1125,75 +1163,49 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.9 — deploy-flow fixes; **not yet deployed to a server**;
-the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
-Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
-changed — see `ops/quality_audit.py`;
-until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
-printing exactly what the older build was coded to print). Hashes refreshed
-2026-10-04, so they describe THIS tree:
+Current **repo source** on this branch (v19.0 — optional category-wise Telegram + WhatsApp
+mirrors and strict-all link-provenance hardening; **not yet deployed to a server**).
+The category classifier is shared by both services through matching
+`category_rules.json` files and uses readable incoming/resolved URL slugs and
+search terms as well as post text; opaque IDs alone and mixed/unclear products
+stay on Main. It does not inspect merchant-page HTML. New Amazon category
+channels remain tagless until explicitly declared. Strict-all accepts only
+account-bound converter proof, exact native attribution, or the verified
+HYPD-to-Meesho mapping; cache rows/shortener hostnames alone do not prove
+ownership. Until `bash ops/deploy_and_verify.sh` is run on the host, live
+channels still run the previous build. Hashes below are refreshed for this
+source snapshot:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.9) | `ce43213667197eb1ed4fcb81d66e27d01efd2f43ade7bf8ca2f5559a6197fdf8` |
-| `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
+| `bestgaa/main_bot_new.py (v19.0)` | `661555e234d3f5c93aa05d63c94c534728db38298a3feaba62d61b1b3326038e` |
+| `bestgaa/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
+| `tg-wa-bridge/bridge.js` | `01d9711beddd55fb938685052f6dc59e77db54ebadbe446b48b3f1a531bb16ae` |
+| `tg-wa-bridge/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
+| `ops/quality_audit.py` | `8ad8d347554bd794ffb305b7006bd8115a0792f48c258e0c485125666331e08f` |
+| `ops/conversion_report.py` | `ea2655376f7697b4d6fb727f922459e723d710388122e2dc285db4a40206fd85` |
+| `ops/test_all.sh` | `1a20ecae5161a130a27e1580e9dcd5ab731c411ac4a2468603090fd5db68de62` |
+| `ops/repack_bundles.sh` | `8cceff22911b52dd9168137c4d7523e8f31c474c40f0a03b9d7742da37b2045f` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `8b825b41b4c6a23146635c336cb6db698f773316ae933020559944c2af7fd7bb` |
-| `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
-| `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
-| `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
-| `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
-| `test_earnkaro_conversion.py` | `4ed544fc03bd2ec3883c32466d269bd17dfd5915ea23de457f26c28aa878d3b2` |
+| `ops/deploy_and_verify.sh` | `7b784afd12fc72c36b8c8f30a49700dc9612c8e4c4bb9f8497bd10a4bf99ae7` |
+| `test_render_job.py` | `e583c796b093a786840900b02d858fb42a51e7a3d5229488b7ba56e29a5122ee` |
+| `test_line_fidelity.py` | `e648cb84378191865257250a94d239141980d1634989e09953daacaf9b2b01fa` |
+| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
+| `test_duplicate_sim.py` | `de827a979773ee933037de16c8e1fe494e69f983c2e538ddd5e9e6f6f62b06bd` |
+| `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
+| `test_earnkaro_conversion.py` | `771f22a147f1b9ce929ea75cdd5cf4ddb6fae1760b16665e525932f358b6eec0` |
+| `test_hypd_links.py` | `71c8f3e6f8c44871a1ac92e26146936108b938a2dfe28d84e0a05a086406a229` |
 
-A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
-tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python
-file compiles, `./ops/test_all.sh` prints ALL OFFLINE CHECKS PASSED, and
-`cd ops && ./repack_bundles.sh` produces both deploy bundles whose `main_bot_new.py` /
-`bridge.js` are byte-identical to the tracked sources (compare with
-`unzip -p … | sha256sum`). `ops/deploy_and_verify.sh` derives the expected version from
-the bot docstring, so it checks the running log against THIS code, and the older
-installers no longer pin the startup marker to v15. Runbook section 8 has the full list.
+**Offline verification on this source tree (2026-10-11):** `PYTHON=.venv/bin/python bash ops/test_all.sh` completed successfully. The gate covers category-taxonomy parity; 211 render/routing checks (including readable URL slugs, a shortened link resolved to a product slug, ambiguous/mixed items, and name-price-link fidelity); rescan/recovery, pipeline, best-copy, duplicate, EarnKaro, HYPD, and line-fidelity suites; the WhatsApp bridge self-test; plus Python compilation and JavaScript syntax validation. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
 
-`ops/earnkaro_check.py`, `ops/conversion_report.py`, `ops/set_earnkaro_key.sh`,
-`test_earnkaro_conversion.py`, `ops/LINK_PERFECTION_2026-10-04.txt` and this README
-carry the 2026-10-04 work (`--plan`, `EK VERIFIED`, LINK PERFECTION, the
-`unattributed` bucket and the v18.5 publisher-id stamping) — re-hash them with
-`sha256sum ops/*.py` after a deploy if you pin hashes elsewhere.
-
-Verified on this tree — **every suite × every knob, 108 runs green** (18 modes:
-`SHORTEN_MIN_LEN=1|300`, `MAX_ALBUM_PHOTOS=1|2`, `DROP_DEAD_LINKS=true`,
-`STRIP_CAMPAIGN_BANNERS=true`, `SAME_PRODUCT_SKIP_SECONDS=0`,
-`PASSTHROUGH_UNMONETIZED=false`, `ADD_OUR_CHANNEL_LINK_TOP=false`,
-`ADD_OUR_CHANNEL_FOOTER=true`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
-`PRODUCT_DEDUP_SECONDS=0`, `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`,
-`STATE_RETENTION_DAYS=1`, `SAME_PRODUCT_DISCOUNT_MARGIN=1`, both `POST_QUIET_*`
-extremes, and everything-off together) — plus the bridge self-test in all **22**
-modes listed in the table below, and
-`python3 ops/sync_identity.py --check` keeps the auditor's copy of the identity rule
-from ever disagreeing with the bot's:
-
-> That matrix is how the last defect in this branch was caught: S13b assumed our
-> channel top line exists, so it failed with `ADD_OUR_CHANNEL_LINK_TOP=false` — a
-> lying assertion, not a broken pipeline. It now asserts the knob's own contract in
-> both directions, which is the rule every test in this repo follows.
-
-| Suite | What it pins |
+| Suite | Current coverage |
 |---|---|
-| `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL ; a scrap glued to a price is cut while spaced text survives, an album of photos is posted as one grid (with its fallbacks), several links leave as our Bitly links and a dead shortener never costs the post, and the top line is our own channel link exactly once
-| `test_render_job.py` | 160/160 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel, and a source message deleted after intake still renders (media never invented, transient failures retried first) |
-| *Every suite above passes at the defaults AND with each knob moved*
-  | (`SHORTEN_MIN_LEN`, `MAX_ALBUM_PHOTOS`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
-  | `PASSTHROUGH_UNMONETIZED=false`, `SAME_PRODUCT_*`, `PRODUCT/PRICE_DEDUP_SECONDS=0`,
-  | `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`, `DROP_DEAD_LINKS=true`, the opt-in strippers,
-  | and the bridge in 7 modes) — an assertion that ignores a knob it depends on is a false
-  | alarm, and false alarms are how real bugs get ignored.
-  | `test_pipeline_fixes.py` | 225/225 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
-| `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
-| `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
-| `test_rescan.py` | rescan/re-queue behaviour |
-| `node tg-wa-bridge/bridge.js --self-test` | passes in **22** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps (`WA_MATURE_GAP_MIN/MAX_SECONDS`), `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, a combination, `TZ_NAME=UTC`/`America/New_York`/`Asia/Dubai`, `QUIET_START/END` at 00:00-23:59, 12:00-12:00 and 22:00-06:00, `WA_ORDINARY_MAX_AGE_MINUTES=1` and `=900`, and everything-off together. **Since v18.3 none of the trust-policy fixtures read the wall clock**, so a morning deploy cannot fail for a healthy bridge |
+| `test_render_job.py` | Strict-all skips unsupported/unmonetized items; readable incoming/resolved URL clues route only confident products; mixed/opaque links remain unguessed; lists preserve each name, price, and correct link. |
+| `test_earnkaro_conversion.py` | Converter response validation, identity-bound durable proof, native tag rotation, and the report/auditor's matching ownership rules. |
+| `test_best_copy.py` | Durable proof and strict link-audit regressions, alongside product-copy and fidelity checks. |
+| `test_duplicate_sim.py` | Real worker-path duplicate/recovery scenarios; fake converter output is persisted so the final provenance gate is still exercised. |
+| `node tg-wa-bridge/bridge.js --self-test` | Bridge provenance and routing contract, including link-derived category routing and ambiguous-link refusal. |
 
 `python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether
 the bot and the bridge consider two posts the same product — the check to run when a

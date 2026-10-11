@@ -6,18 +6,56 @@ import os from 'node:os'
 import { Readable } from 'node:stream'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
-import pino from 'pino'
-import qrcode from 'qrcode-terminal'
-import makeWASocket, {
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  useMultiFileAuthState,
-  encodeBase64EncodedStringForUpload,
-  encodeNewsletterMessage,
-  generateMessageIDV2,
-  prepareWAMessageMedia,
-  DEFAULT_ORIGIN,
-} from 'baileys'
+// The npm dependencies (pino / qrcode-terminal / baileys) are loaded LAZILY
+// (see loadVendorModules below), never as static imports. Static imports are
+// resolved before a single line of this file runs, so --identity-probe - a
+// pure diagnostic over the dedup rule - used to die with ERR_MODULE_NOT_FOUND
+// on any box without node_modules installed, and the cross-language dedup
+// contract test could never go green there. Probe mode now needs only the
+// node: builtins above; every live path loads the vendors first.
+let pino = null
+let qrcode = null
+let makeWASocket = null
+let DisconnectReason = null
+let fetchLatestBaileysVersion = null
+let useMultiFileAuthState = null
+let encodeBase64EncodedStringForUpload = null
+let encodeNewsletterMessage = null
+let generateMessageIDV2 = null
+let prepareWAMessageMedia = null
+let DEFAULT_ORIGIN = null
+let _vendorsLoaded = false
+async function loadVendorModules() {
+  if (_vendorsLoaded) return
+  let baileys
+  try {
+    const [pinoMod, qrcodeMod, baileysMod] = await Promise.all([
+      import('pino'),
+      import('qrcode-terminal'),
+      import('baileys'),
+    ])
+    pino = pinoMod.default
+    qrcode = qrcodeMod.default
+    baileys = baileysMod
+  } catch (error) {
+    throw new Error(
+      `WhatsApp bridge dependencies are missing (${error.message}). Run: cd tg-wa-bridge && npm install`,
+    )
+  }
+  ;({
+    default: makeWASocket,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState,
+    encodeBase64EncodedStringForUpload,
+    encodeNewsletterMessage,
+    generateMessageIDV2,
+    prepareWAMessageMedia,
+    DEFAULT_ORIGIN,
+  } = baileys)
+  _vendorsLoaded = true
+  _realLog = pino({ level: process.env.LOG_LEVEL || 'info' })
+}
 
 const BASE = path.dirname(new URL(import.meta.url).pathname)
 const ENV_FILE = path.join(BASE, '.env')
@@ -44,6 +82,20 @@ function loadEnv(file) {
 }
 loadEnv(ENV_FILE)
 
+const CATEGORY_RULES_PATH = path.join(BASE, 'category_rules.json')
+let CATEGORY_RULES = { version: 0, min_score: 3, min_margin: 2, categories: [] }
+try {
+  CATEGORY_RULES = JSON.parse(fs.readFileSync(CATEGORY_RULES_PATH, 'utf8'))
+} catch (error) {
+  console.warn(`[bridge] category routing disabled: cannot load ${CATEGORY_RULES_PATH}: ${error.message}`)
+}
+const CATEGORY_DEFINITIONS = new Map((CATEGORY_RULES.categories || [])
+  .filter(category => category && category.key)
+  .map(category => [category.key, category]))
+const CATEGORY_WA_CHANNELS = new Map([...CATEGORY_DEFINITIONS.keys()].map(key => [
+  key, (process.env[`WA_CHANNEL_${key.toUpperCase()}`] || '').trim(),
+]))
+
 // --identity-probe only exercises the pure dedup-identity function; it never
 // touches Telegram or WhatsApp. Demanding live credentials for it meant the
 // cross-language dedup contract could not be verified on any machine without a
@@ -65,10 +117,9 @@ const WA_CHANNEL = required('WA_CHANNEL')
 // Accepts an @newsletter JID or a https://whatsapp.com/channel/CODE invite.
 // Empty = single main channel.
 const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
-// The user runs TWO WhatsApp channels. By default the second one is the
-// Under-₹99 shelf and only receives under-₹99 content. Set
-// WA_CHANNEL_ALL_POSTS=true to mirror EVERY post to both channels instead
-// (the under-₹99 gate is then ignored, digests included).
+// Price-tier Channels have their own policies by default. Set
+// WA_CHANNEL_ALL_POSTS=true to mirror every post to all configured price-tier
+// destinations (including digests); category destinations remain strict.
 const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerCase() === 'true'
 // ---------------------------------------------------------------------------
 // THE USER'S CHANNEL MATRIX - each WhatsApp channel is a POLICY, not just a JID.
@@ -83,6 +134,9 @@ const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerC
 //   WA_CHANNEL_UNDER499   -> under-₹499 products + ANY multi-product list
 //   WA_CHANNEL_BEST_OF    -> only "the best of the moment": a deal that is not a
 //                            clear best-tier pick is SKIPPED on this channel
+//   WA_CHANNEL_<CATEGORY> -> one confident product category + the Main mirror;
+//                            mixed/unclear posts stay Main-only. Amazon tags are
+//                            stripped until that category channel is declared.
 // Credit/bank-card offers are not under-₹99 products and stay off that shelf.
 const WA_CHANNEL_UNDER499 = (process.env.WA_CHANNEL_UNDER499 || '').trim()
 // The --self-test run must never rewrite the operator's live state file.
@@ -132,6 +186,10 @@ const QUIET_START = process.env.QUIET_START || '02:00'
 const QUIET_END = process.env.QUIET_END || '06:00'
 const HYBRID_QUIET = (process.env.HYBRID_QUIET || 'false').toLowerCase() === 'true'
 const STRICT_SOURCE_ONLY = (process.env.STRICT_SOURCE_ONLY || 'true').toLowerCase() === 'true'
+// Pinned policy: never send a source, plain merchant, or service URL. Every
+// posted URL must be a verified link that credits our account; otherwise the
+// item/post is skipped rather than published with somebody else's/zero credit.
+const STRICT_OUR_LINKS = true
 const CURATE_TOP_DEALS = (process.env.CURATE_TOP_DEALS || 'true').toLowerCase() === 'true'
 // USER RULE (2026-09-06): "kothaga thiskunna mama086-21 idi manade". The
 // previously seen tag (deals0911-21) belonged to a SOURCE, so it was pinned
@@ -151,6 +209,13 @@ const AMAZON_TAG = (() => {
   }
   return configured || OUR_AMAZON_TAGS[0]
 })()
+// Amazon-tag allowance for newly created WhatsApp category channels is
+// intentionally separate from the existing core-channel policy. Add category
+// slugs here only AFTER each WhatsApp Channel has been declared to Associates.
+const WA_AMAZON_TAG_CATEGORY_TARGETS = new Set(
+  (process.env.WA_AMAZON_TAG_CATEGORY_TARGETS || '').split(',')
+    .map(value => value.trim().toLowerCase()).filter(value => CATEGORY_DEFINITIONS.has(value)),
+)
 const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
 const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
 const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
@@ -263,9 +328,8 @@ const COMMISSION_RANKING = (process.env.WA_COMMISSION_RANKING || 'true').toLower
 // ---------------------------------------------------------------------------
 // Product-level duplicate protection: the SAME product (ASIN / product slug,
 // not just the exact URL or text) must not be posted again within this window.
-// Floor requested by the user: 3 hours. Default 10 hours — the same window the
-// Telegram bot already uses (PRODUCT_DEDUP_SECONDS=36000), so WhatsApp and
-// Telegram stay consistent.
+// STRICT 24h on both services, pinned (user rule 2026-09-04) — the same window
+// the Telegram bot enforces, so WhatsApp and Telegram stay consistent.
 // ---------------------------------------------------------------------------
 const PRODUCT_DEDUP_HOURS = 24 // STRICT 24h: asalu ravoddu same product 24h — pinned, env override blocked (user rule 2026-09-04)
 // ---------------------------------------------------------------------------
@@ -291,14 +355,17 @@ const ALREADY_SHORT_HOSTS = new Set([
 // the Telegram bot skipped/missed still reaches WhatsApp. The same best-deal
 // gate + product dedup apply, so anything already posted via our own channels
 // is never double-posted. Our generated affiliate links keep the provenance
-// check; raw source links are resolved (redirect follow) and posted as-is —
-// raw Amazon product pages get our tag appended so they stay monetized.
+// check; raw source links are resolved and must be converted to our own native
+// Amazon/EarnKaro attribution or refused under strict-all. No clean merchant
+// fallback is posted; unresolved source posts are skipped safely.
 // Requires the bridge's Telegram bot to be an admin in those channels.
 // TG_DIRECT_SOURCES: unset = default list below; empty value = disabled.
 // ---------------------------------------------------------------------------
-const DEFAULT_DIRECT_SOURCES = 'deals,powerloot,loot_alerts,TeluguTechworld,icoolzTricks,SB_Loots_And_Deals,Flipkarthiik,HiddenDeals1,idoffers,Magixdeals_Magix,dealsvelocity,pricehistory,telugutechtvdeals,indian_online_offer,idoffers2,DealsUnder99_com,under_99_loot_deals,Mobile_phone_offers_tv_ac_deals,Mobile_phone_offers_tv_ac_dealsk,techglaredeals,iamprasadtech,hidden_loot_deals_amazon,dealdost,rapiddeals_unlimited,amazinglootsdealsoffers,realearnkaro,CKoffers,LootDealsPortal,LOOTS_DEAL_OFFER_ONLINE_SHOPPING,RealShoppingDeals,rebeldealss,Only_discount_Deals,GrabOnIndiaOfficial,myntra_Ajio_Sale_Deals_offers_li,BiggestLootDeals,lootping,Shopping_Loot_Fashion_Deals,msho_shpsy_offers,Myntra_Ajio_Deals_Shopsy,vaasutechdeals,lootsxpert'
+const DEFAULT_DIRECT_SOURCES = 'deals,powerloot,loot_alerts,TeluguTechworld,icoolzTricks,SB_Loots_And_Deals,Flipkarthiik,HiddenDeals1,idoffers,Magixdeals_Magix,dealsvelocity,pricehistory,telugutechtvdeals,indian_online_offer,idoffers2,DealsUnder99_com,under_99_loot_deals,Mobile_phone_offers_tv_ac_deals,Mobile_phone_offers_tv_ac_dealsk,techglaredeals,hidden_loot_deals_amazon,dealdost,rapiddeals_unlimited,amazinglootsdealsoffers,realearnkaro,CKoffers,LootDealsPortal,LOOTS_DEAL_OFFER_ONLINE_SHOPPING,RealShoppingDeals,rebeldealss,Only_discount_Deals,GrabOnIndiaOfficial,myntra_Ajio_Sale_Deals_offers_li,BiggestLootDeals,lootping,Shopping_Loot_Fashion_Deals,msho_shpsy_offers,Myntra_Ajio_Deals_Shopsy,vaasutechdeals,lootsxpert'
+const BLOCKED_DIRECT_SOURCES = new Set(['iamprasadtech'])
 const DIRECT_SOURCES = new Set((process.env.TG_DIRECT_SOURCES === undefined ? DEFAULT_DIRECT_SOURCES : process.env.TG_DIRECT_SOURCES)
-  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
+  .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase())
+  .filter(x => x && !BLOCKED_DIRECT_SOURCES.has(x)))
 // Hosts safe to follow for redirect resolution on direct-source links (known
 // shorteners/redirectors only — never arbitrary merchant pages).
 const REDIRECT_FOLLOW_HOSTS = new Set([
@@ -317,9 +384,8 @@ const OUR_LINK_HOSTS = new Set([
 // ---------------------------------------------------------------------------
 // HYPD creator-store share links (USER RULE 2026-09-24). Only our store's
 // links with a VERIFIED Meesho destination may be kept as HYPD and shortened.
-// Shopsy gets a clean merchant fallback; foreign-store and unknown destinations
-// are blocked from HYPD. Bot-fed HYPD links have already passed this check in
-// BestGAA; direct-source HYPD links are verified below before they are used.
+// Unsupported/unknown destinations are blocked under strict-all; no clean,
+// unmonetized Shopsy fallback is published. Direct links are verified below.
 //   HYPD_STORES: comma list of our store ids/usernames (default our store).
 const HYPD_STORES = new Set((process.env.HYPD_STORES || '93944,smartdeals')
   .split(',').map(x => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))
@@ -345,14 +411,33 @@ function isOurHypdLink(url) {
 }
 // ---------------------------------------------------------------------------
 // Service / lifestyle offers: Zomato, Swiggy, Zepto, movie tickets, quick
-// commerce, payment-app and card offers. They are not EarnKaro-monetized
-// store products, so their links pass through without affiliate provenance
-// checks and the posts are treated as special offers (best tier).
+// commerce, payment-app and card offers. They are not EarnKaro-monetized store
+// products and are rejected by strict-all even though some are top-tier deals.
 // ---------------------------------------------------------------------------
 const SERVICE_OFFER_DOMAINS = (process.env.WA_SERVICE_DOMAINS ||
   'zomato.com,zomato.in,zom.to,swiggy.com,swiggy.in,zepto.com,dominos.in,pizzahut.co.in,pizza-hut.co.in,bookmyshow.com,pvr.in,inoxmovies.com,amctheatres.in,bigcinema.com,phonepe.com,amazonpay.in,paytm.com,magicpin.in')
   .split(',').map(x => x.trim().toLowerCase()).filter(Boolean)
-const log = pino({ level: process.env.LOG_LEVEL || 'info' })
+// Console-backed logger shim with the same call shape the code uses
+// (info/warn/error/debug/trace/fatal + child), so every call site works before
+// pino loads; loadVendorModules swaps the target to the real pino logger for
+// production / self-test runs. Probe mode only ever uses the shim.
+let _realLog = null
+const _shimLine = level => (...args) => {
+  const target = _realLog?.[level]?.bind(_realLog)
+  if (target) return target(...args)
+  const line = args.map(part => (typeof part === 'string' ? part : JSON.stringify(part) ?? String(part))).join(' ')
+  const out = (level === 'error' || level === 'warn' || level === 'fatal') ? process.stderr : process.stdout
+  out.write(`${new Date().toISOString()} [${level.toUpperCase()}] ${line}\n`)
+}
+const log = {
+  info: _shimLine('info'),
+  warn: _shimLine('warn'),
+  error: _shimLine('error'),
+  debug: _shimLine('debug'),
+  trace: _shimLine('trace'),
+  fatal: _shimLine('fatal'),
+  child: () => log,
+}
 
 const defaultState = () => ({
   telegramOffset: 0,
@@ -378,6 +463,7 @@ let targetJid = null
 let under99Jid = null
 let under499Jid = null
 let bestOfJid = null
+let categoryJids = new Map()
 // jid -> policy, rebuilt whenever a channel resolves (targetsFor reads it).
 const CHANNEL_POLICY_OF_JID = new Map()
 let groupJids = []
@@ -872,6 +958,13 @@ function stripFlipkartShareTitle(text) {
   }).join('\n')
 }
 
+const SHORT_LIST_NON_PRODUCT_TOKENS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'by', 'with', 'from', 'for',
+  'deal', 'deals', 'offer', 'offers', 'sale', 'sales', 'loot', 'loots', 'price', 'mrp',
+  'discount', 'off', 'coupon', 'coupons', 'code', 'buy', 'shop', 'order', 'grab', 'click',
+  'tap', 'now', 'here', 'below', 'join', 'follow', 'subscribe', 'share', 'forward', 'hurry',
+  'today', 'daily', 'new', 'top', 'hot', 'free', 'max', 'quantity', 'qty', 'more', 'link', 'links',
+])
 function cleanDealText(text) {
   const noise = /^(?:\s*(?:🔥\s*LOOT\s+ZONE\s*[—-]\s*India|🚨\s*SPECIAL\s+OFFER|✅\s*Verified\s*•\s*Enjoy\s*\(Grab\s*fast\)|.*deal\s*time\s*:.*(?:IST)?|.*\bloot\s+fa+s+\s*t+\b.*|.*(?:@GrabOnIndiaOfficial|50\+\s*loots\s*daily).*|(?:h|ht|htt|https?|ttp|ttps|tps?:\/\/|s:\/\/|:\/\/|uy)|👉.*(?:https\s*:\s*are)|💰?\s*want\s+real\s+cash\s*back\s+too\??|forward\s+to\s+@cashkarolink_?bot|#(?:myntra|flipkart|amazon|ajio))\s*)$/i
   const fragments = new Set(['h','ht','htt','http','https','ttp','ttps','tps://','tp://','s://','://','uy'])
@@ -879,6 +972,10 @@ function cleanDealText(text) {
   const sourceLines = stripFlipkartShareTitle(
     normalizeNestedLinks(text).replace(/[\u200b-\u200f\u2060\ufeff]/g, '')
   ).split(/\r?\n/)
+  const sourceUrlCount = new Set(sourceLines.flatMap(line =>
+    (line.match(/https?:\/\/[^\s<>\[\](){}"']+/giu) || []).map(cleanUrl)
+  )).size
+  const multiProductContext = sourceUrlCount >= 2
   // Branding always goes; the channel's own hype header only when the operator
   // opted into WA_STRIP_CAMPAIGN_BANNERS.
   const prepared = STRIP_CAMPAIGN_BANNERS
@@ -948,11 +1045,21 @@ function cleanDealText(text) {
     const token = line.trim()
     if (!/^[A-Za-z0-9_-]{1,12}$/.test(token)) return true
     const lower = token.toLowerCase()
+    const core = token.replace(/[^A-Za-z:/]/g, '').toLowerCase()
     const previous = index ? lines[index - 1].trim() : ''
     const next = index + 1 < lines.length ? lines[index + 1].trim() : ''
     const adjacentUrl = /^https?:\/\//i.test(previous) || /^https?:\/\//i.test(next)
     const couponContext = /use\s*code\s*:?$/i.test(previous)
-    return meaningful.has(lower) || adjacentUrl || couponContext
+    const adjacentDeal = [previous, next].some(candidate =>
+      /(?:₹|\b(?:rs\.?|inr)\s*\d|\b\d[\d,]*\s*%|\bmrp\b)/i.test(candidate)
+    )
+    const shortProductLabel = (multiProductContext || adjacentDeal)
+      && /^[A-Za-z][A-Za-z0-9+&._'-]{1,29}$/.test(token)
+      && !SHORT_LIST_NON_PRODUCT_TOKENS.has(lower)
+      && !SHORT_LIST_NON_PRODUCT_TOKENS.has(core)
+      && !fragments.has(core)
+      && !isPromoNoiseLine(line)
+    return meaningful.has(lower) || adjacentUrl || couponContext || shortProductLabel
   })
   return strict.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
@@ -1405,7 +1512,8 @@ function acceptPost(post) {
   return classifySource(post) !== null
 }
 // Our generated affiliate links (bot output): full provenance applies. Raw
-// source links on direct jobs are resolved + posted unconverted instead.
+// source links on direct jobs are resolved and then must pass the same strict
+// ownership gate; a bare merchant fallback is never considered owned.
 function isOurGeneratedLink(url) {
   try {
     const u = new URL(url)
@@ -1420,7 +1528,8 @@ function isOurGeneratedLink(url) {
       // tag (bare = unmonetized, any other tag = a stranger's).
       return u.searchParams.get('tag') === AMAZON_TAG
     }
-    if (host === 'flipkart.com' || host.endsWith('.flipkart.com')) {
+    if (host === 'flipkart.com' || host.endsWith('.flipkart.com')
+        || host === 'myntra.com' || host.endsWith('.myntra.com')) {
       return u.searchParams.get('affExtParam2') === PUBLISHER_ID
     }
     return false
@@ -1445,6 +1554,24 @@ function isOurAmazonTagLink(url) {
       // Tag era: only OUR tag is self-proving; bare or foreign-tagged links
       // are not ours.
       return u.searchParams.get('tag') === AMAZON_TAG
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+// A resolved native merchant link is self-proving only when its actual network
+// attribution is ours. Generic shortener hostnames are deliberately NOT proof.
+function hasOwnAffiliateAttribution(url) {
+  if (isOurAmazonTagLink(url)) return true
+  try {
+    const u = new URL(url)
+    const host = u.hostname.toLowerCase()
+    if (host === 'flipkart.com' || host.endsWith('.flipkart.com')
+        || host === 'myntra.com' || host.endsWith('.myntra.com')) {
+      for (const [key, value] of u.searchParams.entries()) {
+        if (key.toLowerCase() === 'affextparam2' && value === PUBLISHER_ID) return true
+      }
     }
     return false
   } catch {
@@ -1530,20 +1657,19 @@ async function resolveUrl(url, fetchFn = fetch) {
   }
   return current
 }
-// Direct-source jobs carry RAW source links (fkrt.co, amzn.to, linkredirect.in,
-// bare merchant pages) — not our generated affiliate links. Smart handling:
-//   * our generated links keep the normal provenance verification
-//   * Amazon pages resolved from raw links are tagged natively with OUR tag
-//     (product AND search pages, exactly like the bot does): a stranger's tag
-//     is deleted first, then ours is set, so the click earns on our account
-//   * everything else is resolved (redirect follow) and posted unconverted, so
-//     the deal reaches WhatsApp even when the bot never posted it to Telegram
+// Direct-source jobs may contain RAW source links. Resolve only links we can
+// attribute to our account; never publish a clean-but-unmonetized fallback.
 async function prepareDirectJob(job, fetchFn = fetch) {
   job.resolvedLinks ||= {}
   job.blockedLinks ||= {}
   job.verifiedHypdLinks ||= {}
   for (const url of urlsIn(job.text || '')) {
     if (job.blockedLinks[url] || job.verifiedHypdLinks[url] || job.resolvedLinks[url]) continue
+    if (STRICT_OUR_LINKS && isServiceUrl(url)) {
+      job.blockedLinks[url] = true
+      log.warn({ id: job.id, url: url.slice(0, 60) }, 'OWN-LINK POLICY | service offer link skipped')
+      continue
+    }
     if (isHypdHost(hostOf(url))) {
       if (!isOurHypdLink(url)) {
         job.blockedLinks[url] = true
@@ -1554,7 +1680,7 @@ async function prepareDirectJob(job, fetchFn = fetch) {
       if (destination && isMeeshoUrl(destination)) {
         job.verifiedHypdLinks[url] = destination
         log.info({ id: job.id, destination: destination.slice(0, 90) }, 'HYPD VERIFIED | Meesho destination; our share link may be used')
-      } else if (destination && [...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => {
+      } else if (!STRICT_OUR_LINKS && destination && [...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => {
         const host = hostOf(destination)
         return host === domain || host.endsWith('.' + domain)
       })) {
@@ -1597,6 +1723,12 @@ async function prepareDirectJob(job, fetchFn = fetch) {
         resolved = attributeWithOurPublisher(resolved)
       }
     } catch { /* keep resolved as-is */ }
+    if (STRICT_OUR_LINKS && !hasOwnAffiliateAttribution(resolved)) {
+      job.blockedLinks[url] = true
+      log.warn({ id: job.id, url: url.slice(0, 60), destination: String(resolved).slice(0, 90) },
+        'OWN-LINK POLICY | merchant destination has no verified attribution')
+      continue
+    }
     if (resolved !== url) job.resolvedLinks[url] = resolved
   }
 }
@@ -1919,6 +2051,104 @@ function keepSourceSpacing(body, sourceText) {
   return body.replace(/\n{2,}/g, '\n')
 }
 
+// Reflow a list only when the source puts 3+ bare links together at the end.
+// Names may be interleaved with prices or grouped before the price run; pair
+// each item and URL by source order, and leave already-neat posts untouched.
+const LIST_PRICE_LABEL_RE = /(?:₹|\brs\.?|\binr)\s*[\d,]{2,}|(?:\bat|@)\s*[\d,]{2,}|\b[\d,]{2,}\s*\/-/i
+const LIST_NON_PRODUCT_TOKENS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'to', 'in', 'on', 'at', 'by', 'with', 'from', 'for',
+  'deal', 'deals', 'offer', 'offers', 'sale', 'sales', 'loot', 'loots', 'price', 'mrp',
+  'discount', 'off', 'coupon', 'coupons', 'code', 'buy', 'shop', 'order', 'grab', 'click',
+  'tap', 'now', 'here', 'below', 'join', 'follow', 'subscribe', 'share', 'forward', 'hurry',
+  'today', 'daily', 'new', 'top', 'hot', 'free', 'max', 'quantity', 'qty', 'more', 'link', 'links',
+  'todaysbestdeals', 'todaysoffers', 'bestdeals', 'bestoffers', 'topdeals',
+])
+function listProductLabel(value) {
+  const label = String(value || '').replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/^[^\p{L}\p{N}₹]+/u, '').replace(/[\s:|*•-]+$/g, '').trim()
+  if (!label || /https?:\/\//i.test(label) || LIST_PRICE_LABEL_RE.test(label)) return ''
+  if (isPromoNoiseLine(label) || /^(?:apply\s+coupon|use\s+code|coupon|code|buy\s+max|max\s+quantity|click\s+here|shop\s+now|buy\s+now)\b/i.test(label)) return ''
+  const normalized = label.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+  if (LIST_NON_PRODUCT_TOKENS.has(normalized)) return ''
+  return label
+}
+function productNameOnPriceLine(line) {
+  let candidate = String(line || '').replace(LIST_PRICE_LABEL_RE, ' ')
+    .replace(/\b\d[\d,]*\s*%\s*(?:off|discount)?\b/gi, ' ')
+    .replace(/\b(?:deal|price|mrp|regular|original|list|only|just|from|now|off|discount|flat|save|rs\.?|inr|rupees?)\b/gi, ' ')
+  return listProductLabel(candidate)
+}
+function formatBottomDumpedProductList(text) {
+  const original = String(text || '')
+  const lines = original.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+  const isBareUrl = line => /^https?:\/\/\S+$/i.test(line)
+  const urlPositions = lines.flatMap((line, index) => isBareUrl(line) ? [index] : [])
+  if (urlPositions.length < 3) return original
+  const firstUrl = urlPositions[0]
+  if (lines.slice(firstUrl).some(line => !isBareUrl(line))) return original
+  const head = lines.slice(0, firstUrl)
+  const itemPricePositions = []
+  for (let index = 0; index < head.length; index++) {
+    const line = head[index]
+    if (!LIST_PRICE_LABEL_RE.test(line)) continue
+    const hasInlineName = Boolean(productNameOnPriceLine(line))
+    const referenceOnly = /\b(?:mrp|regular\s+price|original\s+price|list\s+price)\b/i.test(line)
+      && !hasInlineName && !/\b(?:deal\s+price|offer\s+price|now|only)\b/i.test(line)
+    if (!referenceOnly) itemPricePositions.push(index)
+  }
+  if (itemPricePositions.length < 3) return original
+  const priceNames = itemPricePositions.map(index => productNameOnPriceLine(head[index]))
+  const prePriceLabels = []
+  for (let index = 0; index < itemPricePositions[0]; index++) {
+    if (listProductLabel(head[index])) prePriceLabels.push(index)
+  }
+  const groupedNamesFirst = priceNames.every(name => !name)
+    && prePriceLabels.length >= itemPricePositions.length
+  let preamble = []
+  const blocks = []
+  if (groupedNamesFirst) {
+    const selected = prePriceLabels.slice(-itemPricePositions.length)
+    preamble = head.slice(0, selected[0])
+    for (let index = 0; index < selected.length; index++) {
+      const nextLabel = index + 1 < selected.length ? selected[index + 1] : itemPricePositions[0]
+      const priceAt = itemPricePositions[index]
+      const nextPrice = index + 1 < itemPricePositions.length ? itemPricePositions[index + 1] : head.length
+      blocks.push([...head.slice(selected[index], nextLabel), ...head.slice(priceAt, nextPrice)])
+    }
+  } else {
+    const starts = []
+    let previousPrice = -1
+    for (let index = 0; index < itemPricePositions.length; index++) {
+      const priceAt = itemPricePositions[index]
+      let start = priceAt
+      if (!priceNames[index]) {
+        const candidates = []
+        for (let candidate = previousPrice + 1; candidate < priceAt; candidate++) {
+          if (listProductLabel(head[candidate])) candidates.push(candidate)
+        }
+        if (candidates.length) start = candidates[candidates.length - 1]
+      }
+      starts.push(start)
+      previousPrice = priceAt
+    }
+    preamble = head.slice(0, starts[0])
+    for (let index = 0; index < starts.length; index++) {
+      const end = index + 1 < starts.length ? starts[index + 1] : head.length
+      blocks.push(head.slice(starts[index], end))
+    }
+  }
+  const urls = urlPositions.map(index => lines[index])
+  const pairCount = Math.min(blocks.length, urls.length)
+  const out = [...preamble]
+  for (let index = 0; index < pairCount; index++) {
+    if (out.length) out.push('')
+    out.push(...blocks[index], urls[index])
+  }
+  for (const extra of urls.slice(pairCount)) out.push(extra)
+  for (const leftover of blocks.slice(pairCount)) out.push('', ...leftover)
+  return out.join('\n').trim()
+}
+
 function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // v17.5 - the WhatsApp post IS the source post: cleaned, never rewritten.
   //
@@ -1934,7 +2164,8 @@ function formatPostBody(job, { includeLinks = true, bodyMax = 0 } = {}) {
   // tokens, orphan URL fragments) via cleanDealText + cleanBodyLine, and every
   // link becomes OUR monetized link, one per line.
   const raw = job.text || ''
-  const cleaned = cleanDealText(raw) || ''
+  const sourceOrdered = formatBottomDumpedProductList(raw)
+  const cleaned = cleanDealText(sourceOrdered) || ''
   const out = []
   for (const lineRaw of cleaned.split(/\r?\n/)) {
     const line = lineRaw.trim()
@@ -2094,21 +2325,19 @@ function passesBestDealGate(job) {
   }
   return { ok: true, reason: '' }
 }
-// Service URLs are not EarnKaro-monetized, so they must never be sent to the
-// BestGAA link_cache provenance check; on direct-source jobs only OUR generated
-// links are in the link_cache (raw source links are resolved + pass through).
-// Amazon links carrying OUR Associates tag are self-proving (see
-// isOurAmazonTagLink) and are also exempt — the cache is for conversion-API
-// output, not for our direct Associates links, so a DB check would only ever
-// reject good deals. Everything else keeps full verification.
+// Service URLs are never proof of affiliate earnings. In strict mode they are
+// rejected before this check. Amazon URLs with OUR Associates tag and supported
+// native publisher URLs are self-proving; other links must match account-bound
+// owned_link_proofs or a verified HYPD mapping. A link_cache row/hostname alone
+// is only a lookup, never evidence that the link pays this account.
 function urlsForProvenance(job, urls) {
   return urls.filter(url => {
     if (job?.direct && job?.blockedLinks?.[url]) return false
-    if (job?.direct && isOurHypdLink(url)
-      && (job?.verifiedHypdLinks?.[url] || job?.resolvedLinks?.[url])) return false
-    if (isServiceUrl(url) || isServiceUrl(displayUrl(job, url))) return false
-    if (isOurAmazonTagLink(url) || isOurAmazonTagLink(displayUrl(job, url))) return false
-    if (job?.direct && !isOurGeneratedLink(url)) return false
+    if (job?.direct && isOurHypdLink(url) && job?.verifiedHypdLinks?.[url]) return false
+    const shown = displayUrl(job, url)
+    if (isServiceUrl(url) || isServiceUrl(shown)) return STRICT_OUR_LINKS
+    if (hasOwnAffiliateAttribution(url) || hasOwnAffiliateAttribution(shown)) return false
+    if (!STRICT_OUR_LINKS && job?.direct && !isOurGeneratedLink(url)) return false
     return true
   })
 }
@@ -2473,25 +2702,51 @@ function stripAmazonJunk(url) {
 }
 function normalizeAmazonTags(text) {
   // Tag era: repair the Amazon links of text about to be verified so every one
-  // of them earns on OUR account. A stranger's tag (old queued jobs may still
-  // carry ?tag=deals0911-21) is deleted and OURS is set, a bare amazon link
-  // gains OURS, and a link already carrying ours passes untouched. Called from
-  // verifyJob BEFORE validateAffiliateText, so the repaired text is what the
-  // policy gate sees.
+  // earns on OUR account. A stranger's tag is replaced and a bare Amazon URL
+  // gains ours before provenance checks.
   if (!text) return text
   let out = String(text)
   for (const url of urlsIn(out)) {
     try {
       const u = new URL(url)
-      const host = u.hostname.toLowerCase()
-      const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
-      if (!isAmazon) continue
+      if (!isAmazonHost(u.hostname.toLowerCase())) continue
       if (u.searchParams.get('tag') === AMAZON_TAG) continue
       u.searchParams.delete('tag')
       u.searchParams.set('tag', AMAZON_TAG)
       const cleaned = u.toString()
       if (cleaned !== url) out = out.split(url).join(cleaned)
     } catch {}
+  }
+  return out
+}
+function amazonUrlWithoutOurTag(value) {
+  try {
+    const url = new URL(value)
+    if (!isAmazonHost(url.hostname.toLowerCase()) || url.searchParams.get('tag') !== AMAZON_TAG) return null
+    url.searchParams.delete('tag')
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+function stripAmazonTagForUndeclaredCategory(job, text) {
+  if (!job || !text) return text
+  let out = String(text)
+  // The displayed URL may be our Bitly short link. Recover its already-verified
+  // destination and use the clean, untagged Amazon page in this channel only.
+  for (const source of urlsIn(job.text || '')) {
+    const resolved = job.resolvedLinks?.[source] || job.provenanceDestinations?.[source] || source
+    const untagged = amazonUrlWithoutOurTag(resolved)
+    if (!untagged) continue
+    const displayed = job.shortLinks?.[source] || resolved
+    for (const candidate of new Set([displayed, resolved, source])) {
+      if (candidate) out = out.split(candidate).join(untagged)
+    }
+  }
+  // Also repair a native tagged Amazon URL that did not have a short-link map.
+  for (const url of urlsIn(out)) {
+    const untagged = amazonUrlWithoutOurTag(url)
+    if (untagged) out = out.split(url).join(untagged)
   }
   return out
 }
@@ -2804,21 +3059,85 @@ async function notBroken(url) {
     return true
   }
 }
-async function verifyBestGaaProvenance(urls) {
-  const script = [
-    'import json,sqlite3,sys',
-    'urls=json.load(sys.stdin)',
-    'db=sqlite3.connect(sys.argv[1])',
-    'found=set()',
-    'chunk=400',
-    'for i in range(0,len(urls),chunk):',
-    ' p=urls[i:i+chunk]',
-    ' q=",".join("?" for _ in p)',
-    ' found.update(r[0] for r in db.execute(f"SELECT affiliate_url FROM link_cache WHERE affiliate_url IN ({q})",p))',
-    'print(json.dumps([u for u in urls if u not in found]))',
-  ].join('\n')
-  return await new Promise((resolve, reject) => {
-    const child = spawn('python3', ['-c', script, BESTGAA_DB_PATH], { stdio: ['pipe', 'pipe', 'pipe'] })
+async function verifyBestGaaProvenance(urls, job = null) {
+  // A link_cache hit is only a lookup, not ownership proof: older rows also
+  // include clean merchant pass-throughs. Mirror the bot/auditor policy here:
+  // require account-bound converter proof, a currently tagged Amazon destination,
+  // native publisher attribution, or an exact verified HYPD -> Meesho mapping.
+  const script = String.raw`
+import json,sqlite3,sys
+from urllib.parse import urlparse,parse_qs
+urls=json.load(sys.stdin)
+db=sqlite3.connect(sys.argv[1])
+publisher=sys.argv[2].strip()
+tag=sys.argv[3].strip()
+stores={x.strip().lower() for x in sys.argv[4].split(',') if x.strip()}
+found={}
+service_domains=('zomato.com','zomato.in','zom.to','swiggy.com','swiggy.in','zepto.com',
+ 'dominos.in','pizzahut.co.in','pizzahut.com','pizza-hut.co.in','bookmyshow.com','pvr.in',
+ 'inoxmovies.com','amctheatres.in','bigcinema.com','phonepe.com','amazonpay.in','paytm.com','magicpin.in')
+def host(url):
+ try: return (urlparse(url).hostname or '').lower()
+ except Exception: return ''
+def forbidden(url):
+ h=host(url)
+ return h=='t.me' or h.endswith('.t.me') or h in ('telegram.org','whatsapp.com') or any(h==d or h.endswith('.'+d) for d in service_domains)
+def is_meesho(url):
+ h=host(url); return h=='meesho.com' or h.endswith('.meesho.com')
+def query(url):
+ try: return {k.lower():v for k,v in parse_qs(urlparse(url).query).items()}
+ except Exception: return {}
+def amazon_owned(url):
+ h=host(url); q=query(url)
+ return (h=='amazon.in' or h.endswith('.amazon.in') or h=='amazon.com' or h.endswith('.amazon.com')) and bool(tag and q.get('tag')) and all(v==tag for v in q.get('tag',[]))
+def native_owned(url):
+ h=host(url); q=query(url)
+ if amazon_owned(url): return True
+ if h=='flipkart.com' or h.endswith('.flipkart.com') or h=='myntra.com' or h.endswith('.myntra.com'):
+  ids=q.get('affextparam2',[])
+  return bool(publisher and ids) and all(v==publisher for v in ids)
+ return False
+try: proof_columns={r[1] for r in db.execute('PRAGMA table_info(owned_link_proofs)')}
+except sqlite3.OperationalError: proof_columns=set()
+proof_publisher='publisher_id' if 'publisher_id' in proof_columns else "''"
+try: hypd_columns={r[1] for r in db.execute('PRAGMA table_info(hypd_links)')}
+except sqlite3.OperationalError: hypd_columns=set()
+has_hypd={'afflink_url','resolved_url','product_key','store'}.issubset(hypd_columns)
+for url in urls:
+ if forbidden(url): continue
+ try: row=db.execute('SELECT affiliate_url,resolved_url,deal_key FROM link_cache WHERE affiliate_url=? LIMIT 1',(url,)).fetchone()
+ except sqlite3.OperationalError: row=None
+ affiliate,resolved,deal_key=row if row else (url,'','')
+ if forbidden(affiliate) or forbidden(resolved): continue
+ owned=native_owned(affiliate) or native_owned(resolved)
+ if not owned:
+  try: proof=db.execute('SELECT destination_url,proof_type,'+proof_publisher+' FROM owned_link_proofs WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1',(affiliate,resolved)).fetchone()
+  except sqlite3.OperationalError: proof=None
+  if proof:
+   destination,kind,proof_account=proof
+   if forbidden(destination): continue
+   if kind=='amazon_native': owned=amazon_owned(destination)
+   elif kind=='earnkaro_api': owned=bool(publisher and proof_account==publisher)
+   if owned and not resolved: resolved=destination
+ if not owned and has_hypd:
+  try:
+   if host(url)=='hypd.store':
+    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(url,)).fetchall()
+   elif row and deal_key and host(affiliate) in ('bit.ly','is.gd'):
+    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE product_key=?',(deal_key,)).fetchall()
+   else: candidates=[]
+   verified=[item for item in candidates if str(item[3] or '').lower() in stores and is_meesho(str(item[1] or ''))]
+   if verified:
+    owned=True
+    resolved=str(verified[0][1] or resolved)
+  except sqlite3.OperationalError: pass
+ if owned: found[url]=resolved or url
+print(json.dumps(found))
+`
+
+  const found = await new Promise((resolve, reject) => {
+    const child = spawn('python3', ['-c', script, BESTGAA_DB_PATH, PUBLISHER_ID, AMAZON_TAG,
+      [...HYPD_STORES].join(',')], { stdio: ['pipe', 'pipe', 'pipe'] })
     const output = [], errors = []
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('provenance DB timeout')) }, 12_000)
     child.stdout.on('data', chunk => output.push(chunk))
@@ -2832,6 +3151,13 @@ async function verifyBestGaaProvenance(urls) {
     })
     child.stdin.end(JSON.stringify(urls))
   })
+  if (job) {
+    job.provenanceDestinations ||= {}
+    for (const [affiliateUrl, resolvedUrl] of Object.entries(found || {})) {
+      if (resolvedUrl) job.provenanceDestinations[affiliateUrl] = resolvedUrl
+    }
+  }
+  return urls.filter(url => !Object.hasOwn(found || {}, url))
 }
 // One merchant link may be verified "dead" by our probe (Amazon and Flipkart answer
 // exactly this way to datacenter IPs) - that is NOT a reason to swallow a post, so
@@ -2949,26 +3275,29 @@ async function prepareAmazonShortLinks(job, fetchFn = fetch) {
 }
 
 async function verifyJob(job, fetchFn = fetch) {
-  // Tag era: repair Amazon tags BEFORE the policy gate - a stranger's tag is
-  // deleted, a bare link gains ours, ours passes untouched - so
-  // validateAffiliateText only ever sees clean, monetized links.
+  // Repair native Amazon URLs with OUR tag, then resolve direct-source URLs to
+  // an owned affiliate destination where one can be created.
   if (job.text) job.text = normalizeAmazonTags(job.text)
-  // Direct-source jobs: resolve raw links to the merchant page first, so the
-  // gate/dedup/health checks all run against the real product.
   if (job.direct) await prepareDirectJob(job)
   attributeBareMerchantPages(job)
   await prepareAmazonShortLinks(job, fetchFn)
+  if (STRICT_OUR_LINKS) {
+    const rejected = urlsIn(job.text || '').find(url => job?.blockedLinks?.[url]
+      || isServiceUrl(url) || isServiceUrl(displayUrl(job, url)))
+    if (rejected) {
+      throw new Error(`Own-link policy: blocked/unmonetized URL ${rejected}`)
+    }
+  }
   const urls = validateAffiliateText(job, job.text)
-  // Service/lifestyle links (Zomato/Swiggy/Zepto/movies/cards) are not in the
-  // BestGAA link_cache by design; only monetized store links get the provenance
-  // DB check. Every link still gets the broken-destination health check.
+  // Every service, merchant and generic-shortener link must either carry our
+  // native attribution or match account-bound converter/HYPD proof in BestGAA.
   const toVerify = urlsForProvenance(job, urls)
-  let missing = toVerify.length ? await verifyBestGaaProvenance(toVerify) : []
+  let missing = toVerify.length ? await verifyBestGaaProvenance(toVerify, job) : []
   if (missing.length && job.direct) {
     // PROVENANCE RESCUE (direct-source jobs only). Raw deal channels very
     // often carry a STRANGER's affiliate wrapper (fktr.in/ekaro.in/clnk.in -
-    // EarnKaro links of other marketers). It is not ours - the bot's
-    // link_cache has no such row, so it can never be published as-is - but
+    // EarnKaro links of other marketers). It is not ours - BestGAA has no
+    // matching account-bound proof, so it can never be published as-is - but
     // the DEAL behind it must not be lost either. Follow the wrapper to the
     // merchant page and post OUR form of it (raw, or natively tagged when it
     // is an Amazon page), exactly like any other raw source link. A wrapper
@@ -2987,16 +3316,25 @@ async function verifyJob(job, fetchFn = fetch) {
             u.searchParams.delete('tag')
             u.searchParams.set('tag', AMAZON_TAG)
           }
+          const owned = attributeWithOurPublisher(u.toString())
+          if (STRICT_OUR_LINKS && !hasOwnAffiliateAttribution(owned)) {
+            cut.push(url)
+            continue
+          }
           job.resolvedLinks ||= {}
-          // The stranger's wrapper is gone; where the network's own attribution
-          // works on the merchant page, OUR publisher id takes its place instead
-          // of publishing a bare link that pays nobody.
-          job.resolvedLinks[url] = attributeWithOurPublisher(u.toString())
+          // The stranger's wrapper is gone; retain only a destination carrying
+          // our native attribution. A clean merchant page is not a paid link.
+          job.resolvedLinks[url] = owned
           rescued.push(url)
         } catch { /* keep as unrescued */ }
       } else {
         cut.push(url)
       }
+    }
+    if (STRICT_OUR_LINKS && cut.length) {
+      // Do not erase only the URL from a product list: that would orphan its
+      // name/price. Skip the post as a unit when any listed item cannot earn.
+      throw new Error(`Own-link policy: no owned affiliate link for ${cut[0]}`)
     }
     for (const url of cut) {
       job.text = String(job.text || '').split(url).join(' ').replace(/\n{3,}/g, '\n\n').trim()
@@ -3045,7 +3383,7 @@ function isPermanent(error) {
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
   // the correct behaviour too (a retry hours later would still be a dup).
-  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Best-deal gate|duplicate product/i.test(error.message)
+  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Own-link policy|Best-deal gate|duplicate product/i.test(error.message)
 }
 
 async function resolveNewsletterJid(sock, target) {
@@ -3171,26 +3509,182 @@ function under99FilteredList(text) {
   for (const block of kept) out.push(...block.label, block.url)
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
-// The text ONE target receives. Every target gets the post exactly as
-// formatted, except the Under-₹99 shelf: a LIST delivered there is filtered
-// down to its ≤₹99 items (under99FilteredList). Returns null when this target
-// must be skipped entirely (nothing under-₹99 left in the copy).
+// The text ONE target receives. Category copies apply their own Amazon-tag
+// allowlist; the Under-₹99 shelf also filters lists down to its ≤₹99 items.
+// Returns null when the Under-₹99 target has no qualifying item in the copy.
 function textForTarget(job, jid, text) {
-  if (!text || !job || CHANNEL_ALL_POSTS) return text
+  if (!text || !job) return text
   const policy = CHANNEL_POLICY_OF_JID.get(jid) || (jid && jid === under99Jid ? 'under99' : '')
-  if (policy !== 'under99') return text
+  let out = text
+  if (policy.startsWith('category:')
+      && !WA_AMAZON_TAG_CATEGORY_TARGETS.has(policy.slice('category:'.length))
+      && !STRICT_OUR_LINKS) {
+    out = stripAmazonTagForUndeclaredCategory(job, out)
+  }
+  // Global mirror applies only to the old price-tier destinations. Category
+  // channels above remain strict, and the Amazon allowlist still applies.
+  if (CHANNEL_ALL_POSTS || policy !== 'under99') return out
   const urls = urlsIn(job.text || '')
-  if (!(Boolean(job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS)) return text
-  const filtered = under99FilteredList(text)
+  if (!(Boolean(job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS)) return out
+  const filtered = under99FilteredList(out)
   if (filtered === '') return null // nothing under-₹99 left: skip this target
-  return filtered || text // null = nothing to change: the text as formatted
+  return filtered || out // null = nothing to change: the text as formatted
 }
-// Targets for a post: main Channel + (groups) + Under-₹99 channel when eligible.
-// Digests/rotational batches pass job=null and go to the main channel only.
+async function shortenUntaggedCategoryCopy(job, jid, text) {
+  const policy = CHANNEL_POLICY_OF_JID.get(jid) || ''
+  if (!text || !policy.startsWith('category:')) return text
+  if (WA_AMAZON_TAG_CATEGORY_TARGETS.has(policy.slice('category:'.length))) return text
+  if (STRICT_OUR_LINKS) {
+    // An undeclared destination must not receive a bare Amazon URL. If any
+    // listed link is our Amazon Associates link, withhold this category copy;
+    // never strip the tag and leave an unmonetized URL behind. EarnKaro links
+    // remain intact when the verified provenance points through that network.
+    for (const url of urlsIn(text)) {
+      if (isAmazonHost(hostOf(url))) return null
+      const sourceUrl = Object.keys(job.shortLinks || {}).find(key => job.shortLinks[key] === url) || url
+      if (isAmazonHost(hostOf(sourceUrl))) return null
+      const hinted = job.resolvedLinks?.[sourceUrl] || job.provenanceDestinations?.[sourceUrl] || ''
+      if (isAmazonHost(hostOf(hinted))) {
+        if (isOurAmazonTagLink(hinted)) return null
+        continue // a verified own-network hop can earn without our Amazon tag
+      }
+      if (!hinted && ALREADY_SHORT_HOSTS.has(hostOf(url))) {
+        const resolved = await resolveUrl(url).catch(() => null)
+        if (isOurAmazonTagLink(resolved)) return null
+      }
+    }
+    return text
+  }
+  let out = text
+  // A main-feed post may carry our Bitly URL, whose Associates tag is hidden
+  // behind the redirect. Strip only when the verified/resolved final URL proves
+  // that OUR tag is present; an EarnKaro hop to Amazon is left intact.
+  for (const url of urlsIn(out)) {
+    if (isAmazonHost(hostOf(url))) continue
+    if (!ALREADY_SHORT_HOSTS.has(hostOf(url))) continue
+    const hinted = job.resolvedLinks?.[url] || job.provenanceDestinations?.[url] || ''
+    const resolved = await resolveUrl(url).catch(() => null)
+    const clean = amazonUrlWithoutOurTag(resolved || hinted)
+    if (clean) {
+      out = out.split(url).join(clean)
+    } else if (!resolved && isAmazonHost(hostOf(hinted))) {
+      // We know this affiliate shortlink points to Amazon but cannot prove
+      // whether it is an Associates-tag hop or an EarnKaro hop. Main still gets
+      // the deal; suppress just this optional category mirror rather than risk
+      // stripping EarnKaro attribution or leaking an undeclared Amazon tag.
+      log.warn({ url: url.slice(0, 60), category: policy.slice('category:'.length) },
+        'category mirror skipped: Amazon short-link attribution could not be verified')
+      return null
+    }
+  }
+  // Removing an undeclared Associates tag must not undo the user's short-link
+  // preference. Mint a cosmetic short URL for each verified clean Amazon page.
+  for (const url of urlsIn(out)) {
+    if (!isAmazonHost(hostOf(url))) continue
+    const short = await shortenLongUrl(url)
+    if (short && short !== url) out = out.split(url).join(short)
+  }
+  return out
+}
+// Targets for a post: Main + eligible price/category mirrors + (groups).
+// Digests/rotational batches pass job=null and go to the Main channel only.
 // ---------------------------------------------------------------------------
 // Channel policy evaluation. The facts are computed once per job so every rule
 // is readable, testable and identical across channels.
 // ---------------------------------------------------------------------------
+function normalizeCategoryPhrase(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/https?:\/\/[^\s<>\[\](){}"']+/giu, ' ')
+    .replace(/&amp;/giu, ' ')
+    .toLocaleLowerCase('en-IN')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+const CATEGORY_QUERY_KEYS = new Set([
+  'k', 'q', 'keyword', 'keywords', 'search', 'searchterm', 'query',
+  'title', 'name', 'product', 'productname', 'category',
+])
+const CATEGORY_URL_STOP_SEGMENTS = new Set([
+  '', 'dp', 'gp', 'aw', 's', 'b', 'p', 'product', 'products', 'item',
+  'items', 'detail', 'details', 'buy', 'shop', 'offers', 'offer', 'ref',
+])
+function categoryWordsFromUrl(value) {
+  try {
+    const url = new URL(String(value || '').replace(/&amp;/giu, '&').trim())
+    const words = []
+    for (const raw of url.pathname.split('/').filter(Boolean)) {
+      let segment
+      try { segment = decodeURIComponent(raw) } catch { segment = raw }
+      const normalized = normalizeCategoryPhrase(segment.replace(/[-_]+/gu, ' '))
+      if (!normalized || CATEGORY_URL_STOP_SEGMENTS.has(normalized)) continue
+      if (/^\d{4,}$/u.test(segment)) continue
+      if (/^(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}$/iu.test(raw)) continue
+      if (/^(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+$/u.test(raw)) continue
+      words.push(normalized)
+    }
+    for (const [key, val] of url.searchParams.entries()) {
+      if (CATEGORY_QUERY_KEYS.has(key.toLowerCase())) {
+        const normalized = normalizeCategoryPhrase(val)
+        if (normalized) words.push(normalized)
+      }
+    }
+    return words.join(' ')
+  } catch {
+    return ''
+  }
+}
+function categoryContextUrls(job) {
+  const urls = [...urlsIn(job?.text || '')]
+  for (const mapping of [job?.resolvedLinks, job?.provenanceDestinations,
+    job?.verifiedHypdLinks, job?.shortLinks]) {
+    if (!mapping || typeof mapping !== 'object') continue
+    for (const [source, destination] of Object.entries(mapping)) {
+      if (String(source).startsWith('http://') || String(source).startsWith('https://')) urls.push(source)
+      if (typeof destination === 'string' && /https?:\/\//i.test(destination)) urls.push(destination)
+    }
+  }
+  return [...new Set(urls)]
+}
+function classifyDealCategory(text, linkContext = []) {
+  if (!text || !CATEGORY_RULES.categories?.length) return null
+  if (typeof linkContext === 'string') linkContext = [linkContext]
+  const urls = [...urlsIn(text), ...(linkContext || []).filter(value => typeof value === 'string')]
+  const linkWords = [...new Set(urls)].map(categoryWordsFromUrl).filter(Boolean).join(' ')
+  const normalized = ` ${normalizeCategoryPhrase(`${text} ${linkWords}`)} `
+  if (!normalized.trim()) return null
+  const matchedRules = []
+  for (const category of CATEGORY_RULES.categories) {
+    for (const [rawAlias, rawWeight] of (category.aliases || [])) {
+      const alias = normalizeCategoryPhrase(rawAlias)
+      const hits = alias ? Math.min(2, normalized.split(` ${alias} `).length - 1) : 0
+      if (hits) matchedRules.push({ key: category.key, alias, weight: Number(rawWeight || 0), hits })
+    }
+  }
+  if (!matchedRules.length) return null
+  const categoryScores = new Map()
+  for (const item of matchedRules) {
+    // Avoid inflating one product phrase twice ("running shoes" and nested
+    // "shoes"), and don't read "shoe" inside "shoe rack" as footwear too.
+    const nestedInStronger = matchedRules.some(other => other.alias !== item.alias
+      && ` ${other.alias} `.includes(` ${item.alias} `)
+      && other.weight >= item.weight)
+    if (!nestedInStronger) {
+      categoryScores.set(item.key, (categoryScores.get(item.key) || 0) + item.hits * item.weight)
+    }
+  }
+  const scores = [...categoryScores.entries()].map(([key, score]) => ({ key, score }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.key.localeCompare(a.key))
+  if (!scores.length) return null
+  const minScore = Math.max(1, Number(CATEGORY_RULES.min_score) || 3)
+  const minMargin = Math.max(0, Number(CATEGORY_RULES.min_margin) || 0)
+  const strongCategories = scores.filter(item => item.score >= minScore).length
+  if (scores[0].score < minScore || strongCategories > 1
+      || scores[0].score - (scores[1]?.score || 0) < minMargin) return null
+  return scores[0].key
+}
 function channelFacts(job) {
   const text = (job && job.text) || ''
   const urls = urlsIn(text)
@@ -3203,6 +3697,10 @@ function channelFacts(job) {
   return { isList, discount, price, prices, cardOffer, special }
 }
 function eligibleForChannel(job, policy) {
+  if (policy.startsWith('category:')) {
+    return Boolean(job) && classifyDealCategory(
+      job.text || '', categoryContextUrls(job)) === policy.slice('category:'.length)
+  }
   const facts = channelFacts(job)
   if (policy === 'main') return true
   if (policy === 'under99') {
@@ -3278,6 +3776,14 @@ function targetsFor(job) {
     if (policy === 'bestOf') noteBestOfPick(job)
     list.push(jid)
   }
+  // Category shelves are always a strict, additive mirror even when the
+  // optional price-tier mirror is enabled: one confident category per product,
+  // plus the Main channel already added above. Unclear/mixed lists stay Main-only.
+  const category = job ? classifyDealCategory(
+    job.text || '', categoryContextUrls(job)) : null
+  const categoryJid = category ? uniqueCategoryTarget(category) : null
+  if (categoryJid && !list.includes(categoryJid)
+      && eligibleForChannel(job, `category:${category}`)) list.push(categoryJid)
   for (const jid of groupJids) if (!list.includes(jid)) list.push(jid)
   return list
 }
@@ -3315,11 +3821,12 @@ function allTargets(job = null) {
   return targetsFor(job)
 }
 // Newsletters use the ack-verified upload path; everything else is a normal
-// WA send (groups). Both the main channel and the Under-₹99 channel are
-// newsletters.
+// WA send (groups). All category/price destinations are Channels and therefore
+// use newsletter delivery.
 function isNewsletterTarget(jid) {
   return jid === targetJid || (!!under99Jid && jid === under99Jid)
     || (!!under499Jid && jid === under499Jid) || (!!bestOfJid && jid === bestOfJid)
+    || [...categoryJids.values()].includes(jid)
     || /@newsletter$/i.test(jid || '')
 }
 // Per-target send marks survive retries so a failed group never causes a
@@ -3346,8 +3853,10 @@ async function broadcastText(sock, job, tag, text) {
     if (marks.includes(mark)) continue
     // Per-target copy: the Under-₹99 shelf receives the list filtered down to
     // its ≤₹99 items; every other target receives the text as formatted.
-    const body = textForTarget(job, jid, text)
+    let body = textForTarget(job, jid, text)
     if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
+    body = await shortenUntaggedCategoryCopy(job, jid, body)
+    if (body === null) { marks.push(mark); continue } // optional category kept off when tag status is uncertain
     if (isNewsletterTarget(jid)) {
       await sendNewsletterText(sock, jid, body)
     } else {
@@ -3377,7 +3886,9 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (marks.includes(mark)) continue
     // Per-target caption: the Under-₹99 shelf gets the caption filtered down to
     // its ≤₹99 items; every other target gets it as formatted.
-    const itemCaption = caption ? textForTarget(job, jid, caption) : caption
+    let itemCaption = caption ? textForTarget(job, jid, caption) : caption
+    if (caption && itemCaption === null) { marks.push(mark); continue }
+    if (itemCaption) itemCaption = await shortenUntaggedCategoryCopy(job, jid, itemCaption)
     if (caption && itemCaption === null) { marks.push(mark); continue }
     if (isNewsletterTarget(jid)) {
       await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption })
@@ -3649,7 +4160,7 @@ function buildLargeListChunks(job) {
   // ours is bolted on. `header` stays as an empty string so the chunking loop
   // below keeps working unchanged.
   const header = ''
-  const cleaned = cleanDealText(job.text)
+  const cleaned = cleanDealText(formatBottomDumpedProductList(job.text))
     .replace(/\b(?:buy\s+now|shop\s+now)\b/gi, '')
     .replace(/^[-–—_=]{3,}$/gm, '').replace(/\*\*/g, '').replace(/\n{3,}/g, '\n\n').trim()
   const lines = cleaned.split(/\n/)
@@ -4059,12 +4570,30 @@ const EXTRA_CHANNELS = () => [
   { key: 'under99', env: WA_CHANNEL_UNDER99, apply: jid => { under99Jid = jid }, current: () => under99Jid },
   { key: 'under499', env: WA_CHANNEL_UNDER499, apply: jid => { under499Jid = jid }, current: () => under499Jid },
   { key: 'bestOf', env: WA_CHANNEL_BEST_OF, apply: jid => { bestOfJid = jid }, current: () => bestOfJid },
+  ...[...CATEGORY_WA_CHANNELS.entries()].map(([key, env]) => ({
+    key: `category_${key}`, env,
+    apply: jid => { categoryJids.set(key, jid) },
+    current: () => categoryJids.get(key) || null,
+  })),
 ]
+function uniqueCategoryTarget(category) {
+  const jid = categoryJids.get(category)
+  if (!jid || [targetJid, under99Jid, under499Jid, bestOfJid].includes(jid)) return null
+  const sameJidCount = [...categoryJids.values()].filter(value => value === jid).length
+  return sameJidCount === 1 ? jid : null
+}
 function syncChannelPolicies() {
   CHANNEL_POLICY_OF_JID.clear()
   if (under99Jid) CHANNEL_POLICY_OF_JID.set(under99Jid, 'under99')
   if (under499Jid) CHANNEL_POLICY_OF_JID.set(under499Jid, 'under499')
   if (bestOfJid) CHANNEL_POLICY_OF_JID.set(bestOfJid, 'bestOf')
+  for (const [category, jid] of categoryJids) {
+    if (jid && uniqueCategoryTarget(category) && !CHANNEL_POLICY_OF_JID.has(jid)) {
+      CHANNEL_POLICY_OF_JID.set(jid, `category:${category}`)
+    } else if (jid) {
+      log.warn({ jid, category }, 'category channel reuses another destination; keeping the existing target policy')
+    }
+  }
 }
 // Resolve every configured extra channel. onlyMissing=true (the timer) retries
 // just the ones that are still unresolved, so a blip never halves coverage.
@@ -4077,8 +4606,10 @@ async function resolveExtraChannels(sock, onlyMissing = false) {
       const jid = await resolveNewsletterJid(sock, channel.env)
       channel.apply(jid)
       syncChannelPolicies()
-      log.info({ channel: channel.key, jid, mode: CHANNEL_ALL_POSTS ? 'mirror-everything' : `policy:${channel.key}` },
-        'WhatsApp channel resolved')
+      const isCategory = channel.key.startsWith('category_')
+      const mode = isCategory ? `category:${channel.key.slice('category_'.length)}`
+        : CHANNEL_ALL_POSTS ? 'mirror-everything' : `policy:${channel.key}`
+      log.info({ channel: channel.key, jid, mode }, 'WhatsApp channel resolved')
     } catch (error) {
       syncChannelPolicies()
       log.error({ channel: channel.key, err: error.message },
@@ -4147,9 +4678,10 @@ async function connectWhatsAppInner() {
       lastConnectionOpenAt = Date.now()
       try {
         targetJid = await resolveTargetJid(sock)
-        // Extra channels (Under-₹99 / Under-₹499 / Best-of). Non-fatal: whatever
-        // fails to resolve is retried on a timer while the main channel posts.
+        // Price/category channels are optional. A target-resolution blip is
+        // retried on a timer while the Main channel keeps posting.
         under99Jid = null; under499Jid = null; bestOfJid = null
+        categoryJids = new Map()
         await resolveExtraChannels(sock)
         groupJids = []
         if (CHANNEL_ONLY) {
@@ -4172,6 +4704,7 @@ async function connectWhatsAppInner() {
         saveState()
         log.info({
           targetJid, under99Jid, under499Jid, bestOfJid,
+          categoryJids: Object.fromEntries([...categoryJids.entries()]),
           channelPolicies: Object.fromEntries([...CHANNEL_POLICY_OF_JID.entries()]),
           sources: [...SOURCES], policy: warmupPolicy(),
           primarySource: PRIMARY_SOURCE, mediaFirst: MEDIA_FIRST,
@@ -4230,6 +4763,12 @@ if (process.argv.includes('--identity-probe')) {
   }
   process.exit(0)
 }
+
+// Every path below this point is a live run (the startup health probe, the
+// self-test, or the service itself) and needs the real npm dependencies -
+// load them now that the dependency-free diagnostics above have had their
+// chance to exit.
+await loadVendorModules()
 
 {
   // A link-health probe is allowed to make a post honest, never to make it
@@ -4343,6 +4882,59 @@ if (process.argv.includes('--self-test')) {
     if (/^💰\s*₹/m.test(listPost)) throw new Error('no badge line may be added to a list:\n' + listPost)
     for (const line of ['Mega Sale', 'A ₹299', 'B ₹399', 'C ₹499', 'D ₹599']) {
       if (!listPost.includes(line)) throw new Error(`list source line lost: ${line}\n${listPost}`)
+    }
+    const separatedNameList = [
+      'Dove', 'Deal Price: ₹99',
+      'Mivi', 'Deal Price: ₹499',
+      'Harpic', 'Deal Price: ₹149',
+      'https://a.test/dove', 'https://a.test/mivi', 'https://a.test/harpic',
+    ].join('\n')
+    const separatedNamePost = formatWhatsAppPost({ text: separatedNameList })
+    for (const name of ['Dove', 'Mivi', 'Harpic']) {
+      if (!separatedNamePost.includes(name)) throw new Error('multi-product list lost short product name ' + name + ':\n' + separatedNamePost)
+    }
+    for (const [name, price, url] of [
+      ['Dove', 'Deal Price: ₹99', 'https://a.test/dove'],
+      ['Mivi', 'Deal Price: ₹499', 'https://a.test/mivi'],
+      ['Harpic', 'Deal Price: ₹149', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = separatedNamePost.indexOf(name)
+      const priceAt = separatedNamePost.indexOf(price)
+      const urlAt = separatedNamePost.indexOf(url)
+      if (!(nameAt >= 0 && priceAt > nameAt && urlAt > priceAt)) {
+        throw new Error('bottom-dumped list item is not kept together: ' + name + '\n' + separatedNamePost)
+      }
+    }
+    const groupedNameList = [
+      'Dove', 'Mivi', 'Harpic',
+      'Deal Price: ₹99', 'Deal Price: ₹499', 'Deal Price: ₹149',
+      'https://a.test/dove', 'https://a.test/mivi', 'https://a.test/harpic',
+    ].join('\n')
+    const groupedNamePost = formatWhatsAppPost({ text: groupedNameList })
+    for (const [name, price, url] of [
+      ['Dove', 'Deal Price: ₹99', 'https://a.test/dove'],
+      ['Mivi', 'Deal Price: ₹499', 'https://a.test/mivi'],
+      ['Harpic', 'Deal Price: ₹149', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = groupedNamePost.indexOf(name)
+      const priceAt = groupedNamePost.indexOf(price)
+      const urlAt = groupedNamePost.indexOf(url)
+      if (!(nameAt >= 0 && priceAt > nameAt && urlAt > priceAt)) {
+        throw new Error('grouped names/prices were not paired in source order: ' + name + '\n' + groupedNamePost)
+      }
+    }
+    const largeListChunks = buildLargeListChunks({ text: groupedNameList, largeList: true, media: [] })
+    const largeListBody = largeListChunks.join('\n')
+    for (const [name, , url] of [
+      ['Dove', '', 'https://a.test/dove'],
+      ['Mivi', '', 'https://a.test/mivi'],
+      ['Harpic', '', 'https://a.test/harpic'],
+    ]) {
+      const nameAt = largeListBody.indexOf(name)
+      const urlAt = largeListBody.indexOf(url)
+      if (!(nameAt >= 0 && urlAt > nameAt)) {
+        throw new Error('large-list chunks lost/reordered a named item: ' + name + '\n' + largeListBody)
+      }
     }
     const singlePost = formatWhatsAppPost({ text: 'Single Shirt\nDeal Price: ₹699\nhttps://a.test/1' })
     if (singlePost.includes('💰')) throw new Error('no synthetic price badge may be added:\n' + singlePost)
@@ -4909,8 +5501,20 @@ https://fktr.in/MANY${i}`,
   if (!megaChunks[0].includes('Myntra: Up to 83% Off')) throw new Error('the source header must lead the list:\n' + megaChunks[0])
   if ((megaChunks.join('\n').match(/https:\/\//g) || []).length !== 8) throw new Error('every link of the list must appear exactly once')
   if (process.env.SELF_TEST_PROVENANCE_URL) {
-    const missing = await verifyBestGaaProvenance([process.env.SELF_TEST_PROVENANCE_URL, 'https://foreign.invalid/not-ours'])
-    if (missing.length !== 1 || missing[0] !== 'https://foreign.invalid/not-ours') throw new Error('SQLite provenance test failed')
+    const owned = process.env.SELF_TEST_PROVENANCE_URL
+    const cacheOnly = process.env.SELF_TEST_CACHE_ONLY_URL || 'https://foreign.invalid/cache-only'
+    const hypd = process.env.SELF_TEST_HYPD_URL || 'https://foreign.invalid/hypd'
+    const wrongAccount = process.env.SELF_TEST_WRONG_ACCOUNT_URL || 'https://foreign.invalid/wrong-account'
+    const amazonProof = process.env.SELF_TEST_AMAZON_PROOF_URL || 'https://foreign.invalid/amazon-proof'
+    const staleAmazon = process.env.SELF_TEST_STALE_AMAZON_URL || 'https://foreign.invalid/stale-amazon'
+    const missing = await verifyBestGaaProvenance([
+      owned, cacheOnly, hypd, wrongAccount, amazonProof, staleAmazon,
+      'https://foreign.invalid/not-ours',
+    ])
+    const refused = [cacheOnly, wrongAccount, staleAmazon, 'https://foreign.invalid/not-ours']
+    if (missing.length !== refused.length || refused.some(url => !missing.includes(url))) {
+      throw new Error('SQLite provenance proof test failed: cache-only/stale/foreign-account links must be refused; current owned EarnKaro/Amazon/HYPD proofs accepted')
+    }
   }
   // Deal-name extraction is still used for digests/gates; the WhatsApp post
   // itself is the cleaned source text with our links on their own lines.
@@ -4966,28 +5570,46 @@ https://fktr.in/MANY${i}`,
   if (!gateAccepts(gate('Running Shoes \u20b9899 40% OFF\nhttps://a.test/1'))) throw new Error('gate must pass a useful mid-price 40% deal')
   // A \u20b91500 20% off non-essential with no photo does not reach the score.
   if (!gateSkips(gate('Generic Gadget \u20b91500 20% OFF\nhttps://a.test/1'))) throw new Error('gate must REJECT a weak mid-price low-score deal')
-  // Service offers (Zomato/Swiggy/Zepto/movies/cards) are specials and skip the
-  // affiliate provenance DB check; store links keep full verification.
+  // Service offers are recognizable promotions but remain outside strict-all;
+  // verifyJob rejects them instead of treating a clean service URL as our link.
   if (!isServiceOffer('Zomato 50% OFF today\nhttps://zom.to/abc')) throw new Error('zomato service offer detection failed')
   if (!isServiceOffer('Swiggy One free for 3 months https://sw.gy/xyz')) throw new Error('swiggy service offer detection failed')
   if (!isSpecialOffer('Zomato 50% OFF today\nhttps://zom.to/abc')) throw new Error('service offer must be treated as a special offer')
   if (!isSpecialOffer('BookMyShow movie ticket 40% OFF https://bookmyshow.com/x')) throw new Error('movie service offer detection failed')
   if (isServiceUrl('https://www.amazon.in/dp/B0GLY3Q2XR?tag=deals0911-21')) throw new Error('amazon URL wrongly classified as service URL')
   {
-    // Service links AND our-tag Amazon links are both exempt from the link_cache
-    // DB check; a bare or foreign-tag Amazon link still goes through for
-    // verification (bare = not proven ours, foreign = not our money).
+    // Our-tag Amazon links are self-proving; every other link, including service
+    // URLs, reaches provenance validation (verifyJob rejects services first).
     const toVerify = urlsForProvenance(null, [
       `https://www.amazon.in/dp/B0OWN?tag=${AMAZON_TAG}`, // our tag: self-proving, skips the DB
       'https://www.amazon.in/dp/B0GLY3Q2XR',              // bare: DB-checked
-      'https://zom.to/abc',                               // service link: exempt
+      'https://zom.to/abc',                               // service link: never exempt in strict mode
       'https://www.amazon.in/dp/B0CHECK99?tag=other-21',  // foreign tag: DB-checked
     ])
-    if (toVerify.length !== 2 ||
+    if (toVerify.length !== 3 ||
         !toVerify.includes('https://www.amazon.in/dp/B0GLY3Q2XR') ||
+        !toVerify.includes('https://zom.to/abc') ||
         !toVerify.includes('https://www.amazon.in/dp/B0CHECK99?tag=other-21')) {
-      throw new Error('service exemption + tag-era provenance filter failed: ' + JSON.stringify(toVerify))
+      throw new Error('strict-all provenance filter failed: ' + JSON.stringify(toVerify))
     }
+  }
+  // Strict-all regressions: neither a service URL nor a recognizable shortener
+  // host proves affiliate ownership. Amazon must carry our exact tag; an
+  // unsupported service post is rejected before delivery.
+  {
+    const tagged = `https://www.amazon.in/dp/B0OWNED001?tag=${AMAZON_TAG}`
+    if (!hasOwnAffiliateAttribution(tagged)) throw new Error('our native Amazon tag must prove attribution')
+    if (hasOwnAffiliateAttribution('https://bit.ly/not-verified')) throw new Error('a generic shortener hostname is not ownership proof')
+    if (!urlsForProvenance({ direct: true }, ['https://bit.ly/not-verified']).includes('https://bit.ly/not-verified')) {
+      throw new Error('an unverified direct-source shortener must reach the provenance check')
+    }
+    let serviceRejected = false
+    try {
+      await verifyJob({ id: 'strict-service', text: 'Zomato offer ₹99 50% OFF\\nhttps://www.zomato.in/offer' })
+    } catch (error) {
+      serviceRejected = /Own-link policy/i.test(error.message)
+    }
+    if (!serviceRejected) throw new Error('a non-affiliate service URL must be skipped under strict-all')
   }
   // Group JID resolution (pure parts; invite codes are resolved live on connect).
   if ((await resolveGroupTarget({}, '919876543210')) !== '919876543210@g.us') throw new Error('group phone resolution test failed')
@@ -5266,6 +5888,10 @@ https://fktr.in/MANY${i}`,
   // DIRECT SOURCE SAFETY NET: deals the Telegram bot missed still reach
   // WhatsApp — smartly (resolve, monetize amazon, dedup against our channels).
   // -------------------------------------------------------------------------
+  if (DEFAULT_DIRECT_SOURCES.split(',').map(x => x.trim().toLowerCase()).includes('iamprasadtech')
+      || !BLOCKED_DIRECT_SOURCES.has('iamprasadtech') || DIRECT_SOURCES.has('iamprasadtech')) {
+    throw new Error('iamprasadtech must be excluded from default and env-configured direct sources')
+  }
   if (classifySource({ chat: { username: 'under499loots' } }) !== 'source') throw new Error('own channel must classify as source')
   if (DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== 'direct') throw new Error('raw deal channel must classify as direct')
   if (!DIRECT_SOURCES.size && classifySource({ chat: { username: 'RealShoppingDeals' } }) !== null) throw new Error('TG_DIRECT_SOURCES= (empty) must disable direct sources')
@@ -5311,13 +5937,13 @@ https://fktr.in/MANY${i}`,
     const fakeFetch = async url => ({ url, status: 200, text: async () => `<script>go("${shopsy}")</script>` })
     const job = { id: 'hypd-shopsy', direct: true, text: `Duffle deal ₹499\n${hypd}` }
     await prepareDirectJob(job, fakeFetch)
-    if (displayUrl(job, hypd) !== 'https://www.shopsy.in/duffle-bag/p/SHOPSY123') {
-      throw new Error('direct Shopsy HYPD must become a clean merchant URL: ' + displayUrl(job, hypd))
+    if (!job.blockedLinks?.[hypd] || displayUrl(job, hypd)) {
+      throw new Error('unsupported Shopsy HYPD destination must be withheld, not passed through')
     }
-    if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('clean Shopsy fallback must not carry the HYPD wrapper into provenance')
+    if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('blocked HYPD fallback must not reach provenance')
     const post = formatWhatsAppPost(job)
-    if (post.includes('hypd.store') || !post.includes('https://www.shopsy.in/duffle-bag/p/SHOPSY123')) {
-      throw new Error('direct Shopsy post must use its clean merchant fallback: ' + post)
+    if (post.includes('hypd.store') || post.includes('shopsy.in')) {
+      throw new Error('strict-all must not publish a clean but unmonetized Shopsy fallback: ' + post)
     }
   }
   {
@@ -5499,10 +6125,11 @@ https://fktr.in/MANY${i}`,
       }
       // An unresolvable stranger wrapper is cut: the deal text stays, the link goes.
       const job2 = { direct: true, id: 'rescue-2', text: 'Mystery deal ₹299\nhttps://fktr.in/STRANGER2\nReal line stays' }
-      await verifyJob(job2, fakeFetch)
-      if (/fktr\.in\/STRANGER2/.test(job2.text)) throw new Error('an unverifiable stranger link must be cut from the post: ' + job2.text)
-      if (!job2.text.includes('Real line stays') || !job2.text.includes('Mystery deal')) {
-        throw new Error('cutting a stranger link must keep the deal text: ' + job2.text)
+      let rejected = false
+      try { await verifyJob(job2, fakeFetch) } catch (error) { rejected = /Own-link policy/i.test(error.message) }
+      if (!rejected) throw new Error('an unverifiable stranger link must reject the post')
+      if (!job2.text.includes('fktr.in/STRANGER2') || !job2.text.includes('Mystery deal')) {
+        throw new Error('a rejected post must not be partially rewritten into an orphaned item')
       }
     } finally {
       verifyBestGaaProvenance = savedVerify
@@ -5540,7 +6167,10 @@ https://fktr.in/MANY${i}`,
     const noNet = async () => { throw new Error('no network expected') }
     const djob = { direct: true, text: 'Offer ₹149\nhttps://linkredirect.in/?dl=' + encodeURIComponent('https://www.zomato.in/offer-page') }
     await prepareDirectJob(djob, noNet)
-    if (!Object.values(djob.resolvedLinks).includes('https://www.zomato.in/offer-page')) throw new Error('linkredirect dl-param not decoded')
+    if (!Object.keys(djob.blockedLinks || {}).some(url => url.startsWith('https://linkredirect.in/'))
+        || Object.values(djob.resolvedLinks || {}).includes('https://www.zomato.in/offer-page')) {
+      throw new Error('decoded service offer URL must be withheld under strict-all')
+    }
   }
   {
     // USER RULE: huge Amazon category/search links (Puma Men/Women/Girls/Boys
@@ -6133,11 +6763,20 @@ https://fktr.in/MANY${i}`,
       throw new Error('a card offer must NOT reach the strict under-99 shelf')
     }
     // Ten deals arrive at once: the best-of channel must take exactly the winner.
-    const saved = { targetJid, under99Jid, under499Jid, bestOfJid, jobs: state.jobs }
+    const saved = { targetJid, under99Jid, under499Jid, bestOfJid,
+      categoryJids: new Map(categoryJids), jobs: state.jobs,
+      amazonCategoryTags: new Set(WA_AMAZON_TAG_CATEGORY_TARGETS),
+      shortLinks: { ...(state.shortLinks || {}) } }
     const savedPolicies = new Map(CHANNEL_POLICY_OF_JID)
     try {
+      WA_AMAZON_TAG_CATEGORY_TARGETS.clear()
       targetJid = 'main@newsletter'; under99Jid = 'u99@newsletter'
       under499Jid = 'u499@newsletter'; bestOfJid = 'best@newsletter'
+      categoryJids = new Map([
+        ['footwear', 'footwear@newsletter'], ['fashion', 'fashion@newsletter'],
+        ['electronics', 'electronics@newsletter'], ['home_kitchen', 'home@newsletter'],
+        ['beauty', 'beauty@newsletter'], ['grocery', 'grocery@newsletter'],
+      ])
       syncChannelPolicies()
       const deals = Array.from({ length: 10 }, (_, i) => ({
         id: `burst-${i}`, text: `Item ${i} ₹399 ${10 + i * 8}% OFF\nhttps://a.co/b${i}`,
@@ -6174,10 +6813,97 @@ https://fktr.in/MANY${i}`,
       if (!deals.every((job) => targetsFor(job).includes('main@newsletter'))) {
         throw new Error('the main channel must keep every deal, not only the winner')
       }
+      const categoryCases = [
+        ['footwear', "Nike Men's Running Shoes ₹1,299 50% OFF\nhttps://a.co/shoes"],
+        ['fashion', 'Women cotton printed kurti ₹699\nhttps://a.co/kurti'],
+        ['electronics', 'Samsung Galaxy Buds wireless earbuds ₹1,299\nhttps://a.co/buds'],
+        ['home_kitchen', 'Wooden shoe rack organizer ₹999\nhttps://a.co/rack'],
+        ['beauty', 'Vitamin C face serum and sunscreen ₹299\nhttps://a.co/serum'],
+        ['grocery', 'Organic basmati rice 5kg ₹299\nhttps://a.co/rice'],
+      ]
+      for (const [expected, text] of categoryCases) {
+        const job = { id: `category-${expected}`, text, createdAt: Date.now() }
+        if (classifyDealCategory(text) !== expected) {
+          throw new Error(`category classifier expected ${expected}, got ${classifyDealCategory(text)}`)
+        }
+        const routed = targetsFor(job)
+        const categoryTargets = routed.filter((jid) => [...categoryJids.values()].includes(jid))
+        if (!routed.includes('main@newsletter')) throw new Error(`${expected} deal lost its Main mirror`)
+        if (categoryTargets.length !== 1 || categoryTargets[0] !== categoryJids.get(expected)) {
+          throw new Error(`${expected} deal did not route to exactly its own category channel`)
+        }
+      }
+      if (classifyDealCategory('Samsung phone, lipstick and running shoes') !== null) {
+        throw new Error('a mixed-category post must stay Main-only, not be guessed')
+      }
+      const linkDerivedText = 'Special price ₹299\nhttps://bit.ly/opaque-category-link'
+      const linkDerived = {
+        id: 'category-from-link', text: linkDerivedText, createdAt: Date.now(),
+        resolvedLinks: {
+          'https://bit.ly/opaque-category-link': 'https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itmABC123456?pid=PID123456',
+        },
+      }
+      if (classifyDealCategory(linkDerived.text, categoryContextUrls(linkDerived)) !== 'electronics') {
+        throw new Error('an opaque incoming short must classify from its resolved product URL')
+      }
+      const linkDerivedTargets = targetsFor(linkDerived)
+      const linkCategoryTargets = linkDerivedTargets.filter(jid => [...categoryJids.values()].includes(jid))
+      if (linkCategoryTargets.length !== 1 || linkCategoryTargets[0] !== 'electronics@newsletter') {
+        throw new Error('a resolved product-link slug must route exactly one matching category')
+      }
+      const mixedLinkContext = [
+        'https://shop.test/puma-running-shoes/123456',
+        'https://shop.test/boat-wireless-earbuds/654321',
+      ]
+      if (classifyDealCategory('Special price', mixedLinkContext) !== null) {
+        throw new Error('mixed product-link categories must not be guessed into one shelf')
+      }
+      const ambiguous = { text: 'Mystery product at ₹299\nhttps://a.co/unknown', createdAt: Date.now() }
+      if (targetsFor(ambiguous).some((jid) => [...categoryJids.values()].includes(jid))) {
+        throw new Error('an unclear product must not enter any category channel')
+      }
+      const amazonSource = 'https://amzn.to/category-tag-test'
+      const amazonTagged = `https://www.amazon.in/dp/B0TAGGED001?tag=${AMAZON_TAG}`
+      const amazonShort = 'https://bit.ly/category-tag-test'
+      const tagJob = {
+        text: `Amazon headphones ${amazonSource}`,
+        resolvedLinks: { [amazonSource]: amazonTagged },
+        shortLinks: { [amazonSource]: amazonShort },
+      }
+      const untaggedAmazon = amazonUrlWithoutOurTag(amazonTagged)
+      state.shortLinks ||= {}
+      state.shortLinks[untaggedAmazon] = 'https://bit.ly/category-tag-untagged'
+      const mappedSource = 'https://bit.ly/category-tag-cache'
+      const mappedJob = {
+        text: `Amazon laptop ${mappedSource}`,
+        provenanceDestinations: { [mappedSource]: 'https://www.amazon.in/dp/B0CACHED001' },
+      }
+      const mappedCopy = textForTarget(mappedJob, 'footwear@newsletter', `Deal\n${mappedSource}`)
+      if (!mappedCopy.includes(mappedSource) || mappedCopy.includes('amazon.in/dp/B0CACHED001')) {
+        throw new Error('an untagged cache destination alone must not replace a short EarnKaro/affiliate link')
+      }
+      const undeclaredCopy = textForTarget(tagJob, 'footwear@newsletter', `Deal\n${amazonShort}`)
+      if (!undeclaredCopy.includes(amazonShort) || undeclaredCopy.includes('amazon.in/dp/B0TAGGED001')) {
+        throw new Error('strict-all must retain the source copy until the per-target monetization gate runs')
+      }
+      const shortenedUndeclared = await shortenUntaggedCategoryCopy(
+        tagJob, 'footwear@newsletter', undeclaredCopy)
+      if (shortenedUndeclared !== null) {
+        throw new Error('undeclared category must be skipped, never stripped to an untagged Amazon link')
+      }
+      WA_AMAZON_TAG_CATEGORY_TARGETS.add('footwear')
+      const declaredCopy = textForTarget(tagJob, 'footwear@newsletter', `Deal\n${amazonShort}`)
+      if (!declaredCopy.includes(amazonShort) || declaredCopy.includes('amazon.in/dp/B0TAGGED001')) {
+        throw new Error('an Associates-declared category may keep its monetized short link')
+      }
     } finally {
       Object.assign(globalThis, {})
       targetJid = saved.targetJid; under99Jid = saved.under99Jid
       under499Jid = saved.under499Jid; bestOfJid = saved.bestOfJid
+      categoryJids = saved.categoryJids
+      WA_AMAZON_TAG_CATEGORY_TARGETS.clear()
+      for (const slug of saved.amazonCategoryTags) WA_AMAZON_TAG_CATEGORY_TARGETS.add(slug)
+      state.shortLinks = saved.shortLinks
       state.jobs = saved.jobs
       CHANNEL_POLICY_OF_JID.clear()
       for (const [k, v] of savedPolicies) CHANNEL_POLICY_OF_JID.set(k, v)

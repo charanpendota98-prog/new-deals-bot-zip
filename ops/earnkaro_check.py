@@ -633,8 +633,8 @@ async def plan_posted_links(client, probes, *, multi_link: bool, publisher: str,
             unmonetized += 1
             failures += 1
             lines.append("  convert   : UNMONETIZED - the network has no campaign for this "
-                         "store/URL. The bot still posts the deal with a clean merchant link; "
-                         "NOBODY IS PAID for it.")
+                         "store/URL. Strict-all skips this item/post; no clean merchant "
+                         "link is sent because it would earn nothing.")
             lines.append("  fix       : Affiliaters > Affiliate Settings > Networks + Selections "
                          "(connect EarnKaro and pick a network per store), or take the deal from "
                          "another source link")

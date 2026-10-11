@@ -209,8 +209,10 @@ else
   sudo journalctl -u bestgaa -n 60 --no-pager 2>/dev/null | grep -iE "error|traceback|exception|auth|login|api|missing" | tail -8 | sed 's/^/    /' || true
 fi
 # 8b. FloodWait / banned / not-admin = a hard Telegram-side block on posting.
-FLOOD=$(sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -icE "floodwait|flood wait|too many requests|chatadminrequired|channelprivate|user.*banned|peer.*invalid|could not find the input" || echo 0)
-if [[ "$FLOOD" -gt 0 ]]; then
+# NOTE: `grep -c` already prints 0 on no match (exit 1) - an `|| echo 0` here
+# used to append a SECOND 0, and `[[ "0\n0" -gt 0 ]]` is a bash error.
+FLOOD=$(sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -icE "floodwait|flood wait|too many requests|chatadminrequired|channelprivate|user.*banned|peer.*invalid|could not find the input" || true)
+if [[ "${FLOOD:-0}" -gt 0 ]]; then
   bad "$FLOOD FloodWait/permission/banned hits in recent bot logs -> Telegram is rate-limiting or the account is not admin in a target:"
   sudo journalctl -u bestgaa -n 800 --no-pager 2>/dev/null | grep -iE "floodwait|flood wait|chatadminrequired|channelprivate|banned|could not find the input" | tail -6 | sed 's/^/    /'
   echo "    -> Wait out the flood (seconds shown in the log), ensure the bot/admin is still admin in every target channel."
@@ -218,8 +220,8 @@ else
   ok "no FloodWait/ban/permission errors in recent bot logs"
 fi
 # 8c. Is intake still seeing source posts? (QUEUED lines) -> event stream health.
-QUEUED_LAST=$(sudo journalctl -u bestgaa -n 400 --no-pager 2>/dev/null | grep -c "QUEUED |" || echo 0)
-if [[ "$QUEUED_LAST" -gt 0 ]]; then
+QUEUED_LAST=$(sudo journalctl -u bestgaa -n 400 --no-pager 2>/dev/null | grep -c "QUEUED |" || true)
+if [[ "${QUEUED_LAST:-0}" -gt 0 ]]; then
   ok "bot is ingesting source posts ($QUEUED_LAST QUEUED in recent logs) -> problem is downstream (render/provenance/send), see section 9"
 else
   warn "no QUEUED lines recently -> the bot is not receiving source posts (not admin in source channels, or session/event stream dead). Restart fixes: sudo systemctl restart bestgaa"

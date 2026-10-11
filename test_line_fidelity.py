@@ -37,6 +37,8 @@ import main_bot_new as bot  # noqa: E402
 # which is exactly what PASSTHROUGH_UNMONETIZED controls. Pin it here (that knob's own
 # behaviour is tested in test_pipeline_fixes / test_duplicate_sim), so running this file
 # under PASSTHROUGH_UNMONETIZED=false compares the same text instead of erroring out.
+# Strict-all refusal paths are covered separately; this suite isolates text fidelity.
+bot.STRICT_OUR_LINKS = False
 bot.PASSTHROUGH_UNMONETIZED = True
 
 R = "\u20b9"
@@ -1697,7 +1699,7 @@ def test_only_the_review_channel_is_restricted():
     # And the per-channel policy switches are all keyed to SHOPPING_TARGET.
     deliver = src[src.index("async def process_job"):]
     strict_block = deliver[deliver.index("if target == SHOPPING_TARGET:"):]
-    strict_block = strict_block[:strict_block.index("target_text = strip_amazon_tag_for_undeclared")]
+    strict_block = strict_block[:strict_block.index("tagless_copy = strip_amazon_tag_for_undeclared")]
     for rule in ("affiliate_safe_text", "has_amazon_trademark", "add_link_disclosure",
                  "shopping_quota_left", "shopping_pace_wait"):
         check("%s sits inside the SHOPPING_TARGET branch" % rule, rule in strict_block,
@@ -2212,6 +2214,38 @@ def test_every_list_shape_reads_name_above_its_own_link():
           got == [(g[0], g[1]) for g in got] and "Boat" in got[0][0]
           and "Samsung" in got[1][0] and "Milton" in got[2][0], str(got))
 
+    # SHAPE 4 - some sources put one-word product names on their own lines,
+    # then list prices, then dump the links at the bottom. These are real names
+    # (Dove/Mivi/Harpic), not orphan URL fragments; cleanup must not erase them.
+    names_before_prices = (
+        "TODAY'S BEST DEALS\nDove\nMivi\nHarpic\n"
+        "Deal Price: ₹99\nDeal Price: ₹499\nDeal Price: ₹149\n"
+        "https://amzn.to/dove\nhttps://amzn.to/mivi\nhttps://amzn.to/harpic"
+    )
+    got_names = pipeline(names_before_prices)
+    for name in ("Dove", "Mivi", "Harpic"):
+        check("a short product name survives a multi-product list: %s" % name,
+              name in got_names, got_names)
+    ordered_items = [
+        "Dove", "Deal Price: ₹99", "https://amzn.to/dove",
+        "Mivi", "Deal Price: ₹499", "https://amzn.to/mivi",
+        "Harpic", "Deal Price: ₹149", "https://amzn.to/harpic",
+    ]
+    item_positions = [got_names.find(item) for item in ordered_items]
+    check("name-first, price-first, link-last lists become neat matched item blocks",
+          all(position >= 0 for position in item_positions)
+          and item_positions == sorted(item_positions), got_names)
+
+    names_with_items = (
+        "Dove\nDeal Price: ₹99\nhttps://amzn.to/dove\n"
+        "Mivi\nDeal Price: ₹499\nhttps://amzn.to/mivi\n"
+        "Harpic\nDeal Price: ₹149\nhttps://amzn.to/harpic"
+    )
+    got_items = pipeline(names_with_items)
+    for name in ("Dove", "Mivi", "Harpic"):
+        check("a separated item name survives beside its price/link: %s" % name,
+              name in got_items, got_items)
+
     # A NEAT SOURCE MUST COME OUT UNCHANGED - we never "fix" what is already right.
     neat = ("\U0001f525 Deals\n\n1) Boat 141 @ 899\nhttps://amzn.to/a\n\n"
             "2) Samsung M14 @ 9999\nhttps://amzn.to/b")
@@ -2377,6 +2411,38 @@ print(json.dumps(fail))
         return
     check("every owned channel carries our tag, nobody else does",
           not failures, "; ".join(failures)[:600])
+
+
+def test_category_tag_requires_explicit_declaration():
+    """New category channels stay tagless until explicitly listed for Amazon."""
+    import tempfile
+
+    probe = r"""
+import os, sys, json
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+url = "https://www.amazon.in/dp/B012345678?tag=" + bot.OUR_TAG
+out = bot.strip_amazon_tag_for_undeclared("Deal\\n" + url, bot.CATEGORY_TARGETS["footwear"])
+expected = os.environ["EXPECT_TAG"] == "true"
+ok = (bot.OUR_TAG in out) == expected
+print(json.dumps({"ok": ok, "target": bot.CATEGORY_TARGETS["footwear"], "out": out}))
+sys.exit(0 if ok else 1)
+"""
+    for category_allowlist, expected_tag in (("", "false"), ("FootwearDeals", "true")):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ,
+                       TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                       AMAZON_TAG="mama086-21", AMAZON_TAG_TARGETS="all",
+                       AMAZON_TAG_CATEGORY_TARGETS=category_allowlist,
+                       TG_CATEGORY_FOOTWEAR_TARGET="FootwearDeals", EXPECT_TAG=expected_tag,
+                       BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"),
+                       BOT_LOG_DIR=str(Path(tmp) / "logs"),
+                       BOT_MEDIA_DIR=str(Path(tmp) / "media"))
+            proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                                  capture_output=True, text=True, env=env, timeout=60)
+            check(f"category Amazon tag allowlist={category_allowlist or '<unset>'}",
+                  proc.returncode == 0,
+                  (proc.stdout or proc.stderr or "")[-300:])
 
 
 def test_amazon_list_links_use_bitly_and_the_review_channel_sees_native():
@@ -3352,6 +3418,7 @@ def main() -> int:
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
     test_tag_on_every_owned_channel_when_switched_on()
+    test_category_tag_requires_explicit_declaration()
     test_amazon_list_links_use_bitly_and_the_review_channel_sees_native()
     test_the_whole_delivery_path_end_to_end()
     test_the_review_channel_publishes_one_product_never_a_list()

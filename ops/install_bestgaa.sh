@@ -32,14 +32,14 @@ SERVICE="bestgaa"
 
 SRC=""
 for cand in "$HERE" "$HERE/../bestgaa"; do
-  if [[ -f "$cand/main_bot_new.py" && -f "$cand/requirements.txt" && -f "$cand/bestgaa.service" ]]; then
+  if [[ -f "$cand/main_bot_new.py" && -f "$cand/category_rules.json" && -f "$cand/requirements.txt" && -f "$cand/bestgaa.service" ]]; then
     SRC="$cand"
     break
   fi
 done
 if [[ -z "$SRC" ]]; then
   echo "ERROR: bestgaa source files not found next to this script or in ../bestgaa" >&2
-  echo "       Needed: main_bot_new.py, requirements.txt, bestgaa.service, migrate_legacy_env.py" >&2
+  echo "       Needed: main_bot_new.py, category_rules.json, requirements.txt, bestgaa.service, migrate_legacy_env.py" >&2
   exit 1
 fi
 
@@ -51,7 +51,7 @@ if [[ -f "$APP/main_bot.py" ]]; then
   exit 1
 fi
 mkdir -p "$APP/logs" "$APP/media"
-cp "$SRC/main_bot_new.py" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
+cp "$SRC/main_bot_new.py" "$SRC/category_rules.json" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
 if [[ -f "$SRC/migrate_legacy_env.py" ]]; then
   cp "$SRC/migrate_legacy_env.py" "$APP/"
 fi
@@ -133,6 +133,13 @@ PY2
     EK_PUB="${EK_PUB_ANSWER:-${EK_PUB:-5478322}}"
     read -rp "Session name [bestgaa_fresh]: " SESSION_NAME; SESSION_NAME="${SESSION_NAME:-bestgaa_fresh}"
     read -rp "Bitly tokens, comma separated (optional): " BITLY
+    echo "Optional category Telegram channel usernames (add the Telethon account as admin first; Enter to skip):"
+    read -rp "  Footwear username: " TG_CATEGORY_FOOTWEAR_TARGET
+    read -rp "  Fashion username: " TG_CATEGORY_FASHION_TARGET
+    read -rp "  Electronics username: " TG_CATEGORY_ELECTRONICS_TARGET
+    read -rp "  Home & Kitchen username: " TG_CATEGORY_HOME_KITCHEN_TARGET
+    read -rp "  Beauty username: " TG_CATEGORY_BEAUTY_TARGET
+    read -rp "  Grocery username: " TG_CATEGORY_GROCERY_TARGET
     if [[ -z "$TG_API_ID" || -z "$TG_API_HASH" || -z "$EK_KEY" || -z "$AMZ_TAG" ]]; then
       echo "ERROR: API_ID, API_HASH, EarnKaro key and Amazon tag are all required" >&2
       exit 1
@@ -146,8 +153,8 @@ EARNKARO_API_KEY=$EK_KEY
 EARNKARO_API_URL=https://ekaro-api.affiliaters.in/api/converter/public
 EARNKARO_PUBLISHER_ID=$EK_PUB
 # The documented converter mode: convert the link and do nothing else. Sending
-# it explicitly keeps the RESPONSE shape predictable (an unreadable response is
-# a post that goes out unmonetized, not a lost post).
+# it explicitly keeps the RESPONSE shape predictable; strict-all refuses a post
+# if the response does not prove an owned affiliate URL.
 EARNKARO_CONVERT_OPTION=convert_only
 # USER DECISION (2026-10-04): the Amazon Associates account is APPROVED for our
 # tag, so the NATIVE tagged link (?tag=mama086-21) is the FIRST choice - the
@@ -159,10 +166,11 @@ AMAZON_DIRECT_ASSOCIATES=true
 # order (EarnKaro first, native tagged link as the fallback).
 AMAZON_VIA_EARNKARO=true
 AMAZON_TAG=$AMZ_TAG
-# USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu, not
-# only review channel". The tag earns on every owned channel.
+# The core owned channels below use our tag after Associates approval. New
+# category channels are excluded until explicitly declared and listed via
+# AMAZON_TAG_CATEGORY_TARGETS.
 #
-# YOUR SIDE OF THIS: every channel below must be listed in Associates Central,
+# YOUR SIDE OF THIS: every core channel below must be listed in Associates Central,
 # with its FULL URL (t.me/LootZoneIndia11, not t.me), and must be public.
 #   https://affiliate-program.amazon.in/home/account/profile/sitelist
 # Amazon reads the traffic source from the tag itself, so a channel carrying
@@ -173,11 +181,25 @@ AMAZON_TAG=$AMZ_TAG
 # and review counts are removed and "#ad (paid link)" is appended, because a
 # tagged channel is a channel Amazon reviews.
 AMAZON_TAG_TARGETS=all
+# Populate only after declaring each category channel in Associates Central.
+AMAZON_TAG_CATEGORY_TARGETS=
+
+# Optional category Telegram mirrors (empty = Main feed only for that category).
+TG_CATEGORY_FOOTWEAR_TARGET=$TG_CATEGORY_FOOTWEAR_TARGET
+TG_CATEGORY_FASHION_TARGET=$TG_CATEGORY_FASHION_TARGET
+TG_CATEGORY_ELECTRONICS_TARGET=$TG_CATEGORY_ELECTRONICS_TARGET
+TG_CATEGORY_HOME_KITCHEN_TARGET=$TG_CATEGORY_HOME_KITCHEN_TARGET
+TG_CATEGORY_BEAUTY_TARGET=$TG_CATEGORY_BEAUTY_TARGET
+TG_CATEGORY_GROCERY_TARGET=$TG_CATEGORY_GROCERY_TARGET
 
 BITLY_TOKENS=$BITLY
 BOT_DB_PATH=$APP/bestgaa.sqlite3
-PRODUCT_DEDUP_SECONDS=36000
-PRICE_DEDUP_SECONDS=3600
+# (No PRODUCT_DEDUP_SECONDS: the 24h same-product window is pinned in code -
+# env override blocked by user rule 2026-09-04 - so a value here would be dead.)
+# Same-price fallback is OFF (0): at common prices (99/499/...) the 1-hour hold
+# ate real unidentified deals. Identity dedup + the pinned 24h product window
+# remain the guards. Set 3600 to restore the hold as an opt-in.
+PRICE_DEDUP_SECONDS=0
 # Same-price gate is a fallback for posts with no ASIN/PID. Set true to
 # also block a different product sharing an already-posted price.
 PRICE_DEDUP_IGNORES_IDENTITY=false
@@ -191,17 +213,18 @@ MAX_JOB_AGE_HOURS=6
 JOB_RETRY_MAX_SECONDS=20
 HTTP_TOTAL_TIMEOUT_SECONDS=12
 LINK_HEALTH_CACHE_SECONDS=900
-PRESEND_CHECK_BUDGET_SECONDS=25
+# Pre-send link check is capped at seconds (a slow page must never hold a deal).
+PRESEND_CHECK_BUDGET_SECONDS=6
 SOURCE_RESCAN_SECONDS=120
 SOURCE_RESCAN_LIMIT=40
 SOURCE_REFRESH_SECONDS=180
 MAX_MEDIA_MB=45
-TARGET_FANOUT_GAP_MIN=0.4
-TARGET_FANOUT_GAP_MAX=1.2
-# v17: publish a store link EarnKaro cannot monetize as a clean untagged
-# merchant link instead of losing the post. false = old behaviour (retry, then
-# skip - that deal never reaches the channels).
-PASSTHROUGH_UNMONETIZED=true
+# Zero artificial waiting: channel fan-out is back-to-back by default.
+TARGET_FANOUT_GAP_MIN=0
+TARGET_FANOUT_GAP_MAX=0
+# Strict-all is pinned in the bot: only a verified affiliate link may be sent.
+# Keep the legacy knob false so old settings cannot imply clean-link passthrough.
+PASSTHROUGH_UNMONETIZED=false
 # Source fidelity: publish what the source published (its own hype header
 # included). Set true to ALSO drop pure campaign banner lines.
 STRIP_CAMPAIGN_BANNERS=false

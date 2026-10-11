@@ -45,7 +45,7 @@ Exactly 10 numbered unique deal cards.
 
 STRICT SOURCE-ONLY WHATSAPP MODE
 - Output format is strict source-only: cleaned source photo/video, useful title/price/coupon/variant labels, and exact generated affiliate links.
-- Every valid shopping candidate is retained; smart curation changes dispatch priority rather than silently dropping ordinary deals. Useful Under99/Under499, Shopsy, clothing, footwear, electronics, home/kitchen, fitness, toys, personal-care/daily-essential deals and strong discounts are sent first.
+- A shopping candidate is retained only when every posted product has a verified link that earns for this account; smart curation changes priority among those eligible deals. Unsupported merchant/service links are withheld. A list with an unverified item is skipped as a unit to preserve every name/price/link association.
 - Dispatch priority is recalculated at send time, so a newly arrived stronger deal can move ahead while the safety delay is running.
 - Exact dispatch order: Under₹99/₹199/₹499 first; then photo/video; 4+ product lists; 2+ links; highest discounts; women-focused products; Shopsy/home/electronics/clothing/footwear; finally remaining deals with ageing bonus.
 - No bot-added Deals-of-the-Day/Special/Mega headings, slogans, numbering, or promotional footer.
@@ -68,7 +68,7 @@ SAFETY / RELIABILITY
 - Hybrid 02:00–06:00 mode allows only major 80%+, special/card, 4+ link, or strong 70%+ photo deals.
 - Max 3,800 characters; descriptions compact safely, affiliate URLs are never truncated.
 - Amazon tag and visible EarnKaro publisher ID validation.
-- Every outgoing URL must also exactly exist as an authenticated generated affiliate_url in BestGAA's SQLite link_cache; manually posted/foreign links are blocked even if their hostname looks acceptable.
+- Every outgoing URL needs native earning attribution (our Amazon tag or supported publisher ID), an account-bound `owned_link_proofs` record, or an exact verified HYPD-to-Meesho mapping. A BestGAA `link_cache` row or shortener hostname alone is never ownership proof.
 - Foreign source shorteners and explicit broken Flipkart repair pages blocked.
 - Posting schedule is 24/7. Quiet/hybrid windows are disabled (`QUIET_START=QUIET_END=00:00`, `HYBRID_QUIET=false`).
 - The normal 60–120 second random gap, hourly/day caps, dedup and one 5–6 minute random break/hour still apply at night.
@@ -143,10 +143,44 @@ set in .env:
   WA_CHANNEL_BEST_OF    only the single best deal available at that moment; a deal
                         that is not a best pick is skipped here (never delayed and
                         dumped). WA_BEST_OF_COOLDOWN_SECONDS spaces the picks out.
-WA_CHANNEL_ALL_POSTS=true overrides all of this and mirrors every post to every
-channel. Channel IDs may be an invite link or a ...@newsletter JID; a channel that
-fails to resolve once is retried every 10 minutes, and the main channel keeps
-posting meanwhile.
+WA_CHANNEL_ALL_POSTS=true overrides the price-tier gates and mirrors every post
+to those price channels. It does NOT turn category channels into catch-all feeds.
+
+CATEGORY-WISE WHATSAPP MIRRORS
+- Optional variables: WA_CHANNEL_FOOTWEAR, WA_CHANNEL_FASHION,
+  WA_CHANNEL_ELECTRONICS, WA_CHANNEL_HOME_KITCHEN, WA_CHANNEL_BEAUTY,
+  WA_CHANNEL_GROCERY (set each to a WhatsApp Channel invite link or
+  ...@newsletter JID after creating that Channel and making this bridge number
+  an admin).
+- A confidently classified deal is mirrored to WA_CHANNEL (Main) AND exactly
+  one matching category. Classification uses product text plus readable terms in
+  incoming/resolved URL paths and selected search/title queries. The bridge does
+  not fetch merchant-page HTML; an opaque product/ASIN ID alone is not enough to
+  route. Mixed/unclear roundups stay on Main; no guessing or fan-out to all six.
+- The bridge uses the same versioned category_rules.json as the Telegram bot
+  and classifies its existing Main Telegram feed itself; do not add the new
+  category output channels to TG_SOURCE_USERNAMES (that would re-ingest copies).
+- A category-channel copy containing our Amazon Associates link is withheld
+  until that category Channel is declared in Associates Central and its slug is
+  added to WA_AMAZON_TAG_CATEGORY_TARGETS=footwear,fashion,... . The bridge does
+  not strip our tag and publish a non-earning Amazon URL. This is separate from
+  the Telegram username allowlist AMAZON_TAG_CATEGORY_TARGETS.
+- An unresolved category channel is retried every 10 minutes; Main delivery
+  continues while that optional destination is unavailable.
+
+STRICT-ALL LINK POLICY (pinned on)
+- Publish only our verified earning links. Service URLs (Zomato/Swiggy/etc.),
+  clean merchant fallbacks, foreign affiliate wrappers and unknown short links
+  are never posted.
+- A direct-source link must carry our native attribution or match account-bound
+  converter proof / an exact verified HYPD-to-Meesho mapping. A cache row or the
+  hostname of bit.ly/fktr.in/ekaro.in is not proof by itself.
+- Unsupported items/posts are skipped. Lists are refused as a unit if an item
+  cannot get an owned link, preserving the product's name, price and correct
+  URL together instead of deleting only the link.
+- For category Channels, Amazon links are withheld until that Channel is
+  Associates-declared and its slug is allowlisted. The bridge does not strip
+  our tag and publish a non-earning Amazon URL.
 
 v17.5 formatting rule: a WhatsApp post is the SOURCE post. The bridge no longer
 adds anything of its own - no bold headline hoisted out of the text, no "💰 price /
@@ -154,8 +188,9 @@ adds anything of its own - no bold headline hoisted out of the text, no "💰 pr
 (Grab fast)" wrapper on specials, no "MEGA DEAL LIST" banner on big lists, no
 "DEALS OF THE DAY" header on digests, no "➜" bullets and no "Latest deal" filler.
 What is still removed is only junk (another channel's branding, referral /
-app-install farming, CTA filler, markdown debris, glued tokens) and what is changed
-is only the link: every merchant link becomes OUR monetized link, one per line.
+app-install farming, CTA filler, markdown debris, glued tokens). Links are replaced
+only with verified links that earn for us; unsupported items/posts are withheld,
+not sent with clean but unmonetized merchant URLs.
 If a source opens with its own "🔥🔥 TOP DEAL OF THE DAY 🔥🔥" line, that line is
 published exactly as the source wrote it; set WA_STRIP_CAMPAIGN_BANNERS=true only if
 you want those hype lines gone.

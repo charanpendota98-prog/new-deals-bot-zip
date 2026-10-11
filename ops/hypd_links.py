@@ -18,8 +18,8 @@ Run on the server (or anywhere with internet) from the bot directory:
         Which of OUR HYPD links (if any) covers this product page?
 
     python3 ops/hypd_links.py --wanted
-        Products the bot had to post UNMONETIZED because no HYPD link exists for
-        them yet (Meesho: use our HYPD store). Create the link
+        Products strict-all skipped because no HYPD link exists yet (Meesho: use
+        our HYPD store). Create the link
         for one of them in the HYPD app, learn it with this tool, and every later
         post of that product earns on it.
 
@@ -76,8 +76,12 @@ if not os.environ.get("BOT_DB_PATH") and (APP_DIR / "bestgaa.sqlite3").exists():
     os.environ["BOT_DB_PATH"] = str(APP_DIR / "bestgaa.sqlite3")
 
 # The bot module needs these at import time; this tool never starts Telegram.
+# (Every flag - even --help - used to die on EARNKARO_API_KEY without a live
+# .env, because only the Telegram pair was defaulted. Same placeholder pattern
+# as ops/identity_probe.py; live .env values loaded above always win.)
 os.environ.setdefault("TELEGRAM_API_ID", "1")
 os.environ.setdefault("TELEGRAM_API_HASH", "hypd-links-ops-tool")
+os.environ.setdefault("EARNKARO_API_KEY", "hypd-links-ops-tool")
 
 import main_bot_new as bot  # noqa: E402
 
@@ -129,7 +133,7 @@ async def main() -> int:
         if not rows:
             print("Every Meesho product seen so far has OUR HYPD link. Nothing pending.")
             return 0
-        print(f"{len(rows)} product(s) posted UNMONETIZED - no HYPD link curated yet:\n")
+        print(f"{len(rows)} product(s) skipped - no HYPD link curated yet:\n")
         for row in rows:
             print(f"  {row['product_url']}")
             print(f"    seen {row['times']}x   product key: {row['product_key'] or '(unknown)'}")

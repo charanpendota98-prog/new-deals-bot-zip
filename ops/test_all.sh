@@ -42,8 +42,58 @@ GATE_TMP="$(mktemp -d /tmp/bestgaa-gate-XXXXXX)"
 export BOT_DB_PATH="${BOT_DB_PATH:-$GATE_TMP/gate.sqlite3}"
 export BOT_LOG_DIR="${BOT_LOG_DIR:-$GATE_TMP/logs}"
 export BOT_MEDIA_DIR="${BOT_MEDIA_DIR:-$GATE_TMP/media}"
+export BESTGAA_DB_PATH="$GATE_TMP/bridge-provenance.sqlite3"
 trap 'rm -rf "$GATE_TMP"' EXIT
 
+# The bridge self-test uses a private DB with three cases: an account-bound
+# converter proof, a cache-only legacy row (must fail), and a verified Meesho HYPD
+# mapping. It never reads or modifies an operator's live database.
+"$PYTHON" - "$BESTGAA_DB_PATH" <<'PY'
+import sqlite3, sys
+conn = sqlite3.connect(sys.argv[1])
+conn.executescript("""
+CREATE TABLE link_cache(source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+ resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY, destination_url TEXT NOT NULL,
+ proof_type TEXT NOT NULL, publisher_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);
+CREATE TABLE hypd_links(token TEXT PRIMARY KEY, store TEXT NOT NULL, afflink_url TEXT NOT NULL,
+ resolved_url TEXT, product_key TEXT, created_at REAL NOT NULL);
+""")
+conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+    "https://source.invalid/1", "https://bit.ly/self-test-owned",
+    "https://www.flipkart.com/product/p/itmOWNED?pid=1", "flipkart:itmowned", 1))
+conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+    "https://bit.ly/self-test-owned", "https://ekaro.in/enkr-self-test",
+    "earnkaro_api", "5478322", 1))
+conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+    "https://source.invalid/2", "https://bit.ly/self-test-cache-only",
+    "https://www.flipkart.com/product/p/itmBARE?pid=2", "flipkart:itmbare", 1))
+conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+    "https://source.invalid/3", "https://bit.ly/self-test-wrong-account",
+    "https://www.flipkart.com/product/p/itmOTHER?pid=3", "flipkart:itmother", 1))
+conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+    "https://bit.ly/self-test-wrong-account", "https://ekaro.in/enkr-other-account",
+    "earnkaro_api", "9999999", 1))
+conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+    "https://source.invalid/4", "https://bit.ly/self-test-amazon",
+    "https://www.amazon.in/dp/B0TAG", "amazon:B0TAG", 1))
+conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+    "https://bit.ly/self-test-amazon", "https://www.amazon.in/dp/B0TAG?tag=mama086-21",
+    "amazon_native", "", 1))
+conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (
+    "https://source.invalid/5", "https://bit.ly/self-test-stale-amazon",
+    "https://www.amazon.in/dp/B0OLD", "amazon:B0OLD", 1))
+conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+    "https://bit.ly/self-test-stale-amazon", "https://www.amazon.in/dp/B0OLD?tag=oldtag-21",
+    "amazon_native", "", 1))
+conn.execute("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", (
+    "self-test-token", "93944", "https://hypd.store/93944/afflink/self-test-token",
+    "https://www.meesho.com/product/p/SELFTEST", "meesho:selftest", 1))
+conn.commit()
+conn.close()
+PY
+
+run 'shared category taxonomy parity' cmp bestgaa/category_rules.json tg-wa-bridge/category_rules.json
 run 'render and routing' "$PYTHON" test_render_job.py
 run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
@@ -52,7 +102,11 @@ run 'duplicate handling' "$PYTHON" test_duplicate_sim.py
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
-run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test'
+run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'
+run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py
+if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+fi
 
 printf '\nALL OFFLINE CHECKS PASSED\n'
