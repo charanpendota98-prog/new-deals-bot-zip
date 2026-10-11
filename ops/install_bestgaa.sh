@@ -32,14 +32,14 @@ SERVICE="bestgaa"
 
 SRC=""
 for cand in "$HERE" "$HERE/../bestgaa"; do
-  if [[ -f "$cand/main_bot_new.py" && -f "$cand/requirements.txt" && -f "$cand/bestgaa.service" ]]; then
+  if [[ -f "$cand/main_bot_new.py" && -f "$cand/category_rules.json" && -f "$cand/requirements.txt" && -f "$cand/bestgaa.service" ]]; then
     SRC="$cand"
     break
   fi
 done
 if [[ -z "$SRC" ]]; then
   echo "ERROR: bestgaa source files not found next to this script or in ../bestgaa" >&2
-  echo "       Needed: main_bot_new.py, requirements.txt, bestgaa.service, migrate_legacy_env.py" >&2
+  echo "       Needed: main_bot_new.py, category_rules.json, requirements.txt, bestgaa.service, migrate_legacy_env.py" >&2
   exit 1
 fi
 
@@ -51,7 +51,7 @@ if [[ -f "$APP/main_bot.py" ]]; then
   exit 1
 fi
 mkdir -p "$APP/logs" "$APP/media"
-cp "$SRC/main_bot_new.py" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
+cp "$SRC/main_bot_new.py" "$SRC/category_rules.json" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
 if [[ -f "$SRC/migrate_legacy_env.py" ]]; then
   cp "$SRC/migrate_legacy_env.py" "$APP/"
 fi
@@ -133,6 +133,13 @@ PY2
     EK_PUB="${EK_PUB_ANSWER:-${EK_PUB:-5478322}}"
     read -rp "Session name [bestgaa_fresh]: " SESSION_NAME; SESSION_NAME="${SESSION_NAME:-bestgaa_fresh}"
     read -rp "Bitly tokens, comma separated (optional): " BITLY
+    echo "Optional category Telegram channel usernames (add the Telethon account as admin first; Enter to skip):"
+    read -rp "  Footwear username: " TG_CATEGORY_FOOTWEAR_TARGET
+    read -rp "  Fashion username: " TG_CATEGORY_FASHION_TARGET
+    read -rp "  Electronics username: " TG_CATEGORY_ELECTRONICS_TARGET
+    read -rp "  Home & Kitchen username: " TG_CATEGORY_HOME_KITCHEN_TARGET
+    read -rp "  Beauty username: " TG_CATEGORY_BEAUTY_TARGET
+    read -rp "  Grocery username: " TG_CATEGORY_GROCERY_TARGET
     if [[ -z "$TG_API_ID" || -z "$TG_API_HASH" || -z "$EK_KEY" || -z "$AMZ_TAG" ]]; then
       echo "ERROR: API_ID, API_HASH, EarnKaro key and Amazon tag are all required" >&2
       exit 1
@@ -159,10 +166,11 @@ AMAZON_DIRECT_ASSOCIATES=true
 # order (EarnKaro first, native tagged link as the fallback).
 AMAZON_VIA_EARNKARO=true
 AMAZON_TAG=$AMZ_TAG
-# USER DECISION (2026-09-06, final): "anni channels amazon tag tho cheyu, not
-# only review channel". The tag earns on every owned channel.
+# The core owned channels below use our tag after Associates approval. New
+# category channels are excluded until explicitly declared and listed via
+# AMAZON_TAG_CATEGORY_TARGETS.
 #
-# YOUR SIDE OF THIS: every channel below must be listed in Associates Central,
+# YOUR SIDE OF THIS: every core channel below must be listed in Associates Central,
 # with its FULL URL (t.me/LootZoneIndia11, not t.me), and must be public.
 #   https://affiliate-program.amazon.in/home/account/profile/sitelist
 # Amazon reads the traffic source from the tag itself, so a channel carrying
@@ -173,6 +181,16 @@ AMAZON_TAG=$AMZ_TAG
 # and review counts are removed and "#ad (paid link)" is appended, because a
 # tagged channel is a channel Amazon reviews.
 AMAZON_TAG_TARGETS=all
+# Populate only after declaring each category channel in Associates Central.
+AMAZON_TAG_CATEGORY_TARGETS=
+
+# Optional category Telegram mirrors (empty = Main feed only for that category).
+TG_CATEGORY_FOOTWEAR_TARGET=$TG_CATEGORY_FOOTWEAR_TARGET
+TG_CATEGORY_FASHION_TARGET=$TG_CATEGORY_FASHION_TARGET
+TG_CATEGORY_ELECTRONICS_TARGET=$TG_CATEGORY_ELECTRONICS_TARGET
+TG_CATEGORY_HOME_KITCHEN_TARGET=$TG_CATEGORY_HOME_KITCHEN_TARGET
+TG_CATEGORY_BEAUTY_TARGET=$TG_CATEGORY_BEAUTY_TARGET
+TG_CATEGORY_GROCERY_TARGET=$TG_CATEGORY_GROCERY_TARGET
 
 BITLY_TOKENS=$BITLY
 BOT_DB_PATH=$APP/bestgaa.sqlite3

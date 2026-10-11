@@ -85,7 +85,7 @@ chmod 600 .env
 echo "[4b/6] Applying Telegram bot orphan-token fix (h/htt leak)..."
 if [[ -n "$BOT_BUNDLE" ]]; then
   cd "$BOT_DIR"
-  unzip -o "$BOT_BUNDLE" main_bot_new.py -d "$BOT_DIR" >/dev/null
+  unzip -o "$BOT_BUNDLE" main_bot_new.py category_rules.json -d "$BOT_DIR" >/dev/null
   python3 -m py_compile main_bot_new.py
   # .env is NOT touched here — the bot keeps its existing credentials.
   cp -a main_bot_new.py main_bot.py

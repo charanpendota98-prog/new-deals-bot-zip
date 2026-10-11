@@ -44,6 +44,7 @@ export BOT_LOG_DIR="${BOT_LOG_DIR:-$GATE_TMP/logs}"
 export BOT_MEDIA_DIR="${BOT_MEDIA_DIR:-$GATE_TMP/media}"
 trap 'rm -rf "$GATE_TMP"' EXIT
 
+run 'shared category taxonomy parity' cmp bestgaa/category_rules.json tg-wa-bridge/category_rules.json
 run 'render and routing' "$PYTHON" test_render_job.py
 run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py

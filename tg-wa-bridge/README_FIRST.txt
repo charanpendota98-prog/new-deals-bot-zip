@@ -143,10 +143,27 @@ set in .env:
   WA_CHANNEL_BEST_OF    only the single best deal available at that moment; a deal
                         that is not a best pick is skipped here (never delayed and
                         dumped). WA_BEST_OF_COOLDOWN_SECONDS spaces the picks out.
-WA_CHANNEL_ALL_POSTS=true overrides all of this and mirrors every post to every
-channel. Channel IDs may be an invite link or a ...@newsletter JID; a channel that
-fails to resolve once is retried every 10 minutes, and the main channel keeps
-posting meanwhile.
+WA_CHANNEL_ALL_POSTS=true overrides the price-tier gates and mirrors every post
+to those price channels. It does NOT turn category channels into catch-all feeds.
+
+CATEGORY-WISE WHATSAPP MIRRORS
+- Optional variables: WA_CHANNEL_FOOTWEAR, WA_CHANNEL_FASHION,
+  WA_CHANNEL_ELECTRONICS, WA_CHANNEL_HOME_KITCHEN, WA_CHANNEL_BEAUTY,
+  WA_CHANNEL_GROCERY (set each to a WhatsApp Channel invite link or
+  ...@newsletter JID after creating that Channel and making this bridge number
+  an admin).
+- A confidently classified deal is mirrored to WA_CHANNEL (Main) AND exactly
+  one matching category. Mixed/unclear roundups stay on Main; no guessing and no
+  cross-posting the same item to all six category shelves.
+- The bridge uses the same versioned category_rules.json as the Telegram bot
+  and classifies its existing Main Telegram feed itself; do not add the new
+  category output channels to TG_SOURCE_USERNAMES (that would re-ingest copies).
+- Amazon tags are removed from category-channel copies by default. After each
+  WhatsApp category Channel is declared in Associates Central, opt in its slug
+  via WA_AMAZON_TAG_CATEGORY_TARGETS=footwear,fashion,... . This is separate
+  from the Telegram username allowlist AMAZON_TAG_CATEGORY_TARGETS.
+- An unresolved category channel is retried every 10 minutes; Main delivery
+  continues while that optional destination is unavailable.
 
 v17.5 formatting rule: a WhatsApp post is the SOURCE post. The bridge no longer
 adds anything of its own - no bold headline hoisted out of the text, no "💰 price /

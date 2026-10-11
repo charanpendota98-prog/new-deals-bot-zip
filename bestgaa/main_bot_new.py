@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""BestGAA Production Bot v18.9
+"""BestGAA Production Bot v19.0
 
 Durable Telegram deal pipeline — "source lo post rattane, mana target lo
 immediately, exactly once, clean":
@@ -62,7 +62,11 @@ immediately, exactly once, clean":
 - long caption/message chunking
 - Under-99 / Under-499 price routing: single deals are band-checked, a product
   LIST reaches both price channels whatever its item prices, bank/card offers fan
-  out to every owned channel, and Premium keeps only the best-scored deals
+  out to core owned channels, and Premium keeps only the best-scored deals
+- v19 category mirrors: confidence-scored multilingual product phrases route a
+  deal to exactly one configured Footwear/Fashion/Electronics/Home & Kitchen/
+  Beauty/Grocery Telegram target while keeping the Main feed; ambiguous roundups
+  stay Main-only and new Amazon-tag channels require an explicit Associates allowlist
 """
 from __future__ import annotations
 
@@ -81,6 +85,7 @@ import signal
 import sqlite3
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -478,6 +483,43 @@ TRICKS_TARGET = "LootzoneTricks"
 # link - no loot/urgency wording, no "buy max quantity", no unverifiable claim).
 # Defined here so routing and the safe-copy renderer share one name.
 SHOPPING_TARGET = "smartbuyhub11"
+
+# Optional product-category Telegram destinations. Every valid deal still reaches
+# LootZoneIndia11; a confident product classification adds exactly one category
+# target. The target values are Telegram usernames (with or without @), created
+# by the operator and reachable by the Telethon session account.
+CATEGORY_RULES_PATH = BASE_DIR / "category_rules.json"
+try:
+    CATEGORY_RULES = json.loads(CATEGORY_RULES_PATH.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError) as exc:
+    # A missing rules file must never stop the core feed; categories degrade to
+    # main-feed-only and emit a visible startup warning.
+    CATEGORY_RULES = {"version": 0, "min_score": 3, "min_margin": 2, "categories": []}
+    logging.getLogger("bestgaa").warning(
+        "CATEGORY ROUTING DISABLED | %s could not be loaded: %s", CATEGORY_RULES_PATH, exc)
+CATEGORY_DEFINITIONS = {
+    item["key"]: item for item in CATEGORY_RULES.get("categories", [])
+    if isinstance(item, dict) and item.get("key")
+}
+CATEGORY_TARGETS = {
+    key: os.getenv(f"TG_CATEGORY_{key.upper()}_TARGET", "").strip().lstrip("@")
+    for key in CATEGORY_DEFINITIONS
+}
+_category_names: dict[str, list[str]] = {}
+for _category_key, _category_target in CATEGORY_TARGETS.items():
+    if _category_target:
+        _category_names.setdefault(_category_target.strip().lower(), []).append(_category_key)
+CATEGORY_TARGET_COLLISIONS = {
+    target: tuple(categories) for target, categories in _category_names.items()
+    if len(categories) > 1
+}
+for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
+    for _category_key in _category_keys:
+        CATEGORY_TARGETS[_category_key] = ""
+AMAZON_TAG_CATEGORY_TARGETS = {
+    value.strip().lstrip("@") for value in
+    os.getenv("AMAZON_TAG_CATEGORY_TARGETS", "").split(",") if value.strip()
+}
 MAIN_TARGETS = [SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET]
 NO_TRICKS_TARGETS = [SECRET_TARGET, "LootZoneIndia11", POWER_FILTER_TARGET]
 LZI_SECRET = ["LootZoneIndia11", SECRET_TARGET]
@@ -528,8 +570,9 @@ PRIORITY_SOURCES.add("under_99_loot_deals")
 # invite hash is case-sensitive to Telegram but not to the queue lookup).
 PRIORITY_SOURCES.update(normalize_source_name(s) for s in FIRST_PREFERENCE_SOURCES)
 OUR_FOLDER_LINK = "https://t.me/addlist/5V7_ViAGDxAwNTI1"
-# Every channel owner controls. Card/bank-offer posts fan out across all of
-# these so a bank/card deal is never missed, and get the folder link appended.
+# Core owned channels used by card/service wide fan-out. Category targets are
+# deliberately excluded here: the classifier adds only one matched shelf so a
+# bank/card deal is never copied indiscriminately to every category.
 # USER RULE (2026-09-06): the user added the new channel's own link as a
 # SOURCE. A channel that is both a source and a target feeds its own posts back
 # into the queue: the bot would re-read what it just published, re-shorten the
@@ -541,8 +584,9 @@ def is_own_channel_source(source: str) -> bool:
     if not name:
         return False
     owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
-             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET}
-    return name in {t.lower() for t in owned}
+             POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET,
+             *CATEGORY_TARGETS.values()}
+    return name in {t.lower() for t in owned if t}
 
 
 ALL_OWNED_TARGETS = list(dict.fromkeys(
@@ -567,20 +611,35 @@ SHOPPING_TARGET_ENABLED = os.getenv(
 # Amazon's own rule is that a channel carrying the tag must be DECLARED in
 # Associates Central. Both can be true at once, so this is one switch:
 #
-#   AMAZON_TAG_TARGETS=all   -> tag on every owned channel. Use this only AFTER
-#                               the account is approved AND every channel below
-#                               is listed in Associates Central. Undeclared
-#                               channels carrying the tag can close the account.
+#   AMAZON_TAG_TARGETS=all   -> tag on the core owned channels only. Use this
+#                               only AFTER those channels are listed in
+#                               Associates Central. New category mirrors are
+#                               excluded until explicitly declared and listed in
+#                               AMAZON_TAG_CATEGORY_TARGETS.
 #   (unset)                  -> tag on the review channel only (safe default,
 #                               correct while the application is pending).
 #   a,b,c                    -> exactly those channels.
+def normalize_channel_target_name(value: str) -> str:
+    """Compare public Telegram handles consistently (case and @ do not matter)."""
+    return str(value or "").strip().lstrip("@").lower()
+
+
 _tag_targets_env = os.getenv("AMAZON_TAG_TARGETS", "").strip()
+# Newly-created category channels are deliberately NOT swept in by `all`:
+# Amazon Associates requires every tagged channel to be declared first. Add
+# their exact Telegram usernames to AMAZON_TAG_CATEGORY_TARGETS only after the
+# channels have been added to the Associates site list.
 if _tag_targets_env.lower() in ("all", "*"):
-    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS}
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *ALL_OWNED_TARGETS,
+                          *AMAZON_TAG_CATEGORY_TARGETS}
 elif _tag_targets_env:
-    AMAZON_TAG_TARGETS = {t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()}
+    AMAZON_TAG_TARGETS = {
+        *(t.strip().lstrip("@") for t in _tag_targets_env.split(",") if t.strip()),
+        *AMAZON_TAG_CATEGORY_TARGETS,
+    }
 else:
-    AMAZON_TAG_TARGETS = {SHOPPING_TARGET}
+    AMAZON_TAG_TARGETS = {SHOPPING_TARGET, *AMAZON_TAG_CATEGORY_TARGETS}
+AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
 # --- Review-channel posting policy (t.me/smartbuyhub11) ---------------------
 # USER RULE (2026-09-05): "daily 20-30 posts, Amazon vi veyu, reject cheyakunda".
 # Three programme rules decide what this channel may publish:
@@ -884,7 +943,8 @@ def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> s
     Only our own tag is touched. The product, the price and the link still work,
     so the reader of that channel loses nothing.
     """
-    if not text or not OUR_TAG or target in AMAZON_TAG_TARGETS:
+    if (not text or not OUR_TAG
+            or normalize_channel_target_name(target) in AMAZON_TAG_TARGET_KEYS):
         return text
     out = text
     # Pass 1: our tag hidden behind a shortener we created.
@@ -1114,11 +1174,80 @@ rotating = logging.handlers.RotatingFileHandler(
 rotating.setFormatter(formatter)
 log.addHandler(console)
 log.addHandler(rotating)
+for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
+    log.warning("CATEGORY TARGET COLLISION | @%s is assigned to %s; those category routes are disabled",
+                _target_name, ", ".join(_category_keys))
 
 # ---------------------------------------------------------------------------
 # Domain and parsing helpers
 # ---------------------------------------------------------------------------
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
+
+
+def _normalize_category_phrase(value: str) -> str:
+    value = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
+    return re.sub(r"[\W_]+", " ", value, flags=re.UNICODE).strip()
+
+
+CATEGORY_MATCH_RULES = tuple(
+    (key, tuple((_normalize_category_phrase(alias), int(weight))
+                for alias, weight in definition.get("aliases", [])
+                if _normalize_category_phrase(alias)))
+    for key, definition in CATEGORY_DEFINITIONS.items()
+)
+
+
+def classify_deal_category(text: str | None) -> str | None:
+    """Return one high-confidence product category, or None for mixed/unclear posts.
+
+    We strip links first, normalize Unicode/HTML/markdown punctuation, score
+    curated product-name phrases, and require both a minimum score and margin
+    over the runner-up. This keeps mixed roundups on the Main channel instead of
+    confidently misfiling them into one category.
+    """
+    if not text or not CATEGORY_MATCH_RULES:
+        return None
+    content = URL_RE.sub(" ", str(text))
+    normalized = " " + _normalize_category_phrase(content) + " "
+    if normalized.strip() == "":
+        return None
+    matched_rules: list[tuple[str, str, int, int]] = []
+    for key, aliases in CATEGORY_MATCH_RULES:
+        for alias, weight in aliases:
+            hits = min(2, normalized.count(f" {alias} "))
+            if hits:
+                matched_rules.append((key, alias, weight, hits))
+    if not matched_rules:
+        return None
+    category_scores: dict[str, int] = {}
+    for key, alias, weight, hits in matched_rules:
+        # Do not score the same phrase twice: "running shoes" should not get
+        # an extra boost from nested "shoes". This also avoids reading "shoe"
+        # in "shoe rack" as a second footwear product across category rules.
+        nested_in_stronger = any(
+            alias != other_alias and f" {alias} " in f" {other_alias} "
+            and other_weight >= weight
+            for _, other_alias, other_weight, _ in matched_rules
+        )
+        if not nested_in_stronger:
+            category_scores[key] = category_scores.get(key, 0) + hits * weight
+    scores = sorted(((score, key) for key, score in category_scores.items() if score),
+                    reverse=True)
+    if not scores:
+        return None
+    best_score, best_key = scores[0]
+    min_score = max(1, int(CATEGORY_RULES.get("min_score", 3)))
+    min_margin = max(0, int(CATEGORY_RULES.get("min_margin", 2)))
+    runner_up = scores[1][0] if len(scores) > 1 else 0
+    # Two independently strong categories mean a mixed roundup/post. Keep it
+    # on Main instead of picking whichever label happened to score a point more.
+    strong_categories = sum(score >= min_score for score, _ in scores)
+    if (best_score < min_score or strong_categories > 1
+            or best_score - runner_up < min_margin):
+        return None
+    return best_key
+
+
 # Same pattern but with a CAPTURE group: re.split drops the separator itself,
 # while a capturing group keeps every URL inside the split parts (odd index),
 # so text-side cleanup can mask URLs and never touch query chars like '+'.
@@ -7072,6 +7201,7 @@ async def build_maps(client: TelegramClient):
     target_map: dict[str, Any] = {}
     all_targets = set(MAIN_TARGETS + [UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET,
                                       SHOPPING_TARGET])
+    all_targets.update(target for target in CATEGORY_TARGETS.values() if target)
     for targets in SOURCE_TO_TARGETS.values():
         all_targets.update(targets)
     for target in sorted(all_targets):
@@ -7984,6 +8114,20 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             base_targets = [target for target in base_targets if target != UNDER99_TARGET]
     if guaranteed not in base_targets:
         base_targets.append(guaranteed)
+    # Category shelves are an additive mirror: a confident product always
+    # remains on the Main feed and adds exactly one category target. This also
+    # brings a genuine product out of a Tricks source into Main; unclassified
+    # Tricks posts and service promos keep their existing routing.
+    if not service_pairs:
+        category = classify_deal_category(text)
+        category_target = CATEGORY_TARGETS.get(category or "", "")
+        if category_target:
+            if "LootZoneIndia11" not in base_targets:
+                base_targets.append("LootZoneIndia11")
+            if category_target not in base_targets:
+                base_targets.append(category_target)
+            log.info("CATEGORY ROUTE | %s -> @%s | queue=%s",
+                     CATEGORY_DEFINITIONS[category]["label"], category_target, row["id"])
     # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
     # same PRODUCT deals every other channel takes, in the programme-safe form
     # rendered at delivery time (name + price + link). A trick/recharge/app promo
@@ -8281,6 +8425,11 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                                 "still goes to every other channel", target)
                     await store.delivery(row["id"], target, True, "shopping target unresolved")
                     continue
+                if target in {value for value in CATEGORY_TARGETS.values() if value}:
+                    log.warning("CATEGORY TARGET UNRESOLVED | @%s not reachable; the deal "
+                                "still goes to the Main feed and other channels", target)
+                    await store.delivery(row["id"], target, True, "category target unresolved")
+                    continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
             # v17.8 one product, one channel, one post: the exact merchant id can
@@ -8486,7 +8635,7 @@ async def idle_wait(stop: asyncio.Event) -> None:
 
 async def main() -> None:
     global QUEUE_WAKE
-    log.info("BestGAA Production Bot v18.9 starting "
+    log.info("BestGAA Production Bot v19.0 starting "
              "(immediate dispatch, no duplicates, verbatim-clean text)")
     QUEUE_WAKE = asyncio.Event()
     client = TelegramClient(SESSION_PATH, API_ID, API_HASH)

@@ -2379,6 +2379,38 @@ print(json.dumps(fail))
           not failures, "; ".join(failures)[:600])
 
 
+def test_category_tag_requires_explicit_declaration():
+    """New category channels stay tagless until explicitly listed for Amazon."""
+    import tempfile
+
+    probe = r"""
+import os, sys, json
+sys.path.insert(0, "bestgaa")
+import main_bot_new as bot
+url = "https://www.amazon.in/dp/B012345678?tag=" + bot.OUR_TAG
+out = bot.strip_amazon_tag_for_undeclared("Deal\\n" + url, bot.CATEGORY_TARGETS["footwear"])
+expected = os.environ["EXPECT_TAG"] == "true"
+ok = (bot.OUR_TAG in out) == expected
+print(json.dumps({"ok": ok, "target": bot.CATEGORY_TARGETS["footwear"], "out": out}))
+sys.exit(0 if ok else 1)
+"""
+    for category_allowlist, expected_tag in (("", "false"), ("FootwearDeals", "true")):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ,
+                       TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x", EARNKARO_API_KEY="k",
+                       AMAZON_TAG="mama086-21", AMAZON_TAG_TARGETS="all",
+                       AMAZON_TAG_CATEGORY_TARGETS=category_allowlist,
+                       TG_CATEGORY_FOOTWEAR_TARGET="FootwearDeals", EXPECT_TAG=expected_tag,
+                       BOT_DB_PATH=str(Path(tmp) / "probe.sqlite3"),
+                       BOT_LOG_DIR=str(Path(tmp) / "logs"),
+                       BOT_MEDIA_DIR=str(Path(tmp) / "media"))
+            proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                                  capture_output=True, text=True, env=env, timeout=60)
+            check(f"category Amazon tag allowlist={category_allowlist or '<unset>'}",
+                  proc.returncode == 0,
+                  (proc.stdout or proc.stderr or "")[-300:])
+
+
 def test_amazon_list_links_use_bitly_and_the_review_channel_sees_native():
     """USER RULE (2026-09-06): "list lo unna amazon links bitly tho, review
     channel tappa" - Amazon links INSIDE a product list go out as OUR Bitly
@@ -3352,6 +3384,7 @@ def main() -> int:
     test_every_list_shape_reads_name_above_its_own_link()
     test_a_markdown_product_name_is_never_thrown_away()
     test_tag_on_every_owned_channel_when_switched_on()
+    test_category_tag_requires_explicit_declaration()
     test_amazon_list_links_use_bitly_and_the_review_channel_sees_native()
     test_the_whole_delivery_path_end_to_end()
     test_the_review_channel_publishes_one_product_never_a_list()

@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 echo "[1/8] Preparing separate bridge directory..."
 mkdir -p "$APP"
 if [[ "$HERE" != "$APP" ]]; then
-  cp "$HERE/bridge.js" "$HERE/package.json" "$HERE/tg-wa-bridge.service" "$HERE/switch_whatsapp_number.sh" "$APP/"
+  cp "$HERE/bridge.js" "$HERE/category_rules.json" "$HERE/package.json" "$HERE/tg-wa-bridge.service" "$HERE/switch_whatsapp_number.sh" "$APP/"
 fi
 cd "$APP"
 
@@ -38,9 +38,15 @@ read -rp "WhatsApp Channel invite link OR ...@newsletter ID: " WA_CHANNEL
 read -rp "SECOND WhatsApp Channel (under-99 shelf / mirror target) - invite link or ...@newsletter ID, Enter to skip: " WA_CHANNEL_UNDER99
 read -rp "THIRD WhatsApp Channel (under-499 picks from every source) - invite link or ...@newsletter ID, Enter to skip: " WA_CHANNEL_UNDER499
 read -rp "FOURTH WhatsApp Channel (THE BEST deal only) - invite link or ...@newsletter ID, Enter to skip: " WA_CHANNEL_BEST_OF
+read -rp "FOOTWEAR category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_FOOTWEAR
+read -rp "FASHION category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_FASHION
+read -rp "ELECTRONICS category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_ELECTRONICS
+read -rp "HOME & KITCHEN category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_HOME_KITCHEN
+read -rp "BEAUTY category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_BEAUTY
+read -rp "GROCERY category WhatsApp Channel - invite/JID, Enter to skip: " WA_CHANNEL_GROCERY
 MIRROR_ALL=""
 if [[ -n "$WA_CHANNEL_UNDER99" || -n "$WA_CHANNEL_UNDER499" || -n "$WA_CHANNEL_BEST_OF" ]]; then
-  read -rp "Post EVERY deal to EVERY channel (mirror)? [y/N] (N = each channel gets only its own content type): " MIRROR_ANS
+  read -rp "Mirror every deal to all PRICE-TIER channels? [y/N] (category channels remain strict): " MIRROR_ANS
   case "$MIRROR_ANS" in [yY]*) MIRROR_ALL="true" ;; *) MIRROR_ALL="false" ;; esac
 fi
 read -rp "WhatsApp groups to ALSO post to (group JID / number / invite code, comma separated, optional): " WA_GROUPS
@@ -65,7 +71,8 @@ TG_SOURCE_USERNAMES=Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia
 $DIRECT_SOURCES_LINE
 WA_PHONE=$(printf '%s' "$WA_PHONE" | tr -cd '0-9')
 WA_CHANNEL=$WA_CHANNEL
-# How each channel is fed (WA_CHANNEL_ALL_POSTS=true mirrors EVERYTHING instead):
+# Price-tier channels: WA_CHANNEL_ALL_POSTS=true mirrors every deal to all tiers.
+# Category channels always receive only their own confident category.
 #  under-99  : deals <=Rs99, credit/bank-card offers, and product LISTS (any price)
 #  under-499 : deals <=Rs499, card offers, and product LISTS (any price)
 #  best-of   : only the single best deal of the moment - a deal that is not a best
@@ -73,6 +80,15 @@ WA_CHANNEL=$WA_CHANNEL
 WA_CHANNEL_UNDER99=$WA_CHANNEL_UNDER99
 WA_CHANNEL_UNDER499=$WA_CHANNEL_UNDER499
 WA_CHANNEL_BEST_OF=$WA_CHANNEL_BEST_OF
+# Category destinations are strict mirrors: one confident category + Main.
+WA_CHANNEL_FOOTWEAR=$WA_CHANNEL_FOOTWEAR
+WA_CHANNEL_FASHION=$WA_CHANNEL_FASHION
+WA_CHANNEL_ELECTRONICS=$WA_CHANNEL_ELECTRONICS
+WA_CHANNEL_HOME_KITCHEN=$WA_CHANNEL_HOME_KITCHEN
+WA_CHANNEL_BEAUTY=$WA_CHANNEL_BEAUTY
+WA_CHANNEL_GROCERY=$WA_CHANNEL_GROCERY
+# Add category slugs only after the WhatsApp Channels are declared to Amazon.
+WA_AMAZON_TAG_CATEGORY_TARGETS=
 WA_CHANNEL_ALL_POSTS=$MIRROR_ALL
 # Optional rest between best-of picks in seconds (0 = pick a winner for every post).
 WA_BEST_OF_COOLDOWN_SECONDS=0

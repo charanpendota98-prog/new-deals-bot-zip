@@ -114,6 +114,26 @@ async def case(store, name, text, resolve_map, convert_map, expect_exception=Non
         check(f"rendered contains {fragment[:60]!r}", fragment in rendered)
     for target in expect_targets_superset:
         check(f"routed to {target}", target in targets)
+    return targets
+
+
+def test_category_classifier():
+    cases = [
+        ("Nike Men's Running Shoes", "footwear"),
+        ("Samsung Galaxy Buds wireless earbuds", "electronics"),
+        ("Women's cotton printed kurti", "fashion"),
+        ("Prestige pressure cooker", "home_kitchen"),
+        ("Vitamin C face serum and sunscreen", "beauty"),
+        ("Organic basmati rice 5kg", "grocery"),
+        ("Wooden shoe rack organizer", "home_kitchen"),
+        ("చెప్పులు offer", "footwear"),
+        ("Samsung phone, lipstick and running shoes", None),
+        ("Mystery deal at a great price", None),
+    ]
+    for text, expected in cases:
+        got = bot.classify_deal_category(text)
+        check(f"category {expected or 'unclear'} for {text!r} "
+              f"(got {got!r})", got == expected)
 
 
 AMAZON_AFF = "https://www.amazon.in/dp/B0GLY3Q2XR"
@@ -132,6 +152,46 @@ async def main():
     with tempfile.TemporaryDirectory() as td:
         store = bot.Store(Path(td) / "t.sqlite3")
         bot.store = store  # render_job uses the module-level store
+        test_category_classifier()
+
+        # Category routing is additive: the same confident product stays on the
+        # Main feed and gets exactly one configured category destination. An
+        # unclear title must never be guessed into a category shelf.
+        saved_category_targets = dict(bot.CATEGORY_TARGETS)
+        bot.CATEGORY_TARGETS["footwear"] = "TestFootwearDeals"
+        try:
+            shoe_url = "https://amzn.to/catshoes001"
+            shoe_destination = "https://www.amazon.in/dp/B0CATSHOE1"
+            shoe_result = bot.LinkResult(
+                shoe_url, shoe_destination,
+                shoe_destination + "?tag=mama086-21", "amazon:B0CATSHOE1")
+            shoe_targets = await case(
+                store, "confident footwear deal is mirrored to Main + Footwear",
+                "Nike Men's Running Shoes ₹1,299 50% OFF\n" + shoe_url,
+                {shoe_url: shoe_destination}, {shoe_url: shoe_result},
+                expect_targets_superset=["LootZoneIndia11", "TestFootwearDeals"],
+                msg_id=9501,
+            )
+            check("footwear target is delivered exactly once",
+                  shoe_targets.count("TestFootwearDeals") == 1)
+
+            unknown_url = "https://amzn.to/catunknown001"
+            unknown_destination = "https://www.amazon.in/dp/B0UNCLASS1"
+            unknown_result = bot.LinkResult(
+                unknown_url, unknown_destination,
+                unknown_destination + "?tag=mama086-21", "amazon:B0UNCLASS1")
+            unknown_targets = await case(
+                store, "unclear product remains on Main without a guessed category",
+                "Mystery product at ₹299\n" + unknown_url,
+                {unknown_url: unknown_destination}, {unknown_url: unknown_result},
+                expect_targets_superset=["LootZoneIndia11"],
+                msg_id=9502,
+            )
+            check("unclear product gets no category target",
+                  "TestFootwearDeals" not in unknown_targets)
+        finally:
+            bot.CATEGORY_TARGETS.clear()
+            bot.CATEGORY_TARGETS.update(saved_category_targets)
 
         # 1. Service-only (Zomato short link): pass-through, fanned out.
         await case(

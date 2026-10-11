@@ -82,6 +82,20 @@ function loadEnv(file) {
 }
 loadEnv(ENV_FILE)
 
+const CATEGORY_RULES_PATH = path.join(BASE, 'category_rules.json')
+let CATEGORY_RULES = { version: 0, min_score: 3, min_margin: 2, categories: [] }
+try {
+  CATEGORY_RULES = JSON.parse(fs.readFileSync(CATEGORY_RULES_PATH, 'utf8'))
+} catch (error) {
+  console.warn(`[bridge] category routing disabled: cannot load ${CATEGORY_RULES_PATH}: ${error.message}`)
+}
+const CATEGORY_DEFINITIONS = new Map((CATEGORY_RULES.categories || [])
+  .filter(category => category && category.key)
+  .map(category => [category.key, category]))
+const CATEGORY_WA_CHANNELS = new Map([...CATEGORY_DEFINITIONS.keys()].map(key => [
+  key, (process.env[`WA_CHANNEL_${key.toUpperCase()}`] || '').trim(),
+]))
+
 // --identity-probe only exercises the pure dedup-identity function; it never
 // touches Telegram or WhatsApp. Demanding live credentials for it meant the
 // cross-language dedup contract could not be verified on any machine without a
@@ -103,10 +117,9 @@ const WA_CHANNEL = required('WA_CHANNEL')
 // Accepts an @newsletter JID or a https://whatsapp.com/channel/CODE invite.
 // Empty = single main channel.
 const WA_CHANNEL_UNDER99 = (process.env.WA_CHANNEL_UNDER99 || '').trim()
-// The user runs TWO WhatsApp channels. By default the second one is the
-// Under-₹99 shelf and only receives under-₹99 content. Set
-// WA_CHANNEL_ALL_POSTS=true to mirror EVERY post to both channels instead
-// (the under-₹99 gate is then ignored, digests included).
+// Price-tier Channels have their own policies by default. Set
+// WA_CHANNEL_ALL_POSTS=true to mirror every post to all configured price-tier
+// destinations (including digests); category destinations remain strict.
 const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerCase() === 'true'
 // ---------------------------------------------------------------------------
 // THE USER'S CHANNEL MATRIX - each WhatsApp channel is a POLICY, not just a JID.
@@ -121,6 +134,9 @@ const CHANNEL_ALL_POSTS = (process.env.WA_CHANNEL_ALL_POSTS || 'false').toLowerC
 //   WA_CHANNEL_UNDER499   -> under-₹499 products + ANY multi-product list
 //   WA_CHANNEL_BEST_OF    -> only "the best of the moment": a deal that is not a
 //                            clear best-tier pick is SKIPPED on this channel
+//   WA_CHANNEL_<CATEGORY> -> one confident product category + the Main mirror;
+//                            mixed/unclear posts stay Main-only. Amazon tags are
+//                            stripped until that category channel is declared.
 // Credit/bank-card offers are not under-₹99 products and stay off that shelf.
 const WA_CHANNEL_UNDER499 = (process.env.WA_CHANNEL_UNDER499 || '').trim()
 // The --self-test run must never rewrite the operator's live state file.
@@ -189,6 +205,13 @@ const AMAZON_TAG = (() => {
   }
   return configured || OUR_AMAZON_TAGS[0]
 })()
+// Amazon-tag allowance for newly created WhatsApp category channels is
+// intentionally separate from the existing core-channel policy. Add category
+// slugs here only AFTER each WhatsApp Channel has been declared to Associates.
+const WA_AMAZON_TAG_CATEGORY_TARGETS = new Set(
+  (process.env.WA_AMAZON_TAG_CATEGORY_TARGETS || '').split(',')
+    .map(value => value.trim().toLowerCase()).filter(value => CATEGORY_DEFINITIONS.has(value)),
+)
 const PUBLISHER_ID = process.env.EARNKARO_PUBLISHER_ID || '5478322'
 const BESTGAA_DB_PATH = process.env.BESTGAA_DB_PATH || '/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3'
 const ROTATION_JITTER_MIN = Number(process.env.ROTATION_JITTER_MIN_SECONDS || 8)
@@ -435,6 +458,7 @@ let targetJid = null
 let under99Jid = null
 let under499Jid = null
 let bestOfJid = null
+let categoryJids = new Map()
 // jid -> policy, rebuilt whenever a channel resolves (targetsFor reads it).
 const CHANNEL_POLICY_OF_JID = new Map()
 let groupJids = []
@@ -2530,25 +2554,51 @@ function stripAmazonJunk(url) {
 }
 function normalizeAmazonTags(text) {
   // Tag era: repair the Amazon links of text about to be verified so every one
-  // of them earns on OUR account. A stranger's tag (old queued jobs may still
-  // carry ?tag=deals0911-21) is deleted and OURS is set, a bare amazon link
-  // gains OURS, and a link already carrying ours passes untouched. Called from
-  // verifyJob BEFORE validateAffiliateText, so the repaired text is what the
-  // policy gate sees.
+  // earns on OUR account. A stranger's tag is replaced and a bare Amazon URL
+  // gains ours before provenance checks.
   if (!text) return text
   let out = String(text)
   for (const url of urlsIn(out)) {
     try {
       const u = new URL(url)
-      const host = u.hostname.toLowerCase()
-      const isAmazon = host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')
-      if (!isAmazon) continue
+      if (!isAmazonHost(u.hostname.toLowerCase())) continue
       if (u.searchParams.get('tag') === AMAZON_TAG) continue
       u.searchParams.delete('tag')
       u.searchParams.set('tag', AMAZON_TAG)
       const cleaned = u.toString()
       if (cleaned !== url) out = out.split(url).join(cleaned)
     } catch {}
+  }
+  return out
+}
+function amazonUrlWithoutOurTag(value) {
+  try {
+    const url = new URL(value)
+    if (!isAmazonHost(url.hostname.toLowerCase()) || url.searchParams.get('tag') !== AMAZON_TAG) return null
+    url.searchParams.delete('tag')
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+function stripAmazonTagForUndeclaredCategory(job, text) {
+  if (!job || !text) return text
+  let out = String(text)
+  // The displayed URL may be our Bitly short link. Recover its already-verified
+  // destination and use the clean, untagged Amazon page in this channel only.
+  for (const source of urlsIn(job.text || '')) {
+    const resolved = job.resolvedLinks?.[source] || job.provenanceDestinations?.[source] || source
+    const untagged = amazonUrlWithoutOurTag(resolved)
+    if (!untagged) continue
+    const displayed = job.shortLinks?.[source] || resolved
+    for (const candidate of new Set([displayed, resolved, source])) {
+      if (candidate) out = out.split(candidate).join(untagged)
+    }
+  }
+  // Also repair a native tagged Amazon URL that did not have a short-link map.
+  for (const url of urlsIn(out)) {
+    const untagged = amazonUrlWithoutOurTag(url)
+    if (untagged) out = out.split(url).join(untagged)
   }
   return out
 }
@@ -2861,20 +2911,20 @@ async function notBroken(url) {
     return true
   }
 }
-async function verifyBestGaaProvenance(urls) {
+async function verifyBestGaaProvenance(urls, job = null) {
   const script = [
     'import json,sqlite3,sys',
     'urls=json.load(sys.stdin)',
     'db=sqlite3.connect(sys.argv[1])',
-    'found=set()',
+    'found={}',
     'chunk=400',
     'for i in range(0,len(urls),chunk):',
     ' p=urls[i:i+chunk]',
     ' q=",".join("?" for _ in p)',
-    ' found.update(r[0] for r in db.execute(f"SELECT affiliate_url FROM link_cache WHERE affiliate_url IN ({q})",p))',
-    'print(json.dumps([u for u in urls if u not in found]))',
+    ' found.update((r[0],r[1]) for r in db.execute(f"SELECT affiliate_url,resolved_url FROM link_cache WHERE affiliate_url IN ({q})",p))',
+    'print(json.dumps(found))',
   ].join('\n')
-  return await new Promise((resolve, reject) => {
+  const found = await new Promise((resolve, reject) => {
     const child = spawn('python3', ['-c', script, BESTGAA_DB_PATH], { stdio: ['pipe', 'pipe', 'pipe'] })
     const output = [], errors = []
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('provenance DB timeout')) }, 12_000)
@@ -2889,6 +2939,13 @@ async function verifyBestGaaProvenance(urls) {
     })
     child.stdin.end(JSON.stringify(urls))
   })
+  if (job) {
+    job.provenanceDestinations ||= {}
+    for (const [affiliateUrl, resolvedUrl] of Object.entries(found || {})) {
+      if (resolvedUrl) job.provenanceDestinations[affiliateUrl] = resolvedUrl
+    }
+  }
+  return urls.filter(url => !Object.hasOwn(found || {}, url))
 }
 // One merchant link may be verified "dead" by our probe (Amazon and Flipkart answer
 // exactly this way to datacenter IPs) - that is NOT a reason to swallow a post, so
@@ -3020,7 +3077,7 @@ async function verifyJob(job, fetchFn = fetch) {
   // BestGAA link_cache by design; only monetized store links get the provenance
   // DB check. Every link still gets the broken-destination health check.
   const toVerify = urlsForProvenance(job, urls)
-  let missing = toVerify.length ? await verifyBestGaaProvenance(toVerify) : []
+  let missing = toVerify.length ? await verifyBestGaaProvenance(toVerify, job) : []
   if (missing.length && job.direct) {
     // PROVENANCE RESCUE (direct-source jobs only). Raw deal channels very
     // often carry a STRANGER's affiliate wrapper (fktr.in/ekaro.in/clnk.in -
@@ -3228,26 +3285,112 @@ function under99FilteredList(text) {
   for (const block of kept) out.push(...block.label, block.url)
   return out.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
-// The text ONE target receives. Every target gets the post exactly as
-// formatted, except the Under-₹99 shelf: a LIST delivered there is filtered
-// down to its ≤₹99 items (under99FilteredList). Returns null when this target
-// must be skipped entirely (nothing under-₹99 left in the copy).
+// The text ONE target receives. Category copies apply their own Amazon-tag
+// allowlist; the Under-₹99 shelf also filters lists down to its ≤₹99 items.
+// Returns null when the Under-₹99 target has no qualifying item in the copy.
 function textForTarget(job, jid, text) {
-  if (!text || !job || CHANNEL_ALL_POSTS) return text
+  if (!text || !job) return text
   const policy = CHANNEL_POLICY_OF_JID.get(jid) || (jid && jid === under99Jid ? 'under99' : '')
-  if (policy !== 'under99') return text
+  let out = text
+  if (policy.startsWith('category:')
+      && !WA_AMAZON_TAG_CATEGORY_TARGETS.has(policy.slice('category:'.length))) {
+    out = stripAmazonTagForUndeclaredCategory(job, out)
+  }
+  // Global mirror applies only to the old price-tier destinations. Category
+  // channels above remain strict, and the Amazon allowlist still applies.
+  if (CHANNEL_ALL_POSTS || policy !== 'under99') return out
   const urls = urlsIn(job.text || '')
-  if (!(Boolean(job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS)) return text
-  const filtered = under99FilteredList(text)
+  if (!(Boolean(job.largeList) || urls.length >= LARGE_LIST_MIN_LINKS)) return out
+  const filtered = under99FilteredList(out)
   if (filtered === '') return null // nothing under-₹99 left: skip this target
-  return filtered || text // null = nothing to change: the text as formatted
+  return filtered || out // null = nothing to change: the text as formatted
 }
-// Targets for a post: main Channel + (groups) + Under-₹99 channel when eligible.
-// Digests/rotational batches pass job=null and go to the main channel only.
+async function shortenUntaggedCategoryCopy(job, jid, text) {
+  const policy = CHANNEL_POLICY_OF_JID.get(jid) || ''
+  if (!text || !policy.startsWith('category:')
+      || WA_AMAZON_TAG_CATEGORY_TARGETS.has(policy.slice('category:'.length))) return text
+  let out = text
+  // A main-feed post may carry our Bitly URL, whose Associates tag is hidden
+  // behind the redirect. Strip only when the verified/resolved final URL proves
+  // that OUR tag is present; an EarnKaro hop to Amazon is left intact.
+  for (const url of urlsIn(out)) {
+    if (isAmazonHost(hostOf(url))) continue
+    if (!ALREADY_SHORT_HOSTS.has(hostOf(url))) continue
+    const hinted = job.resolvedLinks?.[url] || job.provenanceDestinations?.[url] || ''
+    const resolved = await resolveUrl(url).catch(() => null)
+    const clean = amazonUrlWithoutOurTag(resolved || hinted)
+    if (clean) {
+      out = out.split(url).join(clean)
+    } else if (!resolved && isAmazonHost(hostOf(hinted))) {
+      // We know this affiliate shortlink points to Amazon but cannot prove
+      // whether it is an Associates-tag hop or an EarnKaro hop. Main still gets
+      // the deal; suppress just this optional category mirror rather than risk
+      // stripping EarnKaro attribution or leaking an undeclared Amazon tag.
+      log.warn({ url: url.slice(0, 60), category: policy.slice('category:'.length) },
+        'category mirror skipped: Amazon short-link attribution could not be verified')
+      return null
+    }
+  }
+  // Removing an undeclared Associates tag must not undo the user's short-link
+  // preference. Mint a cosmetic short URL for each verified clean Amazon page.
+  for (const url of urlsIn(out)) {
+    if (!isAmazonHost(hostOf(url))) continue
+    const short = await shortenLongUrl(url)
+    if (short && short !== url) out = out.split(url).join(short)
+  }
+  return out
+}
+// Targets for a post: Main + eligible price/category mirrors + (groups).
+// Digests/rotational batches pass job=null and go to the Main channel only.
 // ---------------------------------------------------------------------------
 // Channel policy evaluation. The facts are computed once per job so every rule
 // is readable, testable and identical across channels.
 // ---------------------------------------------------------------------------
+function normalizeCategoryPhrase(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .replace(/https?:\/\/[^\s<>\[\](){}"']+/giu, ' ')
+    .replace(/&amp;/giu, ' ')
+    .toLocaleLowerCase('en-IN')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/g, ' ')
+}
+function classifyDealCategory(text) {
+  if (!text || !CATEGORY_RULES.categories?.length) return null
+  const normalized = ` ${normalizeCategoryPhrase(text)} `
+  if (!normalized.trim()) return null
+  const matchedRules = []
+  for (const category of CATEGORY_RULES.categories) {
+    for (const [rawAlias, rawWeight] of (category.aliases || [])) {
+      const alias = normalizeCategoryPhrase(rawAlias)
+      const hits = alias ? Math.min(2, normalized.split(` ${alias} `).length - 1) : 0
+      if (hits) matchedRules.push({ key: category.key, alias, weight: Number(rawWeight || 0), hits })
+    }
+  }
+  if (!matchedRules.length) return null
+  const categoryScores = new Map()
+  for (const item of matchedRules) {
+    // Avoid inflating one product phrase twice ("running shoes" and nested
+    // "shoes"), and don't read "shoe" inside "shoe rack" as footwear too.
+    const nestedInStronger = matchedRules.some(other => other.alias !== item.alias
+      && ` ${other.alias} `.includes(` ${item.alias} `)
+      && other.weight >= item.weight)
+    if (!nestedInStronger) {
+      categoryScores.set(item.key, (categoryScores.get(item.key) || 0) + item.hits * item.weight)
+    }
+  }
+  const scores = [...categoryScores.entries()].map(([key, score]) => ({ key, score }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.key.localeCompare(a.key))
+  if (!scores.length) return null
+  const minScore = Math.max(1, Number(CATEGORY_RULES.min_score) || 3)
+  const minMargin = Math.max(0, Number(CATEGORY_RULES.min_margin) || 0)
+  const strongCategories = scores.filter(item => item.score >= minScore).length
+  if (scores[0].score < minScore || strongCategories > 1
+      || scores[0].score - (scores[1]?.score || 0) < minMargin) return null
+  return scores[0].key
+}
 function channelFacts(job) {
   const text = (job && job.text) || ''
   const urls = urlsIn(text)
@@ -3260,6 +3403,9 @@ function channelFacts(job) {
   return { isList, discount, price, prices, cardOffer, special }
 }
 function eligibleForChannel(job, policy) {
+  if (policy.startsWith('category:')) {
+    return Boolean(job) && classifyDealCategory(job.text || '') === policy.slice('category:'.length)
+  }
   const facts = channelFacts(job)
   if (policy === 'main') return true
   if (policy === 'under99') {
@@ -3335,6 +3481,13 @@ function targetsFor(job) {
     if (policy === 'bestOf') noteBestOfPick(job)
     list.push(jid)
   }
+  // Category shelves are always a strict, additive mirror even when the
+  // optional price-tier mirror is enabled: one confident category per product,
+  // plus the Main channel already added above. Unclear/mixed lists stay Main-only.
+  const category = job ? classifyDealCategory(job.text || '') : null
+  const categoryJid = category ? uniqueCategoryTarget(category) : null
+  if (categoryJid && !list.includes(categoryJid)
+      && eligibleForChannel(job, `category:${category}`)) list.push(categoryJid)
   for (const jid of groupJids) if (!list.includes(jid)) list.push(jid)
   return list
 }
@@ -3372,11 +3525,12 @@ function allTargets(job = null) {
   return targetsFor(job)
 }
 // Newsletters use the ack-verified upload path; everything else is a normal
-// WA send (groups). Both the main channel and the Under-₹99 channel are
-// newsletters.
+// WA send (groups). All category/price destinations are Channels and therefore
+// use newsletter delivery.
 function isNewsletterTarget(jid) {
   return jid === targetJid || (!!under99Jid && jid === under99Jid)
     || (!!under499Jid && jid === under499Jid) || (!!bestOfJid && jid === bestOfJid)
+    || [...categoryJids.values()].includes(jid)
     || /@newsletter$/i.test(jid || '')
 }
 // Per-target send marks survive retries so a failed group never causes a
@@ -3403,8 +3557,10 @@ async function broadcastText(sock, job, tag, text) {
     if (marks.includes(mark)) continue
     // Per-target copy: the Under-₹99 shelf receives the list filtered down to
     // its ≤₹99 items; every other target receives the text as formatted.
-    const body = textForTarget(job, jid, text)
+    let body = textForTarget(job, jid, text)
     if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
+    body = await shortenUntaggedCategoryCopy(job, jid, body)
+    if (body === null) { marks.push(mark); continue } // optional category kept off when tag status is uncertain
     if (isNewsletterTarget(jid)) {
       await sendNewsletterText(sock, jid, body)
     } else {
@@ -3434,7 +3590,9 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (marks.includes(mark)) continue
     // Per-target caption: the Under-₹99 shelf gets the caption filtered down to
     // its ≤₹99 items; every other target gets it as formatted.
-    const itemCaption = caption ? textForTarget(job, jid, caption) : caption
+    let itemCaption = caption ? textForTarget(job, jid, caption) : caption
+    if (caption && itemCaption === null) { marks.push(mark); continue }
+    if (itemCaption) itemCaption = await shortenUntaggedCategoryCopy(job, jid, itemCaption)
     if (caption && itemCaption === null) { marks.push(mark); continue }
     if (isNewsletterTarget(jid)) {
       await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption })
@@ -4116,12 +4274,30 @@ const EXTRA_CHANNELS = () => [
   { key: 'under99', env: WA_CHANNEL_UNDER99, apply: jid => { under99Jid = jid }, current: () => under99Jid },
   { key: 'under499', env: WA_CHANNEL_UNDER499, apply: jid => { under499Jid = jid }, current: () => under499Jid },
   { key: 'bestOf', env: WA_CHANNEL_BEST_OF, apply: jid => { bestOfJid = jid }, current: () => bestOfJid },
+  ...[...CATEGORY_WA_CHANNELS.entries()].map(([key, env]) => ({
+    key: `category_${key}`, env,
+    apply: jid => { categoryJids.set(key, jid) },
+    current: () => categoryJids.get(key) || null,
+  })),
 ]
+function uniqueCategoryTarget(category) {
+  const jid = categoryJids.get(category)
+  if (!jid || [targetJid, under99Jid, under499Jid, bestOfJid].includes(jid)) return null
+  const sameJidCount = [...categoryJids.values()].filter(value => value === jid).length
+  return sameJidCount === 1 ? jid : null
+}
 function syncChannelPolicies() {
   CHANNEL_POLICY_OF_JID.clear()
   if (under99Jid) CHANNEL_POLICY_OF_JID.set(under99Jid, 'under99')
   if (under499Jid) CHANNEL_POLICY_OF_JID.set(under499Jid, 'under499')
   if (bestOfJid) CHANNEL_POLICY_OF_JID.set(bestOfJid, 'bestOf')
+  for (const [category, jid] of categoryJids) {
+    if (jid && uniqueCategoryTarget(category) && !CHANNEL_POLICY_OF_JID.has(jid)) {
+      CHANNEL_POLICY_OF_JID.set(jid, `category:${category}`)
+    } else if (jid) {
+      log.warn({ jid, category }, 'category channel reuses another destination; keeping the existing target policy')
+    }
+  }
 }
 // Resolve every configured extra channel. onlyMissing=true (the timer) retries
 // just the ones that are still unresolved, so a blip never halves coverage.
@@ -4134,8 +4310,10 @@ async function resolveExtraChannels(sock, onlyMissing = false) {
       const jid = await resolveNewsletterJid(sock, channel.env)
       channel.apply(jid)
       syncChannelPolicies()
-      log.info({ channel: channel.key, jid, mode: CHANNEL_ALL_POSTS ? 'mirror-everything' : `policy:${channel.key}` },
-        'WhatsApp channel resolved')
+      const isCategory = channel.key.startsWith('category_')
+      const mode = isCategory ? `category:${channel.key.slice('category_'.length)}`
+        : CHANNEL_ALL_POSTS ? 'mirror-everything' : `policy:${channel.key}`
+      log.info({ channel: channel.key, jid, mode }, 'WhatsApp channel resolved')
     } catch (error) {
       syncChannelPolicies()
       log.error({ channel: channel.key, err: error.message },
@@ -4204,9 +4382,10 @@ async function connectWhatsAppInner() {
       lastConnectionOpenAt = Date.now()
       try {
         targetJid = await resolveTargetJid(sock)
-        // Extra channels (Under-₹99 / Under-₹499 / Best-of). Non-fatal: whatever
-        // fails to resolve is retried on a timer while the main channel posts.
+        // Price/category channels are optional. A target-resolution blip is
+        // retried on a timer while the Main channel keeps posting.
         under99Jid = null; under499Jid = null; bestOfJid = null
+        categoryJids = new Map()
         await resolveExtraChannels(sock)
         groupJids = []
         if (CHANNEL_ONLY) {
@@ -4229,6 +4408,7 @@ async function connectWhatsAppInner() {
         saveState()
         log.info({
           targetJid, under99Jid, under499Jid, bestOfJid,
+          categoryJids: Object.fromEntries([...categoryJids.entries()]),
           channelPolicies: Object.fromEntries([...CHANNEL_POLICY_OF_JID.entries()]),
           sources: [...SOURCES], policy: warmupPolicy(),
           primarySource: PRIMARY_SOURCE, mediaFirst: MEDIA_FIRST,
@@ -6196,11 +6376,20 @@ https://fktr.in/MANY${i}`,
       throw new Error('a card offer must NOT reach the strict under-99 shelf')
     }
     // Ten deals arrive at once: the best-of channel must take exactly the winner.
-    const saved = { targetJid, under99Jid, under499Jid, bestOfJid, jobs: state.jobs }
+    const saved = { targetJid, under99Jid, under499Jid, bestOfJid,
+      categoryJids: new Map(categoryJids), jobs: state.jobs,
+      amazonCategoryTags: new Set(WA_AMAZON_TAG_CATEGORY_TARGETS),
+      shortLinks: { ...(state.shortLinks || {}) } }
     const savedPolicies = new Map(CHANNEL_POLICY_OF_JID)
     try {
+      WA_AMAZON_TAG_CATEGORY_TARGETS.clear()
       targetJid = 'main@newsletter'; under99Jid = 'u99@newsletter'
       under499Jid = 'u499@newsletter'; bestOfJid = 'best@newsletter'
+      categoryJids = new Map([
+        ['footwear', 'footwear@newsletter'], ['fashion', 'fashion@newsletter'],
+        ['electronics', 'electronics@newsletter'], ['home_kitchen', 'home@newsletter'],
+        ['beauty', 'beauty@newsletter'], ['grocery', 'grocery@newsletter'],
+      ])
       syncChannelPolicies()
       const deals = Array.from({ length: 10 }, (_, i) => ({
         id: `burst-${i}`, text: `Item ${i} ₹399 ${10 + i * 8}% OFF\nhttps://a.co/b${i}`,
@@ -6237,10 +6426,78 @@ https://fktr.in/MANY${i}`,
       if (!deals.every((job) => targetsFor(job).includes('main@newsletter'))) {
         throw new Error('the main channel must keep every deal, not only the winner')
       }
+      const categoryCases = [
+        ['footwear', "Nike Men's Running Shoes ₹1,299 50% OFF\nhttps://a.co/shoes"],
+        ['fashion', 'Women cotton printed kurti ₹699\nhttps://a.co/kurti'],
+        ['electronics', 'Samsung Galaxy Buds wireless earbuds ₹1,299\nhttps://a.co/buds'],
+        ['home_kitchen', 'Wooden shoe rack organizer ₹999\nhttps://a.co/rack'],
+        ['beauty', 'Vitamin C face serum and sunscreen ₹299\nhttps://a.co/serum'],
+        ['grocery', 'Organic basmati rice 5kg ₹299\nhttps://a.co/rice'],
+      ]
+      for (const [expected, text] of categoryCases) {
+        const job = { id: `category-${expected}`, text, createdAt: Date.now() }
+        if (classifyDealCategory(text) !== expected) {
+          throw new Error(`category classifier expected ${expected}, got ${classifyDealCategory(text)}`)
+        }
+        const routed = targetsFor(job)
+        const categoryTargets = routed.filter((jid) => [...categoryJids.values()].includes(jid))
+        if (!routed.includes('main@newsletter')) throw new Error(`${expected} deal lost its Main mirror`)
+        if (categoryTargets.length !== 1 || categoryTargets[0] !== categoryJids.get(expected)) {
+          throw new Error(`${expected} deal did not route to exactly its own category channel`)
+        }
+      }
+      if (classifyDealCategory('Samsung phone, lipstick and running shoes') !== null) {
+        throw new Error('a mixed-category post must stay Main-only, not be guessed')
+      }
+      const ambiguous = { text: 'Mystery product at ₹299\nhttps://a.co/unknown', createdAt: Date.now() }
+      if (targetsFor(ambiguous).some((jid) => [...categoryJids.values()].includes(jid))) {
+        throw new Error('an unclear product must not enter any category channel')
+      }
+      const amazonSource = 'https://amzn.to/category-tag-test'
+      const amazonTagged = `https://www.amazon.in/dp/B0TAGGED001?tag=${AMAZON_TAG}`
+      const amazonShort = 'https://bit.ly/category-tag-test'
+      const tagJob = {
+        text: `Amazon headphones ${amazonSource}`,
+        resolvedLinks: { [amazonSource]: amazonTagged },
+        shortLinks: { [amazonSource]: amazonShort },
+      }
+      const untaggedAmazon = amazonUrlWithoutOurTag(amazonTagged)
+      state.shortLinks ||= {}
+      state.shortLinks[untaggedAmazon] = 'https://bit.ly/category-tag-untagged'
+      const mappedSource = 'https://bit.ly/category-tag-cache'
+      const mappedJob = {
+        text: `Amazon laptop ${mappedSource}`,
+        provenanceDestinations: { [mappedSource]: 'https://www.amazon.in/dp/B0CACHED001' },
+      }
+      const mappedCopy = textForTarget(mappedJob, 'footwear@newsletter', `Deal\n${mappedSource}`)
+      if (!mappedCopy.includes(mappedSource) || mappedCopy.includes('amazon.in/dp/B0CACHED001')) {
+        throw new Error('an untagged cache destination alone must not replace a short EarnKaro/affiliate link')
+      }
+      const undeclaredCopy = textForTarget(tagJob, 'footwear@newsletter', `Deal\n${amazonShort}`)
+      if (undeclaredCopy.includes(AMAZON_TAG) || undeclaredCopy.includes(amazonShort)
+          || !undeclaredCopy.includes('amazon.in/dp/B0TAGGED001')) {
+        throw new Error('undeclared category must use a working untagged Amazon destination, not our short link')
+      }
+      const shortenedUndeclared = await shortenUntaggedCategoryCopy(
+        tagJob, 'footwear@newsletter', undeclaredCopy)
+      if (!shortenedUndeclared.includes('https://bit.ly/category-tag-untagged')
+          || shortenedUndeclared.includes(AMAZON_TAG)
+          || shortenedUndeclared.includes('amazon.in/dp/B0TAGGED001')) {
+        throw new Error('undeclared category must re-shorten the working untagged Amazon destination')
+      }
+      WA_AMAZON_TAG_CATEGORY_TARGETS.add('footwear')
+      const declaredCopy = textForTarget(tagJob, 'footwear@newsletter', `Deal\n${amazonShort}`)
+      if (!declaredCopy.includes(amazonShort) || declaredCopy.includes('amazon.in/dp/B0TAGGED001')) {
+        throw new Error('an Associates-declared category may keep its monetized short link')
+      }
     } finally {
       Object.assign(globalThis, {})
       targetJid = saved.targetJid; under99Jid = saved.under99Jid
       under499Jid = saved.under499Jid; bestOfJid = saved.bestOfJid
+      categoryJids = saved.categoryJids
+      WA_AMAZON_TAG_CATEGORY_TARGETS.clear()
+      for (const slug of saved.amazonCategoryTags) WA_AMAZON_TAG_CATEGORY_TARGETS.add(slug)
+      state.shortLinks = saved.shortLinks
       state.jobs = saved.jobs
       CHANNEL_POLICY_OF_JID.clear()
       for (const [k, v] of savedPolicies) CHANNEL_POLICY_OF_JID.set(k, v)

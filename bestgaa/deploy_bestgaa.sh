@@ -13,6 +13,7 @@ cd "$APP_DIR"
 
 echo "[1/9] Checking uploaded files..."
 [[ -f "$NEW_FILE" ]] || { echo "ERROR: main_bot_new.py not found"; exit 1; }
+[[ -f "$APP_DIR/category_rules.json" ]] || { echo "ERROR: category_rules.json missing; upload it beside main_bot_new.py"; exit 1; }
 [[ -f "$APP_DIR/migrate_legacy_env.py" ]] || { echo "ERROR: migrate_legacy_env.py not found"; exit 1; }
 
 # Zero-manual-config path: create .env locally from the currently working

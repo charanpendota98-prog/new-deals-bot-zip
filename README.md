@@ -1125,29 +1125,38 @@ Matches what ran on the Oracle server after the 2026-08-23 14:21 UTC deploy.
 | `bestgaa/main_bot_new.py` (= server `main_bot.py`) | `087d227516e4e9392a4efce8ce7da09f470428a56a0088adf804029c1b0294f6` |
 | `tg-wa-bridge/bridge.js` (= server `bridge.js`) | `3faf9856dacd84e3f57347c7699ecd93c767d71d2b936fa11bcb4506ac2c5407` |
 
-Current **repo source** on this branch (v18.9 — deploy-flow fixes; **not yet deployed to a server**;
-the v18.7 audit-truth fix answers "idi manadenaa link": an EarnKaro-minted
-Flipkart-family link that names OUR affExtParam2 is OURS, and only the audit
-changed — see `ops/quality_audit.py`;
-until `bash ops/deploy_and_verify.sh` is run on the host, the live channels keep
-printing exactly what the older build was coded to print). Hashes refreshed
-2026-10-04, so they describe THIS tree:
+Current **repo source** on this branch (v19.0 — optional category-wise Telegram + WhatsApp
+mirrors; **not yet deployed to a server**; the v18.7 audit-truth fix still answers
+"idi manadenaa link": an EarnKaro-minted Flipkart-family link that names OUR
+affExtParam2 is OURS, and only the audit changed — see `ops/quality_audit.py`.
+The v19 category classifier is shared by both services through matching
+`category_rules.json` files; mixed/unclear posts stay on Main, and new Amazon
+category channels are Associates-tagless until explicitly declared. Until
+`bash ops/deploy_and_verify.sh` is run on the host, live channels still run the
+previous build. Core code hashes refreshed 2026-10-11; unaffected audit hashes
+below remain from 2026-10-04:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py` (v18.9) | `ce43213667197eb1ed4fcb81d66e27d01efd2f43ade7bf8ca2f5559a6197fdf8` |
-| `tg-wa-bridge/bridge.js` | `6862d39e9b4d2067e837badad8542ef5b38d625b8f4302d024a88476771781c9` |
+| `bestgaa/main_bot_new.py` (v19.0) | `95252ea274753fdbb17d4d1bb5cb43b283eeea37090c2df79ee4c318f9c9f9d0` |
+| `bestgaa/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
+| `tg-wa-bridge/bridge.js` | `ce298245c881d7804c03e2c16cb013b93b466ca894320b06aa8690f263374b5c` |
+| `tg-wa-bridge/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
 | `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
 | `ops/quality_audit.py` | `74389bf0b34a1c2a80661f2c43ba071c1c797e9ee8f1e898b33bca5b44c36843` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `8b825b41b4c6a23146635c336cb6db698f773316ae933020559944c2af7fd7bb` |
-| `test_line_fidelity.py` | `fe7131c3ef40a5d0fd32452a3701731091c431d8d6a7bdc222ff8bf77c996b02` |
+| `ops/deploy_and_verify.sh` | `7b784afd12fc72c36b8c8f30a49700dc9612c8e2c4cbb9f8497bd10a4bf99ae7` |
+| `test_line_fidelity.py` | `9659e8b2dc4aa014f7e3a38e1fb929c8a8180d8c4b900a245175ba1666fcba67` |
 | `test_pipeline_fixes.py` | `0d43488867230bbed2127b85878684218200bb6ad4d6d166e8ea797479abd16d` |
 | `test_duplicate_sim.py` | `951062adceb25a0daab9df563fdd0e3bdd2dc5e5cd7c5cad8516830d091c69b8` |
 | `test_best_copy.py` | `339f39f8e0d855a3ad148affcd718394862b22eabae70e3e65e3b4b97af2e019` |
 | `test_earnkaro_conversion.py` | `4ed544fc03bd2ec3883c32466d269bd17dfd5915ea23de457f26c28aa878d3b2` |
 
-A fresh clone reproduces this build (verified 2026-10-04, commit 85ca77e): every
+**v19.0 category-routing verification (2026-10-11):** `bash ops/test_all.sh` passes
+with the six-category rules identical in Python and JavaScript, 177 render/routing
+checks, explicit Amazon category-tag allowlists, and the WhatsApp bridge contract.
+
+A fresh clone reproduces the earlier v18.9 matrix (verified 2026-10-04, commit 85ca77e): every
 tracked shell script passes `bash -n`, the bridge passes `node --check`, every Python
 file compiles, `./ops/test_all.sh` prints ALL OFFLINE CHECKS PASSED, and
 `cd ops && ./repack_bundles.sh` produces both deploy bundles whose `main_bot_new.py` /
@@ -1182,18 +1191,18 @@ from ever disagreeing with the bot's:
 | Suite | What it pins |
 |---|---|
 | `test_line_fidelity.py` | every source line of a banner/coupon/MRP/numbered-list post survives the real `render_job`, no `…`, no invented footer, no amount printed more often than the source wrote it; the product signature recognises the same product through two links and two captions, keeps `141` apart from `131` and `128GB` from `256GB`, refuses to key a roundup or a bare category phrase; chunking never cuts a link; the auditor's rule and the bridge's rule are checked against the bot's | ; a coupon code glued to a price is un-glued and kept while link debris is cut, and `[…](…)` keeps the label URL ; a scrap glued to a price is cut while spaced text survives, an album of photos is posted as one grid (with its fallbacks), several links leave as our Bitly links and a dead shortener never costs the post, and the top line is our own channel link exactly once
-| `test_render_job.py` | 160/160 — PowerLoots takes every deal, premium needs a real discount, a list lands in both price channels exactly once per channel, and a source message deleted after intake still renders (media never invented, transient failures retried first) |
+| `test_render_job.py` | PowerLoots takes every deal, premium needs a real discount, lists land in both price channels once, deleted source messages still render, and all six categories route confidently while mixed/unknown products stay on Main (177 checks at v19.0) |
 | *Every suite above passes at the defaults AND with each knob moved*
   | (`SHORTEN_MIN_LEN`, `MAX_ALBUM_PHOTOS`, `PRESEND_CHECK_BUDGET_SECONDS=0`,
   | `PASSTHROUGH_UNMONETIZED=false`, `SAME_PRODUCT_*`, `PRODUCT/PRICE_DEDUP_SECONDS=0`,
   | `MAX_MEDIA_MB=1`, `JOB_MAX_ATTEMPTS=3`, `DROP_DEAD_LINKS=true`, the opt-in strippers,
   | and the bridge in 7 modes) — an assertion that ignores a knob it depends on is a false
   | alarm, and false alarms are how real bugs get ignored.
-  | `test_pipeline_fixes.py` | 225/225 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
+  | `test_pipeline_fixes.py` | 238/238 — source fidelity incl. the "nothing added by us" end-to-end test, list shapes, branding/referral junk, coverage audit, price fidelity, no-silent-loss; pacing assertions are pinned to a forced window, not the wall clock |
 | `test_best_copy.py` | best-copy swap ("one row per product", "a weaker copy never downgrades", "a list is never hijacked", "the displaced copy comes back"), the numeric fidelity gate, and the quality auditor catching each defect class |
 | `test_duplicate_sim.py` | one copy per channel through the real worker path in all nine duplicate-prone scenarios, incl. the same product through two unresolvable links (second copy skipped), a cheaper copy (still posted) and a different product from the same store (never skipped); S9-S11 are the user's own live posts run end to end - a share button and a 404-to-us link may not swallow a post, a dead short link is cut instead of killing the deal, and the top line is our own link exactly once |
 | `test_rescan.py` | rescan/re-queue behaviour |
-| `node tg-wa-bridge/bridge.js --self-test` | passes in **22** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps (`WA_MATURE_GAP_MIN/MAX_SECONDS`), `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix, a combination, `TZ_NAME=UTC`/`America/New_York`/`Asia/Dubai`, `QUIET_START/END` at 00:00-23:59, 12:00-12:00 and 22:00-06:00, `WA_ORDINARY_MAX_AGE_MINUTES=1` and `=900`, and everything-off together. **Since v18.3 none of the trust-policy fixtures read the wall clock**, so a morning deploy cannot fail for a healthy bridge |
+| `node tg-wa-bridge/bridge.js --self-test` | passes in **22** env modes — default, `WA_STRIP_CAMPAIGN_BANNERS=true`, `WA_CHANNEL_ALL_POSTS=true`, `WA_WARMUP_DONE=false`, `WA_BEST_OF_COOLDOWN_SECONDS=3600`, `WA_MEDIA_FIRST=false`, `WA_DISABLE_SMART_ANTIBAN=true`, tuned gaps (`WA_MATURE_GAP_MIN/MAX_SECONDS`), `WA_MAX_MESSAGE_GAP_SECONDS=1800`, `WA_SAME_PRODUCT_HOURS=0`, `WA_SAME_PRODUCT_MARGIN=20`, the four-channel matrix plus six category mirrors/undeclared-Amazon-tag guard, a combination, `TZ_NAME=UTC`/`America/New_York`/`Asia/Dubai`, `QUIET_START/END` at 00:00-23:59, 12:00-12:00 and 22:00-06:00, `WA_ORDINARY_MAX_AGE_MINUTES=1` and `=900`, and everything-off together. **Since v18.3 none of the trust-policy fixtures read the wall clock**, so a morning deploy cannot fail for a healthy bridge |
 
 `python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether
 the bot and the bridge consider two posts the same product — the check to run when a
