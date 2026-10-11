@@ -1338,11 +1338,21 @@ BROKEN_PAGE_MARKERS = (
 
 
 def looks_broken_page(status: int, body: str) -> bool:
-    """Recognize explicit dead/error destinations without mistaking bot-blocks for dead deals."""
+    """True ONLY when the page's own words say it is gone.
+
+    A bare 4xx/5xx status from OUR datacenter IP proves nothing: Amazon and
+    Flipkart serve 404/repair pages to datacenter IPs all day long for
+    products that are live for every real customer (USER REPORT 2026-10-11:
+    "mana links ravatledu" - live deals posted WITHOUT our links because a
+    datacenter-404 vetoed the conversion before the API was even called, and
+    discarded proven conversions after it). The veto needs the page's own
+    dead words (Flipkart's repair text, "no longer available", ...); `status`
+    stays in the signature for the caller's log line but never decides alone.
+    Doubt always resolves toward attempting the conversion - the EarnKaro API
+    (not our probe) is the authority on whether a campaign exists.
+    """
     text = (body or "").lower()
-    if any(marker in text for marker in BROKEN_PAGE_MARKERS):
-        return True
-    return status in {400, 404, 410, 451}
+    return any(marker in text for marker in BROKEN_PAGE_MARKERS)
 
 
 def host_matches(host: str, domain: str) -> bool:
@@ -5839,7 +5849,7 @@ def _response_flag_failed(value: Any) -> bool:
     if isinstance(value, (int, float)):
         return value <= 0
     return str(value).strip().lower() in {
-        "0", "false", "no", "failed", "failure", "error", "unsuccessful", "not_ok",
+        "0", "false", "no", "fail", "failed", "failure", "error", "unsuccessful", "not_ok",
     }
 
 
@@ -5927,7 +5937,7 @@ def parse_earnkaro_response(body: str,
             or (status is not None and _response_flag_failed(status))):
         reason = message or str(payload.get("data") or payload.get("result") or "API marked conversion unsuccessful")
         return None, f"success={success!r} message={reason[:140]!r}"
-    if isinstance(status, str) and status.strip().lower() in {"failed", "failure", "error"}:
+    if isinstance(status, str) and status.strip().lower() in {"fail", "failed", "failure", "error"}:
         return None, f"status={status!r} message={message[:140]!r}"
     if "data" in payload:
         data = payload.get("data")
@@ -6269,6 +6279,12 @@ class AffiliateClient:
 
     async def convert(self, source_url: str, multi_link: bool, resolved_hint: str | None = None) -> "LinkResult | None":
         cached = await store.cached_link(source_url)
+        if cached and is_amazon_search_or_browse_link(source_url):
+            # canonical_url() collapses EVERY /s? search to one cache key (the
+            # query carries no pid/asin/node), so a row under it belongs to the
+            # FIRST search cached, never this one. Searches are never served
+            # from (or written to) the cache - the tag/API answer is always fresh.
+            cached = None
         if cached:
             cached_url = clean_url(cached["affiliate_url"])
             cached_resolved = cached["resolved_url"] or resolved_hint or source_url
@@ -6727,7 +6743,11 @@ class AffiliateClient:
                                 # the cosmetic shortener is unavailable/rate-limited.
                                 log.warning("BITLY unavailable; using verified EarnKaro fallback")
                         key = product_key(resolved)
-                        await store.cache_link(source_url, affiliate, resolved, key)
+                        if not is_amazon_search_or_browse_link(source_url):
+                            await store.cache_link(source_url, affiliate, resolved, key)
+                        # (Search links are deliberately NOT cached: every /s?
+                        # search shares one canonical key, so storing here would
+                        # hand this search's link back for every later one.)
                         EK_BREAKER.success()
                         # One line per monetized link: this is how an operator
                         # answers "are the EarnKaro links actually converting?"

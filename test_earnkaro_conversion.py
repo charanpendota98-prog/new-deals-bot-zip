@@ -31,6 +31,11 @@ What this file pins, and why each check exists:
     destination proves it is ours (a store page, our publisher id, our tag) and
     never when it leads back to the source, to a foreign shortener, or to a
     foreign publisher id.
+7.  A DATACENTER 404 IS NOT PROOF. Amazon/Flipkart 404 live products to a
+    datacenter IP all day; only the page's own dead words veto a conversion
+    (before the API call and after it). Amazon /s? searches never touch the
+    link cache - every search shares one canonical key, so caching would hand
+    one search's link back for all the others.
 """
 import asyncio
 import json
@@ -457,6 +462,164 @@ def test_unknown_affiliate_domain_is_verified_or_refused():
 # ---------------------------------------------------------------------------
 # 3. The API key: account it pays, and the guards built on it
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 7. USER REPORT 2026-10-11 ("mana links ravatledu, convert correctga cheyatledu")
+# ---------------------------------------------------------------------------
+class LiveProbeAff(bot.AffiliateClient):
+    """The real client with only the API/DB/shortener taken out.
+
+    Unlike Aff above, the page-health probe is REAL here: the whole point of
+    this section is proving what a datacenter-404 does to conversion, so the
+    probe must run against the fake session's canned pages.
+    """
+
+    def __init__(self, session):
+        self._health, self._short_cache, self._short_to_long = {}, {}, {}
+        self.session = session
+        self.cached = []
+
+    async def cache_link(self, *args):
+        self.cached.append(args)
+
+    async def resolve(self, url):
+        return url
+
+    async def shorten(self, url):
+        return None
+
+
+def probe_page(final_url, status=200, body="fine"):
+    get = FakeGet(final_url, body)
+    get.status, get.charset = status, "utf-8"
+    return get
+
+
+def test_datacenter_404_never_vetoes_conversion():
+    """A bare 404 from OUR IP is not proof a product is dead.
+
+    Amazon and Flipkart serve 404/repair pages to datacenter IPs all day for
+    products that are live for every real customer. The old rule treated that
+    404 as definitive: conversion was vetoed BEFORE the API was even called
+    (no EK SUCCESS, no EK MISS - invisible in the log), and a PROVEN
+    conversion was discarded AFTER it. Live deals posted WITHOUT our links -
+    exactly this report. Only the page's own dead words veto now; the API is
+    the authority on campaigns.
+    """
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+    # The rule itself, all four corners.
+    check("a bare 404 with a clean body is NOT a dead page",
+          bot.looks_broken_page(404, "<html>a live product page</html>") is False)
+    check("a 200 carrying the repair text still is",
+          bot.looks_broken_page(200, "Just a quick repair needed") is True)
+    check("a 404 WITH dead words still is",
+          bot.looks_broken_page(404, "the page you requested cannot be found") is True)
+    check("a normal 200 is not",
+          bot.looks_broken_page(200, "fine") is False)
+
+    flipkart = "https://www.flipkart.com/boat-rockerz-255/p/itmDATACENTER1?pid=PIDDC1"
+    clean = bot.merchant_url(flipkart)
+
+    # (a) Merchant page 404s to us, no dead words: the API is STILL called.
+    session = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER1"})],
+        gets=[probe_page(clean, 404, "<html>live for customers</html>"),
+              probe_page("https://ekaro.in/enkrDATACENTER1", 200, "ok")])
+    result = asyncio.run(LiveProbeAff(session).convert(flipkart, False))
+    check("a datacenter-404 does not stop the API call",
+          len(session.posts) == 1, f"posts={len(session.posts)}")
+    check("and the converted link is published",
+          bool(result) and result.affiliate == "https://ekaro.in/enkrDATACENTER1",
+          repr(result))
+
+    # (b) The repair page still vetoes - and the API is never touched.
+    dead_shop = "https://www.flipkart.com/dead-product/p/itmDEADREPAIR?pid=PIDDC2"
+    session2 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/should-never-be-minted"})],
+        gets=[probe_page(bot.merchant_url(dead_shop), 200,
+                         "Just a quick repair needed, we are fixing it")])
+    result2 = asyncio.run(LiveProbeAff(session2).convert(dead_shop, False))
+    check("an explicit repair page still vetoes conversion", result2 is None, repr(result2))
+    check("and the API is never called for it",
+          len(session2.posts) == 0, f"posts={len(session2.posts)}")
+
+    # (c) A PROVEN conversion survives a bare-404 on its own verify probe.
+    flipkart3 = "https://www.flipkart.com/noise-buds-pro/p/itmDATACENTER3?pid=PIDDC3"
+    session3 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER3"})],
+        gets=[probe_page(bot.merchant_url(flipkart3), 200, "fine"),
+              probe_page("https://ekaro.in/enkrDATACENTER3", 404, "<html>live</html>")])
+    result3 = asyncio.run(LiveProbeAff(session3).convert(flipkart3, False))
+    check("a proven conversion is kept when its page only 404s to us",
+          bool(result3) and result3.affiliate == "https://ekaro.in/enkrDATACENTER3",
+          repr(result3))
+
+    # (d) ...but a converted link opening a truly dead page is still dropped.
+    flipkart4 = "https://www.flipkart.com/gone-product/p/itmDATACENTER4?pid=PIDDC4"
+    session4 = FakeSession(
+        [json.dumps({"success": 1, "data": "https://ekaro.in/enkrDATACENTER4"})],
+        gets=[probe_page(bot.merchant_url(flipkart4), 200, "fine"),
+              probe_page("https://ekaro.in/enkrDATACENTER4", 200,
+                         "this product is no longer available")])
+    result4 = asyncio.run(LiveProbeAff(session4).convert(flipkart4, False))
+    check("a converted link to an explicitly dead page is still discarded",
+          result4 is None, repr(result4))
+
+    # (e) A "fail" flag is a failure, never a shape to mine for links.
+    got, reason = bot.parse_earnkaro_response(
+        json.dumps({"success": "fail", "data": "https://ekaro.in/enkrNEVER", "message": "no"}))
+    check('success="fail" is refused like success=0',
+          got is None and bool(reason), f"got={got!r} reason={reason!r}")
+    got, _ = bot.parse_earnkaro_response(
+        json.dumps({"status": "fail", "data": "https://ekaro.in/enkrNEVER"}))
+    check('status="fail" is refused like status=error', got is None, f"got={got!r}")
+
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+def test_search_links_never_touch_the_cache():
+    """Every Amazon /s? search shares one canonical cache key.
+
+    canonical_url() keeps only pid/asin/node query keys, so /s?k=headphones
+    and /s?k=laptop collapse to the SAME key. Caching one search's converted
+    link would hand it back for every later search - a WRONG product link
+    wearing our attribution. Searches convert fresh every time (the native
+    path already refused to cache them; the EarnKaro path and the cache
+    lookup now match it).
+    """
+    old = (bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES)
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+    try:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = "", True, True
+        first = "https://www.amazon.in/s?k=headphones+under+2000"
+        second = "https://www.amazon.in/s?k=laptop+stand+metal"
+        check("the two searches really do share one canonical key",
+              bot.canonical_url(first) == bot.canonical_url(second),
+              f"{bot.canonical_url(first)!r} vs {bot.canonical_url(second)!r}")
+        session = FakeSession(
+            [json.dumps({"success": 1, "data": "https://ekaro.in/enkrSEARCH1"}),
+             json.dumps({"success": 1, "data": "https://ekaro.in/enkrSEARCH2"})],
+            gets=[probe_page(bot.merchant_url(first), 200, "fine"),
+                  probe_page("https://ekaro.in/enkrSEARCH1", 200, "ok"),
+                  probe_page(bot.merchant_url(second), 200, "fine"),
+                  probe_page("https://ekaro.in/enkrSEARCH2", 200, "ok")])
+        aff = LiveProbeAff(session)
+        one = asyncio.run(aff.convert(first, False))
+        two = asyncio.run(aff.convert(second, False))
+        check("each search calls the API (no collapsed cache hit)",
+              len(session.posts) == 2, f"posts={len(session.posts)}")
+        check("each search keeps its own converted link",
+              bool(one) and bool(two) and one.affiliate == "https://ekaro.in/enkrSEARCH1"
+              and two.affiliate == "https://ekaro.in/enkrSEARCH2",
+              f"{one!r} / {two!r}")
+        check("nothing is stored under the collapsed key",
+              asyncio.run(bot.store.cached_link(first)) is None
+              and asyncio.run(bot.store.cached_link(second)) is None)
+    finally:
+        bot.OUR_TAG, bot.AMAZON_VIA_EARNKARO, bot.AMAZON_DIRECT_ASSOCIATES = old
+        bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
 def test_token_claims():
     # The token literal lives next to the env block at the top: the suite must not
     # read a real .env, so it hands the bot its own token.
@@ -1334,6 +1497,8 @@ def main():
     test_echo_and_foreign_links_are_refused()
     test_echoed_destination_is_not_mistaken_for_a_conversion()
     test_unknown_affiliate_domain_is_verified_or_refused()
+    test_datacenter_404_never_vetoes_conversion()
+    test_search_links_never_touch_the_cache()
     test_token_claims()
     test_deploy_flow_cannot_silently_skip_again()
     test_amazon_policy()
