@@ -1,0 +1,143 @@
+================================================================================
+PR #15 SERVER ROLLOUT RUNBOOK — deploy with services OFF, post only after approval
+================================================================================
+"Ee runbook server lo okkate sari chadivi, aa steps in order lo run cheyyi."
+
+WHAT THIS DOES (exactly the order you asked for):
+  1. Backup: existing DB + channel config (channels.json) + Telegram session
+     + WhatsApp state (Baileys auth + bridge-state)
+  2. Deploy the merged PR #15 code onto the server
+  3. Set up the operator dashboard SECURELY (token + localhost-only + restart gate)
+  4. Keep bestgaa + tg-wa-bridge OFF (stopped AND disabled - reboot-safe) and
+     verify everything without posting a single message
+  5. Posting starts ONLY when YOU approve.
+
+--------------------------------------------------------------------------------
+0) GET THE CODE ONTO THE SERVER
+--------------------------------------------------------------------------------
+The rollout tooling lives on this branch:
+    arena/b414ddc2-new-deals-bot-zip
+
+Option A (after the tooling PR is merged into main):
+    cd <your-repo-checkout>            # e.g. ~/new-deals-bot-zip
+    git pull origin main
+
+Option B (without merging - use the branch directly):
+    cd <your-repo-checkout>
+    git fetch origin arena/b414ddc2-new-deals-bot-zip
+    git checkout -B arena/b414ddc2-new-deals-bot-zip FETCH_HEAD
+
+Not sure where the checkout is? The deploy scripts work from any clone; the
+live app dirs are fixed:  ~/bestgaa-bot/bestgaa-bot   and   ~/tg-wa-bridge
+
+--------------------------------------------------------------------------------
+1) DRY RUN FIRST (optional, changes nothing)
+--------------------------------------------------------------------------------
+    cd <repo-checkout>
+    ./ops/deploy_r15_keep_off.sh --dry-run
+
+--------------------------------------------------------------------------------
+2) THE SAFE ROLLOUT (one command - backup, deploy, dashboard, verify, OFF)
+--------------------------------------------------------------------------------
+    ./ops/deploy_r15_keep_off.sh                 # fast (suites already run in CI)
+    ./ops/deploy_r15_keep_off.sh --with-tests    # belt-and-suspenders: full suites first
+
+What it does internally:
+    step 1  systemctl stop + disable bestgaa tg-wa-bridge   <- POSTING OFF (reboot-safe)
+    step 2  ops/backup_live_state.sh
+            -> ~/bestgaa-backups/pre-r15-<timestamp>.tar.gz (mode 600, sha256 sidecar)
+            -> contains: bestgaa.sqlite3, channels.json, *.session,
+               tg-wa-bridge/auth/ + bridge-state*.json, both .env files, unit files
+            -> COPY IT OFF-BOX:  scp ubuntu@<server>:~/bestgaa-backups/pre-r15-*.tar.gz ~/safe/
+    step 3  deploy PR #15 code (no service is started):
+            bundles -> .env migration -> pip/npm deps -> py_compile / node --check
+            -> bridge self-test -> sha256 proof live == shipped
+    step 4  ops/install_dashboard_secure.sh
+            -> DASHBOARD_TOKEN generated once, kept in /etc/bestgaa/dashboard.env
+               (root:ubuntu 640 - NEVER in Git, do not paste into chats)
+            -> bestgaa-dashboard.service on 127.0.0.1:8080 ONLY
+            -> restart button routed through /usr/local/sbin/bestgaa-restart-gate
+               (it REFUSES to restart anything until you approve)
+    step 5  verify panel: services inactive+disabled, files match repo hashes,
+            dashboard token-protected (401 without token / 200 with), backup present
+
+If any CHECK line appears, read it - each one names its own fix. Posting stays
+OFF either way.
+
+--------------------------------------------------------------------------------
+3) DASHBOARD (secure) - OPEN IT THROUGH AN SSH TUNNEL
+--------------------------------------------------------------------------------
+From YOUR laptop (not on the server):
+
+    ssh -N -L 8080:127.0.0.1:8080 ubuntu@<server-ip>
+    browser:  http://127.0.0.1:8080
+
+    token:    ssh ubuntu@<server> 'sudo cat /etc/bestgaa/dashboard.env'
+
+NEVER expose port 8080 to the internet (no 0.0.0.0, no public security-list
+port). The token is the only auth; the tunnel is the wall.
+
+While approval is pending, the dashboard's restart button answers:
+    "REFUSED: posting is locked until operator approval."
+
+--------------------------------------------------------------------------------
+4) VERIFY WHILE SERVICES ARE OFF (already printed by step 2/5, or re-check)
+--------------------------------------------------------------------------------
+    systemctl is-active bestgaa tg-wa-bridge        # want: inactive inactive
+    systemctl is-enabled bestgaa tg-wa-bridge       # want: disabled disabled
+    ls -l ~/bestgaa-backups/                        # want: pre-r15-*.tar.gz + .sha256
+    curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/api/status   # want: 401
+
+    # offline checks against the DEPLOYED code (no services needed):
+    cd ~/tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=91 WA_CHANNEL=c node bridge.js --self-test
+    python3 -m py_compile ~/bestgaa-bot/bestgaa-bot/main_bot.py
+
+--------------------------------------------------------------------------------
+5) YOUR APPROVAL - ONLY THEN POSTING STARTS
+--------------------------------------------------------------------------------
+    cd <repo-checkout>
+    sudo bash ops/approve_posting.sh --i-approve-posting
+
+    (it refuses to run without that exact flag; it also refuses if there is no
+     backup younger than 24h. Override only if you mean it:
+     sudo bash ops/approve_posting.sh --i-approve-posting --skip-backup-check)
+
+    It then: writes /etc/bestgaa/POSTING_APPROVED, enables + starts
+    bestgaa + tg-wa-bridge, and prints proof both came up.
+
+    After that, watch the first minutes yourself:
+    journalctl -u bestgaa -f
+    journalctl -u tg-wa-bridge -f
+    python3 ops/conversion_report.py
+
+--------------------------------------------------------------------------------
+ROLLBACK (if anything looks wrong before approval)
+--------------------------------------------------------------------------------
+Nothing is posting, so 'rollback' = put the old files back and stay OFF:
+
+    tar -xzf ~/bestgaa-backups/pre-r15-<stamp>.tar.gz -C /tmp/restore-preview
+    # MANIFEST.txt inside lists every file + sha256
+    # db/ -> ~/bestgaa-bot/bestgaa-bot/   telegram/ -> same dir (*.session)
+    # channels/ -> same dir as the db     whatsapp/ -> ~/tg-wa-bridge/ (auth/ + bridge-state*)
+    # env/ -> the matching .env paths     systemd/ -> /etc/systemd/system/
+
+After approval (posting already live) and you need to stop again:
+    sudo systemctl stop bestgaa tg-wa-bridge
+    sudo systemctl disable bestgaa tg-wa-bridge
+    sudo rm -f /etc/bestgaa/POSTING_APPROVED     # re-lock the dashboard button
+
+--------------------------------------------------------------------------------
+FILES ADDED BY THIS ROLLOUT
+--------------------------------------------------------------------------------
+    ops/deploy_r15_keep_off.sh       one-command safe rollout (backup->deploy->verify)
+    ops/backup_live_state.sh         DB + channels + TG session + WA state -> tar.gz
+    ops/install_dashboard_secure.sh  token + localhost-only dashboard + restart gate
+    ops/approve_posting.sh           the ONLY command that starts posting
+    ops/bestgaa_restart_gate.sh      installed to /usr/local/sbin (dashboard guard)
+    dashboard/bestgaa-dashboard.service   unit template (@REPO_ROOT@ rendered at install)
+
+    patched (keep-off support, no behaviour change in normal mode):
+    ops/deploy_and_verify.sh  --keep-off flag
+    ops/apply_dual_hotfix.sh  BESTGAA_KEEP_OFF=1 skips enable/start
+    bestgaa/deploy_bestgaa.sh BESTGAA_KEEP_OFF=1 skips enable/restart
+================================================================================

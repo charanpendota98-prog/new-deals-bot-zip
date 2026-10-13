@@ -3,6 +3,10 @@ set -Eeuo pipefail
 
 APP_DIR="/home/ubuntu/bestgaa-bot/bestgaa-bot"
 SERVICE="bestgaa"
+# BESTGAA_KEEP_OFF=1: ship + verify the code but NEVER start/restart the service
+# (used by ops/deploy_r15_keep_off.sh so posting stays off until the operator
+# approves with ops/approve_posting.sh).
+KEEP_OFF="${BESTGAA_KEEP_OFF:-0}"
 NEW_FILE="$APP_DIR/main_bot_new.py"
 LIVE_FILE="$APP_DIR/main_bot.py"
 ENV_FILE="$APP_DIR/.env"
@@ -77,7 +81,11 @@ rollback() {
   echo "DEPLOY FAILED — rolling back..."
   if [[ -f "$BACKUP" ]]; then
     cp -a "$BACKUP" "$LIVE_FILE"
-    sudo systemctl restart "$SERVICE" || true
+    if [[ "$KEEP_OFF" == "1" ]]; then
+      echo "      (keep-off mode: file restored; service NOT started)"
+    else
+      sudo systemctl restart "$SERVICE" || true
+    fi
   fi
 }
 trap rollback ERR
@@ -90,13 +98,21 @@ if [[ -f "$APP_DIR/bestgaa.service" ]]; then
   sudo cp "$APP_DIR/bestgaa.service" "/etc/systemd/system/$SERVICE.service"
 fi
 sudo systemctl daemon-reload
-sudo systemctl enable "$SERVICE" >/dev/null
-sudo systemctl restart "$SERVICE"
+if [[ "$KEEP_OFF" == "1" ]]; then
+  # keep-off: unit is installed but the service is stopped + disabled so it
+  # cannot post and cannot come back on a reboot until approved.
+  sudo systemctl disable "$SERVICE" >/dev/null 2>&1 || true
+  sudo systemctl stop "$SERVICE" 2>/dev/null || true
+  echo "[7/9] keep-off mode: service left STOPPED + DISABLED (posting OFF)"
+else
+  sudo systemctl enable "$SERVICE" >/dev/null
+  sudo systemctl restart "$SERVICE"
 
-sleep 12
+  sleep 12
 
-echo "[7/9] Checking service..."
-sudo systemctl is-active --quiet "$SERVICE"
+  echo "[7/9] Checking service..."
+  sudo systemctl is-active --quiet "$SERVICE"
+fi
 
 sleep 12
 
@@ -110,12 +126,22 @@ if ! cmp -s "$LIVE_FILE" "$NEW_FILE"; then
   exit 1
 fi
 if ! tail -n 300 "$APP_DIR/logs/bot.log" | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
-  echo "WARNING: startup marker not yet visible in last 300 lines"
-  echo "         (service may still be starting). Continuing but check logs below."
+  if [[ "$KEEP_OFF" == "1" ]]; then
+    echo "NOTE: no startup marker - expected in keep-off mode (service is OFF)."
+  else
+    echo "WARNING: startup marker not yet visible in last 300 lines"
+    echo "         (service may still be starting). Continuing but check logs below."
+  fi
 fi
 
 trap - ERR
 
 echo "[9/9] DEPLOY SUCCESS (verified: live file == shipped code)"
-sudo systemctl status "$SERVICE" --no-pager --lines=10
+if [[ "$KEEP_OFF" == "1" ]]; then
+  printf 'bestgaa: '; sudo systemctl is-active "$SERVICE" || true
+  printf 'enabled : '; sudo systemctl is-enabled "$SERVICE" 2>/dev/null || echo disabled
+  echo "        posting stays OFF until: sudo bash ops/approve_posting.sh --i-approve-posting"
+else
+  sudo systemctl status "$SERVICE" --no-pager --lines=10
+fi
 printf '\nLive logs:\n  tail -f %s/logs/bot.log\n' "$APP_DIR"

@@ -114,6 +114,27 @@ The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 test suites set dummy values for their isolated checks; see deployment below for
 live credentials.
 
+## Deploying to the server (services OFF until you approve)
+
+The operator-controlled rollout used for the PR #15 server update ("mundu
+backup, dashboard secure, bot services OFF, approval tarvata posting"):
+
+```bash
+./ops/deploy_r15_keep_off.sh --dry-run     # print the plan
+./ops/deploy_r15_keep_off.sh               # backup -> deploy -> dashboard -> verify (posting OFF)
+# ...review the verify panel, open the dashboard over an SSH tunnel...
+sudo bash ops/approve_posting.sh --i-approve-posting   # ONLY then posting starts
+```
+
+`ops/backup_live_state.sh` snapshots the live DB, `channels.json`, the Telethon
+`*.session`, and the WhatsApp `auth/` + `bridge-state*.json` into
+`~/bestgaa-backups/pre-r15-<stamp>.tar.gz` (mode 600 + sha256). The deploy runs
+with `BESTGAA_KEEP_OFF=1`, which leaves `bestgaa` and `tg-wa-bridge` stopped
+**and disabled** (reboot-safe OFF). `ops/install_dashboard_secure.sh` generates
+the `DASHBOARD_TOKEN`, serves the dashboard on `127.0.0.1` only, and routes its
+restart button through `/usr/local/sbin/bestgaa-restart-gate`, which refuses
+until `/etc/bestgaa/POSTING_APPROVED` exists. Full steps: `ops/DEPLOY_R15_RUNBOOK.txt`.
+
 ## Deploying to the server (one command, fresh)
 
 ```bash

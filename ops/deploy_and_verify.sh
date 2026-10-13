@@ -7,7 +7,11 @@
 #   ./ops/deploy_and_verify.sh              # pull, repack, deploy, restart, verify
 #   ./ops/deploy_and_verify.sh --verify-only # deploy nothing, just prove what runs
 #   ./ops/deploy_and_verify.sh --no-pull      # deploy the working tree as-is
-#   ./ops/deploy_and_verify.sh --with-tests    # run the repo suites first, then ship
+#   ./ops/deploy_and_verify.sh --no-restart   # deploy, but do not restart services
+#   ./ops/deploy_and_verify.sh --with-tests   # run the repo suites first, then ship
+#   ./ops/deploy_and_verify.sh --keep-off     # deploy + verify with services LEFT
+#                                             # stopped + disabled (posting OFF
+#                                             # until ops/approve_posting.sh)
 set -Eeuo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
@@ -16,13 +20,14 @@ BRIDGE_DIR="${BRIDGE_DIR:-$HOME/tg-wa-bridge}"
 BOT_LOG="${BOT_LOG:-$BESTGAA_DIR/logs/bot.log}"
 SERVICE_BOT="${SERVICE_BOT:-bestgaa}"
 SERVICE_BRIDGE="${SERVICE_BRIDGE:-tg-wa-bridge}"
-DO_PULL=1; DO_DEPLOY=1; DO_RESTART=1; DO_TESTS=0
+DO_PULL=1; DO_DEPLOY=1; DO_RESTART=1; DO_TESTS=0; DO_KEEP_OFF=0
 for arg in "$@"; do
   case "$arg" in
     --verify-only) DO_PULL=0; DO_DEPLOY=0; DO_RESTART=0 ;;
     --no-pull)     DO_PULL=0 ;;
     --no-restart)  DO_RESTART=0 ;;
     --with-tests)  DO_TESTS=1 ;;
+    --keep-off)    DO_KEEP_OFF=1; DO_RESTART=0; export BESTGAA_KEEP_OFF=1 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -129,6 +134,23 @@ for PAIR in "$REPO/bestgaa/main_bot_new.py|$BESTGAA_DIR/main_bot.py" \
 done
 
 echo ""
+if [[ "$DO_KEEP_OFF" == "1" ]]; then
+  echo "==== 3. KEEP-OFF PROOF: POSTING SERVICES STAY DOWN ===="
+  for svc in "$SERVICE_BOT" "$SERVICE_BRIDGE"; do
+    ACTIVE="$(systemctl is-active "$svc" 2>/dev/null || true)"
+    ENABLED="$(systemctl is-enabled "$svc" 2>/dev/null || true)"
+    if [[ "$ACTIVE" == "inactive" || "$ACTIVE" == "failed" || -z "$ACTIVE" ]]; then
+      ok "$svc is $ACTIVE (posting cannot start)"
+    else
+      warn "$svc is '$ACTIVE' - it must be STOPPED in keep-off mode"
+    fi
+    if [[ "$ENABLED" == "disabled" ]]; then
+      ok "$svc is disabled (will not auto-start on reboot)"
+    else
+      warn "$svc is '$ENABLED' - disable it so a reboot cannot post early"
+    fi
+  done
+else
 echo "==== 3. DID THE BOT COME UP AS $WANT_VERSION? ===="
   BOOT_LINE="BestGAA Production Bot $WANT_VERSION starting"
   if $SUDO journalctl -u "$SERVICE_BOT" -n 400 --no-pager 2>/dev/null | grep -qF "$BOOT_LINE" \
@@ -137,6 +159,7 @@ echo "==== 3. DID THE BOT COME UP AS $WANT_VERSION? ===="
   else
     warn "$SERVICE_BOT never logged '$BOOT_LINE' - old code still running, or it crashed: $SUDO journalctl -u $SERVICE_BOT -n 60 --no-pager"
   fi
+fi
 if [[ -f "$BRIDGE_DIR/bridge.js" ]]; then
   if command -v node >/dev/null 2>&1; then
     SELFTEST_OUT="$(cd "$BRIDGE_DIR" && TELEGRAM_BOT_TOKEN=x WA_PHONE=91 WA_CHANNEL=c node bridge.js --self-test 2>&1 || true)"
@@ -153,6 +176,10 @@ if [[ -f "$BRIDGE_DIR/bridge.js" ]]; then
 fi
 
 echo ""
+if [[ "$DO_KEEP_OFF" == "1" ]]; then
+  echo "==== 4. IMMEDIACY (skipped - services are OFF by design) ===="
+  info "nothing can post while keep-off is active; re-check after approve_posting.sh"
+else
 echo "==== 4. IMMEDIACY: source arrival -> our channel (last 60 min) ===="
 LOGFILE="$(mktemp /tmp/deploy-verify-log.XXXXXX)"
 if [[ -s "$BOT_LOG" ]]; then
@@ -208,6 +235,7 @@ else:
 PY
 python3 "$PYFILE" "$LOGFILE"
 rm -f "$PYFILE" "$LOGFILE"
+fi
 
 echo ""
 echo "==== 5. POST QUALITY ON LIVE DATA (nothing invented, our links, no dupes) ===="
@@ -231,4 +259,9 @@ if ((${#FAILED[@]})); then
   echo "Nothing here is fixed by restarting again - the hash/version line above names the real gap."
   exit 1
 fi
-echo "DEPLOY VERIFY: all good - $WANT_VERSION is live, posting immediately, and the last posts are clean."
+if [[ "$DO_KEEP_OFF" == "1" ]]; then
+  echo "DEPLOY VERIFY: all good - $WANT_VERSION is on disk, services are OFF (keep-off),"
+  echo "and the last posts are clean. Posting starts only via ops/approve_posting.sh."
+else
+  echo "DEPLOY VERIFY: all good - $WANT_VERSION is live, posting immediately, and the last posts are clean."
+fi
