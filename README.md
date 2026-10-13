@@ -1281,7 +1281,7 @@ Never commit or paste `.env`, `auth/`, BotFather tokens, or pairing codes/QRs.
 ### Strict category channels — rules v2
 
 Create the destination Telegram channel first, give the bot/session account posting
-permission, then **Dashboard → Add a channel → select the category**. This configures
+permission, then **Dashboard → Guided setup → select the category**. This configures
 routing; it does not create a Telegram or WhatsApp channel on those services.
 
 | Picker label | Stable key | Examples |
@@ -1297,7 +1297,9 @@ routing; it does not create a Telegram or WhatsApp channel on those services.
 **Migration:** the existing `fashion` key now means clothing only. Bags/wallets
 move to `accessories`. Select both keys on a dashboard channel if you want its old
 broader scope. Existing non-category/built-in routing is unchanged. Empty category
-selection means unrestricted; the UI asks for confirmation. Multiple selected
+selection in stored configuration means unrestricted. The setup wizard requires
+at least one category; the existing-channel editor offers an explicit unrestricted
+mode with confirmation. Multiple selected
 categories accept either category, but never authorize mixed-product roundups.
 
 **Conservative, not infallible:** this is an offline evidence classifier, not a
@@ -1380,3 +1382,47 @@ NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_da
 Run the dashboard from the repository (`python -m dashboard.app`); bot/bridge deploy
 bundles do not package the dashboard UI or its Python helpers. No production restart
 or deployment is performed by these tests.
+
+
+### Easy setup: link → category → channel
+
+The redesigned **Channel Studio** opens with a three-step setup wizard:
+
+1. **Category:** paste a product URL and click **Identify category**, or select a
+   category card directly. A readable `wireless-earbuds` slug can suggest Electronics;
+   `cotton-kurti` can suggest Clothing. **Use this category** selects that shelf.
+2. **Channel details:** enter the username of a Telegram channel you already
+   control and confirm posting permission. These are operator confirmations, not
+   automated Telegram checks. Sources default to every main source; Amazon-tag
+   opt-in defaults OFF. Optional settings are under Advanced.
+3. **Review & save:** verify name, categories, sources and tag policy before saving.
+   Saving config does not send posts, create a Telegram channel or restart the bot.
+   Duplicate clicks are blocked. Stale config returns a conflict and preserves the
+   form for review. Restart now also requires an explicit confirmation in the UI.
+
+The inspector is **offline**: it reads only supplied URL/title text, never merchant
+HTML or redirect destinations fetched from the network. An opaque ASIN/PID or an
+`amzn.to`/`bit.ly` token cannot reveal the product category. The UI asks for the
+**original source product title** or a **user-supplied resolved URL**, rather than
+inventing a product name. Conflicting title/link evidence is withheld. A pasted
+resolved URL is not verified redirect provenance, and classification is not proof
+of affiliate ownership, identity or commission eligibility.
+
+Authenticated `POST /api/inspect-link` accepts:
+
+```json
+{"url": "https://amzn.to/example", "title": "Cotton printed kurti", "resolved_url": ""}
+```
+
+Responses include a suggestion or `needs_details`/`withheld` verdict, evidence,
+next-step guidance and existing enabled shelves for that category. Existing-shelf
+matches are not delivery approval. Inspection never writes config or queue data.
+URL/title inputs are bounded; non-web URLs and embedded credentials are rejected.
+
+The responsive UI template is now `dashboard/index.html`, loaded by `dashboard/app.py`.
+Copy the entire `dashboard/` folder when updating a standalone dashboard install.
+The full offline gate includes inspector regressions; optional setup DOM tests:
+
+```bash
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_dashboard_setup.cjs
+```

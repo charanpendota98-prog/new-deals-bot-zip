@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BestGAA dashboard</title>
+<style>
+body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+main{max-width:960px;margin:0 auto;padding:16px}
+.card{background:#1e293b;border-radius:12px;padding:14px;margin:12px 0}
+h1{font-size:20px;margin:6px 0}h2{font-size:16px;margin:4px 0 10px;color:#93c5fd}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.stat{flex:1;min-width:130px;background:#0f172a;border-radius:10px;padding:10px;text-align:center}
+.stat b{display:block;font-size:22px}.stat span{font-size:12px;color:#94a3b8}
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:8px;border-bottom:1px solid #334155}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#334155}
+.badge.ours{background:#14532d}.badge.new{background:#713f12}.badge.warn{background:#7c2d12}
+button,input,select,textarea{background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 10px;font-size:14px}
+button{cursor:pointer;background:#2563eb;border-color:#2563eb}button.danger{background:#7f1d1d;border-color:#7f1d1d}
+button.ghost{background:transparent}button:disabled{opacity:.5}
+input,select,textarea{width:100%;box-sizing:border-box;margin:4px 0}
+label{font-size:13px;color:#cbd5e1}
+.srcs{columns:2;font-size:13px}.srcs label{display:block}
+#tokenbar{display:flex;gap:8px;margin:8px 0}pre{white-space:pre-wrap;font-size:12px;color:#fca5a5}
+dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:12px;max-width:560px;width:85%}
+dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
+.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}
+
+:root{color-scheme:dark}body{background:#0b1019;color:#e7edf5;line-height:1.55}main{max-width:1160px;padding:22px 28px 60px}
+a{color:inherit;text-decoration:none}button{font-weight:600;transition:background .15s;border-radius:8px;background:#80f0cf;color:#10241e;border-color:#80f0cf}button:hover{filter:brightness(1.1)}button.ghost{color:#ced8e6;border-color:#34445b}button.danger{color:#fff}
+button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid #80f0cf;outline-offset:3px}
+.card{background:#111a27;border:1px solid #253146;padding:24px;margin:20px 0}.topbar,.brand,.topbar nav,.section-heading,.step-actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{justify-content:flex-start;font-weight:700;font-size:19px}.brand-icon{display:grid;place-items:center;width:36px;height:36px;background:#80f0cf;color:#10241e;border-radius:10px}.topbar nav{font-size:13px;color:#aab8ca}.hero{display:flex;justify-content:space-between;align-items:center;padding:32px 4px 24px;gap:32px}.eyebrow{color:#80f0cf;font-size:10px;letter-spacing:2px;font-weight:700}.hero h1{font-size:clamp(34px,5vw,56px);line-height:1.06;letter-spacing:-2px;margin:12px 0 20px}.hero h1 span{color:#80f0cf}.hero p{color:#aab8ca;font-size:14px}.hero-note{border-left:1px solid #34445b;padding:16px 25px;font-size:10px;letter-spacing:1px;color:#b6c5d8;min-width:180px}.hero-note p{letter-spacing:0;font-size:12px}.pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#80f0cf;margin-right:5px}
+h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0}.muted{color:#9dacc1;font-size:12px}#tokenbar{align-items:center;padding:12px 16px}#token{max-width:350px}#authstate{margin-left:auto}input,textarea,select{background:#0b131f;border-color:#344259;padding:11px 12px}.setup-card{border-color:#364e60;padding:28px}.steps{display:flex;gap:12px;padding:20px 0;margin-bottom:4px}.step{flex:1;background:transparent;color:#8fa2bb;border-color:#26364c;font-size:12px;text-align:left}.step.active{color:#80f0cf;border-color:#80f0cf;background:#132f2c}.inspector-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:24px;margin:14px 0 24px}.inspect-input{padding:2px 0}.inspect-input button{margin-top:14px}.inspect-result{border:1px solid #2c4057;background:linear-gradient(150deg,#14283a,#111a27);border-radius:12px;padding:24px;display:flex;flex-direction:column;align-items:flex-start}.inspect-result h3{font-size:25px;margin-top:20px}.inspect-result #inext{font-size:13px;color:#c7d4e5}.inspect-result #iuse{margin-top:auto}.category-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.category-tile{position:relative;background:#0d1521;border:1px solid #29374c;border-radius:10px;padding:16px;cursor:pointer;font-size:13px;display:flex;flex-direction:column;gap:7px}.category-tile:has(input:checked){border-color:#80f0cf;background:#142d2a}.category-tile input{position:absolute;top:10px;right:12px;width:auto;accent-color:#80f0cf}.tile-code{display:inline-block;color:#80f0cf;font-family:monospace;font-size:11px;margin-bottom:8px}.category-tile small{color:#8fa2bb;font-size:10px;line-height:1.45}.step-actions{border-top:1px solid #26364c;margin-top:24px;padding-top:20px}.advanced{margin:22px 0;padding:16px;border:1px solid #2a3a50;border-radius:8px}summary{cursor:pointer;color:#b5c7dd;font-size:13px;margin:7px 0}.checkline{display:flex;align-items:center;gap:10px;margin:15px 0}.checkline input{width:auto}.review-box{background:#0b131f;border:1px solid #304059;border-radius:10px;padding:22px;white-space:pre-wrap;line-height:1.9}.badge{background:#25364a;color:#c2d5e7}.badge.ours{color:#a6f3d2}#addmsg{color:#f6c98c}#addmsg.ok{color:#80f0cf}[hidden]{display:none!important}
+@media(max-width:760px){main{padding:14px}.hero-note{display:none}.hero{padding:22px 0}.card,.setup-card{padding:18px}.inspector-grid{grid-template-columns:1fr}.category-grid{grid-template-columns:repeat(2,1fr)}.steps{gap:6px}.step{font-size:10px;padding:10px 6px}.topbar nav{gap:10px}.brand .muted{display:none}.section-heading{align-items:flex-start}#tokenbar{flex-wrap:wrap}#token{max-width:none;width:75%}#authstate{margin-left:0}}
+</style>
+</head>
+<body>
+<main>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#test-lab">Test lab</a></nav></header>
+<div id="tokenbar" class="card">
+<input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
+<button onclick="saveToken()">Use</button>
+<span id="authstate" class="muted"></span>
+</div>
+<div id="pending" class="card" style="display:none;border:1px solid #f59e0b">
+<b>Channel changes are waiting for a bot restart.</b>
+<button onclick="doRestart()">Restart bot now</button>
+<span class="muted">or run on the server: <span id="restartcmd">sudo systemctl restart bestgaa</span></span>
+<pre id="restartout"></pre>
+</div>
+<section class="hero"><div><span class="eyebrow">CATEGORY CHANNEL STUDIO</span>
+<h1>Right deals.<br><span>Right channels.</span></h1><p>Paste a product link, choose its category, and configure your channel.<br>Simple setup. Strict category filtering. You stay in control.</p></div>
+<div class="hero-note"><span class="pulse"></span> CONFIGURE, THEN REVIEW<p>No automatic posts.<br>No automatic restart.</p></div></section>
+<section class="card setup-card" id="setup">
+<div class="section-heading"><div><span class="eyebrow">GUIDED SETUP</span><h2>Create a category channel</h2></div><span class="badge">Telegram routing</span></div>
+<nav class="steps" aria-label="Setup progress"><button class="step active" id="stepnav1" onclick="setSetupStep(1)">01 · Category</button><button class="step" id="stepnav2" onclick="setupNext()">02 · Channel details</button><button class="step" id="stepnav3" onclick="reviewSetup()">03 · Review &amp; save</button></nav>
+<div id="setupstep1">
+<div class="inspector-grid"><div class="inspect-input"><h3>What kind of product is this?</h3><p class="muted">Paste a readable product link. Short/opaque links need the source title; we never invent one.</p>
+<label for="ilink">Product link</label><input id="ilink" type="url" maxlength="2000" placeholder="https://www.flipkart.com/wireless-earbuds/p/…" autocomplete="off">
+<label for="ititle">Original source title <span class="muted">— optional, useful for short links</span></label><input id="ititle" maxlength="2000" placeholder="e.g. Cotton printed kurti" autocomplete="off">
+<details><summary>Have the resolved merchant URL?</summary><label for="iresolved">Paste it here (optional)</label><input id="iresolved" type="url" maxlength="2000" placeholder="https://www.amazon.in/product-name/dp/…"><p class="muted">User-supplied context only. The redirect is not independently verified.</p></details>
+<button id="inspectbutton" onclick="inspectLink()">Identify category <span aria-hidden="true">→</span></button>
+<button class="ghost" onclick="loadLinkExample()">Try an example</button>
+</div><div class="inspect-result" aria-live="polite"><span class="eyebrow">CATEGORY INSIGHT</span><h3 id="icategory">Waiting for a product link</h3><p id="inext">Or skip detection and choose a category below.</p><p id="ievidence" class="muted"></p><p id="ishelves" class="muted"></p><button id="iuse" disabled onclick="useInspection()">Use this category</button><p class="muted">Offline suggestion, not product or affiliate verification. No pages are fetched.</p></div></div>
+<div class="section-heading"><div><h3>Choose your channel category</h3><p class="muted">Select one or more. Only matching posts qualify; mixed or uncertain posts are withheld.</p></div></div>
+<div class="category-grid" id="fcats"><p class="muted">Connect the dashboard to load categories.</p></div>
+<p id="categoryversion" class="muted"></p>
+<div class="step-actions"><span id="selectedsummary" class="muted">Choose at least one category</span><button onclick="setupNext()">Channel details →</button></div>
+</div>
+<div id="setupstep2" hidden>
+<h3>Connect your existing Telegram channel</h3><p class="muted">This saves routing settings. It does not create a channel on Telegram or verify admin access.</p>
+<label for="fname">Channel username</label><input id="fname" maxlength="65" placeholder="@MyElectronicsDeals" autocomplete="off">
+<label class="checkline"><input id="channelready" type="checkbox"> I created this Telegram channel and control it.</label>
+<label class="checkline"><input id="postingready" type="checkbox"> The bot/session account has permission to post there.</label>
+<details class="advanced"><summary>Advanced settings · sources, affiliate tag &amp; note</summary>
+<label class="checkline"><input type="checkbox" id="fall" checked onchange="toggleSrcs()"> Every main source (recommended; excludes Tricks-only sources)</label>
+<div class="srcs" id="fsrcs" style="display:none"></div>
+<label class="checkline"><input type="checkbox" id="ftag"> Include our Amazon tag (only after declaring this channel in Associates Central)</label>
+<p class="muted">Tag opt-in is OFF by default. Strict affiliate checks still apply; this setup does not verify commission eligibility.</p>
+<label for="fnote">Operator note</label><input id="fnote" maxlength="200" placeholder="Optional">
+</details>
+<div class="step-actions"><button class="ghost" onclick="setSetupStep(1)">← Category</button><button onclick="reviewSetup()">Review setup →</button></div>
+</div>
+<div id="setupstep3" hidden>
+<h3>One final check</h3><div id="setupreview" class="review-box"></div>
+<p class="muted">No posts will be sent now. Saving queues configuration for an approved bot restart. Existing channels and duplicate/link safety rules are unchanged.</p>
+<div class="step-actions"><button class="ghost" onclick="setSetupStep(2)">← Edit details</button><button id="setupsave" onclick="addChannel()">Save channel configuration</button></div>
+</div>
+<p id="addmsg" role="status" aria-live="polite"></p>
+</section>
+<div class="card"><h2>Status</h2><div class="row" id="stats"></div><div id="uptime" class="muted"></div></div>
+<div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
+<table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th></th></tr></thead>
+<tbody id="channels"></tbody></table></div>
+</div>
+<div class="card"><h2>Test a category before posting</h2>
+<p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
+<label for="psource">Source (for channel dry-run)</label><input id="psource" list="knownsources" placeholder="Select or type the exact source name">
+<datalist id="knownsources"></datalist>
+<label>Deal text</label><textarea id="ctext" rows="4" maxlength="12000" style="width:100%;box-sizing:border-box" placeholder="Cotton kurti ₹499"></textarea>
+<label>Resolved product URLs (one per line, optional)</label><textarea id="clinks" rows="2" style="width:100%;box-sizing:border-box"></textarea>
+<button onclick="previewCategory()">Check category</button>
+<pre id="cresult" style="white-space:pre-wrap" aria-live="polite"></pre>
+</div>
+<div class="card" id="test-lab"><h2>Category test lab — bulk dry-run</h2>
+<p class="muted">Up to 20 deals, separated by a line containing --- . Read-only: no sends, no URL fetches.
+Channel candidates use saved dashboard settings, not proof that the running bot has applied them.</p>
+<label for="bsource">Source for plain-text deals</label><input id="bsource" list="knownsources" placeholder="Exact source name">
+<label for="bformat">Input format</label><select id="bformat"><option value="text">Deal blocks separated by ---</option><option value="json">JSON array (optional expected_category per item)</option></select>
+<label for="btext">Deals</label><textarea id="btext" rows="8" maxlength="60000" placeholder="Cotton kurti ₹499&#10;---&#10;Wireless earbuds ₹999&#10;---&#10;Shoes and shoe rack"></textarea>
+<div class="row"><button id="brun" onclick="runBatch()">Run dry-run</button><button class="ghost" onclick="loadBatchExamples()">Load example test set</button><button class="ghost" id="bexport" disabled onclick="exportBatch()">Download report JSON</button></div>
+<p id="bsummary" aria-live="polite"></p><p id="bnotice" class="muted"></p>
+<label for="bfilter">Show results</label><select id="bfilter" onchange="renderBatch()"><option value="all">All results</option><option value="withheld">Withheld categories</option><option value="mismatch">Expectation mismatches</option></select>
+<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Category / reason</th><th>Expectation</th><th>Dashboard channel checks</th></tr></thead><tbody id="batchresults"></tbody></table></div>
+</div>
+<dialog id="shelfeditor" aria-labelledby="editheading">
+<h2 id="editheading">Edit category shelf</h2><p id="edittarget"></p>
+<label for="editmode">Delivery category policy</label><select id="editmode" onchange="toggleEditMode()"><option value="strict">Strict selected categories</option><option value="all">Unrestricted — ALL categories</option></select>
+<div id="editcats" class="srcs"></div>
+<p class="muted">Strict mode requires at least one category. Mixed/unclear posts are withheld. Saving does not restart the bot.</p>
+<p id="editerror" role="alert"></p>
+<button id="editsave" onclick="saveShelf()">Save shelf</button><button class="ghost" onclick="document.getElementById('shelfeditor').close()">Cancel</button>
+</dialog>
+<div class="card"><h2>Recent jobs</h2>
+<table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Error</th></tr></thead>
+<tbody id="recent"></tbody></table></div>
+<div class="card"><h2>Audit (live DB)</h2><div id="audit" class="muted">loading…</div></div>
+</main>
+<script>
+const DEMO_MODE = false;
+let categoryLabels = {};
+let channelRows = [];
+let configRevision = null;
+let editingShelf = null;
+let batchReport = null;
+let batchGeneration = 0;
+let setupStep = 1, setupDraft = null, setupSaving = false;
+let inspection = null, inspectGeneration = 0;
+const categoryDetails = {
+ fashion:['CL','Kurtis, shirts, sarees & jeans'], electronics:['EL','Phones, laptops & audio'], home_kitchen:['HK','Appliances, cookware & decor'],
+ footwear:['FW','Shoes, sandals & slippers'], beauty:['BT','Skincare & personal care'], grocery:['GR','Food, staples & snacks'], accessories:['BA','Bags, wallets & jewellery']
+};
+let TOKEN = sessionStorage.getItem('dash_token') || '';
+function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
+function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
+function saveToken(){ TOKEN = document.getElementById('token').value.trim();
+  sessionStorage.setItem('dash_token', TOKEN); document.getElementById('token').value='';
+  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); }
+async function api(method, path, body, revision){
+  const h = headers(); if(revision) h['If-Match'] = revision;
+  const r = await fetch(path, {method, headers:h, body: body ? JSON.stringify(body) : undefined});
+  const j = await r.json().catch(()=>({}));
+  if(r.status === 401){ document.getElementById('authstate').textContent = 'bad token - paste it above'; }
+  if(!r.ok) throw new Error((j.errors||[j.error||r.status]).join('; '));
+  return j;
+}
+function fmtTime(ts){ if(!ts) return '—'; const d = new Date(ts*1000);
+  return d.toLocaleString('en-IN',{hour12:false}) ; }
+async function refresh(){
+  if(!TOKEN && !DEMO_MODE){ document.getElementById('authstate').textContent = 'paste the token to begin'; return; }
+  try {
+    const s = await api('GET','/api/status');
+    document.getElementById('authstate').textContent = s.insecure ? 'INSECURE MODE (no token set)' : 'connected';
+    const q = s.queue || {};
+    document.getElementById('stats').innerHTML =
+      stat(s.today_sends,'sent today') + stat(s.today_skips,'skipped today') +
+      stat(q.pending||0,'queued') + stat(q.processing||0,'working now') +
+      stat(q.failed||0,'failed');
+    document.getElementById('uptime').textContent =
+      'last posted deal: '+fmtTime(s.last_post_at)+' · bot started: '+fmtTime(s.bot_started_at) +
+      (s.db_exists?'':' · NO DATABASE YET');
+    document.getElementById('pending').style.display = s.pending_restart ? 'block' : 'none';
+    const c = await api('GET','/api/channels');
+    categoryLabels = c.categories || {};
+    document.getElementById('categoryversion').textContent = 'Installed category rules v'+(c.category_rules_version||'?')
+      +' · bot reported v'+(c.bot_category_rules_version||'unknown')+' · saved changes require an approved restart';
+    channelRows = c.dashboard || [];
+    configRevision = c.revision;
+    const sourceOptions = document.getElementById('knownsources'); sourceOptions.replaceChildren();
+    for(const source of c.sources||[]){ const option = document.createElement('option'); option.value=source; sourceOptions.append(option); }
+    let rows = '';
+    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
+    (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
+      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
+      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
+      + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
+      + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
+      + `<td><button class="ghost" data-action="edit" data-name="${escapeHTML(t.name)}">edit shelf</button> <button class="danger" data-action="delete" data-name="${escapeHTML(t.name)}">remove</button></td></tr>`; });
+    document.getElementById('channels').innerHTML = rows || '<tr><td colspan="7" class="muted">no channels yet</td></tr>';
+    const box = document.getElementById('fsrcs');
+    if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
+      box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${escapeHTML(s)}" style="width:auto"> ${escapeHTML(s)}</label>`).join(''); }
+    const catbox = document.getElementById('fcats');
+    if(!catbox.dataset.filled && c.categories && Object.keys(c.categories).length){ catbox.dataset.filled = '1';
+      catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label class="category-tile"><input type="checkbox" value="${escapeHTML(k)}" onchange="setupCategoriesChanged()"><span class="tile-code">${escapeHTML(categoryDetails[k]?.[0]||'CT')}</span><strong>${escapeHTML(v)}</strong><small>${escapeHTML(categoryDetails[k]?.[1]||'Only matching category posts')}</small></label>`).join(''); }
+    const r = await api('GET','/api/recent?limit=15');
+    document.getElementById('recent').innerHTML = (r.jobs||[]).map(j=>
+      `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
+      || '<tr><td colspan="6" class="muted">queue is empty</td></tr>';
+    const a = await api('GET','/api/audit?limit=200');
+    const d = a.delivery_summary||{}, l = a.link_summary||{};
+    document.getElementById('audit').innerHTML =
+      `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · ` +
+      `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
+      `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
+  } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
+}
+function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
+function toggleSrcs(){ document.getElementById('fsrcs').style.display =
+  document.getElementById('fall').checked ? 'none' : 'block'; }
+async function previewCategory(){
+  const out = document.getElementById('cresult'); out.textContent = 'checking…';
+  try {
+    const j = await api('POST','/api/category-preview',{
+      text:document.getElementById('ctext').value, source:document.getElementById('psource').value.trim(),
+      links:document.getElementById('clinks').value.split(/\n/).map(s=>s.trim()).filter(Boolean)});
+    out.textContent = (j.category ? 'MATCH: '+(categoryLabels[j.category]||j.category) : 'WITHHELD from category shelves')
+      +'\nReason: '+j.reason+'\nRules version: '+j.rules_version
+      +'\nEvidence: '+(j.evidence.map(e=>e.phrase+' → '+e.category+' ('+e.source+')').join(', ')||'none')
+      +'\nChannel checks: '+j.channels.map(c=>'@'+c.channel+': '+c.state+' ('+c.reason+')').join('; ')
+      +'\n'+j.notice;
+  } catch(e){ out.textContent = e.message; }
+}
+function editShelf(name){
+  const channel = channelRows.find(c=>c.name===name); if(!channel) return;
+  editingShelf = {name, revision:configRevision};
+  document.getElementById('edittarget').textContent = '@'+name;
+  document.getElementById('editerror').textContent = '';
+  document.getElementById('editmode').value = (channel.categories||[]).length ? 'strict' : 'all';
+  const box = document.getElementById('editcats'); box.replaceChildren();
+  const keys = [...new Set([...Object.keys(categoryLabels),...(channel.categories||[])])];
+  for(const key of keys){
+    const label=document.createElement('label'), input=document.createElement('input');
+    input.type='checkbox'; input.value=key; input.style.width='auto'; input.checked=(channel.categories||[]).includes(key);
+    label.append(input,document.createTextNode(' '+(categoryLabels[key]||key+' (unavailable)'))); box.append(label);
+  }
+  toggleEditMode(); const dialog=document.getElementById('shelfeditor'); if(!dialog.open) dialog.showModal();
+}
+function toggleEditMode(){
+  const all=document.getElementById('editmode').value==='all';
+  for(const input of document.querySelectorAll('#editcats input')) input.disabled=all;
+}
+async function saveShelf(){
+  if(!editingShelf) return;
+  const error=document.getElementById('editerror'); error.textContent='';
+  const all=document.getElementById('editmode').value==='all';
+  const categories=all?[]:[...document.querySelectorAll('#editcats input:checked')].map(i=>i.value);
+  if(!all && !categories.length){ error.textContent='Select at least one category for a strict shelf.'; return; }
+  if(all && !confirm('This channel will accept ALL categories. Remove the shelf restriction?')) return;
+  const button=document.getElementById('editsave'); button.disabled=true;
+  try { await api('PATCH','/api/channels/'+encodeURIComponent(editingShelf.name),{categories},editingShelf.revision);
+    document.getElementById('shelfeditor').close(); editingShelf=null; await refresh(); }
+  catch(e){ error.textContent=e.message; }
+  finally { button.disabled=false; }
+}
+function invalidateBatch(){
+  batchGeneration++; document.getElementById('brun').disabled=false;
+  batchReport=null; document.getElementById('bexport').disabled=true;
+  document.getElementById('batchresults').replaceChildren();
+  document.getElementById('bsummary').textContent='Input changed — run a new dry-run.';
+  document.getElementById('bnotice').textContent='';
+}
+function loadBatchExamples(){
+  if(document.getElementById('btext').value.trim() && !confirm('Replace the current input with example deals?')) return;
+  const source=document.getElementById('bsource').value.trim() || document.querySelector('#knownsources option')?.value || '';
+  const examples=[['Cotton kurti ₹499','fashion'],['Wireless earbuds ₹999','electronics'],['Rice cooker ₹1299','home_kitchen'],['Shoes and shoe rack',null],['Mystery deal ₹199',null]];
+  document.getElementById('bformat').value='json';
+  document.getElementById('btext').value=JSON.stringify(examples.map(([text,expected_category])=>({text,source,expected_category})),null,2);
+  invalidateBatch();
+}
+async function runBatch(){
+  const generation=++batchGeneration;
+  const button=document.getElementById('brun'), summary=document.getElementById('bsummary');
+  button.disabled=true; batchReport=null; document.getElementById('bexport').disabled=true;
+  document.getElementById('batchresults').replaceChildren(); document.getElementById('bnotice').textContent='';
+  summary.textContent='Checking…';
+  try {
+    const raw=document.getElementById('btext').value;
+    const items=document.getElementById('bformat').value==='json' ? JSON.parse(raw)
+      : raw.split(/\r?\n[ \t]*---+[ \t]*\r?\n/).map(text=>text.trim()).filter(Boolean)
+        .map(text=>({text,source:document.getElementById('bsource').value.trim()}));
+    const report=await api('POST','/api/category-batch',{items});
+    if(generation!==batchGeneration) return; batchReport=report;
+    const s=report.summary;
+    summary.textContent=`${s.total} tested · ${s.matched} category matches · ${s.withheld} withheld · ${s.expectation_mismatches}/${s.evaluated} expectation mismatches`;
+    document.getElementById('bnotice').textContent=report.notice+(report.pending_restart?' Saved changes are waiting for restart.':'');
+    document.getElementById('bexport').disabled=false; renderBatch();
+  } catch(e){ if(generation===batchGeneration) summary.textContent='Error: '+e.message; }
+  finally { if(generation===batchGeneration) button.disabled=false; }
+}
+function renderBatch(){
+  const body=document.getElementById('batchresults'); body.replaceChildren(); if(!batchReport) return;
+  const filter=document.getElementById('bfilter').value;
+  for(const row of batchReport.results){
+    if(filter==='withheld' && row.category) continue;
+    if(filter==='mismatch' && row.expectation_match!==false) continue;
+    const tr=document.createElement('tr');
+    const values=[row.text,
+      (row.category ? categoryLabels[row.category]||row.category : 'WITHHELD')+'\n'+row.reason,
+      'expectation_match' in row ? (row.expected_category||'withheld')+' — '+(row.expectation_match?'PASS':'MISMATCH') : 'Not specified',
+      row.channels.map(c=>'@'+c.channel+': '+c.state+' — '+c.reason).join('\n')||'No saved dashboard channels'];
+    for(const value of values){ const td=document.createElement('td'); td.textContent=value; td.style.whiteSpace='pre-wrap'; tr.append(td); }
+    body.append(tr);
+  }
+}
+function exportBatch(){
+  if(!batchReport) return;
+  const blob=new Blob([JSON.stringify(batchReport,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download='category-dry-run.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function selectedCategories(){ return [...document.querySelectorAll('#fcats input:checked')].map(i=>i.value); }
+function setupCategoriesChanged(){
+  setupDraft=null;
+  const labels=selectedCategories().map(k=>categoryLabels[k]||k);
+  document.getElementById('selectedsummary').textContent=labels.length ? 'Only: '+labels.join(' · ') : 'Choose at least one category';
+}
+function setSetupStep(step){
+  if(setupSaving) return;
+  setupStep=step;
+  for(let n=1;n<=3;n++){
+    document.getElementById('setupstep'+n).hidden=n!==step;
+    const nav=document.getElementById('stepnav'+n); nav.classList.toggle('active',n===step);
+    if(n===step) nav.setAttribute('aria-current','step'); else nav.removeAttribute('aria-current');
+  }
+}
+function setupNext(){
+  if(setupSaving) return;
+  const msg=document.getElementById('addmsg'); msg.className='';
+  if(!selectedCategories().length){ msg.textContent='Choose at least one category. This setup creates a strict category channel.'; setSetupStep(1); return; }
+  msg.textContent=''; setSetupStep(2);
+}
+function readSetup(){
+  const name=document.getElementById('fname').value.trim().replace(/^@/,'');
+  const categories=selectedCategories();
+  const sources=document.getElementById('fall').checked ? ['*'] : [...document.querySelectorAll('#fsrcs input:checked')].map(i=>i.value);
+  if(!categories.length) throw new Error('Select at least one category.');
+  if(!/^[A-Za-z0-9_]{5,64}$/.test(name)) throw new Error('Enter a Telegram username: 5–64 letters, digits or underscores. Not an invite link.');
+  if(!document.getElementById('channelready').checked || !document.getElementById('postingready').checked) throw new Error('Confirm that you created the channel and granted posting permission. These checks are your confirmation, not automatic verification.');
+  if(!sources.length) throw new Error('Choose a source or enable Every main source.');
+  return {name, sources, categories, amazon_tag:document.getElementById('ftag').checked,
+    note:document.getElementById('fnote').value.trim(), enabled:true};
+}
+function reviewSetup(){
+  if(setupSaving) return;
+  const msg=document.getElementById('addmsg'); msg.className='';
+  try{
+    const payload=readSetup();
+    if(!configRevision) throw new Error('Connect and refresh the dashboard before saving.');
+    setupDraft={payload,revision:configRevision};
+    document.getElementById('setupreview').textContent='Channel: @'+payload.name
+      +'\nCategories: '+payload.categories.map(k=>categoryLabels[k]||k).join(', ')
+      +'\nSources: '+(payload.sources[0]==='*'?'Every main source (not Tricks-only)':payload.sources.join(', '))
+      +'\nUnknown or mixed category: WITHHELD'
+      +'\nAmazon tag: '+(payload.amazon_tag?'Opted in — declaration is your responsibility':'Off; strict affiliate checks still apply')
+      +'\nPosting access: operator-confirmed, not automatically verified'
+      +'\nActivation: saved configuration only; approved restart required';
+    msg.textContent=''; setSetupStep(3);
+  }catch(e){ msg.textContent=e.message; setSetupStep(selectedCategories().length?2:1); }
+}
+function invalidateInspection(){
+  inspection=null; inspectGeneration++; document.getElementById('iuse').disabled=true;
+  document.getElementById('inspectbutton').disabled=false;
+  document.getElementById('icategory').textContent='Ready to check';
+  document.getElementById('inext').textContent='Inputs changed. Identify the category again to use a suggestion.';
+  document.getElementById('ievidence').textContent=''; document.getElementById('ishelves').textContent='';
+}
+function loadLinkExample(){
+  document.getElementById('ilink').value='https://www.flipkart.com/wireless-earbuds/p/itmEXAMPLE123';
+  document.getElementById('ititle').value=''; document.getElementById('iresolved').value='';
+  invalidateInspection();
+}
+async function inspectLink(){
+  const generation=++inspectGeneration;
+  inspection=null; document.getElementById('iuse').disabled=true;
+  document.getElementById('inspectbutton').disabled=true;
+  document.getElementById('icategory').textContent='Checking URL text…';
+  document.getElementById('inext').textContent='No pages are fetched.';
+  document.getElementById('ievidence').textContent=''; document.getElementById('ishelves').textContent='';
+  try{
+    const result=await api('POST','/api/inspect-link',{
+      url:document.getElementById('ilink').value.trim(), title:document.getElementById('ititle').value,
+      resolved_url:document.getElementById('iresolved').value.trim()});
+    if(generation!==inspectGeneration) return;
+    inspection=result;
+    document.getElementById('icategory').textContent=result.category?(categoryLabels[result.category]||result.category):result.verdict==='withheld'?'Mixed or conflicting evidence':'More product details needed';
+    document.getElementById('inext').textContent=result.next_step;
+    document.getElementById('ievidence').textContent='Evidence: '+(result.evidence.map(e=>e.phrase+' ('+(e.source==='link'?'URL text':'supplied title')+')').join(', ')||'no reliable category terms');
+    document.getElementById('ishelves').textContent=result.matching_shelves.length ? 'Existing shelves for this category: '+result.matching_shelves.map(s=>'@'+s).join(', ')+' (source/link checks still apply)' : 'No matching configured category shelf.';
+    document.getElementById('iuse').disabled=!result.category || !categoryLabels[result.category];
+  }catch(e){ if(generation===inspectGeneration){document.getElementById('icategory').textContent='Could not inspect';document.getElementById('inext').textContent=e.message;} }
+  finally{ if(generation===inspectGeneration) document.getElementById('inspectbutton').disabled=false; }
+}
+function useInspection(){
+  if(!inspection?.category || !categoryLabels[inspection.category]) return;
+  for(const input of document.querySelectorAll('#fcats input')) input.checked=input.value===inspection.category;
+  setupCategoriesChanged(); setupNext();
+}
+async function addChannel(){
+  if(setupSaving) return;
+  const msg=document.getElementById('addmsg'); msg.className='';
+  let payload;
+  try{ payload=readSetup(); }catch(e){ msg.textContent=e.message; return; }
+  if(!setupDraft || JSON.stringify(payload)!==JSON.stringify(setupDraft.payload)){
+    msg.textContent='Review the current settings before saving.'; reviewSetup(); return;
+  }
+  setupSaving=true;
+  const controls=[...document.querySelectorAll('#setup input, #setup button, #setup textarea, #setup select')].map(node=>[node,node.disabled]);
+  for(const [node] of controls) node.disabled=true;
+  const button=document.getElementById('setupsave'); button.disabled=true; button.textContent='Saving…';
+  try{
+    const result=await api('POST','/api/channels',setupDraft.payload,setupDraft.revision);
+    msg.textContent='Saved @'+result.channel.name+'. No posts sent. An approved bot restart is required.'
+      +(result.warnings?.length?' '+result.warnings.join('; '):'');
+    msg.className='ok'; setupDraft=null;
+    document.getElementById('fname').value=''; document.getElementById('fnote').value='';
+    document.getElementById('channelready').checked=false; document.getElementById('postingready').checked=false;
+    document.getElementById('ftag').checked=false;
+    setupSaving=false; setSetupStep(1); await refresh();
+  }catch(e){ msg.textContent=e.message+' Your form is preserved. Refresh, review, and try again.'; setupDraft=null; }
+  finally{ setupSaving=false; for(const [node,disabled] of controls) node.disabled=disabled; button.disabled=false; button.textContent='Save channel configuration'; }
+}
+for(const id of ['ilink','ititle','iresolved']) document.getElementById(id).addEventListener('input',invalidateInspection);
+for(const id of ['fname','channelready','postingready','fall','ftag','fnote','fsrcs']) document.getElementById(id).addEventListener('input',()=>{setupDraft=null;});
+async function toggleCh(name, on){
+  try { await api('PATCH','/api/channels/'+encodeURIComponent(name),{enabled:on}); refresh(); }
+  catch(e){ alert(e.message); } }
+async function delCh(name){
+  if(!confirm('Remove @'+name+' from dashboard channels? (Built-in routing is untouched.)')) return;
+  try { await api('DELETE','/api/channels/'+encodeURIComponent(name)); refresh(); }
+  catch(e){ alert(e.message); } }
+async function doRestart(){
+  if(!confirm('Restart the bot now? This may resume live posting. Continue only after verification and explicit approval.')) return;
+  const out = document.getElementById('restartout'); out.textContent = 'restarting…';
+  try { const j = await api('POST','/api/restart'); out.textContent = j.output||'restart requested';
+    setTimeout(refresh, 8000); }
+  catch(e){ out.textContent = e.message; } }
+for(const id of ['btext','bsource','bformat']) document.getElementById(id).addEventListener('input',invalidateBatch);
+document.getElementById('channels').addEventListener('click', event=>{
+  const button=event.target.closest('button[data-action]'); if(!button) return;
+  const name=button.dataset.name;
+  if(button.dataset.action==='edit') editShelf(name);
+  if(button.dataset.action==='toggle') toggleCh(name,button.dataset.enabled==='true');
+  if(button.dataset.action==='delete') delCh(name);
+});
+if(TOKEN || DEMO_MODE) refresh();
+</script>
+</body>
+</html>

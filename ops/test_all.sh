@@ -101,6 +101,7 @@ run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
 run 'best-copy quality audit' "$PYTHON" test_best_copy.py
 run 'duplicate handling' "$PYTHON" test_duplicate_sim.py
 run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
+run 'link category inspector' "$PYTHON" test_link_inspector.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py

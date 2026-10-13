@@ -87,3 +87,64 @@ def preview_batch(items, config, snapshot, rules=None):
         results.append(row)
     return {"scope": "saved_dashboard_config", "notice": NOTICE,
             "rules_version": rules.get("version", 0), "results": results, "summary": summary}
+
+
+def inspect_product_link(body, config, snapshot):
+    """Classify user-supplied URL text, never fetch a page or guess an opaque ID.
+
+    A pasted resolved URL is user-supplied context, not independently verified
+    redirect provenance. This tool MUST NOT approve links for live delivery.
+    """
+    from urllib.parse import urlsplit
+    import re
+
+    if not isinstance(body, dict):
+        raise ValueError("body must be a JSON object")
+
+    def product_url(value, field, optional=False):
+        if optional and value == "":
+            return ""
+        if not isinstance(value, str) or not 1 <= len(value) <= 2000:
+            raise ValueError(f"{field} must be a web URL of 1–2000 characters")
+        value = value.strip()
+        try:
+            parsed = urlsplit(value)
+            if (parsed.scheme.lower() not in {"http", "https"} or not parsed.hostname
+                    or "." not in parsed.hostname or parsed.username or parsed.password
+                    or any(c.isspace() or ord(c) < 32 for c in value)):
+                raise ValueError()
+            hostname = parsed.hostname.rstrip(".").encode("idna").decode("ascii")
+            if len(hostname) > 253 or any(not re.fullmatch(r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label)
+                                          for label in hostname.split(".")):
+                raise ValueError()
+            # Access .port to reject malformed port syntax as well.
+            if parsed.port is not None and not 1 <= parsed.port <= 65535:
+                raise ValueError()
+        except (ValueError, UnicodeError):
+            raise ValueError(f"{field} must be an http(s) URL with a valid host and no credentials") from None
+        return value
+
+    url = product_url(body.get("url"), "url")
+    resolved = product_url(body.get("resolved_url", ""), "resolved_url", optional=True)
+    title = body.get("title", "")
+    if not isinstance(title, str) or len(title) > 2000:
+        raise ValueError("title must be a string of at most 2000 characters")
+    item = {"text": title.strip() + "\n" + url, "links": [resolved] if resolved else [],
+            "source": body.get("source", "")}
+    result = preview_batch([item], config, snapshot)
+    decision = result["results"][0]
+    if decision["category"]:
+        verdict = "suggested"
+        next_step = "Review this category, then use it to configure a shelf. This does not verify the product or affiliate link."
+    elif decision["reason"] == "mixed_or_conflicting":
+        verdict = "withheld"
+        next_step = "The supplied title/link evidence conflicts or describes multiple categories. Check the original source; do not guess."
+    else:
+        verdict = "needs_details"
+        next_step = "This link does not reveal enough product details. Paste the original source title or the resolved merchant URL. Short links and opaque IDs are not guessed."
+    return {**decision, "verdict": verdict, "next_step": next_step,
+            "input_url": url, "fetched": False, "notice": result["notice"],
+            "context_note": "URL/title text only. No merchant HTML, redirect resolution or ownership verification.",
+            "matching_shelves": [c["name"] for c in config["channels"]
+                                 if c.get("enabled", True) and decision["category"]
+                                 and decision["category"] in c.get("categories", [])]}

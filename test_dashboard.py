@@ -327,6 +327,24 @@ def test_http_api():
                     check("conflict retains the newer home filter",
                           body["dashboard"][0]["categories"] == ["home_kitchen"])
 
+                    before_inspect = (tdp / "channels.json").read_bytes()
+                    status, body = await call("POST", "/api/inspect-link", token=False,
+                                              json={"url": "https://bit.ly/opaque"})
+                    check("link inspector requires authentication", status == 401)
+                    status, body = await call("POST", "/api/inspect-link", json={
+                        "url": "https://www.flipkart.com/wireless-earbuds/p/itmTEST123"})
+                    check("link-only inspector detects readable electronics slug",
+                          status == 200 and body["category"] == "electronics"
+                          and body["fetched"] is False and body["verdict"] == "suggested")
+                    status, body = await call("POST", "/api/inspect-link", json={"url": "https://amzn.to/opaque"})
+                    check("opaque short link asks for product details, never invents category",
+                          status == 200 and body["category"] is None and body["verdict"] == "needs_details")
+                    for bad in ([], {"url": "javascript:alert(1)"}, {"url": "https://site.test/", "title": []}):
+                        status, body = await call("POST", "/api/inspect-link", json=bad)
+                        check("invalid inspector payload returns 400", status == 400)
+                    check("inspection never changes channel configuration",
+                          before_inspect == (tdp / "channels.json").read_bytes())
+
                     status, body = await call("GET", "/api/recent?limit=5")
                     jobs = body.get("jobs", [])
                     check("recent shows jobs with send counts",
