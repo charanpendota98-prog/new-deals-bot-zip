@@ -167,7 +167,7 @@ async def test_strict_owned_link_policy(store):
         )
 
         paid_source = "https://amzn.to/strict-paid"
-        paid_destination = "https://www.amazon.in/dp/B0STRICT0001"
+        paid_destination = "https://www.amazon.in/dp/B0STRICT01"
         unsupported_source = "https://www.myntra.com/kurta/itm-unsupported"
         paid_affiliate = paid_destination + "?tag=mama086-21"
         await case(
@@ -177,7 +177,7 @@ async def test_strict_owned_link_policy(store):
             {paid_source: paid_destination, unsupported_source: unsupported_source},
             {paid_source: bot.LinkResult(
                 source=paid_source, resolved=paid_destination, affiliate=paid_affiliate,
-                deal_key="amazon:B0STRICT0001")},
+                deal_key="amazon:B0STRICT01")},
             expect_exception=bot.PermanentSkip, msg_id=9903,
         )
 
@@ -213,7 +213,7 @@ async def test_strict_owned_link_policy(store):
                   "Deal ₹399\n" + bot.OUR_FOLDER_LINK))
 
         accepted_source = "https://amzn.to/strict-owned"
-        accepted_dest = "https://www.amazon.in/dp/B0STRICT0002"
+        accepted_dest = "https://www.amazon.in/dp/B0STRICT02"
         await case(
             store, "strict-all accepts our verified Amazon-tagged link",
             "Headphones ₹799 50% OFF\n" + accepted_source,
@@ -221,7 +221,7 @@ async def test_strict_owned_link_policy(store):
             {accepted_source: bot.LinkResult(
                 source=accepted_source, resolved=accepted_dest,
                 affiliate=accepted_dest + "?tag=mama086-21",
-                deal_key="amazon:B0STRICT0002")},
+                deal_key="amazon:B0STRICT02")},
             expect_render_contains=["tag=mama086-21"], msg_id=9904,
         )
 

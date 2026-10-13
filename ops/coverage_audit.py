@@ -81,7 +81,7 @@ def default_db() -> Path:
     return here.parent / "bestgaa" / "bestgaa.sqlite3"
 
 
-def classify(last_error: str, status: str, sent: int) -> str:
+def classify(last_error: str, status: str, sent: int, skip_reason: str = "") -> str:
     if sent:
         return "posted"
     reason = (last_error or "").lower()
@@ -93,6 +93,16 @@ def classify(last_error: str, status: str, sent: int) -> str:
                                            "duplicate pending content")):
         return "dedup"
     if any(marker in reason for marker in POLICY_MARKERS):
+        return "policy"
+    # POST-DEPLOY FIX (2026-10-11): a job concluded by per-target policy skips
+    # (duplicate product, review filters, ...) carries no queue-level reason -
+    # the reason lives on the deliveries rows. Classify from it instead of
+    # calling the row lost (or, before the sent predicate was fixed, posted).
+    skip = (skip_reason or "").lower()
+    if any(marker in skip for marker in ("duplicate", "already posted", "all products",
+                                         "duplicate pending content")):
+        return "dedup"
+    if any(marker in skip for marker in POLICY_MARKERS):
         return "policy"
     if not reason:
         return "policy"          # closed silently by an older build: usually a skip
@@ -114,14 +124,32 @@ def audit(db: Path, hours: float) -> dict:
         "FROM queue WHERE created_at>=?", (since,),
     ).fetchall()
     sent_counts: dict[int, int] = {}
+    skip_reasons: dict[int, str] = {}
     if has_deliveries:
+        try:
+            delivery_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(deliveries)")}
+        except sqlite3.OperationalError:
+            delivery_columns = set()
+        has_error_column = "last_error" in delivery_columns
+        # POST-DEPLOY FIX (2026-10-11): only an empty-reason 'sent' row reached
+        # Telegram. Older builds stored policy skips as 'sent' with the reason
+        # in last_error (Adidas queues 351498/351502); new builds write
+        # status='skipped'. Both shapes count as skips, never as posts.
+        real_send = ("status='sent' AND COALESCE(last_error,'')=''"
+                     if has_error_column else "status='sent'")
+        skip_shape = ("(status='skipped' OR (status='sent' AND COALESCE(last_error,'')<>''))"
+                      if has_error_column else "status='skipped'")
         for r in conn.execute("SELECT queue_id, COUNT(*) c FROM deliveries "
-                              "WHERE status='sent' GROUP BY queue_id"):
+                              f"WHERE {real_send} GROUP BY queue_id"):
             sent_counts[r["queue_id"]] = r["c"]
+        for r in conn.execute("SELECT queue_id, last_error FROM deliveries "
+                              f"WHERE {skip_shape}"):
+            skip_reasons.setdefault(r["queue_id"], (r["last_error"] or "") if has_error_column else "")
     per_source: dict[str, dict[str, int]] = {}
     lost: list[dict] = []
     for row in rows:
-        state = classify(row["last_error"] or "", row["status"], sent_counts.get(row["id"], 0))
+        state = classify(row["last_error"] or "", row["status"], sent_counts.get(row["id"], 0),
+                         skip_reasons.get(row["id"], ""))
         bucket = per_source.setdefault(row["source"], {"seen": 0, "posted": 0, "in-flight": 0,
                                                         "dedup": 0, "policy": 0, "lost": 0})
         bucket["seen"] += 1
@@ -163,7 +191,7 @@ def heal(db: Path, ids: list[int], backup: bool = True) -> int:
             conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (job_id,))
             if "deliveries" in {r["name"] for r in conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'")}:
-                conn.execute("UPDATE deliveries SET chunks_sent=0 WHERE queue_id=? AND status<>'sent'",
+                conn.execute("UPDATE deliveries SET chunks_sent=0 WHERE queue_id=? AND status NOT IN ('sent','skipped')",
                              (job_id,))
             done += 1
         conn.commit()

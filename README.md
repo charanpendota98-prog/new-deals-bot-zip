@@ -431,6 +431,20 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
 > supersedes legacy acceptance of clean merchant pass-throughs, family/channel promo
 > URLs, and other non-earning links; those are now refused or skipped.
 
+- **Post-deploy repeats fix (2026-10-11):** right after a deploy some queues
+  posted up to three times to the same target. The delivery checkpoint (a ledger
+  write) sat *inside* the Telegram send-retry loop, so one locked-database
+  moment re-sent an already-sent chunk instead of retrying the write. The
+  checkpoint now runs once per sent chunk *outside* the loop (a failure logs
+  `CHECKPOINT FAILED` and never re-sends), ledger writes absorb transient
+  `locked`/`busy` contention with their own retry (`sqlite3` `timeout=30s`),
+  policy skips are stored as `status='skipped'` (terminal like `'sent'`, never
+  retried) instead of `'sent'` with the reason in `last_error`, both audits
+  count only empty-reason `'sent'` rows as real sends (`SENDS vs SKIPS` in
+  `quality_audit.py`; skip-aware `posted`/`dedup` in `coverage_audit.py`),
+  strict-all dedup keys on verified product identity only and skips a post with
+  no trustworthy identity as a unit, and only a real send blocks an edit
+  revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
 - **Routing** (`ops/LATEST_ROUTING_NOTES.txt`): per-target source allowlists, dedicated LootzoneTricks sources, Premium target with ≥85% OFF / ≤₹99 / ₹100–499 ≥70% filter, IST posting windows.
 - **WhatsApp media fix** (`ops/WHATSAPP_MEDIA_FIX_NOTES.txt`): works around the Baileys 7.0.0-rc14 newsletter-media bug (issue #2199) with a custom `/newsletter/newsletter-*` upload path + `server_thumb_gen=1`, ack watching so "sent but invisible" can't happen silently, text-only fallback after 3 failed media attempts. Kill switch: `NEWSLETTER_MEDIA_FIX=false`.
 - **Queue liveness:** mature warm-up tier pinned by default (`WA_WARMUP_DONE=true`), plausibility ceiling on `nextAllowedAt`, per-step timeouts, connection watchdog, heartbeat logs.

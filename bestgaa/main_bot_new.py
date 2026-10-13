@@ -330,6 +330,10 @@ try:
     SAME_PRODUCT_DISCOUNT_MARGIN = 15  # STRICT: only 15%+ better discount can override 24h (prevents 5% loophole spam)
 except ValueError:
     SAME_PRODUCT_DISCOUNT_MARGIN = 5
+# A cheaper repeat of an already-posted product is news only when the drop is
+# real: a token one-rupee / rounding wobble between two captions of the same
+# deal must not repost it (same-product-multiple-times, 2026-10-12).
+SAME_PRODUCT_PRICE_DROP_FRACTION = 0.05
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
 # and nothing we invent. Our own "join the loot family" footer and the folder
 # link are therefore OFF by default; set ADD_OUR_CHANNEL_FOOTER=true to put them
@@ -392,6 +396,17 @@ PASSTHROUGH_UNMONETIZED = os.getenv("PASSTHROUGH_UNMONETIZED", "true").strip().l
 STRIP_CAMPAIGN_BANNERS = os.getenv("STRIP_CAMPAIGN_BANNERS", "false").strip().lower() in ("1", "true", "yes", "on")
 EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "8")))
 POST_RETRIES = max(1, int(os.getenv("POST_RETRIES", "3")))
+# (queue_id, target) pairs whose post is already OUT on Telegram but whose
+# ledger record failed even after patient retries (SETTLE FAILED). The next
+# pass retries ONLY the bookkeeping for these, never the send - re-sending an
+# already-sent post is exactly the post-deploy repeat this guards against
+# (2026-10-11, second hole: the settle writes after deliver() could still
+# throw the job back into fail_job's requeue mill). Process-local: a crash
+# loses it, and the crash window stays at-least-once like any Telegram send.
+SETTLED_BUT_UNRECORDED: dict[tuple[int, str], dict] = {}
+# Breathing room between ledger-write retries for an already-sent target, so a
+# wedged database idles instead of hot-looping the claim/finish cycle.
+UNRECORDED_SETTLE_RETRY_DELAY = 30.0
 # Every outbound HTTP probe gets a real budget instead of the 18-30s default,
 # and repeated probes of the same URL are cached, so one slow merchant site can
 # no longer hold up the whole queue.
@@ -1892,6 +1907,27 @@ def extract_product_id(value: str) -> str | None:
                 return f"{label}:{host}:{'/'.join(g.lower() for g in match.groups())}"
     except Exception:
         pass
+    return None
+
+
+def verified_product_id(*urls: str | None) -> str | None:
+    """A merchant product id proven by a verified URL - never a guess.
+
+    POST-DEPLOY RULE (2026-10-11): dedup keys on VERIFIED identity only. The
+    merchant id is read from the resolved merchant page (or, failing that, from
+    the verified affiliate destination our own converter produced for it) with
+    extract_product_id(). A URL-hash fallback ("URL:...") is opaque - two
+    spellings of one product hash apart, two products behind one shortener hash
+    together - so it is NOT identity and is never returned here. No product
+    name is invented, no merchant page is fetched or inspected: the URL the
+    converter already verified is the whole evidence.
+    """
+    for url in urls:
+        if not url:
+            continue
+        product_id = extract_product_id(url)
+        if product_id:
+            return product_id
     return None
 
 
@@ -4762,7 +4798,13 @@ def marked_chat_id(value: Any) -> int:
 # ---------------------------------------------------------------------------
 class Store:
     def __init__(self, path: Path):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        # timeout=30: a writer blocked behind another connection (a VACUUM in
+        # maintenance, a wal_checkpoint, or an overlapping process during a
+        # deploy) waits instead of raising "database is locked" into the send
+        # path - where a raised ledger write used to retry the TELEGRAM send
+        # and post one queue up to three times (POST_RETRIES) to the same
+        # targets (post-deploy repeats, 2026-10-11).
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self.lock = asyncio.Lock()
         self._schema()
@@ -5032,6 +5074,34 @@ class Store:
         except Exception as exc:
             log.warning("Legacy dedup migration skipped: %s", exc)
 
+    async def _commit(self, patient: bool = False) -> None:
+        """Commit, riding out transient writer contention instead of raising it.
+
+        The send path treats a raised ledger write as "not recorded" and retries
+        the TELEGRAM send - which is exactly-once violated. A busy/locked commit
+        (VACUUM, checkpoint, deploy overlap) almost always clears within seconds,
+        so it is retried here with backoff; only a durable failure raises, and
+        the caller then logs it instead of re-sending an already-sent chunk.
+        patient=True is for writes that settle an ALREADY-SENT post (delivery
+        ok=True, mark_product_posted, premium completion, chunk checkpoint): a
+        stalled worker beats a duplicated post, so these wait minutes, not
+        seconds, before admitting defeat.
+        """
+        attempts = 30 if patient else 10
+        base, cap = (0.1, 10.0) if patient else (0.05, 2.0)
+        for attempt in range(attempts):
+            try:
+                self.conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                if attempt >= attempts - 1:
+                    raise
+                await asyncio.sleep(min(cap, base * (2 ** attempt)))
+        self.conn.commit()
+
     async def queue_id_for(self, chat_id: int, msg_id: int) -> int | None:
         """The queue id behind a just-queued message - so the immediacy log line
         can be paired with the "JOB N | ... sent=" line by the deploy verifier."""
@@ -5045,9 +5115,13 @@ class Store:
                                      price: int | None, discount: int | None) -> tuple[bool, str]:
         """Has THIS channel already carried this product inside the skip window?
 
-        Returns (skip, why). A copy that is strictly better - a lower price, or a
-        deeper discount at the same price - is never skipped, because on a deals
-        channel a cheaper repeat of the same product is a real new post.
+        Returns (skip, why). A copy that is MEANINGFULLY better - a real price
+        drop, or a deeper discount at no higher price - is never skipped,
+        because on a deals channel a cheaper repeat of the same product is a
+        real new post. But "better on paper" is not better: a one-rupee drop
+        and a bigger claimed percent at the same (or higher) price are the
+        same deal wearing different numbers, and reposting them is exactly the
+        "same product multiple times" the user refused (2026-10-12).
         """
         if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return False, ""
@@ -5064,8 +5138,24 @@ class Store:
         # the post text, and a source that spells out an MRP can read one point
         # higher than the same deal written without it - a 1-point gap is noise,
         # and letting it through is exactly the repeat the user complained about.
-        better_price = price is not None and (last_price is None or price < last_price)
-        better_discount = (discount or 0) >= (last_discount or 0) + SAME_PRODUCT_DISCOUNT_MARGIN
+        # Same for the price: a token drop (a rupee, a rounding wobble between two
+        # captions of one deal) is not a PRICE DROP a reader would care about.
+        if price is not None and last_price is None:
+            better_price = True  # the earlier post had no price at all: news
+        elif price is not None and last_price:
+            drop = (last_price - price) / last_price
+            better_price = drop >= SAME_PRODUCT_PRICE_DROP_FRACTION
+        else:
+            better_price = False
+        deeper_discount = (discount or 0) >= (last_discount or 0) + SAME_PRODUCT_DISCOUNT_MARGIN
+        if deeper_discount and price is not None and last_price is not None:
+            # The SAME price with a bigger claimed percent is two sources doing
+            # different MRP math on one deal - not news. A bigger percent only
+            # counts when the reader also pays less; paying MORE for a bigger
+            # claimed percent is worse, never news.
+            better_discount = price < last_price
+        else:
+            better_discount = deeper_discount
         if better_price or better_discount:
             return False, (f"better copy (₹{price or 0} / {discount or 0}% off vs "
                            f"₹{last_price or 0} / {last_discount or 0}% off)")
@@ -5085,7 +5175,7 @@ class Store:
                 "DELETE FROM posted_products WHERE posted_at<?",
                 (time.time() - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
         """True when this exact source message is already known to the queue."""
@@ -5168,7 +5258,7 @@ class Store:
                  json.dumps(sorted(product_identities(text))) if text else None,
                  (text or "")[:8000] or None),
             )
-            self.conn.commit()
+            await self._commit()
         inserted = cur.rowcount > 0
         if inserted:
             # Wake the idle workers immediately: a deal must never wait for the
@@ -5239,7 +5329,7 @@ class Store:
                      max(int(priority), int(row["priority"] or 1)),
                      str(row["chat_id"]), row["msg_id"], row["id"]),
                 )
-                self.conn.commit()
+                await self._commit()
                 log.info("BEST COPY | queue=%s re-pointed at %s msg=%s for %s (score %s beats %s)",
                          row["id"], source, msg_id, ",".join(sorted(wanted)),
                          score, row["quality"] or 0)
@@ -5266,7 +5356,7 @@ class Store:
                 (int(old_chat), int(old_msg), row["source"], time.time(), 3,
                  str(raw_chat_id(int(old_chat))), 0),
             )
-            self.conn.commit()
+            await self._commit()
         if cur.rowcount:
             log.info("BEST COPY ROLLBACK | queue=%s restored the original copy (msg=%s)",
                      row["id"], old_msg)
@@ -5305,7 +5395,7 @@ class Store:
                 # next_at doubles as the claim timestamp while processing, so a
                 # job orphaned mid-flight (kill -9, OOM) can be reclaimed later.
                 self.conn.execute("UPDATE queue SET status='processing', next_at=? WHERE id=?", (now, row["id"]))
-            self.conn.commit()
+            await self._commit()
             return row
 
     async def reclaim_stuck_jobs(self, max_age_seconds: float = 1800) -> int:
@@ -5320,7 +5410,7 @@ class Store:
                 "UPDATE queue SET status='pending', next_at=0 WHERE status='processing' AND next_at<?",
                 (time.time() - max_age_seconds,),
             )
-            self.conn.commit()
+            await self._commit()
             if cur.rowcount:
                 notify_queue()
             return cur.rowcount
@@ -5347,7 +5437,7 @@ class Store:
                     (f"stale job dropped (older than {hours:g}h)", row["id"]),
                 )
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (row["id"],))
-            self.conn.commit()
+            await self._commit()
         if rows:
             log.info("STALE DROP | %s pending job(s) older than %sh skipped instead of posted late",
                      len(rows), hours)
@@ -5360,7 +5450,7 @@ class Store:
         async with self.lock:
             self.conn.execute("UPDATE queue SET product_keys=? WHERE id=?",
                               (json.dumps(list(keys)[:12]), queue_id))
-            self.conn.commit()
+            await self._commit()
 
     async def save_render(self, queue_id: int, text: str, targets: list[str], keys: list[str],
                           premium_rank: int | None = None) -> None:
@@ -5373,7 +5463,7 @@ class Store:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO deliveries(queue_id,target) VALUES(?,?)", (queue_id, target)
                 )
-            self.conn.commit()
+            await self._commit()
 
     async def cached_link(self, source_url: str) -> sqlite3.Row | None:
         async with self.lock:
@@ -5398,7 +5488,7 @@ class Store:
                 (token, hypd_store_of(afflink_url), clean_url(afflink_url),
                  page, product_key_value or "", time.time()),
             )
-            self.conn.commit()
+            await self._commit()
         # This product is no longer "missing our link".
         with contextlib.suppress(Exception):
             await self.forget_hypd_wanted(page, product_key_value or "", afflink_url)
@@ -5411,7 +5501,7 @@ class Store:
             return 0
         async with self.lock:
             cur = self.conn.execute("DELETE FROM hypd_links WHERE token=?", (token,))
-            self.conn.commit()
+            await self._commit()
             return max(cur.rowcount or 0, 0)
 
     async def hypd_link_for(self, *keys: str,
@@ -5461,7 +5551,7 @@ class Store:
                 " product_key=COALESCE(excluded.product_key, product_key)",
                 (url, product_key_value or "", now, now),
             )
-            self.conn.commit()
+            await self._commit()
         return existing is None
 
     def recent_hypd_wanted(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -5491,7 +5581,7 @@ class Store:
                         "DELETE FROM hypd_wanted WHERE product_url=? OR product_key=?",
                         (variant, key))
                     removed += max(cursor.rowcount or 0, 0)
-            self.conn.commit()
+            await self._commit()
         return removed
 
     def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
@@ -5571,7 +5661,7 @@ class Store:
                 "INSERT OR REPLACE INTO link_cache VALUES(?,?,?,?,?)",
                 (canonical_url(source_url), affiliate, resolved, key, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def remember_owned_link_proof(self, affiliate_url: str, destination_url: str,
                                         proof_type: str) -> None:
@@ -5589,7 +5679,7 @@ class Store:
                 "VALUES(?,?,?,?,?)",
                 (affiliate, destination, proof_type, publisher_id, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     @staticmethod
     def is_our_amazon_tag_link(url: str) -> bool:
@@ -5842,11 +5932,11 @@ class Store:
                 # content fingerprint above is the honest check for it: same text twice
                 # is still refused, this text once is a first.
                 if not keys and content_key:
-                    self.conn.commit()
+                    await self._commit()
                     return True, []
                 self.conn.rollback()
                 return False, []
-            self.conn.commit()
+            await self._commit()
             return True, new_keys
 
     async def claim_content_key(self, queue_id: int, content_key: str | None) -> bool:
@@ -5882,7 +5972,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE queue SET deal_keys_json=? WHERE id=?", (json.dumps(keys), queue_id)
                 )
-            self.conn.commit()
+            await self._commit()
             return True
 
     async def has_pending_work(self) -> bool:
@@ -5916,7 +6006,7 @@ class Store:
                 " VALUES(?,?,?,?,?)",
                 (source_url, url, url, deal_key, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def revive_edited_job(self, chat_key: str, msg_id: int) -> str | None:
         """Re-open a source post that was edited before it reached any target.
@@ -5932,7 +6022,7 @@ class Store:
             row = self.conn.execute(
                 "SELECT q.id, q.status FROM queue q WHERE q.chat_key=? AND q.msg_id=? "
                 "AND NOT EXISTS (SELECT 1 FROM deliveries d "
-                "WHERE d.queue_id=q.id AND d.status='sent')",
+                "WHERE d.queue_id=q.id AND d.status='sent' AND COALESCE(d.last_error,'')='')",
                 (str(chat_key), msg_id),
             ).fetchone()
             if not row:
@@ -5946,7 +6036,7 @@ class Store:
                 "rendered_text=NULL, last_error='' WHERE id=?",
                 (row["id"],),
             )
-            self.conn.commit()
+            await self._commit()
         notify_queue()
         return "revived"
 
@@ -5955,12 +6045,16 @@ class Store:
         after a restart) sends byte-identical chunks."""
         async with self.lock:
             self.conn.execute("UPDATE queue SET rendered_text=? WHERE id=?", (text, queue_id))
-            self.conn.commit()
+            await self._commit()
 
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
+            # Terminal states are never retried: 'sent' (posted) and 'skipped'
+            # (withheld by policy). Anything else ('pending', legacy 'failed')
+            # is still actionable.
             rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status!='sent'", (queue_id,)
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped')",
+                (queue_id,),
             ).fetchall()
             return [r[0] for r in rows]
 
@@ -5978,7 +6072,7 @@ class Store:
                 "UPDATE deliveries SET chunks_sent=MAX(chunks_sent,?) WHERE queue_id=? AND target=?",
                 (chunks_sent, queue_id, target),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def delivery(self, queue_id: int, target: str, ok: bool, error: str = "") -> None:
         async with self.lock:
@@ -5986,7 +6080,26 @@ class Store:
                 "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
                 ("sent" if ok else "pending", error[:500], queue_id, target),
             )
-            self.conn.commit()
+            await self._commit()
+
+    async def delivery_skipped(self, queue_id: int, target: str, reason: str) -> None:
+        """Record a target this post was deliberately WITHHELD from.
+
+        POST-DEPLOY FIX (2026-10-11): policy skips (duplicate product,
+        review-channel filters, undeclared-tag targets, unreachable extra
+        targets) used to be stored as status='sent', so the ledger - and both
+        audits - counted a withheld post as a delivered one (Adidas queues
+        351498/351502: last_error='duplicate product' on status='sent' rows).
+        'skipped' is terminal like 'sent' (never retried) but is never counted
+        as a send. Rows written by older builds keep status='sent' with a
+        non-empty last_error; the audits treat those as skips too.
+        """
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
+                ("skipped", reason[:500], queue_id, target),
+            )
+            await self._commit()
 
     async def shopping_quota_left(self) -> int:
         """How many more posts the review channel may take today (IST)."""
@@ -6047,7 +6160,7 @@ class Store:
             # Keep the table tiny: yesterday's counters are of no further use.
             self.conn.execute("DELETE FROM shopping_quota WHERE day_key < ?",
                               ((datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"),))
-            self.conn.commit()
+            await self._commit()
 
     async def claim_premium(self, queue_id: int) -> tuple[bool, float]:
         """Atomically gate highest-score premium job for the evening window."""
@@ -6063,32 +6176,32 @@ class Store:
                 )
                 state = self.conn.execute("SELECT * FROM premium_state WHERE id=1").fetchone()
             if not inside:
-                self.conn.commit()
+                await self._commit()
                 return False, next_window
             if state["sent_count"] >= PREMIUM_MAX_PER_NIGHT:
-                self.conn.commit()
+                await self._commit()
                 return False, next_window
             if state["claim_queue_id"] and state["claim_queue_id"] != queue_id and state["claim_at"] >= now - 600:
-                self.conn.commit()
+                await self._commit()
                 return False, max(now + 60, float(state["next_at"] or 0))
             top = self.conn.execute(
                 """SELECT q.id FROM queue q JOIN deliveries d ON d.queue_id=q.id
-                   WHERE d.target=? AND d.status!='sent' AND q.premium_score IS NOT NULL
+                   WHERE d.target=? AND d.status NOT IN ('sent','skipped') AND q.premium_score IS NOT NULL
                      AND q.status IN ('pending','processing')
                    ORDER BY q.premium_score DESC,q.created_at ASC LIMIT 1""",
                 (PREMIUM_TARGET,),
             ).fetchone()
             if top and int(top[0]) != queue_id:
-                self.conn.commit()
+                await self._commit()
                 return False, now + 60
             if now < float(state["next_at"] or 0):
-                self.conn.commit()
+                await self._commit()
                 return False, float(state["next_at"])
             self.conn.execute(
                 "UPDATE premium_state SET claim_queue_id=?,claim_at=? WHERE id=1",
                 (queue_id, now),
             )
-            self.conn.commit()
+            await self._commit()
             return True, now
 
     async def complete_premium(self, queue_id: int, ok: bool) -> None:
@@ -6107,7 +6220,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE premium_state SET claim_queue_id=NULL,claim_at=0 WHERE id=1"
                 )
-            self.conn.commit()
+            await self._commit(patient=ok)
 
     async def finish(self, row: sqlite3.Row, successes: int, price: int | None,
                      premium_defer_until: float | None = None) -> None:
@@ -6133,7 +6246,8 @@ class Store:
                     )
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
             remaining_rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status!='sent'", (queue_id,)
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped')",
+                (queue_id,),
             ).fetchall()
             remaining_targets = [r[0] for r in remaining_rows]
             only_scheduled_premium = (
@@ -6154,7 +6268,7 @@ class Store:
                 self.conn.execute("UPDATE queue SET status='done' WHERE id=?", (queue_id,))
                 if not successes:
                     self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
-            self.conn.commit()
+            await self._commit()
         # A job that still owes targets must be picked up immediately, not at
         # the end of the next idle poll.
         notify_queue()
@@ -6171,7 +6285,7 @@ class Store:
                 "UPDATE queue SET status=?,attempts=?,next_at=?,last_error=? WHERE id=?",
                 (status, attempts, next_at, error[:1000], row["id"]),
             )
-            self.conn.commit()
+            await self._commit()
         log.info("RETRY | queue=%s attempt=%s status=%s (%s)",
                  row["id"], attempts, status, error[:160])
         notify_queue()
@@ -6182,7 +6296,7 @@ class Store:
                 "UPDATE queue SET status='done',last_error=? WHERE id=?", (reason[:1000], queue_id)
             )
             self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
-            self.conn.commit()
+            await self._commit()
         notify_queue()
 
     async def maintenance(self) -> dict[str, int]:
@@ -6226,7 +6340,7 @@ class Store:
             self.conn.execute(
                 "DELETE FROM deliveries WHERE queue_id NOT IN (SELECT id FROM queue)"
             )
-            self.conn.commit()
+            await self._commit()
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             # Compact only when the durable DB becomes unusually large; normal
@@ -6791,8 +6905,17 @@ class AffiliateClient:
                                                cached["deal_key"] or product_key(cached_resolved))
                     else:
                         log.warning("BITLY unavailable; using verified cached EarnKaro link")
-                return LinkResult(source_url, cached_resolved, cached_url,
-                                  cached["deal_key"] or product_key(source_url))
+                cached_key = cached["deal_key"] or product_key(source_url)
+                if STRICT_OUR_LINKS:
+                    # A legacy cache row can carry an opaque URL-hash key for a
+                    # merchant page that DOES name its product id. Dedup must
+                    # key on the verified identity, so upgrade the key instead
+                    # of serving the stale one (the render gate skips the post
+                    # outright when no identity exists at all).
+                    verified_key = verified_product_id(cached_resolved, cached_url)
+                    if verified_key:
+                        cached_key = verified_key
+                return LinkResult(source_url, cached_resolved, cached_url, cached_key)
         resolved = resolved_hint or await self.resolve(source_url)
         host = (urlparse(resolved).hostname or "").lower()
         if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, NON_SHOP_DOMAINS):
@@ -7901,10 +8024,6 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                     await client.send_message(
                         entity, content, parse_mode=None, link_preview=link_preview
                     )
-                if progress_callback:
-                    await progress_callback(index + 1)
-                sent = True
-                break
             except FloodWaitError as exc:
                 # A Telegram rate-limit. Never let a very long flood (hours /
                 # an account soft-ban) freeze a worker for that long — cap the
@@ -7917,14 +8036,40 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                             "account; posting resumes automatically.",
                             getattr(entity, "id", entity), getattr(exc, "seconds", 60), wait)
                 await asyncio.sleep(wait + 2)
+                continue
             except (ChannelPrivateError, ChatAdminRequiredError) as exc:
                 return False, str(exc)
             except Exception as exc:
                 last_error = str(exc)
                 if attempt + 1 < POST_RETRIES:
                     await asyncio.sleep(2 ** attempt)
+                continue
+            sent = True
+            break
         if not sent:
             return False, last_error
+        # The chunk is OUT on Telegram. The checkpoint below records that fact -
+        # and it lives OUTSIDE the retry loop on purpose. It used to sit inside
+        # it, so a ledger write that threw (a locked/busy database during a
+        # VACUUM, a checkpoint, or an overlapping writer right after a deploy)
+        # retried the TELEGRAM send instead of the write: one queue went out up
+        # to POST_RETRIES (3) times to the same targets (2026-10-11 repeats).
+        # A failed checkpoint is now logged loudly and the post continues; the
+        # ledger write itself already retries inside Store. Re-sending an
+        # already-sent chunk is never the answer to a bookkeeping failure.
+        # (Residual risk, stated honestly: Telegram offers no send idempotency,
+        # so a transport error raised AFTER Telegram accepted the message still
+        # retries above and can duplicate that chunk. Nothing in this function
+        # can distinguish that case; the ledger-driven triple-send above is
+        # what this fix eliminates.)
+        if progress_callback:
+            try:
+                await progress_callback(index + 1)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping must never resend
+                log.error("CHECKPOINT FAILED | chunk %s/%s reached Telegram but the "
+                          "ledger write failed (%s); continuing without resend - "
+                          "a later resume may re-check this target",
+                          index + 1, len(parts), exc)
     return True, ""
 
 # ---------------------------------------------------------------------------
@@ -8234,6 +8379,23 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # one source post. Collapse only an exact repeated generated URL. Product-key
     # reservation still provides global 24-hour dedup across source channels.
     converted = distinct_affiliate_results(converted)
+    if STRICT_OUR_LINKS and converted:
+        # POST-DEPLOY RULE (2026-10-11): no trustworthy product identity, no
+        # post. Every converted item must name its merchant product id on the
+        # verified merchant page (or on the verified affiliate destination our
+        # converter produced for it). A search/category/offer page and an
+        # opaque shortener URL carry no identity: posting one risks repeating a
+        # product the channels already saw - or mis-attaching a price to the
+        # wrong product - and dropping just the item would orphan its
+        # name/price lines. So the post is skipped as a unit, like any other
+        # unverified strict-all item. Nothing is invented to fill the gap: no
+        # guessed name, no merchant-page fetch, no URL-hash identity.
+        for result in converted:
+            if not verified_product_id(result.resolved, result.affiliate):
+                host = (urlparse(clean_url(result.resolved or "")).hostname or "?").lower()
+                raise PermanentSkip(
+                    "no trustworthy product identity for %s - skipping rather "
+                    "than risking a mis-posted duplicate" % host)
     keys = list(dict.fromkeys(
         [product_key(resolved) for _, resolved in service_pairs]
         + [product_key(resolved) for _, resolved in passthrough]
@@ -8627,6 +8789,36 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
     return msg, rendered, None
 
 
+async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
+                                   product_sig: str | None, price: int | None,
+                                   discount: int | None) -> None:
+    """Retry the ledger write for an already-sent target - never the send.
+
+    Called when a target's post reached Telegram but SETTLE FAILED (the
+    database refused the record even after patient retries). Success pops the
+    SETTLED_BUT_UNRECORDED entry so finish() can close the job; failure idles
+    on UNRECORDED_SETTLE_RETRY_DELAY so a wedged database waits instead of
+    hot-looping the claim/finish cycle. Either way nothing re-posts. This is
+    ledger-outage backoff, not fan-out pacing: the send path never waits on it.
+    """
+    try:
+        if premium:
+            await store.complete_premium(queue_id, True)
+        await store.delivery(queue_id, target, True, "")
+        if target == SHOPPING_TARGET:
+            with contextlib.suppress(Exception):
+                await store.note_shopping_sent()
+        if product_sig:
+            await store.mark_product_posted(target, product_sig, price, discount)
+    except Exception as exc:
+        log.critical(
+            "SETTLE STILL FAILING | queue=%s target=%s (%s): the post is already out - "
+            "retrying the ledger write, never the send", queue_id, target, exc)
+        await asyncio.sleep(UNRECORDED_SETTLE_RETRY_DELAY)
+    else:
+        SETTLED_BUT_UNRECORDED.pop((queue_id, target), None)
+
+
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
     stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
     # a list of files (with their Telegram refs) when the source posted an album
@@ -8783,6 +8975,18 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if first_target_sent and TARGET_FANOUT_GAP_MAX > 0:
                 await asyncio.sleep(random.uniform(TARGET_FANOUT_GAP_MIN, TARGET_FANOUT_GAP_MAX))
             first_target_sent = True
+            unrecorded = SETTLED_BUT_UNRECORDED.get((row["id"], target))
+            if unrecorded is not None:
+                # This target's post is already OUT on Telegram: an earlier
+                # pass sent it and the ledger refused the record (SETTLE
+                # FAILED). Retry ONLY the bookkeeping - never the send. The
+                # ledger row still reads pending, so finish() requeues and
+                # this repeats until the write lands; each failing pass idles
+                # instead of hot-looping, and the post is never doubled.
+                await settle_unrecorded_target(row["id"], target, unrecorded.get("premium"),
+                                               product_sig, price, target_discount)
+                successes += 1
+                continue
             premium_claimed = False
             if target == PREMIUM_TARGET:
                 premium_claimed, defer_until = await store.claim_premium(row["id"])
@@ -8808,12 +9012,12 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     # retry until the price went stale.
                     log.warning("SHOPPING TARGET UNRESOLVED | @%s not reachable; the deal "
                                 "still goes to every other channel", target)
-                    await store.delivery(row["id"], target, True, "shopping target unresolved")
+                    await store.delivery_skipped(row["id"], target, "shopping target unresolved")
                     continue
                 if target in {value for value in CATEGORY_TARGETS.values() if value}:
                     log.warning("CATEGORY TARGET UNRESOLVED | @%s not reachable; the deal "
                                 "still goes to the Main feed and other channels", target)
-                    await store.delivery(row["id"], target, True, "category target unresolved")
+                    await store.delivery_skipped(row["id"], target, "category target unresolved")
                     continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
@@ -8831,7 +9035,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if target_skip_reason:
                 log.info("DUPLICATE PRODUCT (signature) | queue=%s target=%s | %s",
                          row["id"], target, target_skip_reason)
-                await store.delivery(row["id"], target, True, "duplicate product")
+                await store.delivery_skipped(row["id"], target, "duplicate product")
                 continue
             start_chunk = await store.delivery_progress(row["id"], target)
 
@@ -8884,7 +9088,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 if (not safe_text or not URL_RE.search(safe_text) or not _named):
                     log.info("SHOPPING SKIP | queue=%s nothing reviewable left after the "
                              "programme-safe rewrite", row["id"])
-                    await store.delivery(row["id"], target, True, "not programme-safe")
+                    await store.delivery_skipped(row["id"], target, "not programme-safe")
                     continue
                 # Off-programme store on the channel submitted for the AMAZON
                 # programme: it belongs on the other channels, not here.
@@ -8897,13 +9101,13 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 safe_text = retag_foreign_amazon_links(safe_text)
                 if SHOPPING_AMAZON_ONLY and not is_amazon_only_post(safe_text):
                     log.info("SHOPPING SKIP | queue=%s not an Amazon-only deal", row["id"])
-                    await store.delivery(row["id"], target, True, "not an amazon deal")
+                    await store.delivery_skipped(row["id"], target, "not an amazon deal")
                     continue
                 # A curated shop posts 20-30 times a day; a firehose reads as spam.
                 if await store.shopping_quota_left() <= 0:
                     log.info("SHOPPING SKIP | queue=%s daily cap of %s reached",
                              row["id"], SHOPPING_DAILY_CAP)
-                    await store.delivery(row["id"], target, True, "daily cap reached")
+                    await store.delivery_skipped(row["id"], target, "daily cap reached")
                     continue
                 # Pace it like a person: the day's allowance is spread across
                 # posting hours instead of fired off in one burst. The deal is
@@ -8923,14 +9127,14 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 if has_amazon_trademark(safe_text):
                     log.info("SHOPPING SKIP | queue=%s copy names an Amazon trademark",
                              row["id"])
-                    await store.delivery(row["id"], target, True, "amazon trademark in copy")
+                    await store.delivery_skipped(row["id"], target, "amazon trademark in copy")
                     continue
                 # The same email named t.me/LootZoneIndia11 as its example, so a
                 # reviewer must find NO route from here to a loot channel.
                 if has_telegram_pointer(safe_text):
                     log.info("SHOPPING SKIP | queue=%s copy points at another channel",
                              row["id"])
-                    await store.delivery(row["id"], target, True, "telegram pointer in copy")
+                    await store.delivery_skipped(row["id"], target, "telegram pointer in copy")
                     continue
                 # Link-level disclosure is an Amazon/FTC requirement on EVERY post
                 # (the channel bio alone is not enough) and a common rejection
@@ -8956,7 +9160,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # that does not earn for us.
                 log.warning("TARGET SKIP | queue=%s @%s is not approved for our Amazon tag; "
                             "no untagged fallback will be posted", row["id"], target)
-                await store.delivery(row["id"], target, True,
+                await store.delivery_skipped(row["id"], target,
                                      "our Amazon affiliate link is not approved for this target")
                 continue
             target_text = tagless_copy
@@ -8980,15 +9184,37 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 start_chunk=start_chunk, progress_callback=checkpoint,
                 link_preview=allow_preview, media_refs=media_refs,
             )
-            if premium_claimed:
-                await store.complete_premium(row["id"], ok)
-            await store.delivery(row["id"], target, ok, error)
-            if ok and target == SHOPPING_TARGET:
-                with contextlib.suppress(Exception):
-                    await store.note_shopping_sent()
-            if ok and product_sig:
-                await store.mark_product_posted(target, product_sig, price, target_discount)
-            successes += int(ok)
+            if ok:
+                # The post is OUT on Telegram. Recording that fact must NEVER
+                # throw the job back into fail_job's requeue mill: the target
+                # would still read pending and the next pass would RE-SEND an
+                # already-sent post. A ledger that stays unwritable after
+                # patient retries is a CRITICAL alarm, not a reason to
+                # duplicate - the next pass retries the write via
+                # SETTLED_BUT_UNRECORDED without re-posting.
+                try:
+                    if premium_claimed:
+                        await store.complete_premium(row["id"], True)
+                    await store.delivery(row["id"], target, True, error)
+                    if target == SHOPPING_TARGET:
+                        with contextlib.suppress(Exception):
+                            await store.note_shopping_sent()
+                    if product_sig:
+                        await store.mark_product_posted(target, product_sig, price,
+                                                        target_discount)
+                except Exception as exc:
+                    log.critical(
+                        "SETTLE FAILED | queue=%s target=%s: sent to Telegram but the "
+                        "ledger refused the record (%s). NOT re-sending; the write "
+                        "will keep retrying without re-posting.",
+                        row["id"], target, exc)
+                    SETTLED_BUT_UNRECORDED[(row["id"], target)] = {"premium": premium_claimed}
+                successes += 1
+            else:
+                # Nothing went out: the normal retry mill is correct here.
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                await store.delivery(row["id"], target, False, error)
         await store.finish(row, successes, price, premium_defer_until)
         log.info("JOB %s | source=%s | sent=%s", row["id"], row["source"], successes)
     except DuplicateDeal as exc:
