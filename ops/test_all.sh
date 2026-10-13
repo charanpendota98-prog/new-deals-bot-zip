@@ -100,6 +100,7 @@ run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
 run 'best-copy quality audit' "$PYTHON" test_best_copy.py
 run 'duplicate handling' "$PYTHON" test_duplicate_sim.py
 run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
+run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py

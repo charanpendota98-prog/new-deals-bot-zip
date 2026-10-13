@@ -1184,6 +1184,54 @@ UNDER99_SOURCES = {
     "https://t.me/+LP6MYEpCwi0zOGYx",
 }
 
+# Dashboard-managed channels (2026-10-13): operator-added targets from
+# channels.json (next to the bot database) merge over the maps above at
+# startup, so a new channel needs no code change and no redeploy - only a
+# restart. Additive only, and a missing/corrupt file simply means "no
+# dashboard channels": this block can never break startup.
+try:
+    try:
+        from bestgaa import channels_config as _dashboard_channels
+    except ImportError:
+        # Script-style launch (bestgaa/ itself on sys.path): plain import.
+        import channels_config as _dashboard_channels
+
+    _dashboard_data = _dashboard_channels.load_channels()
+    _dashboard_targets = {
+        SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET,
+        UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET, SHOPPING_TARGET,
+        *(t for t in CATEGORY_TARGETS.values() if t),
+    }
+    _dashboard_summary = _dashboard_channels.apply_to_routing(
+        SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, _dashboard_data,
+        existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES)
+    AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
+    _dashboard_log = logging.getLogger("bestgaa")
+    if _dashboard_summary.get("added"):
+        _dashboard_log.info(
+            "DASHBOARD CHANNELS | +%s target(s): %s",
+            len(_dashboard_summary["added"]), ", ".join(_dashboard_summary["added"]))
+    for _dashboard_warning in _dashboard_summary.get("warnings", []):
+        _dashboard_log.warning("DASHBOARD CHANNELS | %s", _dashboard_warning)
+    try:
+        _snapshot_targets = set(_dashboard_targets)
+        for _targets in SOURCE_TO_TARGETS.values():
+            _snapshot_targets.update(_targets)
+        _snapshot_path = _dashboard_channels.snapshot_path()
+        _snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        _snapshot_path.write_text(json.dumps({
+            "started_at": time.time(),
+            "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
+            "targets": sorted(str(t) for t in _snapshot_targets),
+            "dashboard_added": list(_dashboard_summary.get("added", [])),
+            "channels_mtime": os.path.getmtime(_dashboard_channels.channels_json_path())
+            if _dashboard_channels.channels_json_path().exists() else 0,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as exc:
+        _dashboard_log.warning("DASHBOARD CHANNELS | snapshot not written: %s", exc)
+except Exception as exc:
+    logging.getLogger("bestgaa").warning("DASHBOARD CHANNELS | config not applied: %s", exc)
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------

@@ -445,6 +445,16 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   strict-all dedup keys on verified product identity only and skips a post with
   no trustworthy identity as a unit, and only a real send blocks an edit
   revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
+- **Operator dashboard (2026-10-13):** add posting channels from a browser
+  instead of editing code - name, sources (or every main source), Amazon-tag
+  opt-in, enable/disable/remove. Channels live in `channels.json` next to the
+  bot database (a redeploy never wipes them) and apply on the next bot restart;
+  the dashboard shows a pending badge plus one-click restart when allowed.
+  Strictly additive (new names only, built-ins untouched), the tag opt-in
+  warns that Associates Central must list the channel first, and the same page
+  shows queue depth, today's sends-vs-skips, recent jobs, and the live quality
+  audit. `DASHBOARD_TOKEN='...' python3 -m dashboard.app`; localhost + SSH
+  tunnel only, never public. Pinned by `test_dashboard.py` in the gate.
 - **Same-product repeats, advanced guard (2026-10-12, user rule "1 hour lopala
   malli post cheyoddu"):** the per-channel repeat guard now matches ANY of the
   post's identity keys - the headline key plus the exact link identities
