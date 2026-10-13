@@ -613,6 +613,7 @@ def is_own_channel_source(source: str) -> bool:
     owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
              POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET,
              *CATEGORY_TARGETS.values()}
+    owned.update(t for targets in globals().get("SOURCE_TO_TARGETS", {}).values() for t in targets)
     return name in {t.lower() for t in owned if t}
 
 
@@ -9381,6 +9382,30 @@ async def idle_wait(stop: asyncio.Event) -> None:
         await asyncio.wait_for(stop.wait(), timeout=QUEUE_IDLE_POLL_SECONDS)
 
 
+def refresh_dashboard_tag_keys():
+    global AMAZON_TAG_TARGET_KEYS
+    AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
+
+
+async def dashboard_live_loop(client, source_map, target_map, stop):
+    """Optional dashboard subsystem must never take down posting workers."""
+    try:
+        try:
+            from .live_channels import LiveChannels
+        except ImportError:
+            from live_channels import LiveChannels
+        initial_names = {n.lower() for n in _dashboard_summary.get("added", [])}
+        live_channels = LiveChannels(
+            SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, DASHBOARD_CATEGORY_FILTERS,
+            source_map, target_map,
+            [c for c in _dashboard_data["channels"] if c["name"].lower() in initial_names],
+            _dashboard_targets, CATEGORY_DEFINITIONS, TRICKS_SOURCES,
+            lambda name: client.get_entity(name), refresh_dashboard_tag_keys)
+        await live_channels.run(stop)
+    except Exception:
+        log.exception("DASHBOARD LIVE ADD unavailable; existing posting continues")
+
+
 async def main() -> None:
     global QUEUE_WAKE
     log.info("BestGAA Production Bot v19.0 starting "
@@ -9500,6 +9525,8 @@ async def main() -> None:
                 log.exception("WORKER %s crashed on job %s (continuing): %s", index, row["id"], exc)
 
     workers = [asyncio.create_task(worker(i)) for i in range(QUEUE_WORKERS)]
+    # Independent task; access/config failures never stop normal posting workers.
+    dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -9516,6 +9543,8 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await dashboard_reload_task
     await client.disconnect()
     await session.close()
     store.conn.close()

@@ -63,7 +63,7 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
  assert.equal(d.querySelectorAll('#batchresults tr').length,2);
  assert.equal(d.querySelectorAll('#batchresults img').length,0); // no injection from pasted captions
  assert.match(d.getElementById('bsummary').textContent,/2 tested/);
- assert.match(d.getElementById('bnotice').textContent,/waiting for restart/);
+ assert.match(d.getElementById('bnotice').textContent,/awaiting bot application/);
  assert.equal(d.getElementById('bexport').disabled,false);
  d.getElementById('bfilter').value='withheld'; w.renderBatch(); assert.equal(d.querySelectorAll('#batchresults tr').length,1);
  d.getElementById('bfilter').value='mismatch'; w.renderBatch(); assert.equal(d.querySelectorAll('#batchresults tr').length,1);

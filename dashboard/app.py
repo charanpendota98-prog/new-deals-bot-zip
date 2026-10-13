@@ -102,6 +102,9 @@ def snapshot() -> dict:
 
 def pending_restart() -> bool:
     """True when channels.json changed since the bot last loaded it."""
+    snap = snapshot()
+    if snap.get("live_reload"):
+        return snap.get("applied_revision") != config_revision()
     sidecar = channels_config.pending_path()
     try:
         pending = json.loads(sidecar.read_text(encoding="utf-8"))
@@ -262,16 +265,34 @@ def category_catalog() -> dict:
     return {c["key"]: c["label"] for c in load_rules().get("categories", [])}
 
 
+def activation_status(snap=None):
+    snap = snapshot() if snap is None else snap
+    try:
+        age = time.time() - float(snap.get("heartbeat_at") or 0)
+    except (TypeError, ValueError):
+        age = float("inf")
+    fresh = bool(snap.get("live_reload") and 0 <= age < 40)
+    same = snap.get("observed_revision") == config_revision()
+    return {"watcher_online": fresh, "heartbeat_at": snap.get("heartbeat_at"),
+            "new_channels_live": fresh, "config_observed": same,
+            "channels": snap.get("live_channels", {}) if fresh and same else {},
+            "error": snap.get("live_error", "") if fresh else "",
+            "message": ("Bot online: new channels get access checks and live activation; existing edits/removals need an approved restart."
+                        if fresh else "Live activation not confirmed: bot may be OFF, starting, or on older code. Saving alone cannot start it.")}
+
+
 @require_token
 async def api_channels(request: web.Request):
     snap = snapshot()
     data = channels_config.load_channels()
     dashboard_names = {c["name"].lower() for c in data["channels"]}
+    dashboard_names.update(str(n).lower() for n in snap.get("dashboard_added", []))
     targets = [str(t) for t in snap.get("targets", [])]
     return web.json_response({
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
         "revision": config_revision(),
+        "activation": activation_status(snap),
         "sources": snap.get("sources", []),
         "categories": category_catalog(),
         "category_rules_version": load_rules().get("version", 0),
@@ -304,7 +325,8 @@ async def api_add_channel(request: web.Request):
     data["channels"].append(cleaned)
     channels_config.save_channels(data)
     mark_pending()
-    return web.json_response({"channel": cleaned, "warnings": warnings, "pending_restart": True})
+    return web.json_response({"channel": cleaned, "warnings": warnings, "pending_restart": True,
+                              "activation": activation_status()})
 
 
 @require_token

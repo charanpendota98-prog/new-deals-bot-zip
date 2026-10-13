@@ -345,6 +345,35 @@ def test_http_api():
                     check("inspection never changes channel configuration",
                           before_inspect == (tdp / "channels.json").read_bytes())
 
+                    status, body = await call("POST", "/api/channels", json={
+                        "name": "https://t.me/QuickFashion", "sources": ["*"], "categories": ["fashion"]})
+                    check("public channel links normalize to a routing username", status == 200
+                          and body["channel"]["name"] == "QuickFashion")
+                    check("saving while bot offline never claims active posting",
+                          not body["activation"]["watcher_online"])
+                    status, body = await call("POST", "/api/channels", json={
+                        "name": "@QuickFashion", "sources": ["*"], "categories": ["fashion"]})
+                    check("URL and username cannot add a channel twice", status == 400)
+                    for value in ("https://t.me/+private", "https://t.me/QuickFashion/123", "https://foreign.test/QuickFashion"):
+                        status, body = await call("POST", "/api/channels", json={
+                            "name": value, "sources": ["*"], "categories": ["fashion"]})
+                        check("private/message/foreign channel links are rejected", status == 400)
+                    state = json.loads((tdp / "routing_snapshot.json").read_text())
+                    live_state = dict(state, live_reload=True, heartbeat_at=time.time(),
+                                      observed_revision=dash.config_revision(), applied_revision=dash.config_revision(),
+                                      live_channels={"QuickFashion": {"state": "active", "detail": "test fixture"}})
+                    (tdp / "routing_snapshot.json").write_text(json.dumps(live_state))
+                    status, body = await call("GET", "/api/channels")
+                    check("live heartbeat and matching revision confirm activation",
+                          body["activation"]["watcher_online"] and not body["pending_restart"]
+                          and body["activation"]["channels"]["QuickFashion"]["state"] == "active")
+                    live_state["heartbeat_at"] = time.time() - 100
+                    (tdp / "routing_snapshot.json").write_text(json.dumps(live_state))
+                    status, body = await call("GET", "/api/channels")
+                    check("stale heartbeat cannot report an active bot",
+                          not body["activation"]["watcher_online"] and not body["activation"]["channels"])
+                    (tdp / "routing_snapshot.json").write_text(json.dumps(state))
+
                     status, body = await call("GET", "/api/recent?limit=5")
                     jobs = body.get("jobs", [])
                     check("recent shows jobs with send counts",

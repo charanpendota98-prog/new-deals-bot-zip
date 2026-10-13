@@ -51,7 +51,7 @@ if [[ -f "$APP/main_bot.py" ]]; then
   exit 1
 fi
 mkdir -p "$APP/logs" "$APP/media"
-cp "$SRC/category_classifier.py" "$SRC/channels_config.py" "$SRC/main_bot_new.py" "$SRC/category_rules.json" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
+cp "$SRC/live_channels.py" "$SRC/category_classifier.py" "$SRC/channels_config.py" "$SRC/main_bot_new.py" "$SRC/category_rules.json" "$SRC/requirements.txt" "$SRC/bestgaa.service" "$APP/"
 if [[ -f "$SRC/migrate_legacy_env.py" ]]; then
   cp "$SRC/migrate_legacy_env.py" "$APP/"
 fi

@@ -51,7 +51,7 @@ const dom=new JSDOM(html,{url:'https://preview.example',runScripts:'dangerously'
  releaseSave();await save;holdSave=null;
  assert.equal(rows[0].name,'TechDeals');assert.deepEqual(rows[0].categories,['electronics']);
  assert.deepEqual(rows[0].sources,['*']);assert.equal(rows[0].amazon_tag,false);
- assert.match(d.getElementById('addmsg').textContent,/No posts sent/);
+ assert.match(d.getElementById('addmsg').textContent,/Activation pending/);
  assert.equal(calls.some(c=>c.path==='/api/restart'),false);
  assert.equal(d.getElementById('fname').disabled,false);
  // An opaque link cannot select a category and cannot reuse an earlier result.
@@ -70,6 +70,20 @@ const dom=new JSDOM(html,{url:'https://preview.example',runScripts:'dangerously'
  w.reviewSetup();conflict=true;await w.addChannel();
  assert.equal(d.getElementById('fname').value,'SecondTech');assert.equal(rows.length,1);
  assert.match(d.getElementById('addmsg').textContent,/preserved/);
+ // Quick setup accepts a public link with just a category, no wizard checklist.
+ conflict=false;d.getElementById('quicklink').value='https://t.me/QuickClothes';
+ d.getElementById('quickcategory').value='fashion';await w.quickSave();
+ assert.equal(rows.length,2);assert.equal(rows[1].name,'QuickClothes');
+ assert.deepEqual(rows[1].categories,['fashion']);assert.deepEqual(rows[1].sources,['*']);
+ assert.equal(rows[1].amazon_tag,false);
+ assert.match(d.getElementById('quickmsg').textContent,/Waiting for bot activation/);
+ assert.equal(d.getElementById('quicklink').value,'');
+ d.getElementById('quicklink').value='https://t.me/+PrivateInvite';
+ const before=calls.filter(c=>c.method==='POST'&&c.path==='/api/channels').length;
+ await w.quickSave();
+ assert.equal(calls.filter(c=>c.method==='POST'&&c.path==='/api/channels').length,before);
+ assert.match(d.getElementById('quickmsg').textContent,/not a private invite/);
+ assert.equal(w.publicChannelName('t.me/QuickClothes'),'QuickClothes');
  console.log('Guided setup DOM PASS: cards, inspector, opaque/stale results, checklist, review, duplicate-save guard, safe defaults, conflict preservation.');
  w.close();
 })().catch(e=>{console.error(e);process.exit(1)});

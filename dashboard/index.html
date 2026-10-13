@@ -44,14 +44,22 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <span id="authstate" class="muted"></span>
 </div>
 <div id="pending" class="card" style="display:none;border:1px solid #f59e0b">
-<b>Channel changes are waiting for a bot restart.</b>
+<b>Saved channel changes are not fully applied yet.</b><p class="muted">New channels activate on a running, upgraded bot after access checks. Existing edits/removals require an approved restart.</p>
 <button onclick="doRestart()">Restart bot now</button>
 <span class="muted">or run on the server: <span id="restartcmd">sudo systemctl restart bestgaa</span></span>
 <pre id="restartout"></pre>
 </div>
 <section class="hero"><div><span class="eyebrow">CATEGORY CHANNEL STUDIO</span>
 <h1>Right deals.<br><span>Right channels.</span></h1><p>Paste a product link, choose its category, and configure your channel.<br>Simple setup. Strict category filtering. You stay in control.</p></div>
-<div class="hero-note"><span class="pulse"></span> CONFIGURE, THEN REVIEW<p>No automatic posts.<br>No automatic restart.</p></div></section>
+<div class="hero-note"><span class="pulse"></span> CONFIGURE, THEN REVIEW<p>Existing routes stay intact.<br>New routes checked first.</p></div></section>
+<section class="card" id="quick-setup">
+<div class="section-heading"><div><span class="eyebrow">QUICK ADD · NO CODE CHANGES</span><h2>Channel link + category. Save.</h2></div><span class="badge">Live additions</span></div>
+<p class="muted">Create your Telegram channel first and give the bot/session account Post Messages permission. A running bot checks access, then routes eligible newly rendered deals. No history replay.</p>
+<div class="inspector-grid"><div><label for="quicklink">Public channel link or @username</label><input id="quicklink" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off"></div><div><label for="quickcategory">Category</label><select id="quickcategory"><option value="">Choose a category</option></select></div></div>
+<button id="quicksave" onclick="quickSave()">Save &amp; request activation</button><p id="quickmsg" aria-live="polite"></p>
+<p class="muted">Defaults: every main source, one strict category, Amazon-tag opt-in OFF. Existing channels keep their current rules.</p>
+<div class="review-box"><strong id="livestate">Bot activation not confirmed</strong><p id="livedetail" class="muted">Connect to see the bot heartbeat and activation results.</p><div id="liveerrors" class="muted"></div></div>
+</section>
 <section class="card setup-card" id="setup">
 <div class="section-heading"><div><span class="eyebrow">GUIDED SETUP</span><h2>Create a category channel</h2></div><span class="badge">Telegram routing</span></div>
 <nav class="steps" aria-label="Setup progress"><button class="step active" id="stepnav1" onclick="setSetupStep(1)">01 · Category</button><button class="step" id="stepnav2" onclick="setupNext()">02 · Channel details</button><button class="step" id="stepnav3" onclick="reviewSetup()">03 · Review &amp; save</button></nav>
@@ -70,7 +78,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </div>
 <div id="setupstep2" hidden>
 <h3>Connect your existing Telegram channel</h3><p class="muted">This saves routing settings. It does not create a channel on Telegram or verify admin access.</p>
-<label for="fname">Channel username</label><input id="fname" maxlength="65" placeholder="@MyElectronicsDeals" autocomplete="off">
+<label for="fname">Public channel link or username</label><input id="fname" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off">
 <label class="checkline"><input id="channelready" type="checkbox"> I created this Telegram channel and control it.</label>
 <label class="checkline"><input id="postingready" type="checkbox"> The bot/session account has permission to post there.</label>
 <details class="advanced"><summary>Advanced settings · sources, affiliate tag &amp; note</summary>
@@ -84,14 +92,14 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </div>
 <div id="setupstep3" hidden>
 <h3>One final check</h3><div id="setupreview" class="review-box"></div>
-<p class="muted">No posts will be sent now. Saving queues configuration for an approved bot restart. Existing channels and duplicate/link safety rules are unchanged.</p>
+<p class="muted">Saving requests live activation on an already-running bot. New channels need access checks; existing edits/removals need an approved restart. This does not create a Telegram channel or start the bot.</p>
 <div class="step-actions"><button class="ghost" onclick="setSetupStep(2)">← Edit details</button><button id="setupsave" onclick="addChannel()">Save channel configuration</button></div>
 </div>
 <p id="addmsg" role="status" aria-live="polite"></p>
 </section>
 <div class="card"><h2>Status</h2><div class="row" id="stats"></div><div id="uptime" class="muted"></div></div>
 <div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
-<table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th></th></tr></thead>
+<table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
 </div>
 <div class="card"><h2>Test a category before posting</h2>
@@ -118,7 +126,7 @@ Channel candidates use saved dashboard settings, not proof that the running bot 
 <h2 id="editheading">Edit category shelf</h2><p id="edittarget"></p>
 <label for="editmode">Delivery category policy</label><select id="editmode" onchange="toggleEditMode()"><option value="strict">Strict selected categories</option><option value="all">Unrestricted — ALL categories</option></select>
 <div id="editcats" class="srcs"></div>
-<p class="muted">Strict mode requires at least one category. Mixed/unclear posts are withheld. Saving does not restart the bot.</p>
+<p class="muted">Strict mode requires at least one category. Mixed/unclear posts are withheld. Edits to an already-active route apply only after an approved restart; its current policy remains active until then.</p>
 <p id="editerror" role="alert"></p>
 <button id="editsave" onclick="saveShelf()">Save shelf</button><button class="ghost" onclick="document.getElementById('shelfeditor').close()">Cancel</button>
 </dialog>
@@ -135,6 +143,7 @@ let configRevision = null;
 let editingShelf = null;
 let batchReport = null;
 let batchGeneration = 0;
+let quickSaving = false;
 let setupStep = 1, setupDraft = null, setupSaving = false;
 let inspection = null, inspectGeneration = 0;
 const categoryDetails = {
@@ -157,8 +166,11 @@ async function api(method, path, body, revision){
 }
 function fmtTime(ts){ if(!ts) return '—'; const d = new Date(ts*1000);
   return d.toLocaleString('en-IN',{hour12:false}) ; }
+let refreshBusy=false;
 async function refresh(){
+  if(refreshBusy) return;
   if(!TOKEN && !DEMO_MODE){ document.getElementById('authstate').textContent = 'paste the token to begin'; return; }
+  refreshBusy=true;
   try {
     const s = await api('GET','/api/status');
     document.getElementById('authstate').textContent = s.insecure ? 'INSECURE MODE (no token set)' : 'connected';
@@ -174,20 +186,34 @@ async function refresh(){
     const c = await api('GET','/api/channels');
     categoryLabels = c.categories || {};
     document.getElementById('categoryversion').textContent = 'Installed category rules v'+(c.category_rules_version||'?')
-      +' · bot reported v'+(c.bot_category_rules_version||'unknown')+' · saved changes require an approved restart';
+      +' · bot reported v'+(c.bot_category_rules_version||'unknown')+' · new channels can activate live; existing edits need approved restart';
     channelRows = c.dashboard || [];
     configRevision = c.revision;
+    const activation=c.activation||{};
+    document.getElementById('livestate').textContent=activation.watcher_online?'Bot live-add watcher online':'Bot live activation not confirmed';
+    document.getElementById('livedetail').textContent=activation.message||'Bot may be stopped or running older code. No activation is assumed.';
+    document.getElementById('liveerrors').textContent=activation.error||'';
+    const quickCategory=document.getElementById('quickcategory');
+    if(!quickCategory.dataset.filled && Object.keys(categoryLabels).length){
+      for(const [key,label] of Object.entries(categoryLabels)){const option=document.createElement('option');option.value=key;option.textContent=label;quickCategory.append(option);}
+      quickCategory.dataset.filled='1';
+    }
     const sourceOptions = document.getElementById('knownsources'); sourceOptions.replaceChildren();
     for(const source of c.sources||[]){ const option = document.createElement('option'); option.value=source; sourceOptions.append(option); }
     let rows = '';
-    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
+    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="6" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
       + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
       + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
+      + `<td class="muted">${escapeHTML(activation.channels?.[t.name]?.state||'awaiting bot')}<br>${escapeHTML(activation.channels?.[t.name]?.detail||'Not confirmed active for this saved config')}</td>`
       + `<td><button class="ghost" data-action="edit" data-name="${escapeHTML(t.name)}">edit shelf</button> <button class="danger" data-action="delete" data-name="${escapeHTML(t.name)}">remove</button></td></tr>`; });
-    document.getElementById('channels').innerHTML = rows || '<tr><td colspan="7" class="muted">no channels yet</td></tr>';
+    const savedNames=new Set((c.dashboard||[]).map(channel=>channel.name.toLowerCase()));
+    for(const [name,state] of Object.entries(activation.channels||{})){
+      if(state.state==='restart_required' && !savedNames.has(name.toLowerCase())) rows+=`<tr><td>@${escapeHTML(name)}</td><td><span class="badge warn">live-only</span></td><td colspan="4" class="muted">Removed from saved config; previous live route still runs</td><td class="muted">${escapeHTML(state.detail)}</td><td class="muted">Approved restart required</td></tr>`;
+    }
+    document.getElementById('channels').innerHTML = rows || '<tr><td colspan="8" class="muted">no channels yet</td></tr>';
     const box = document.getElementById('fsrcs');
     if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
       box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${escapeHTML(s)}" style="width:auto"> ${escapeHTML(s)}</label>`).join(''); }
@@ -205,6 +231,7 @@ async function refresh(){
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
+  finally { refreshBusy=false; }
 }
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
 function toggleSrcs(){ document.getElementById('fsrcs').style.display =
@@ -284,7 +311,7 @@ async function runBatch(){
     if(generation!==batchGeneration) return; batchReport=report;
     const s=report.summary;
     summary.textContent=`${s.total} tested · ${s.matched} category matches · ${s.withheld} withheld · ${s.expectation_mismatches}/${s.evaluated} expectation mismatches`;
-    document.getElementById('bnotice').textContent=report.notice+(report.pending_restart?' Saved changes are waiting for restart.':'');
+    document.getElementById('bnotice').textContent=report.notice+(report.pending_restart?' Saved changes are awaiting bot application; check activation status.':'');
     document.getElementById('bexport').disabled=false; renderBatch();
   } catch(e){ if(generation===batchGeneration) summary.textContent='Error: '+e.message; }
   finally { if(generation===batchGeneration) button.disabled=false; }
@@ -310,6 +337,33 @@ function exportBatch(){
   const url=URL.createObjectURL(blob), a=document.createElement('a');
   a.href=url; a.download='category-dry-run.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+function publicChannelName(value){
+  let text=String(value||'').trim();
+  if(/^(?:t\.me|telegram\.me|www\.t\.me)\//i.test(text)) text='https://'+text;
+  if(text.includes('://')){
+    let url; try{url=new URL(text);}catch{throw new Error('Enter a valid public Telegram channel link.');}
+    if(!['https:','http:'].includes(url.protocol)||!['t.me','www.t.me','telegram.me'].includes(url.hostname)||url.username||url.password||url.port||url.search||url.hash) throw new Error('Only a public Telegram channel root link is accepted.');
+    text=url.pathname.replace(/^\/+|\/+$/g,'');
+  }else{text=text.replace(/^@/,'');}
+  if(!/^[A-Za-z0-9_]{5,64}$/.test(text)) throw new Error('Use https://t.me/ChannelName or @username — not a private invite or message link.');
+  return text;
+}
+async function quickSave(){
+  if(quickSaving) return;
+  const out=document.getElementById('quickmsg');out.textContent='';
+  let name;
+  try{name=publicChannelName(document.getElementById('quicklink').value);}catch(e){out.textContent=e.message;return;}
+  const category=document.getElementById('quickcategory').value;
+  if(!categoryLabels[category]){out.textContent='Select one category first.';return;}
+  if(!configRevision){out.textContent='Connect/refresh the dashboard first.';return;}
+  quickSaving=true;document.getElementById('quicksave').disabled=true;
+  try{
+    const result=await api('POST','/api/channels',{name,sources:['*'],categories:[category],enabled:true,amazon_tag:false,note:''},configRevision);
+    out.textContent='Saved @'+result.channel.name+'. '+(result.activation?.message||'Waiting for bot activation checks.');
+    document.getElementById('quicklink').value='';await refresh();
+  }catch(e){out.textContent=e.message+' Your input is preserved.';}
+  finally{quickSaving=false;document.getElementById('quicksave').disabled=false;}
+}
 function selectedCategories(){ return [...document.querySelectorAll('#fcats input:checked')].map(i=>i.value); }
 function setupCategoriesChanged(){
   setupDraft=null;
@@ -332,7 +386,7 @@ function setupNext(){
   msg.textContent=''; setSetupStep(2);
 }
 function readSetup(){
-  const name=document.getElementById('fname').value.trim().replace(/^@/,'');
+  const name=publicChannelName(document.getElementById('fname').value);
   const categories=selectedCategories();
   const sources=document.getElementById('fall').checked ? ['*'] : [...document.querySelectorAll('#fsrcs input:checked')].map(i=>i.value);
   if(!categories.length) throw new Error('Select at least one category.');
@@ -355,7 +409,7 @@ function reviewSetup(){
       +'\nUnknown or mixed category: WITHHELD'
       +'\nAmazon tag: '+(payload.amazon_tag?'Opted in — declaration is your responsibility':'Off; strict affiliate checks still apply')
       +'\nPosting access: operator-confirmed, not automatically verified'
-      +'\nActivation: saved configuration only; approved restart required';
+      +'\nActivation: new channels apply on a running bot after access checks; existing edits need restart';
     msg.textContent=''; setSetupStep(3);
   }catch(e){ msg.textContent=e.message; setSetupStep(selectedCategories().length?2:1); }
 }
@@ -411,7 +465,7 @@ async function addChannel(){
   const button=document.getElementById('setupsave'); button.disabled=true; button.textContent='Saving…';
   try{
     const result=await api('POST','/api/channels',setupDraft.payload,setupDraft.revision);
-    msg.textContent='Saved @'+result.channel.name+'. No posts sent. An approved bot restart is required.'
+    msg.textContent='Saved @'+result.channel.name+'. Activation pending: check the channel status. Eligible new jobs may post after access checks.'
       +(result.warnings?.length?' '+result.warnings.join('; '):'');
     msg.className='ok'; setupDraft=null;
     document.getElementById('fname').value=''; document.getElementById('fnote').value='';
@@ -424,10 +478,11 @@ async function addChannel(){
 for(const id of ['ilink','ititle','iresolved']) document.getElementById(id).addEventListener('input',invalidateInspection);
 for(const id of ['fname','channelready','postingready','fall','ftag','fnote','fsrcs']) document.getElementById(id).addEventListener('input',()=>{setupDraft=null;});
 async function toggleCh(name, on){
+  if(!confirm('Change saved enabled state? Already-active channels keep their live policy until an approved restart.')) return;
   try { await api('PATCH','/api/channels/'+encodeURIComponent(name),{enabled:on}); refresh(); }
   catch(e){ alert(e.message); } }
 async function delCh(name){
-  if(!confirm('Remove @'+name+' from dashboard channels? (Built-in routing is untouched.)')) return;
+  if(!confirm('Remove @'+name+' from saved configuration? If already active, its LIVE route continues until an approved restart. Built-in routing is untouched.')) return;
   try { await api('DELETE','/api/channels/'+encodeURIComponent(name)); refresh(); }
   catch(e){ alert(e.message); } }
 async function doRestart(){
@@ -445,6 +500,7 @@ document.getElementById('channels').addEventListener('click', event=>{
   if(button.dataset.action==='delete') delCh(name);
 });
 if(TOKEN || DEMO_MODE) refresh();
+setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
 </script>
 </body>
 </html>

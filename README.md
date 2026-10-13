@@ -1396,7 +1396,8 @@ The redesigned **Channel Studio** opens with a three-step setup wizard:
    automated Telegram checks. Sources default to every main source; Amazon-tag
    opt-in defaults OFF. Optional settings are under Advanced.
 3. **Review & save:** verify name, categories, sources and tag policy before saving.
-   Saving config does not send posts, create a Telegram channel or restart the bot.
+   Saving config does not directly send a post, create a Telegram channel or restart the bot.
+   On the upgraded running bot, new channels can activate live after access checks.
    Duplicate clicks are blocked. Stale config returns a conflict and preserves the
    form for review. Restart now also requires an explicit confirmation in the UI.
 
@@ -1426,3 +1427,57 @@ The full offline gate includes inspector regressions; optional setup DOM tests:
 ```bash
 NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_dashboard_setup.cjs
 ```
+
+### Quick add + live activation (new destinations only)
+
+**Public channel link → select one category → Save & request activation.**
+The dashboard accepts `https://t.me/ChannelName`, `t.me/ChannelName`, or `@ChannelName`.
+They normalize to the same username, so aliases cannot create duplicate config.
+Private invite links, message links and non-Telegram links are rejected. Create the
+channel first and grant the Telethon session account **Post Messages** permission.
+Quick add defaults to every main source, one strict category, and Amazon-tag opt-in
+OFF. Declare new affiliate channels before opting their Amazon tag in via advanced
+settings; otherwise strict affiliate policy may withhold Amazon deals.
+
+A **one-time approved deployment/start of this upgraded bot** is needed to install
+live activation. After that, a running bot checks config about every five seconds:
+
+- Only NEW destinations are added live. Existing routing, queues and deliveries
+  are not restarted or replayed. Eligible jobs rendered after activation may use
+  the new destination; this is not historical backfill.
+- New channels must resolve as broadcast channels and report creator/posting-admin
+  rights. No test message is sent. Source/destination loops and duplicate channel
+  IDs are refused. Unknown/new intake sources are not subscribed live.
+- Resolution runs separately from posting workers with an 8-second per-channel
+  timeout, at most three attempts per pass and 30-second failure backoff. Telegram
+  FloodWait retry windows pause all new access checks for the requested period. A failing
+  new destination does not stop existing destinations.
+- The config revision is checked again after the Telegram lookup. A save/remove
+  during that lookup cannot accidentally activate obsolete configuration.
+- **Edits, disabling and deleting already-active destinations intentionally need
+  an approved restart. Until then the old live policy CONTINUES.** This protects
+  existing queues from silently changed routing. The UI warns before these actions.
+- Malformed/unreadable config preserves existing routes. Startup configuration
+  still uses the existing startup merge; live permission preflight applies to new
+  additions after startup. `active` means routing loaded, not a successful send or
+  a guarantee about Telegram availability, prices, stock or affiliate eligibility.
+
+The dashboard displays the watcher heartbeat and per-channel activation states:
+`active`, `checking_access`, `needs_attention`, `waiting_sources`, `disabled`, or
+`restart_required`. Status is only shown for the observed config revision and a
+fresh heartbeat (under 40 seconds). Missing/stale heartbeat means **not confirmed**,
+never "running". Saving does not start a stopped service. The preview demo has no
+Telegram connection and correctly shows activation as unconfirmed.
+
+`bestgaa/live_channels.py` is included in bot deploy bundles and checked by the
+installer. New targets still pass existing product-identity, category, owned-link,
+per-channel duplicate and delivery checks. Live product processing uses the existing
+resolver/conversion pipeline, including resolved URL context for classification.
+The dashboard inspector remains offline: it does not open merchant HTML, verify
+stock/prices, or invent names from opaque links. Link resolution alone is not proof
+of product identity or category accuracy.
+
+Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
+permission failures, preservation of existing routes, deferred edits/removals,
+malformed config, source/target aliases, backoff and configuration races. Production
+is not restarted or redeployed by development tests.

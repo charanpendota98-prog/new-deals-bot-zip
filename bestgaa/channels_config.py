@@ -32,6 +32,7 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 SCHEMA_VERSION = 1
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{5,64}$")
@@ -65,7 +66,22 @@ def empty_config() -> dict:
 
 
 def normalize_handle(name: str) -> str:
-    return str(name or "").strip().lstrip("@").strip()
+    value = str(name or "").strip()
+    if value.lower().startswith(("t.me/", "telegram.me/", "www.t.me/")):
+        value = "https://" + value
+    if "://" in value:
+        try:
+            url = urlsplit(value)
+            if (url.scheme.lower() not in {"http", "https"}
+                    or (url.hostname or "").lower() not in {"t.me", "www.t.me", "telegram.me"}
+                    or url.username or url.password or url.port or url.query or url.fragment):
+                return value
+            handle = url.path.strip("/")
+            # Only the public channel root is accepted, not invites or post links.
+            return handle if HANDLE_RE.fullmatch(handle) else value
+        except ValueError:
+            return value
+    return value.lstrip("@").strip()
 
 
 def category_keys(raw) -> list[str]:
@@ -163,7 +179,7 @@ def validate_channel(entry: dict, known_sources: set[str],
         return {}, ["channel must be a JSON object"], []
     name = normalize_handle((entry or {}).get("name", ""))
     if not HANDLE_RE.match(name):
-        errors.append("name must be a Telegram username: 5-64 letters/digits/_ (no @, no invite link)")
+        errors.append("use a public Telegram channel link (https://t.me/ChannelName) or @username; private invites and message links are not supported")
     known_lower = {str(s).lower() for s in (known_sources or set())}
     if name.lower() in {str(t).lower() for t in (existing_targets or set())}:
         errors.append(f"@{name} is already a channel - dashboard entries must be new names")
