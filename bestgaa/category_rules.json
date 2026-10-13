@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "min_score": 3,
   "min_margin": 2,
   "categories": [
@@ -63,7 +63,8 @@
         ["type c charger", 6], ["pendrive", 6], ["pen drive", 6], ["usb hub", 6],
         ["tws earbuds", 6], ["neckband", 6], ["in ear headphones", 6], ["over ear headphones", 6],
         ["laptops", 6], ["smartphones", 6], ["speakers", 6], ["bluetooth headphones", 6],
-        ["gaming mouse", 6], ["gaming keyboard", 6], ["fitness band", 6]
+        ["gaming mouse", 6], ["gaming keyboard", 6], ["fitness band", 6],
+        ["phone case", 7], ["mobile back cover", 7], ["iphone case", 7], ["smartphone case", 7], ["tablet case", 7], ["earbuds case", 7]
       ]
     },
     {
@@ -96,7 +97,8 @@
         ["cushion covers", 6], ["curtains", 6], ["shoe racks", 6], ["tv stand", 6],
         ["phone stand", 6], ["laptop stand", 6], ["washing machine cover", 6], ["laptop table", 6],
         ["ironing board", 6], ["storage boxes", 6], ["led bulb", 6], ["led bulbs", 6],
-        ["table lamp", 6]
+        ["table lamp", 6],
+        ["shoe storage box", 7], ["shoe storage boxes", 7], ["saree organizer", 7], ["saree storage bags", 7], ["clothes organizer", 7], ["shirt organizer", 7], ["garment steamer", 7], ["garment rack", 7], ["garment bag", 7], ["makeup organizer", 7], ["cosmetic organizer", 7], ["jewellery box", 7], ["jewelry box", 7], ["watch organizer", 7], ["tea storage container", 7], ["rice storage container", 7]
       ]
     },
     {
@@ -115,7 +117,8 @@
         ["lip balm", 6], ["shower gel", 6], ["hand wash", 6], ["body lotion", 6], ["toothpaste", 6],
         ["toothbrush", 6], ["electric toothbrush", 6], ["hair straightener", 6], ["face mask", 6],
         ["sheet mask", 6], ["hair mask", 6], ["lip gloss", 6], ["eyeliner", 6], ["nail paint", 6],
-        ["shaving razor", 6], ["shaving foam", 6]
+        ["shaving razor", 6], ["shaving foam", 6],
+        ["green tea face wash", 7], ["rice face wash", 7], ["rice water shampoo", 7], ["coffee face scrub", 7], ["sugar body scrub", 7], ["chocolate lip balm", 7], ["coconut oil hair mask", 7]
       ]
     },
     {
@@ -146,7 +149,8 @@
         ["backpacks", 5], ["suitcase", 5], ["suitcases", 5], ["trolley bag", 5], ["duffel bag", 5],
         ["sling bag", 5], ["tote bag", 5], ["wallets", 5], ["purses", 5], ["sunglasses", 5],
         ["earrings", 5], ["necklace", 5], ["bangle", 5], ["bangles", 5], ["bracelet", 5],
-        ["jewellery", 5], ["jewelry", 5], ["wrist watch", 5], ["analog watch", 5]
+        ["jewellery", 5], ["jewelry", 5], ["wrist watch", 5], ["analog watch", 5],
+        ["laptop backpack", 7], ["laptop bag", 7], ["laptop sleeve", 7], ["camera bag", 7], ["tablet sleeve", 7]
       ]
     }
   ]

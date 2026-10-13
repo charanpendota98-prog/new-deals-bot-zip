@@ -1369,6 +1369,8 @@ def test_status_report_answers_are_we_converting():
         conn.executescript("""
             CREATE TABLE link_cache (source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
                 resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+            CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY, destination_url TEXT,
+                proof_type TEXT, publisher_id TEXT, created_at REAL);
             CREATE TABLE hypd_links (token TEXT, store TEXT, afflink_url TEXT,
                 resolved_url TEXT, product_key TEXT, created_at REAL);
             CREATE TABLE hypd_wanted (product_url TEXT, product_key TEXT, times INTEGER,
@@ -1380,15 +1382,17 @@ def test_status_report_answers_are_we_converting():
         meesho = "https://www.meesho.com/product/p/mee123"
         shopsy = "https://www.shopsy.in/product/p/shop123"
         conn.executemany("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", [
-            ("m", "93944", "https://hypd.store/93944/afflink/meesho", meesho, "PID:mee123", now),
+            ("m", "93944", "https://hypd.store/93944/afflink/meesho", meesho, "PID:www.meesho.com:mee123", now),
             ("s", "93944", "https://hypd.store/93944/afflink/shopsy", shopsy, "PID:shop123", now),
         ])
         conn.executemany("INSERT INTO link_cache VALUES(?,?,?,?,?)", [
-            (meesho, "https://bit.ly/meesho", meesho, "PID:mee123", now),
+            (meesho, "https://bit.ly/meesho", meesho, "PID:www.meesho.com:mee123", now),
             (shopsy, "https://bit.ly/shopsy", shopsy, "PID:shop123", now),
         ])
+        conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
+            "https://bit.ly/meesho", "https://hypd.store/93944/afflink/meesho", "hypd", "93944", now))
         conn.executemany("INSERT INTO hypd_wanted VALUES(?,?,?,?,?)", [
-            (meesho, "PID:mee123", 1, now, now),
+            (meesho, "PID:www.meesho.com:mee123", 1, now, now),
             (shopsy, "PID:shop123", 1, now, now),
         ])
         # The post that actually went out: OUR short link (minted into link_cache
@@ -1474,7 +1478,7 @@ def test_status_report_answers_are_we_converting():
     check("and it says EarnKaro is working and which account is paid",
           any("WORKING" in l and "5478322" in l for l in lines), str(lines))
     check("it says our hypd links are working",
-          any(l.startswith("HYPD") and "WORKING" in l for l in lines), str(lines))
+          any(l.startswith("HYPD") and "READY / ACTIVITY" in l and "not delivery or payout proof" in l for l in lines), str(lines))
 
     clean_links = dict(healthy, links={"links": 9, "our-short": 6, "our-publisher": 3,
                                        "clean-merchant": 0, "foreign": 0})

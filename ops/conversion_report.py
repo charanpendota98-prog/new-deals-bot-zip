@@ -105,7 +105,7 @@ LOG_MARKERS = (
                               "our own Associates link"),
     ("PROVENANCE rejected", "a link we did not produce was refused"),
     ("UNMONETIZED LINK", "a deal posted with a clean merchant link (earns NOTHING)"),
-    ("HYPD LINK", "OUR hypd link published (Bitly) - earns on our store"),
+    ("HYPD LINK", "verified HYPD conversion event (not delivery or payout proof)"),
     ("HYPD MISSING", "a Meesho product with NO curated HYPD link (earns nothing)"),
     ("HYPD WANTED", "the product was added to the curation to-do list"),
     ("BITLY unavailable", "shortener outage: the raw link was kept (never unmonetized)"),
@@ -274,17 +274,25 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
         return bool(row)
 
+    qa = _quality_audit()
+    our_links = qa.our_minted_links(conn, our_tag, publisher) if qa is not None else set()
+    stores = {os.getenv("HYPD_STORE_ID", "93944").strip().lstrip("@").lower(),
+              os.getenv("HYPD_STORE_SLUG", "smartdeals").strip().lstrip("@").lower()} - {""}
+    def valid_hypd(row):
+        return bool(qa and qa.mapping_valid(row["afflink_url"], row["resolved_url"],
+                                          row["store"], row["product_key"], stores))
+
     verified_hypd_keys: set[str] = set()
     out_of_scope_hypd_keys: set[str] = set()
     if table_exists("hypd_links"):
         for hypd_row in conn.execute(
-                "SELECT resolved_url, product_key FROM hypd_links").fetchall():
+                "SELECT afflink_url, resolved_url, product_key, store FROM hypd_links").fetchall():
             key = str(hypd_row["product_key"] or "")
             if not key:
                 continue
-            if in_hosts(host_of(hypd_row["resolved_url"] or ""), ("meesho.com",)):
+            if valid_hypd(hypd_row):
                 verified_hypd_keys.add(key)
-            else:
+            elif not in_hosts(host_of(hypd_row["resolved_url"] or ""), ("meesho.com",)):
                 out_of_scope_hypd_keys.add(key)
 
     if table_exists("link_cache"):
@@ -303,10 +311,12 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
             elif route == "shortened":
                 if key in out_of_scope_hypd_keys and key not in verified_hypd_keys:
                     route = "hypd_out_of_scope"
-                elif key in verified_hypd_keys:
+                elif key in verified_hypd_keys and affiliate in our_links:
                     route = "hypd"
             if source_host == "hypd.store" and not in_hosts(resolved_host, ("meesho.com",)):
                 route = "hypd_out_of_scope"
+            if route == "hypd" and affiliate not in our_links:
+                route = "hypd_unverified"
             bucket = out["routes"].setdefault(route, {"count": 0, "examples": []})
             bucket["count"] += 1
             if route == "passthrough" and len(out["passthrough_examples"]) < 8:
@@ -320,9 +330,9 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
             {"afflink": row["afflink_url"], "product": row["resolved_url"] or "",
              "created": as_time(row["created_at"])}
             for row in conn.execute(
-                "SELECT afflink_url, resolved_url, created_at FROM hypd_links"
+                "SELECT afflink_url, resolved_url, product_key, store, created_at FROM hypd_links"
                 " ORDER BY created_at DESC").fetchall()
-            if in_hosts(host_of(row["resolved_url"] or ""), ("meesho.com",))][:10]
+            if valid_hypd(row)][:10]
     if table_exists("hypd_wanted"):
         out["hypd_wanted"] = [
             {"product": row["product_url"], "times": row["times"], "last": as_time(row["last_seen"])}
@@ -332,10 +342,8 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
             if in_hosts(host_of(row["product_url"] or ""), ("meesho.com",))][:10]
     # LINK PERFECTION: every link in every post of the window, classified with the
     # auditor's own rule (data-backed: link_cache + our tag/publisher id).
-    qa = _quality_audit()
     if qa is not None and table_exists("queue"):
         try:
-            our_links = qa.our_minted_links(conn, our_tag, publisher)
             for row in conn.execute(
                     "SELECT rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
                     (since,)).fetchall():
@@ -465,12 +473,17 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
     # --- HYPD / Meesho
     learned = db.get("hypd_learned", [])
     wanted = db.get("hypd_wanted", [])
-    hypd_posts = markers.get("HYPD LINK", {}).get("count", 0)
-    if learned or hypd_posts:
-        lines.append(f"HYPD     : WORKING - {len(learned)} verified Meesho link(s) learned, "
-                     f"{hypd_posts} post(s) on OUR link (store {cfg['hypd_store']}/{cfg['hypd_slug']})")
+    hypd_conversions = markers.get("HYPD LINK", {}).get("count", 0)
+    if learned or hypd_conversions:
+        lines.append(f"HYPD     : READY / ACTIVITY - {len(learned)} valid stored Meesho mapping(s), "
+                     f"{hypd_conversions} conversion event(s) (store {cfg['hypd_store']}/{cfg['hypd_slug']}); "
+                     "not delivery or payout proof")
     else:
         lines.append("HYPD     : IDLE - nothing learned yet; run ops/hypd_links.py with a verified Meesho link")
+    unverified = routes.get("hypd_unverified", {}).get("count", 0)
+    if unverified:
+        problems.append(f"{unverified} HYPD cache row(s) lack current ownership/product proof; reconversion required")
+        lines.append(f"           {unverified} unverified HYPD cache row(s) withheld")
     out_of_scope = routes.get("hypd_out_of_scope", {}).get("count", 0)
     if out_of_scope:
         problems.append(f"{out_of_scope} legacy HYPD cache row(s) point outside Meesho; "

@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Offline quality auditor for the deal pipeline (read-only, no network).
 
-The bot guarantees four things on every post: nothing of ours is added, the only
-links are OUR monetized links, no product is posted twice, and no eligible post
-is lost. This script proves it on the live database - run it any time (or from
-ops/diagnose.sh) and it reports every post that broke a guarantee, with queue ids,
-so a regression is visible the day it happens instead of in channel feedback.
+Checks saved posts for unwanted additions, missing affiliate ownership evidence,
+product repeats and apparent coverage gaps. Findings include queue IDs for
+investigation. This is a read-only database audit, not verification of live
+redirects, account access, delivery receipts or commission payouts.
 
     python3 ops/quality_audit.py                      # last 200 posts
     python3 ops/quality_audit.py --db <path> --limit 500 --json
@@ -24,6 +23,12 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+try:  # deployed beside the bot, or run directly from the repository's ops/
+    from hypd_policy import hypd_parts, mapping_valid, meesho_product_id
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from bestgaa.hypd_policy import hypd_parts, mapping_valid, meesho_product_id
 
 RUPEE = "\u20b9"
 OURS_MARKERS = (
@@ -696,13 +701,14 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
     except sqlite3.OperationalError:
         cache_rows = []
     proof_urls: set[str] = set()
+    hypd_proofs: dict[str, str] = {}
     try:
         proof_columns = {str(row[1]) for row in conn.execute(
             "PRAGMA table_info(owned_link_proofs)")}
         publisher_expr = "publisher_id" if "publisher_id" in proof_columns else "''"
         proof_rows = conn.execute(
             "SELECT affiliate_url,destination_url,proof_type,%s FROM owned_link_proofs "
-            "WHERE proof_type IN ('earnkaro_api','amazon_native')" % publisher_expr
+            "WHERE proof_type IN ('earnkaro_api','amazon_native','hypd')" % publisher_expr
         ).fetchall()
         for affiliate, destination, proof_type, publisher_id in proof_rows:
             affiliate = str(affiliate or "")
@@ -710,7 +716,11 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
             if not affiliate or _is_non_monetizable_url(affiliate) or \
                     _is_non_monetizable_url(destination):
                 continue
-            if proof_type == "amazon_native":
+            if proof_type == "hypd":
+                parts = hypd_parts(destination)
+                if parts and str(publisher_id or "") == parts[0]:
+                    hypd_proofs[affiliate] = destination
+            elif proof_type == "amazon_native":
                 if _has_native_owned_attribution(destination, our_tag, our_publisher):
                     proof_urls.add(affiliate)
             elif proof_type == "earnkaro_api":
@@ -724,29 +734,34 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
         pass
     try:
         hypd_rows = conn.execute(
-            "SELECT afflink_url,resolved_url,product_key FROM hypd_links").fetchall()
+            "SELECT afflink_url,resolved_url,product_key,store FROM hypd_links").fetchall()
     except sqlite3.OperationalError:
         hypd_rows = []
 
-    def is_meesho(url: str) -> bool:
-        host = link_host(url)
-        return host == "meesho.com" or host.endswith(".meesho.com")
-
-    verified_hypd_urls = {str(row[0]) for row in hypd_rows
-                          if row[0] and is_meesho(str(row[1] or ""))}
-    verified_hypd_keys = {str(row[2]) for row in hypd_rows
-                          if row[2] and is_meesho(str(row[1] or ""))}
-    owned: set[str] = set(proof_urls)
+    stores = {os.getenv("HYPD_STORE_ID", "93944").strip().lstrip("@").lower(),
+              os.getenv("HYPD_STORE_SLUG", "smartdeals").strip().lstrip("@").lower()} - {""}
+    verified = {str(row[0]): str(row[1]) for row in hypd_rows
+                if mapping_valid(row[0], row[1], row[3], row[2], stores)}
+    hypd_proofs = {short: share for short, share in hypd_proofs.items() if share in verified}
+    owned: set[str] = set(proof_urls) | set(verified) | set(hypd_proofs)
     for affiliate, resolved, deal_key in cache_rows:
         affiliate = str(affiliate or "")
         resolved = str(resolved or "")
         if not affiliate:
             continue
+        if any(link_host(url) in {"hypd.store", "www.hypd.store", "meesho.com", "www.meesho.com", "m.meesho.com"}
+               for url in (affiliate, resolved)) or affiliate in hypd_proofs:
+            share = affiliate if affiliate in verified else hypd_proofs.get(affiliate, "")
+            if share and (not resolved or hypd_parts(resolved) == hypd_parts(share)
+                          or bool(meesho_product_id(resolved) and
+                                  meesho_product_id(resolved) == meesho_product_id(verified[share]))):
+                owned.add(affiliate)
+            else:
+                owned.discard(affiliate)
+            continue
         if (_has_native_owned_attribution(affiliate, our_tag, our_publisher)
                 or _has_native_owned_attribution(resolved, our_tag, our_publisher)
-                or affiliate in proof_urls or resolved in proof_urls
-                or affiliate in verified_hypd_urls
-                or (deal_key and str(deal_key) in verified_hypd_keys)):
+                or affiliate in proof_urls or resolved in proof_urls):
             owned.add(affiliate)
     return owned
 

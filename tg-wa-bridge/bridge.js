@@ -398,13 +398,19 @@ function isHypdHost(host) {
 function hypdStoreOf(url) {
   try {
     const u = new URL(url)
-    if (!isHypdHost(u.hostname.toLowerCase())) return ''
-    const parts = u.pathname.split('/').filter(Boolean)
-    if (parts.length >= 2 && parts[1].toLowerCase() === 'afflink') return parts[0].toLowerCase()
-    return ''
-  } catch {
-    return ''
-  }
+    if (u.protocol !== 'https:' || !['hypd.store','www.hypd.store'].includes(u.hostname)
+      || u.username || u.password || u.port || u.search || u.hash) return ''
+    const parts = u.pathname.match(/^\/([A-Za-z0-9_-]{1,80})\/afflink\/([A-Za-z0-9_-]{1,256})\/?$/)
+    return parts ? parts[1].toLowerCase() : ''
+  } catch { return '' }
+}
+function meeshoProductId(value) {
+  try {
+    const u = new URL(value)
+    if (!['http:','https:'].includes(u.protocol) || !['meesho.com','www.meesho.com','m.meesho.com'].includes(u.hostname)
+      || u.username || u.password || u.port) return ''
+    return (u.pathname.match(/\/p\/([a-z0-9]{6,})\/?$/i)?.[1] || '').toLowerCase()
+  } catch { return '' }
 }
 function isOurHypdLink(url) {
   const store = hypdStoreOf(url)
@@ -546,22 +552,32 @@ async function resolveOwnedHypdDestination(url, fetchFn = fetch) {
     })
     if (Number(response.status) >= 400) return ''
     const final = cleanUrl(response.url || url)
-    if (isMeeshoUrl(final)) return final
+    if (isMeeshoUrl(final)) return meeshoProductId(final) ? final : ''
     const finalHost = hostOf(final)
     if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => finalHost === domain || finalHost.endsWith('.' + domain))) {
       return cleanHypdDestination(final)
     }
+    if (!isHypdHost(finalHost)) return '' // never inspect merchant HTML
     let body = ''
     try { body = (await response.text()).slice(0, 200_000) } catch { /* fail closed below */ }
     // HYPD client-side redirect pages may escape slashes inside a script URL.
     body = body.replace(/\\\//g, '/')
+    const candidates = new Map()
     for (const candidate of urlsIn(body)) {
-      if (isMeeshoUrl(candidate)) return candidate
+      if (isMeeshoUrl(candidate) && meeshoProductId(candidate)) candidates.set('meesho:'+meeshoProductId(candidate),candidate)
       const candidateHost = hostOf(candidate)
+      // A wrapper mentioning another supported merchant is ambiguous, even if
+      // one of its URLs is a valid Meesho product. Never just choose the first.
+      if (['amazon.in','amazon.com','flipkart.com','myntra.com','ajio.com','myntr.in',
+        'myntr.it','ajiio.co','fkrt.co','fkrt.cc','fktr.in','tatacliq.com','nykaa.com',
+        'croma.com','reliancedigital.in','jiomart.com','firstcry.com','snapdeal.com',
+        'decathlon.in','pepperfry.com','limeroad.com','paytmmall.com'].some(domain =>
+          candidateHost === domain || candidateHost.endsWith('.'+domain))) return ''
       if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => candidateHost === domain || candidateHost.endsWith('.' + domain))) {
-        return cleanHypdDestination(candidate)
+        candidates.set(cleanHypdDestination(candidate),cleanHypdDestination(candidate))
       }
     }
+    if (candidates.size === 1) return [...candidates.values()][0]
   } catch (error) {
     log.warn({ url: url.slice(0, 60), err: error.message }, 'HYPD destination could not be verified')
   }
@@ -3068,6 +3084,8 @@ async function verifyBestGaaProvenance(urls, job = null) {
   const script = String.raw`
 import json,sqlite3,sys
 from urllib.parse import urlparse,parse_qs
+sys.path.insert(0,sys.argv[5])
+from hypd_policy import hypd_parts,mapping_valid,meesho_product_id
 urls=json.load(sys.stdin)
 db=sqlite3.connect(sys.argv[1])
 publisher=sys.argv[2].strip()
@@ -3110,24 +3128,28 @@ for url in urls:
  except sqlite3.OperationalError: row=None
  affiliate,resolved,deal_key=row if row else (url,'','')
  if forbidden(affiliate) or forbidden(resolved): continue
- owned=native_owned(affiliate) or native_owned(resolved)
+ hypd_context=is_meesho(resolved) or host(affiliate) in ('hypd.store','www.hypd.store') or host(resolved) in ('hypd.store','www.hypd.store')
+ owned=(native_owned(affiliate) or native_owned(resolved)) and not hypd_context
+ proof=None
  if not owned:
   try: proof=db.execute('SELECT destination_url,proof_type,'+proof_publisher+' FROM owned_link_proofs WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1',(affiliate,resolved)).fetchone()
   except sqlite3.OperationalError: proof=None
   if proof:
    destination,kind,proof_account=proof
    if forbidden(destination): continue
-   if kind=='amazon_native': owned=amazon_owned(destination)
-   elif kind=='earnkaro_api': owned=bool(publisher and proof_account==publisher)
+   if kind=='amazon_native' and not hypd_context: owned=amazon_owned(destination)
+   elif kind=='earnkaro_api' and not hypd_context: owned=bool(publisher and proof_account==publisher)
    if owned and not resolved: resolved=destination
  if not owned and has_hypd:
   try:
-   if host(url)=='hypd.store':
-    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(url,)).fetchall()
-   elif row and deal_key and host(affiliate) in ('bit.ly','is.gd'):
-    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE product_key=?',(deal_key,)).fetchall()
-   else: candidates=[]
-   verified=[item for item in candidates if str(item[3] or '').lower() in stores and is_meesho(str(item[1] or ''))]
+   share=affiliate if hypd_parts(affiliate) else ''
+   if not share:
+    hp=db.execute("SELECT destination_url,publisher_id FROM owned_link_proofs WHERE affiliate_url=? AND proof_type='hypd'",(affiliate,)).fetchone()
+    if hp and hypd_parts(hp[0]) and hp[1]==hypd_parts(hp[0])[0]: share=hp[0]
+   candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(share,)).fetchall() if share else []
+   verified=[item for item in candidates if mapping_valid(item[0],item[1],item[3],item[2],stores)
+     and (not resolved or hypd_parts(resolved)==hypd_parts(share) or
+          bool(meesho_product_id(resolved) and meesho_product_id(resolved)==meesho_product_id(item[1])))]
    if verified:
     owned=True
     resolved=str(verified[0][1] or resolved)
@@ -3138,7 +3160,7 @@ print(json.dumps(found))
 
   const found = await new Promise((resolve, reject) => {
     const child = spawn('python3', ['-c', script, BESTGAA_DB_PATH, PUBLISHER_ID, AMAZON_TAG,
-      [...HYPD_STORES].join(',')], { stdio: ['pipe', 'pipe', 'pipe'] })
+      [...HYPD_STORES].join(','), BASE], { stdio: ['pipe', 'pipe', 'pipe'] })
     const output = [], errors = []
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('provenance DB timeout')) }, 12_000)
     child.stdout.on('data', chunk => output.push(chunk))
@@ -5430,6 +5452,12 @@ https://fktr.in/MANY${i}`,
     const wrongAccount = process.env.SELF_TEST_WRONG_ACCOUNT_URL || 'https://foreign.invalid/wrong-account'
     const amazonProof = process.env.SELF_TEST_AMAZON_PROOF_URL || 'https://foreign.invalid/amazon-proof'
     const staleAmazon = process.env.SELF_TEST_STALE_AMAZON_URL || 'https://foreign.invalid/stale-amazon'
+    const matrixBad = ['unproven','wrong-product','wrong-store','legacy-ek'].map(x=>'https://bit.ly/hypd-matrix-'+x)
+    matrixBad.push('https://hypd.store/88888/afflink/matrix-foreign','https://hypd.store/93944/afflink/matrix-bad-key')
+    const matrixMissing = await verifyBestGaaProvenance(['https://bit.ly/hypd-matrix-exact', ...matrixBad])
+    if (matrixMissing.length !== matrixBad.length || matrixBad.some(url => !matrixMissing.includes(url))) {
+      throw new Error('HYPD proof matrix failed: exact share proof plus consistent product identity and current store required')
+    }
     const missing = await verifyBestGaaProvenance([
       owned, cacheOnly, hypd, wrongAccount, amazonProof, staleAmazon,
       'https://foreign.invalid/not-ours',
@@ -5840,6 +5868,11 @@ https://fktr.in/MANY${i}`,
     throw new Error('another store hypd link is shortened by the normal length rule only')
   }
   {
+    for (const bad of ['https://hypd.store/93944/afflink','http://hypd.store/93944/afflink/token',
+      'https://evil.hypd.store/93944/afflink/token','https://user@hypd.store/93944/afflink/token',
+      'https://hypd.store/93944/afflink/token/extra','https://hypd.store/93944/afflink/token?url=evil']) {
+      if (isOurHypdLink(bad)) throw new Error('malformed HYPD link accepted: '+bad)
+    }
     const hypd = 'https://hypd.store/93944/afflink/verifiedMeeshoToken'
     const destination = 'https://www.meesho.com/women-kurta/p/MEESHO123?affid=infhypd'
     const fakeFetch = async url => ({
@@ -5850,6 +5883,19 @@ https://fktr.in/MANY${i}`,
     const job = { id: 'hypd-meesho', direct: true, text: `Kurta deal ₹499\n${hypd}` }
     await prepareDirectJob(job, fakeFetch)
     if (job.verifiedHypdLinks?.[hypd] !== destination) throw new Error('direct HYPD Meesho destination was not verified')
+    const homepage = await resolveOwnedHypdDestination(hypd, async () => ({url:'https://www.meesho.com/',status:200,text:async()=>''}))
+    if (homepage) throw new Error('Meesho homepage is not a product')
+    const mixed = await resolveOwnedHypdDestination(hypd, async () => ({url:hypd,status:200,
+      text:async()=>`<script>go("${destination}");go("https://www.meesho.com/earbuds/p/OTHER123")</script>`}))
+    if (mixed) throw new Error('ambiguous HYPD redirect page cannot select the first product')
+    const mixedMerchant = await resolveOwnedHypdDestination(hypd, async () => ({url:hypd,status:200,
+      text:async()=>`<script>go("${destination}");go("https://www.amazon.in/dp/B012345678")</script>`}))
+    if (mixedMerchant) throw new Error('HYPD wrapper containing multiple merchants must be withheld')
+    let merchantRead = false
+    await resolveOwnedHypdDestination(hypd, async () => ({url:'https://www.amazon.in/dp/B012345678',status:200,
+      text:async()=>{ merchantRead = true; return '' }}))
+    if (merchantRead) throw new Error('HYPD verifier must not inspect merchant HTML')
+
     if (displayUrl(job, hypd) !== hypd) throw new Error('verified Meesho HYPD share link must remain the displayed destination')
     if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('verified direct HYPD should not require a bot-cache row')
     if (!needsShortening(displayUrl(job, hypd))) throw new Error('verified Meesho HYPD should be shortened')

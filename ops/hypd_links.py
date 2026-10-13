@@ -107,8 +107,8 @@ async def resolve_live(url: str) -> tuple[str, str]:
         return (destination, bot.product_key(destination) if destination else "")
 
 
-async def remember(url: str, destination: str, key: str) -> None:
-    await bot.store.remember_hypd_link(url, destination, key)
+async def remember(url: str, destination: str, key: str) -> bool:
+    return await bot.store.remember_hypd_link(url, destination, key)
 
 
 async def main() -> int:
@@ -182,8 +182,7 @@ async def main() -> int:
             print("  -> another creator's store: NEVER used as ours (it would pay them)")
             failures += 1
             continue
-        destination_host = (bot.urlparse(bot.clean_url(destination)).hostname or "").lower() if destination else ""
-        if not destination or not bot.in_domains(destination_host, bot.HYPD_MERCHANT_DOMAINS):
+        if not bot.mapping_valid(url, destination, bot.hypd_store_of(url), key, bot.OUR_HYPD_STORES):
             print("  -> NOT STORED: our HYPD store is configured for Meesho only; "
                   "destination must be a verified Meesho product URL")
             failures += 1

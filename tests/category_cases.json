@@ -376,5 +376,208 @@
   {
     "text": "t&#45;shirt",
     "expected": "fashion"
+  },
+  {
+    "text": "shoe storage box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "shoe storage boxes",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "saree organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "saree storage bags",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "clothes organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "shirt organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment steamer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment rack",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment bag",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "makeup organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "cosmetic organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "jewellery box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "jewelry box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "watch organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "tea storage container",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "rice storage container",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "laptop backpack",
+    "expected": "accessories"
+  },
+  {
+    "text": "laptop bag",
+    "expected": "accessories"
+  },
+  {
+    "text": "laptop sleeve",
+    "expected": "accessories"
+  },
+  {
+    "text": "camera bag",
+    "expected": "accessories"
+  },
+  {
+    "text": "tablet sleeve",
+    "expected": "accessories"
+  },
+  {
+    "text": "green tea face wash",
+    "expected": "beauty"
+  },
+  {
+    "text": "rice face wash",
+    "expected": "beauty"
+  },
+  {
+    "text": "rice water shampoo",
+    "expected": "beauty"
+  },
+  {
+    "text": "coffee face scrub",
+    "expected": "beauty"
+  },
+  {
+    "text": "sugar body scrub",
+    "expected": "beauty"
+  },
+  {
+    "text": "chocolate lip balm",
+    "expected": "beauty"
+  },
+  {
+    "text": "coconut oil hair mask",
+    "expected": "beauty"
+  },
+  {
+    "text": "phone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "mobile back cover",
+    "expected": "electronics"
+  },
+  {
+    "text": "iphone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "smartphone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "tablet case",
+    "expected": "electronics"
+  },
+  {
+    "text": "earbuds case",
+    "expected": "electronics"
+  },
+  {
+    "text": "Saree and saree organizer",
+    "expected": null
+  },
+  {
+    "text": "Laptop plus laptop backpack",
+    "expected": null
+  },
+  {
+    "text": "Green tea and green tea face wash",
+    "expected": null
+  },
+  {
+    "text": "Running shoes",
+    "links": [
+      "https://www.meesho.com/shoe-storage-box/p/abc12345"
+    ],
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/p/shirts",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.amazon.in/dp/earbuds",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://www.hypd.store/93944/afflink/shoes",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://www.bit.ly/shoes",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/rice/cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/rice?q=cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/?title=rice&name=cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/cotton-kurti/p/abc12345",
+    "expected": "fashion"
+  },
+  {
+    "text": "Deal https://www.meesho.com/shoe-storage-box/p/shirts",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Deal https://shop.test/rice%2Fcooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/%70/shirts",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/cotton%2Dkurti/p/abc12345",
+    "expected": "fashion"
   }
 ]

@@ -42,10 +42,16 @@ def category_words_from_url(url: str) -> str:
         parsed = urlparse(html.unescape(str(url or "").strip()))
         if parsed.scheme.lower() not in {"http", "https"}:
             return ""
-        if (parsed.hostname or "").lower() in OPAQUE_HOSTS:
+        if any((parsed.hostname or "").lower() == host or
+               (parsed.hostname or "").lower().endswith("." + host) for host in OPAQUE_HOSTS):
             return ""
         words: list[str] = []
+        previous = ""
         for raw_segment in unquote(parsed.path or "").split("/"):
+            is_identifier = previous.lower() in {"p", "dp", "product", "item"}
+            previous = raw_segment
+            if is_identifier:
+                continue
             segment = raw_segment.replace("-", " ").replace("_", " ").strip()
             normalized = _normalize_category_phrase(segment)
             if not normalized or normalized in CATEGORY_URL_STOP_SEGMENTS:
@@ -60,7 +66,7 @@ def category_words_from_url(url: str) -> str:
         for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
             if key.lower() in CATEGORY_QUERY_KEYS:
                 words.extend(_normalize_category_phrase(value) for value in values if value)
-        return " ".join(word for word in words if word)
+        return "\n".join(word for word in words if word)
     except Exception:
         return ""
 
@@ -85,7 +91,9 @@ def classify_category(text, link_context=(), rules=None):
         if isinstance(value, str):
             urls.extend(URL_RE.findall(value))
     segments = [("text", line) for line in URL_RE.sub(" ", text).splitlines()]
-    segments += [("link", category_words_from_url(url)) for url in dict.fromkeys(urls)]
+    # Never invent a product phrase across path components or query fields.
+    segments += [("link", part) for url in dict.fromkeys(urls)
+                 for part in category_words_from_url(url).splitlines()]
     seen = set()
     for source, segment in segments:
         normalized = " " + _normalize_category_phrase(segment) + " "

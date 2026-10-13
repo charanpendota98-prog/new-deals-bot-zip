@@ -233,7 +233,7 @@ def test_http_api():
                           str(body)[:200])
 
                     check("installed taxonomy is available despite an older bot snapshot",
-                          body.get("category_rules_version") == 2
+                          body.get("category_rules_version") == 3
                           and body.get("categories", {}).get("accessories") == "Bags & Accessories"
                           and body.get("categories", {}).get("fashion") == "Clothing")
 

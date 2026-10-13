@@ -88,11 +88,30 @@ conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (
     "amazon_native", "", 1))
 conn.execute("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", (
     "self-test-token", "93944", "https://hypd.store/93944/afflink/self-test-token",
-    "https://www.meesho.com/product/p/SELFTEST", "meesho:selftest", 1))
+    "https://www.meesho.com/product/p/SELFTEST", "PID:www.meesho.com:selftest", 1))
+# HYPD proof matrix: a known product does NOT prove an arbitrary short URL.
+share = "https://hypd.store/93944/afflink/self-test-token"
+product = "https://www.meesho.com/product/p/SELFTEST"
+for name, destination, kind, proof_share, issuer in [
+    ("exact", product, "hypd", share, "93944"),
+    ("unproven", product, "", "", ""),
+    ("wrong-product", "https://www.meesho.com/product/p/WRONG123", "hypd", share, "93944"),
+    ("wrong-store", product, "hypd", share, "88888"),
+    ("legacy-ek", product, "earnkaro_api", "https://ekaro.in/legacy", "5478322"),
+]:
+    short = "https://bit.ly/hypd-matrix-" + name
+    conn.execute("INSERT INTO link_cache VALUES(?,?,?,?,?)", (short,short,destination,"PID:www.meesho.com:selftest",1))
+    if kind:
+        conn.execute("INSERT INTO owned_link_proofs VALUES(?,?,?,?,?)", (short,proof_share,kind,issuer,1))
+for name, owner, key in [("foreign", "88888", "PID:www.meesho.com:selftest"),
+                         ("bad-key", "93944", "PID:www.meesho.com:wrong123")]:
+    link = f"https://hypd.store/{owner}/afflink/matrix-{name}"
+    conn.execute("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", (f"{owner}:matrix-{name}",owner,link,product,key,1))
 conn.commit()
 conn.close()
 PY
 
+run 'shared HYPD identity policy parity' cmp bestgaa/hypd_policy.py tg-wa-bridge/hypd_policy.py
 run 'shared category taxonomy parity' cmp bestgaa/category_rules.json tg-wa-bridge/category_rules.json
 run 'strict category evidence and cross-language parity' "$PYTHON" test_category_classifier.py
 run 'render and routing' "$PYTHON" test_render_job.py
@@ -110,9 +129,9 @@ run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'
 run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
-  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

@@ -385,9 +385,11 @@ Behaviour (pinned by `test_hypd_links.py`):
 | An HYPD link has an unknown destination | Not learned or published as a Meesho link; the tool reports that it could not verify the merchant |
 | Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours; it would pay them |
 
-**Teaching the bot your HYPD links** (HYPD has no public link-creation API —
-links are minted in the HYPD creator app for a curated product, then the bot
-learns the product behind each one):
+**Teaching the bot your HYPD links.** This repository does **not** implement
+an automatic HYPD link-creation API. Create an original share in your HYPD
+creator app for the product, then teach the bot that exact link. Never substitute
+a store ID into somebody else's token. These are operator commands, not steps
+run automatically by this change; live learning requires approval:
 
 ```bash
 python3 ops/hypd_links.py                                   # what the bot knows
@@ -402,16 +404,54 @@ python3 ops/earnkaro_check.py --hypd-only
 
 Learning one link maps the **product** (`hypd_links` table: token → afflink,
 merchant page, product key), so every later post of that product — however the
-source spells the URL (with or without HYPD's tracking parameters) — earns on
-our link. Merchant pages are stored clean (tracking stripped) so a bare link
+source spells the URL (with or without HYPD's tracking parameters) — can use
+our link when the same-product redirect check succeeds. Actual payouts depend
+on the platform's attribution and eligibility rules. Merchant pages are stored clean (tracking stripped) so a bare link
 matches.
 
 Pinned HYPD scope: `HYPD_STORE_ID=93944`, `HYPD_STORE_SLUG=smartdeals`,
 `HYPD_ALWAYS_BITLY=true`, and `HYPD_MERCHANT_DOMAINS=meesho.com` (Meesho only;
-Shopsy is excluded). Reserved `HYPD_API_URL`/`HYPD_API_TOKEN` are unused until
-HYPD ships a link API. The bridge mirrors the store ids via `HYPD_STORES`
+Shopsy is excluded). Reserved `HYPD_API_URL`/`HYPD_API_TOKEN` are unused;
+no automatic share-token creation is implemented. The bridge mirrors the store ids via `HYPD_STORES`
 (`93944,smartdeals`); for direct-source posts it verifies Meesho destinations,
-uses a clean Shopsy fallback, and blocks foreign/unknown HYPD destinations.
+blocks foreign/unknown HYPD destinations, and does not publish clean Shopsy
+fallbacks in strict mode.
+
+
+### Category evidence and HYPD hardening (2026-10-14)
+
+- **Categories are evidence-based, not an AI confidence guarantee.** Shared
+  taxonomy v3 distinguishes product phrases such as `saree organizer` → Home,
+  `laptop backpack` → Bags, and `green tea face wash` → Beauty. Independent
+  conflicting items still withhold the category (e.g. `saree and saree organizer`).
+  Unknown/mixed evidence is not guessed into a category channel. Existing
+  identity, price/link-association, routing and duplicate gates still apply.
+- URL evidence excludes opaque shortener/share tokens and IDs after `/p/`,
+  `/dp/`, `/product/` and `/item/`. Separate path/query fields cannot manufacture
+  a product phrase (`/rice?q=cooker` is not evidence for “rice cooker”).
+  Classification does not fetch merchant HTML. Search-word evidence alone
+  does not satisfy the separate publishable-product identity gate.
+- **Meesho needs an identified product and our original HYPD share.** Shares
+  must have the exact HTTPS host/path shape, current configured store, and a
+  product-key-consistent stored mapping. Learned mappings, including cache
+  hits, get a fresh redirect check before bot conversion. Changed/unverifiable
+  destinations are withheld; stale mappings are invalidated. Missing products
+  remain in the curation queue, not an unrelated EarnKaro fallback.
+- A Bitly/is.gd URL needs **its own exact short → HYPD share proof**. Another
+  mapping for the same product does not establish ownership of an arbitrary
+  short URL. Telegram, WhatsApp DB provenance and the quality auditor reject
+  foreign, stale-account, inconsistent-product and unproven legacy records.
+  Old HYPD shorts without exact proofs are intentionally withheld until
+  reconverted through the verified route. No blind backfill is performed.
+- HYPD wrapper parsing rejects HTTP errors and multiple product destinations;
+  merchant HTML is not inspected. Store configuration is an operator assertion,
+  not independent verification of account access or actual commission payout.
+
+Offline validation: `PYTHON=/path/to/venv/bin/python bash ops/test_all.sh`;
+142 Python/JavaScript category parity cases, HYPD regression tests, bridge proof
+matrix, existing routing/dedup/one-hour/WhatsApp checks and syntax/lint gates.
+**No production deployment, restart, live posting or commission verification**
+is part of this change. Production must remain OFF until explicitly approved.
 
 Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
 

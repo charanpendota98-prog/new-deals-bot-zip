@@ -1546,33 +1546,20 @@ def in_domains(host: str, domains: Iterable[str]) -> bool:
     return any(host_matches(host, d) for d in domains)
 
 
-def hypd_store_of(url: str) -> str:
-    """The store segment of a HYPD share link ("" when the URL is not one).
+try:
+    from .hypd_policy import hypd_parts, meesho_product_id, meesho_key, mapping_valid
+except ImportError:
+    from hypd_policy import hypd_parts, meesho_product_id, meesho_key, mapping_valid
 
-    https://hypd.store/93944/afflink/<token> -> "93944"
-    """
-    try:
-        parsed = urlparse(clean_url(url))
-        if not in_domains((parsed.hostname or "").lower(), HYPD_DOMAINS):
-            return ""
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 2 and parts[1].lower() == "afflink":
-            return parts[0].lower()
-        return ""
-    except Exception:
-        return ""
+
+def hypd_store_of(url: str) -> str:
+    parts = hypd_parts(url)
+    return parts[0] if parts else ""
 
 
 def hypd_afflink_token(url: str) -> str:
-    """The (store, token) pair a HYPD share link identifies."""
-    try:
-        parsed = urlparse(clean_url(url))
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 3 and parts[1].lower() == "afflink":
-            return f"{parts[0].lower()}:{parts[2]}"
-    except Exception:
-        pass
-    return ""
+    parts = hypd_parts(url)
+    return f"{parts[0]}:{parts[1]}" if parts else ""
 
 
 def is_hypd_link(url: str) -> bool:
@@ -1592,6 +1579,11 @@ def hypd_product_keys(value: str) -> list[str]:
     if not url:
         return []
     keys: list[str] = []
+    pid = meesho_product_id(url)
+    key_match = re.fullmatch(r"PID:(?:www\.|m\.)?meesho\.com:([a-z0-9]{6,})", url, re.I)
+    pid = pid or (key_match[1].lower() if key_match else "")
+    if pid:
+        keys.extend(f"PID:{host}:{pid}" for host in ("www.meesho.com", "meesho.com", "m.meesho.com"))
     for candidate in (url, merchant_url(url), canonical_url(url)):
         candidate = clean_url(candidate)
         if candidate and candidate not in keys:
@@ -5530,7 +5522,10 @@ class Store:
         if (not token or not is_our_hypd_link(afflink_url)
                 or not in_domains(host, HYPD_MERCHANT_DOMAINS)):
             return False
-        # Store the clean Meesho page so a later bare Meesho product URL matches.
+        if not mapping_valid(afflink_url, resolved_url, hypd_store_of(afflink_url),
+                             product_key_value, OUR_HYPD_STORES):
+            return False
+        # Store only a single identified Meesho product, not a storefront/search.
         page = clean_url(merchant_url(resolved_url))
         async with self.lock:
             self.conn.execute(
@@ -5574,22 +5569,34 @@ class Store:
         async with self.lock:
             for key in wanted:
                 rows = self.conn.execute(
-                    "SELECT afflink_url, resolved_url FROM hypd_links WHERE product_key=? "
+                    "SELECT afflink_url, resolved_url, store, product_key FROM hypd_links WHERE product_key=? "
                     "OR resolved_url=? OR afflink_url=? ORDER BY created_at DESC",
                     (key, key, key)).fetchall()
                 for row in rows:
                     if not row["afflink_url"]:
                         continue
                     host = (urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower()
-                    if include_outside_meesho or in_domains(host, HYPD_MERCHANT_DOMAINS):
+                    if include_outside_meesho and not in_domains(host, HYPD_MERCHANT_DOMAINS):
+                        return row["afflink_url"]  # invalidation only; never delivery
+                    if mapping_valid(row["afflink_url"], row["resolved_url"], row["store"],
+                                     row["product_key"], OUR_HYPD_STORES):
                         return row["afflink_url"]
         return None
+
+    async def hypd_product_for(self, afflink: str) -> str:
+        """Previously verified product for an exact share, including curated-only rows."""
+        async with self.lock:
+            if not self._hypd_mapping_is_valid(afflink):
+                return ""
+            row = self.conn.execute("SELECT resolved_url FROM hypd_links WHERE token=?",
+                                    (hypd_afflink_token(afflink),)).fetchone()
+            return str(row["resolved_url"] or "") if row else ""
 
     async def remember_hypd_wanted(self, product_url: str, product_key_value: str) -> bool:
         """A Meesho product we have NO HYPD link for: commission leaking."""
         url = clean_url(product_url)
         host = (urlparse(url).hostname or "").lower()
-        if not url or not in_domains(host, HYPD_MERCHANT_DOMAINS):
+        if not url or not in_domains(host, HYPD_MERCHANT_DOMAINS) or not meesho_product_id(url):
             return False
         now = time.time()
         async with self.lock:
@@ -5638,11 +5645,11 @@ class Store:
     def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
         """Meesho-only (afflink_url, resolved_url) pairs — used by ops/hypd_links.py."""
         rows = self.conn.execute(
-            "SELECT afflink_url, resolved_url FROM hypd_links ORDER BY created_at DESC").fetchall()
+            "SELECT afflink_url, resolved_url, store, product_key FROM hypd_links ORDER BY created_at DESC").fetchall()
         out = []
         for row in rows:
-            host = (urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower()
-            if in_domains(host, HYPD_MERCHANT_DOMAINS):
+            if mapping_valid(row["afflink_url"], row["resolved_url"], row["store"],
+                             row["product_key"], OUR_HYPD_STORES):
                 out.append((row["afflink_url"], row["resolved_url"] or ""))
                 if len(out) >= max(1, int(limit)):
                     break
@@ -5720,10 +5727,13 @@ class Store:
         affiliate = clean_url(affiliate_url)
         destination = clean_url(destination_url)
         if (not affiliate or not destination
-                or proof_type not in {"earnkaro_api", "amazon_native"}):
+                or proof_type not in {"earnkaro_api", "amazon_native", "hypd"}):
             return
         async with self.lock:
-            publisher_id = OUR_EK_ID if proof_type == "earnkaro_api" else ""
+            if proof_type == "hypd" and not self._hypd_mapping_is_valid(destination):
+                return
+            publisher_id = (hypd_store_of(destination) if proof_type == "hypd"
+                            else OUR_EK_ID if proof_type == "earnkaro_api" else "")
             self.conn.execute(
                 "INSERT OR REPLACE INTO owned_link_proofs "
                 "(affiliate_url,destination_url,proof_type,publisher_id,created_at) "
@@ -5773,15 +5783,41 @@ class Store:
         except Exception:
             return False
 
+    def _hypd_mapping_is_valid(self, afflink: str, expected: str = "") -> bool:
+        token = hypd_afflink_token(afflink)
+        if not token or not is_our_hypd_link(afflink):
+            return False
+        row = self.conn.execute(
+            "SELECT afflink_url,resolved_url,store,product_key FROM hypd_links WHERE token=?", (token,)
+        ).fetchone()
+        if not row or hypd_afflink_token(row["afflink_url"]) != token or not mapping_valid(
+                row["afflink_url"], row["resolved_url"], row["store"], row["product_key"], OUR_HYPD_STORES):
+            return False
+        if not expected or hypd_afflink_token(expected) == token:
+            return True
+        return bool(meesho_product_id(expected) and
+                    meesho_product_id(expected) == meesho_product_id(row["resolved_url"]))
+
     def _strict_cache_pair_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
         """Reject legacy clean-link rows; accept only verified network/native links."""
         affiliate_url = clean_url(affiliate_url)
         resolved_url = clean_url(resolved_url)
+        hypd_context = any(in_domains((urlparse(url).hostname or "").lower(),
+                                     HYPD_DOMAINS | HYPD_MERCHANT_DOMAINS)
+                           for url in (affiliate_url, resolved_url))
+        if hypd_context:
+            if is_our_hypd_link(affiliate_url):
+                return self._hypd_mapping_is_valid(affiliate_url, resolved_url)
+            exact_proof = self.conn.execute(
+                "SELECT destination_url,publisher_id FROM owned_link_proofs "
+                "WHERE affiliate_url=? AND proof_type='hypd'", (affiliate_url,)).fetchone()
+            return bool(exact_proof
+                        and exact_proof["publisher_id"] == hypd_store_of(exact_proof["destination_url"])
+                        and self._hypd_mapping_is_valid(exact_proof["destination_url"], resolved_url))
         if self.has_native_owned_attribution(affiliate_url):
             return True
         if self.has_native_owned_attribution(resolved_url):
             return True
-        affiliate_host = (urlparse(affiliate_url).hostname or "").lower()
         proof = self.conn.execute(
             "SELECT destination_url,proof_type,publisher_id FROM owned_link_proofs "
             "WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1",
@@ -5799,37 +5835,15 @@ class Store:
             # legacy rows without an identity) fail closed.
             proof_publisher = str(proof["publisher_id"] or "") if proof else ""
             return bool(OUR_EK_ID and proof_publisher == OUR_EK_ID)
-        hypd_candidate = next((value for value in (affiliate_url, resolved_url)
-                               if is_our_hypd_link(value)), "")
-        if hypd_candidate:
-            token = hypd_afflink_token(hypd_candidate)
-            row = self.conn.execute(
-                "SELECT resolved_url FROM hypd_links WHERE token=? AND store=?",
-                (token, hypd_store_of(hypd_candidate)),
-            ).fetchone()
-            if row and in_domains((urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower(),
-                                  HYPD_MERCHANT_DOMAINS):
-                return True
-        if affiliate_host in OUR_RUNTIME_SHORTENER_DOMAINS:
-            # Bitly/is.gd are generic services: the recorded pair must show the
-            # destination we minted was itself an owned network/native link or
-            # a product page covered by a verified HYPD mapping.
-            hypd_page = clean_url(merchant_url(resolved_url))
-            hypd_key = product_key(hypd_page)
-            verified_hypd = self.conn.execute(
-                "SELECT resolved_url FROM hypd_links WHERE resolved_url=? OR product_key=? "
-                "ORDER BY created_at DESC LIMIT 1",
-                (hypd_page, hypd_key),
-            ).fetchone()
-            verified_hypd = bool(verified_hypd and in_domains(
-                (urlparse(clean_url(verified_hypd["resolved_url"] or "")).hostname or "").lower(),
-                HYPD_MERCHANT_DOMAINS))
-            return (self.has_native_owned_attribution(resolved_url)
-                    or verified_hypd
-                    or bool(hypd_candidate and self.conn.execute(
-                        "SELECT 1 FROM hypd_links WHERE afflink_url=? AND resolved_url=? LIMIT 1",
-                        (clean_url(hypd_candidate), clean_url(resolved_url)),
-                    ).fetchone()))
+        if proof_type == "hypd":
+            share = str(proof["destination_url"] or "")
+            return (str(proof["publisher_id"] or "") == hypd_store_of(share)
+                    and self._hypd_mapping_is_valid(share, resolved_url))
+        if is_our_hypd_link(affiliate_url):
+            return self._hypd_mapping_is_valid(affiliate_url, resolved_url)
+        # A generic shortener cache row or a mapping for a similar product is
+        # not proof that THIS short URL was minted from our HYPD share link.
+
         return False
 
     async def cached_link_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
@@ -6931,6 +6945,11 @@ class AffiliateClient:
                 clean_url(cached_url) != clean_url(source_url)
                 and cache_attribution_proven
             )
+            if cache_is_safe and meesho_product_id(cached_resolved) and cached_hypd_link:
+                # A cache hit is not a fresh redirect check. Revalidate the share
+                # against the cached identity, including source-share retargeting.
+                return await self._hypd_affiliate_link(cached_hypd_link, source_url, multi_link,
+                                                       destination_hint=cached_resolved)
             # Old releases cached Shopsy->HYPD results. Do not keep serving them
             # after the Meesho-only policy change; remove the stale product map and
             # re-run the normal route for that merchant instead.
@@ -7016,13 +7035,11 @@ class AffiliateClient:
         non_meesho_hypd_destination = ""
         if is_our_hypd_link(source_url) or is_our_hypd_link(resolved):
             hypd_link = source_url if is_our_hypd_link(source_url) else resolved
-            destination = (resolved if resolved != hypd_link
-                           and in_domains(host, KNOWN_MERCHANT_DOMAINS)
-                           else await self._hypd_destination(hypd_link))
+            destination = await self._hypd_destination(hypd_link)
             destination_host = (urlparse(clean_url(destination)).hostname or "").lower()
             if in_domains(destination_host, HYPD_MERCHANT_DOMAINS):
                 return await self._hypd_affiliate_link(
-                    hypd_link, source_url, multi_link, destination_hint=destination)
+                    hypd_link, source_url, multi_link, destination_hint=destination, destination_verified=True)
             if destination and in_domains(destination_host, KNOWN_MERCHANT_DOMAINS):
                 # Shopsy/other merchants must not inherit our HYPD route. Continue
                 # through their ordinary affiliate path, then keep a clean merchant
@@ -7061,6 +7078,7 @@ class AffiliateClient:
                     clean_url(resolved)[:90])
                 log.info("HYPD WANTED | added to the curation list (%s product(s) pending)",
                          len(store.recent_hypd_wanted(limit=1000)))
+            return None  # fail closed: never invent a HYPD token or publish bare/source Meesho
 
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
@@ -7174,51 +7192,60 @@ class AffiliateClient:
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                        "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
             ) as response:
+                if response.status >= 400:
+                    return ""
                 final = str(response.url)
                 if final and clean_url(final) != clean_url(afflink):
                     return clean_url(final)
                 raw = await response.content.read(200_000)
                 body = raw.decode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+            candidates = {}
+            body = body.replace("\\/", "/")
             for candidate in URL_RE.findall(body):
-                url = clean_url(candidate).replace("\\/", "/")
+                url = clean_url(candidate)
                 host = (urlparse(url).hostname or "").lower()
                 if not host or in_domains(host, HYPD_DOMAINS):
                     continue
                 if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, {"googletagmanager.com"}):
                     continue
                 if in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, HYPD_MERCHANT_DOMAINS):
-                    return url
+                    candidates.setdefault(canonical_url(url), url)
+            if len(candidates) == 1:
+                return next(iter(candidates.values()))
         except Exception as exc:
             log.warning("HYPD destination unresolved for %s: %s", afflink[:60], exc)
         return ""
 
     async def _hypd_affiliate_link(self, afflink: str, source_url: str, multi_link: bool,
-                                   destination_hint: str = "") -> "LinkResult | None":
-        """Publish OUR HYPD link only for a verified Meesho destination."""
-        destination = destination_hint or await self._hypd_destination(afflink)
-        destination_host = (urlparse(clean_url(destination)).hostname or "").lower()
-        if not destination or not in_domains(destination_host, HYPD_MERCHANT_DOMAINS):
-            log.warning("HYPD REJECT | link destination is not verified as Meesho; "
-                        "our HYPD link will not be published (%s)", destination_host or "unknown")
+                                   destination_hint: str = "", destination_verified: bool = False) -> "LinkResult | None":
+        """Only our exact share token, resolving to the SAME identified Meesho product."""
+        if not is_our_hypd_link(afflink):
             return None
-        key = product_key(destination)
-        if not key:
-            key = "HYPD:" + (hypd_afflink_token(afflink) or canonical_url(afflink))
+        known_product = await store.hypd_product_for(afflink)
+        destination = destination_hint if destination_verified else await self._hypd_destination(afflink)
+        pid = meesho_product_id(destination)
+        expected_urls = [value for value in (destination_hint, known_product) if value]
+        expected_ids = {meesho_product_id(value) for value in expected_urls}
+        if not pid or (expected_ids and expected_ids != {pid}):
+            await store.forget_hypd_link(afflink)
+            for expected_url in expected_urls:
+                if meesho_product_id(expected_url) and meesho_product_id(expected_url) != pid:
+                    await store.remember_hypd_wanted(expected_url, meesho_key(expected_url))
+            log.warning("HYPD REJECT | unverified destination or product mapping drift; link withheld")
+            return None
+        key = meesho_key(destination)
+        if not await store.remember_hypd_link(afflink, destination, key):
+            return None
         affiliate = afflink
         if HYPD_ALWAYS_BITLY or len(afflink) > SHORTEN_MIN_LEN:
-            shortened = await self.shorten(afflink)
-            if shortened:
-                affiliate = shortened
-            else:
-                # Never lose the user's own commission link to a shortener
-                # outage: the HYPD link itself is short and always works.
-                log.warning("BITLY unavailable; posting OUR HYPD link as it is")
-        await store.cache_link(source_url, affiliate, destination or afflink, key)
-        with contextlib.suppress(Exception):
-            await store.remember_hypd_link(afflink, destination, key)
-        log.info("HYPD LINK | %s -> %s%s", afflink[:70], affiliate[:70],
-                 f" | behind it: {destination[:60]}" if destination else " | destination unknown")
-        return LinkResult(source_url, destination or afflink, affiliate, key)
+            affiliate = await self.shorten(afflink) or afflink
+            if affiliate == afflink:
+                log.warning("BITLY unavailable; keeping verified OUR HYPD link")
+        await store.cache_link(source_url, affiliate, destination, key)
+        if affiliate != afflink:
+            await store.remember_owned_link_proof(affiliate, afflink, "hypd")
+        log.info("HYPD LINK | owned store=%s product=%s", hypd_store_of(afflink), key)
+        return LinkResult(source_url, destination, affiliate, key)
 
     async def _native_amazon_link(self, source_url: str, clean: str, resolved: str,
                                   multi_link: bool) -> "LinkResult | None":
@@ -7619,6 +7646,8 @@ class AffiliateClient:
                 # the real store; tests can override it.
                 with contextlib.suppress(Exception):
                     await self.cache_link(url, shortened, url, product_key(url))
+                    if is_our_hypd_link(url):
+                        await store.remember_owned_link_proof(shortened, url, "hypd")
         for raw, shortened in replacements.items():
             out = replace_url_everywhere(out, raw, shortened)
         if compacted or replacements:
