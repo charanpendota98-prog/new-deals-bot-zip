@@ -5,6 +5,10 @@ BESTGAA_DIR="$HOME_DIR/bestgaa-bot/bestgaa-bot"
 BRIDGE_DIR="$HOME_DIR/tg-wa-bridge"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 STAMP="$(date +%Y%m%d_%H%M%S)"
+# BESTGAA_KEEP_OFF=1: deploy BOTH services but never enable/start them (used by
+# ops/deploy_r15_keep_off.sh - posting stays off until ops/approve_posting.sh).
+KEEP_OFF="${BESTGAA_KEEP_OFF:-0}"
+[[ "$KEEP_OFF" == "1" ]] && export BESTGAA_KEEP_OFF=1
 
 echo "[1/7] Checking packages..."
 [[ -f "$HERE/bestgaa_final_bundle.zip" && -f "$HERE/tg_wa_bridge_bundle.zip" ]] || { echo "Missing inner bundles" >&2; exit 1; }
@@ -183,8 +187,15 @@ fi
 bash -n switch_whatsapp_number.sh
 sudo cp tg-wa-bridge.service /etc/systemd/system/tg-wa-bridge.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now tg-wa-bridge
-sleep 10
+if [[ "$KEEP_OFF" == "1" ]]; then
+  # keep-off: units installed, services stopped + DISABLED (reboot-safe OFF).
+  sudo systemctl disable tg-wa-bridge bestgaa >/dev/null 2>&1 || true
+  sudo systemctl stop tg-wa-bridge bestgaa 2>/dev/null || true
+  echo "       keep-off mode: both services STOPPED + DISABLED (posting OFF until approval)"
+else
+  sudo systemctl enable --now tg-wa-bridge
+  sleep 10
+fi
 
 echo "[5/7] Service status + live PIDs..."
 printf 'bestgaa: '; sudo systemctl is-active bestgaa
