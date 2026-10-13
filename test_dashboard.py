@@ -179,6 +179,7 @@ def test_http_api():
             os.environ["EARNKARO_PUBLISHER_ID"] = "5478322"
             (tdp / "routing_snapshot.json").write_text(json.dumps({
                 "started_at": now - 100, "sources": ["deals", "dealsvelocity"],
+                "main_sources": ["deals", "dealsvelocity"],
                 "targets": ["LootZoneIndia11", "PowerLoots1"], "dashboard_added": [],
                 "categories": {"electronics": "Electronics", "fashion": "Fashion"},
                 "channels_mtime": 0}), encoding="utf-8")
@@ -189,6 +190,7 @@ def test_http_api():
                 async with aiohttp.ClientSession(timeout=timeout) as sess:
                     async def call(method, path, token=True, **kw):
                         headers = {"X-Dashboard-Token": "test-token-123"} if token else {}
+                        headers.update(kw.pop("headers", {}))
                         async with sess.request(method, base + path, headers=headers, **kw) as resp:
                             try:
                                 body = await resp.json()
@@ -293,6 +295,38 @@ def test_http_api():
                           status == 200 and body["channel"]["categories"] == ["fashion"],
                           str(body)[:200])
 
+                    # Preview is authenticated and entirely side-effect-free.
+                    before = (tdp / "channels.json").read_bytes()
+                    before_pending = channels_config.pending_path().read_bytes()
+                    status, body = await call("POST", "/api/category-batch", token=False,
+                                              json={"items": [{"text": "Cotton kurti"}]})
+                    check("batch preview requires auth", status == 401)
+                    status, body = await call("POST", "/api/category-batch", json={"items": [
+                        {"text": "Cotton kurti", "source": "deals", "expected_category": "fashion"},
+                        {"text": "Shoes and shoe rack", "source": "deals", "expected_category": None}]})
+                    check("bulk API explains channel candidates and withheld posts",
+                          status == 200 and body["summary"]["matched"] == 1
+                          and body["summary"]["withheld"] == 1
+                          and body["results"][0]["channels"][0]["state"] == "candidate"
+                          and body["results"][1]["channels"][0]["state"] == "blocked")
+                    check("bulk preview changes neither config nor pending state",
+                          before == (tdp / "channels.json").read_bytes()
+                          and before_pending == channels_config.pending_path().read_bytes())
+                    for items in ([], [{}], [{"text": "x"}]*21, [{"text": "x"*12000}]*6):
+                        status, body = await call("POST", "/api/category-batch", json={"items": items})
+                        check("invalid batch is rejected", status == 400)
+                    status, body = await call("GET", "/api/channels")
+                    revision = body["revision"]
+                    status, body = await call("PATCH", "/api/channels/ElectroShelf",
+                                              headers={"If-Match": revision}, json={"categories": ["home_kitchen"]})
+                    check("current form revision can update the shelf", status == 200)
+                    status, body = await call("PATCH", "/api/channels/ElectroShelf",
+                                              headers={"If-Match": revision}, json={"categories": []})
+                    check("stale editor cannot silently clear newer restrictions", status == 409)
+                    status, body = await call("GET", "/api/channels")
+                    check("conflict retains the newer home filter",
+                          body["dashboard"][0]["categories"] == ["home_kitchen"])
+
                     status, body = await call("GET", "/api/recent?limit=5")
                     jobs = body.get("jobs", [])
                     check("recent shows jobs with send counts",
@@ -383,6 +417,11 @@ if __name__ == "__main__":
     test_bot_merge()
     test_package_import_merge()
     test_category_shelf()
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "dashboard.js"
+        script.write_text(dash.UI_HTML.split("<script>")[1].split("</script>")[0])
+        proc = subprocess.run(["node", "--check", str(script)], capture_output=True, text=True)
+        check("served dashboard JavaScript has valid syntax", proc.returncode == 0, proc.stderr)
     print("\n" + ("DASHBOARD TESTS: FAILURES: " + ", ".join(FAILS) if FAILS
                   else "test_dashboard: all checks PASS"))
     sys.exit(1 if FAILS else 0)

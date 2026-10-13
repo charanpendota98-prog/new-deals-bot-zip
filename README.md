@@ -1327,3 +1327,56 @@ Run `PYTHON=/path/to/python bash ops/test_all.sh` for the complete offline gate,
 including shared Python/JS classification fixtures, real render routing and
 authenticated dashboard preview/config tests. Production must remain stopped
 until deployment/restart is explicitly approved.
+
+### Category test lab and safer editing
+
+The dashboard now supports **bulk dry-runs** (up to 20 deals and 60,000 combined
+text/link characters). Paste complete posts separated by a line containing `---`,
+and choose their exact source. Or select JSON mode to supply per-deal sources,
+resolved URLs and expected categories:
+
+```json
+[
+  {"text": "Cotton kurti ₹499", "source": "deals", "expected_category": "fashion"},
+  {"text": "Shoes and shoe rack", "source": "deals", "expected_category": null}
+]
+```
+
+Results show category evidence, withheld reasons, optional expectation mismatches,
+and **saved dashboard channel** checks. Filter withheld/mismatching cases or
+download the report as JSON. Caption text is rendered as text, never executable
+HTML. Tests do not fetch links, enqueue jobs, send posts or write configuration.
+
+- **Candidate:** the saved category and source filters match. This is NOT approval
+  to send: identity, attribution, duplicate, service-promotion, source-access and
+  final delivery gates still apply. Built-in/WhatsApp destinations are not simulated.
+- **Blocked:** disabled channel, category mismatch/withheld, or source excluded.
+- **Undetermined:** source missing, or an older bot snapshot cannot confirm the
+  wildcard main-source list. `*` excludes Tricks sources, just like the live merge.
+- Reports include installed rules version, config revision and pending-restart
+  status. Saved config can differ from the running bot. No classifier output is
+  claimed to be a calibrated probability or guaranteed accuracy.
+
+**Edit shelf** opens a checkbox editor. Strict mode requires a category;
+unrestricted mode requires confirmation. The editor captures the config revision
+and sends `If-Match`: an intervening save returns HTTP 409 instead of overwriting
+newer filters. Close the editor, refresh and reopen to review the new state.
+This guards clients using one dashboard process, not arbitrary external file writers.
+Older API clients that omit `If-Match` remain compatible.
+
+API: authenticated `POST /api/category-batch` accepts `{"items": [...]}`.
+`POST /api/category-preview` also accepts `source` and returns channel checks.
+Neither endpoint stores submitted captions. Downloaded reports may contain your
+submitted deal text/URLs; keep them private as appropriate.
+
+The full offline gate now includes batch/source parity and HTTP concurrency tests,
+plus a syntax check of the actual served JavaScript. Optional DOM workflow test:
+
+```bash
+npm install --prefix /tmp/category-ui-test --no-package-lock jsdom
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_dashboard_ui.cjs
+```
+
+Run the dashboard from the repository (`python -m dashboard.app`); bot/bridge deploy
+bundles do not package the dashboard UI or its Python helpers. No production restart
+or deployment is performed by these tests.

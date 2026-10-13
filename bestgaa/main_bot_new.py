@@ -1233,6 +1233,7 @@ try:
         _snapshot_path.write_text(json.dumps({
             "started_at": time.time(),
             "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
+            "main_sources": sorted(str(s) for s in SOURCE_TO_TARGETS if s not in TRICKS_SOURCES),
             "targets": sorted(str(t) for t in _snapshot_targets),
             "dashboard_added": list(_dashboard_summary.get("added", [])),
             "category_rules_version": CATEGORY_RULES.get("version", 0),

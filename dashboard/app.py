@@ -25,6 +25,7 @@ Read-only on the bot database always; the only writes are channels.json, its
 .pending sidecar, and the optional restart command.
 """
 import argparse
+import hashlib
 import hmac
 import importlib.util
 import json
@@ -39,9 +40,11 @@ from pathlib import Path
 from aiohttp import web
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
-from category_classifier import classify_category, load_rules  # noqa: E402
+from category_classifier import load_rules  # noqa: E402
+from dashboard.preview import preview_batch  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -196,23 +199,50 @@ async def api_status(request: web.Request):
     })
 
 
-@require_token
-async def api_category_preview(request: web.Request):
-    """Diagnostic only: no sends, URL fetches, DB writes or bot startup."""
+def config_revision() -> str:
+    try:
+        data = channels_config.channels_json_path().read_bytes()
+    except FileNotFoundError:
+        data = b""
+    return hashlib.sha256(data).hexdigest()
+
+
+def stale_config(request):
+    expected = request.headers.get("If-Match")
+    if expected and expected != config_revision():
+        return web.json_response({"errors": ["Channels changed since you opened this form. Refresh and review before saving."],
+                                  "revision": config_revision()}, status=409)
+    return None
+
+
+async def category_preview_response(request, batch=False):
     try:
         body = await request.json()
     except (ValueError, TypeError):
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
-    if (not isinstance(body, dict) or not isinstance(body.get("text"), str)
-            or not body["text"].strip() or len(body["text"]) > 12000):
-        return web.json_response({"errors": ["text must contain 1–12000 characters"]}, status=400)
-    links = body.get("links", [])
-    if (not isinstance(links, list) or len(links) > 20
-            or any(not isinstance(link, str) or len(link) > 2000 for link in links)):
-        return web.json_response({"errors": ["links must be at most 20 URL strings (2000 characters each)"]}, status=400)
-    decision = classify_category(body["text"], links)
-    decision["notice"] = "Category check only — identity, affiliate, source, dedup and delivery checks still apply."
-    return web.json_response(decision)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    try:
+        result = preview_batch(body.get("items") if batch else [body],
+                               channels_config.load_channels(), snapshot())
+    except ValueError as exc:
+        return web.json_response({"errors": [str(exc)]}, status=400)
+    result["config_revision"] = config_revision()
+    result["pending_restart"] = pending_restart()
+    if not batch:
+        result = {**result["results"][0], "notice": result["notice"],
+                  "config_revision": result["config_revision"], "pending_restart": result["pending_restart"]}
+    return web.json_response(result)
+
+
+@require_token
+async def api_category_preview(request: web.Request):
+    return await category_preview_response(request)
+
+
+@require_token
+async def api_category_batch(request: web.Request):
+    return await category_preview_response(request, batch=True)
 
 
 def category_catalog() -> dict:
@@ -230,6 +260,7 @@ async def api_channels(request: web.Request):
     return web.json_response({
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
+        "revision": config_revision(),
         "sources": snap.get("sources", []),
         "categories": category_catalog(),
         "category_rules_version": load_rules().get("version", 0),
@@ -252,6 +283,9 @@ async def api_add_channel(request: web.Request):
         set(category_catalog()))
     if errors:
         return web.json_response({"errors": errors, "warnings": warnings}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
     data = channels_config.load_channels()
     if any(c["name"].lower() == cleaned["name"].lower() for c in data["channels"]):
         return web.json_response({"errors": [f"@{cleaned['name']} is already a dashboard channel"]},
@@ -271,6 +305,9 @@ async def api_edit_channel(request: web.Request):
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
     if not isinstance(patch, dict):
         return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
     data = channels_config.load_channels()
     entry = next((c for c in data["channels"] if c["name"].lower() == name), None)
     if entry is None:
@@ -409,6 +446,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/channels", api_channels)
     app.router.add_post("/api/category-preview", api_category_preview)
+    app.router.add_post("/api/category-batch", api_category_batch)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
@@ -443,6 +481,8 @@ input,select,textarea{width:100%;box-sizing:border-box;margin:4px 0}
 label{font-size:13px;color:#cbd5e1}
 .srcs{columns:2;font-size:13px}.srcs label{display:block}
 #tokenbar{display:flex;gap:8px;margin:8px 0}pre{white-space:pre-wrap;font-size:12px;color:#fca5a5}
+dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:12px;max-width:560px;width:85%}
+dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
 .ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}
 </style>
 </head>
@@ -479,11 +519,32 @@ No selection = ALL categories (not a themed channel). Multiple selections = eith
 </div>
 <div class="card"><h2>Test a category before posting</h2>
 <p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
+<label for="psource">Source (for channel dry-run)</label><input id="psource" list="knownsources" placeholder="Select or type the exact source name">
+<datalist id="knownsources"></datalist>
 <label>Deal text</label><textarea id="ctext" rows="4" maxlength="12000" style="width:100%;box-sizing:border-box" placeholder="Cotton kurti ₹499"></textarea>
 <label>Resolved product URLs (one per line, optional)</label><textarea id="clinks" rows="2" style="width:100%;box-sizing:border-box"></textarea>
 <button onclick="previewCategory()">Check category</button>
 <pre id="cresult" style="white-space:pre-wrap" aria-live="polite"></pre>
 </div>
+<div class="card"><h2>Category test lab — bulk dry-run</h2>
+<p class="muted">Up to 20 deals, separated by a line containing --- . Read-only: no sends, no URL fetches.
+Channel candidates use saved dashboard settings, not proof that the running bot has applied them.</p>
+<label for="bsource">Source for plain-text deals</label><input id="bsource" list="knownsources" placeholder="Exact source name">
+<label for="bformat">Input format</label><select id="bformat"><option value="text">Deal blocks separated by ---</option><option value="json">JSON array (optional expected_category per item)</option></select>
+<label for="btext">Deals</label><textarea id="btext" rows="8" maxlength="60000" placeholder="Cotton kurti ₹499&#10;---&#10;Wireless earbuds ₹999&#10;---&#10;Shoes and shoe rack"></textarea>
+<div class="row"><button id="brun" onclick="runBatch()">Run dry-run</button><button class="ghost" onclick="loadBatchExamples()">Load example test set</button><button class="ghost" id="bexport" disabled onclick="exportBatch()">Download report JSON</button></div>
+<p id="bsummary" aria-live="polite"></p><p id="bnotice" class="muted"></p>
+<label for="bfilter">Show results</label><select id="bfilter" onchange="renderBatch()"><option value="all">All results</option><option value="withheld">Withheld categories</option><option value="mismatch">Expectation mismatches</option></select>
+<div class="tablewrap"><table><thead><tr><th>Deal</th><th>Category / reason</th><th>Expectation</th><th>Dashboard channel checks</th></tr></thead><tbody id="batchresults"></tbody></table></div>
+</div>
+<dialog id="shelfeditor" aria-labelledby="editheading">
+<h2 id="editheading">Edit category shelf</h2><p id="edittarget"></p>
+<label for="editmode">Delivery category policy</label><select id="editmode" onchange="toggleEditMode()"><option value="strict">Strict selected categories</option><option value="all">Unrestricted — ALL categories</option></select>
+<div id="editcats" class="srcs"></div>
+<p class="muted">Strict mode requires at least one category. Mixed/unclear posts are withheld. Saving does not restart the bot.</p>
+<p id="editerror" role="alert"></p>
+<button id="editsave" onclick="saveShelf()">Save shelf</button><button class="ghost" onclick="document.getElementById('shelfeditor').close()">Cancel</button>
+</dialog>
 <div class="card"><h2>Recent jobs</h2>
 <table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Error</th></tr></thead>
 <tbody id="recent"></tbody></table></div>
@@ -493,13 +554,19 @@ No selection = ALL categories (not a themed channel). Multiple selections = eith
 const DEMO_MODE = false;
 let categoryLabels = {};
 let channelRows = [];
+let configRevision = null;
+let editingShelf = null;
+let batchReport = null;
+let batchGeneration = 0;
 let TOKEN = sessionStorage.getItem('dash_token') || '';
+function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
   sessionStorage.setItem('dash_token', TOKEN); document.getElementById('token').value='';
   document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); }
-async function api(method, path, body){
-  const r = await fetch(path, {method, headers:headers(), body: body ? JSON.stringify(body) : undefined});
+async function api(method, path, body, revision){
+  const h = headers(); if(revision) h['If-Match'] = revision;
+  const r = await fetch(path, {method, headers:h, body: body ? JSON.stringify(body) : undefined});
   const j = await r.json().catch(()=>({}));
   if(r.status === 401){ document.getElementById('authstate').textContent = 'bad token - paste it above'; }
   if(!r.ok) throw new Error((j.errors||[j.error||r.status]).join('; '));
@@ -526,31 +593,34 @@ async function refresh(){
     document.getElementById('categoryversion').textContent = 'Installed category rules v'+(c.category_rules_version||'?')
       +' · bot reported v'+(c.bot_category_rules_version||'unknown')+' · saved changes require an approved restart';
     channelRows = c.dashboard || [];
+    configRevision = c.revision;
+    const sourceOptions = document.getElementById('knownsources'); sourceOptions.replaceChildren();
+    for(const source of c.sources||[]){ const option = document.createElement('option'); option.value=source; sourceOptions.append(option); }
     let rows = '';
-    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${t}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
-    (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${t.name}</td><td><span class="badge new">dashboard</span></td>`
-      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':t.sources.slice(0,3).join(', ')+(t.sources.length>3?'…':'')}</td>`
-      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${categoryLabels[k] || k}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
+    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
+    (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
+      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
+      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
-      + `<td><button class="ghost" onclick="toggleCh('${t.name}',${!t.enabled})">${t.enabled?'ON':'OFF'}</button></td>`
-      + `<td><button class="ghost" onclick="editShelf('${t.name}')">edit shelf</button> <button class="danger" onclick="delCh('${t.name}')">remove</button></td></tr>`; });
+      + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
+      + `<td><button class="ghost" data-action="edit" data-name="${escapeHTML(t.name)}">edit shelf</button> <button class="danger" data-action="delete" data-name="${escapeHTML(t.name)}">remove</button></td></tr>`; });
     document.getElementById('channels').innerHTML = rows || '<tr><td colspan="7" class="muted">no channels yet</td></tr>';
     const box = document.getElementById('fsrcs');
     if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
-      box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${s}" style="width:auto"> ${s}</label>`).join(''); }
+      box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${escapeHTML(s)}" style="width:auto"> ${escapeHTML(s)}</label>`).join(''); }
     const catbox = document.getElementById('fcats');
     if(!catbox.dataset.filled && c.categories && Object.keys(c.categories).length){ catbox.dataset.filled = '1';
-      catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label><input type="checkbox" value="${k}" style="width:auto"> ${v}</label>`).join(''); }
+      catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label><input type="checkbox" value="${escapeHTML(k)}" style="width:auto"> ${escapeHTML(v)}</label>`).join(''); }
     const r = await api('GET','/api/recent?limit=15');
     document.getElementById('recent').innerHTML = (r.jobs||[]).map(j=>
-      `<tr><td>${j.id}</td><td>${j.source}</td><td>${j.status}</td><td>${j.sends}</td><td>${j.skips}</td><td class="muted">${j.error||''}</td></tr>`).join('')
+      `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
       || '<tr><td colspan="6" class="muted">queue is empty</td></tr>';
     const a = await api('GET','/api/audit?limit=200');
     const d = a.delivery_summary||{}, l = a.link_summary||{};
     document.getElementById('audit').innerHTML =
       `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · ` +
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
-      `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>k+'='+v).join(', ')||'none'}`;
+      `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
 }
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
@@ -560,23 +630,102 @@ async function previewCategory(){
   const out = document.getElementById('cresult'); out.textContent = 'checking…';
   try {
     const j = await api('POST','/api/category-preview',{
-      text:document.getElementById('ctext').value,
+      text:document.getElementById('ctext').value, source:document.getElementById('psource').value.trim(),
       links:document.getElementById('clinks').value.split(/\\n/).map(s=>s.trim()).filter(Boolean)});
     out.textContent = (j.category ? 'MATCH: '+(categoryLabels[j.category]||j.category) : 'WITHHELD from category shelves')
       +'\\nReason: '+j.reason+'\\nRules version: '+j.rules_version
       +'\\nEvidence: '+(j.evidence.map(e=>e.phrase+' → '+e.category+' ('+e.source+')').join(', ')||'none')
+      +'\\nChannel checks: '+j.channels.map(c=>'@'+c.channel+': '+c.state+' ('+c.reason+')').join('; ')
       +'\\n'+j.notice;
   } catch(e){ out.textContent = e.message; }
 }
-async function editShelf(name){
-  const channel = channelRows.find(c=>c.name===name);
-  const choices = Object.entries(categoryLabels).map(([k,v])=>k+' = '+v).join('\\n');
-  const value = prompt('Shelf keys, comma separated. Blank = ALL categories.\\n'+choices, (channel.categories||[]).join(', '));
-  if(value===null) return;
-  const categories = value.split(',').map(s=>s.trim()).filter(Boolean);
-  if(!categories.length && !confirm('Remove the category filter? This channel will accept every category.')) return;
-  try { await api('PATCH','/api/channels/'+encodeURIComponent(name),{categories}); refresh(); }
-  catch(e){ alert(e.message); }
+function editShelf(name){
+  const channel = channelRows.find(c=>c.name===name); if(!channel) return;
+  editingShelf = {name, revision:configRevision};
+  document.getElementById('edittarget').textContent = '@'+name;
+  document.getElementById('editerror').textContent = '';
+  document.getElementById('editmode').value = (channel.categories||[]).length ? 'strict' : 'all';
+  const box = document.getElementById('editcats'); box.replaceChildren();
+  const keys = [...new Set([...Object.keys(categoryLabels),...(channel.categories||[])])];
+  for(const key of keys){
+    const label=document.createElement('label'), input=document.createElement('input');
+    input.type='checkbox'; input.value=key; input.style.width='auto'; input.checked=(channel.categories||[]).includes(key);
+    label.append(input,document.createTextNode(' '+(categoryLabels[key]||key+' (unavailable)'))); box.append(label);
+  }
+  toggleEditMode(); const dialog=document.getElementById('shelfeditor'); if(!dialog.open) dialog.showModal();
+}
+function toggleEditMode(){
+  const all=document.getElementById('editmode').value==='all';
+  for(const input of document.querySelectorAll('#editcats input')) input.disabled=all;
+}
+async function saveShelf(){
+  if(!editingShelf) return;
+  const error=document.getElementById('editerror'); error.textContent='';
+  const all=document.getElementById('editmode').value==='all';
+  const categories=all?[]:[...document.querySelectorAll('#editcats input:checked')].map(i=>i.value);
+  if(!all && !categories.length){ error.textContent='Select at least one category for a strict shelf.'; return; }
+  if(all && !confirm('This channel will accept ALL categories. Remove the shelf restriction?')) return;
+  const button=document.getElementById('editsave'); button.disabled=true;
+  try { await api('PATCH','/api/channels/'+encodeURIComponent(editingShelf.name),{categories},editingShelf.revision);
+    document.getElementById('shelfeditor').close(); editingShelf=null; await refresh(); }
+  catch(e){ error.textContent=e.message; }
+  finally { button.disabled=false; }
+}
+function invalidateBatch(){
+  batchGeneration++; document.getElementById('brun').disabled=false;
+  batchReport=null; document.getElementById('bexport').disabled=true;
+  document.getElementById('batchresults').replaceChildren();
+  document.getElementById('bsummary').textContent='Input changed — run a new dry-run.';
+  document.getElementById('bnotice').textContent='';
+}
+function loadBatchExamples(){
+  if(document.getElementById('btext').value.trim() && !confirm('Replace the current input with example deals?')) return;
+  const source=document.getElementById('bsource').value.trim() || document.querySelector('#knownsources option')?.value || '';
+  const examples=[['Cotton kurti ₹499','fashion'],['Wireless earbuds ₹999','electronics'],['Rice cooker ₹1299','home_kitchen'],['Shoes and shoe rack',null],['Mystery deal ₹199',null]];
+  document.getElementById('bformat').value='json';
+  document.getElementById('btext').value=JSON.stringify(examples.map(([text,expected_category])=>({text,source,expected_category})),null,2);
+  invalidateBatch();
+}
+async function runBatch(){
+  const generation=++batchGeneration;
+  const button=document.getElementById('brun'), summary=document.getElementById('bsummary');
+  button.disabled=true; batchReport=null; document.getElementById('bexport').disabled=true;
+  document.getElementById('batchresults').replaceChildren(); document.getElementById('bnotice').textContent='';
+  summary.textContent='Checking…';
+  try {
+    const raw=document.getElementById('btext').value;
+    const items=document.getElementById('bformat').value==='json' ? JSON.parse(raw)
+      : raw.split(/\\r?\\n[ \\t]*---+[ \\t]*\\r?\\n/).map(text=>text.trim()).filter(Boolean)
+        .map(text=>({text,source:document.getElementById('bsource').value.trim()}));
+    const report=await api('POST','/api/category-batch',{items});
+    if(generation!==batchGeneration) return; batchReport=report;
+    const s=report.summary;
+    summary.textContent=`${s.total} tested · ${s.matched} category matches · ${s.withheld} withheld · ${s.expectation_mismatches}/${s.evaluated} expectation mismatches`;
+    document.getElementById('bnotice').textContent=report.notice+(report.pending_restart?' Saved changes are waiting for restart.':'');
+    document.getElementById('bexport').disabled=false; renderBatch();
+  } catch(e){ if(generation===batchGeneration) summary.textContent='Error: '+e.message; }
+  finally { if(generation===batchGeneration) button.disabled=false; }
+}
+function renderBatch(){
+  const body=document.getElementById('batchresults'); body.replaceChildren(); if(!batchReport) return;
+  const filter=document.getElementById('bfilter').value;
+  for(const row of batchReport.results){
+    if(filter==='withheld' && row.category) continue;
+    if(filter==='mismatch' && row.expectation_match!==false) continue;
+    const tr=document.createElement('tr');
+    const values=[row.text,
+      (row.category ? categoryLabels[row.category]||row.category : 'WITHHELD')+'\\n'+row.reason,
+      'expectation_match' in row ? (row.expected_category||'withheld')+' — '+(row.expectation_match?'PASS':'MISMATCH') : 'Not specified',
+      row.channels.map(c=>'@'+c.channel+': '+c.state+' — '+c.reason).join('\\n')||'No saved dashboard channels'];
+    for(const value of values){ const td=document.createElement('td'); td.textContent=value; td.style.whiteSpace='pre-wrap'; tr.append(td); }
+    body.append(tr);
+  }
+}
+function exportBatch(){
+  if(!batchReport) return;
+  const blob=new Blob([JSON.stringify(batchReport,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download='category-dry-run.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 async function addChannel(){
   const msg = document.getElementById('addmsg'); msg.textContent = ''; msg.className = '';
@@ -606,6 +755,14 @@ async function doRestart(){
   try { const j = await api('POST','/api/restart'); out.textContent = j.output||'restart requested';
     setTimeout(refresh, 8000); }
   catch(e){ out.textContent = e.message; } }
+for(const id of ['btext','bsource','bformat']) document.getElementById(id).addEventListener('input',invalidateBatch);
+document.getElementById('channels').addEventListener('click', event=>{
+  const button=event.target.closest('button[data-action]'); if(!button) return;
+  const name=button.dataset.name;
+  if(button.dataset.action==='edit') editShelf(name);
+  if(button.dataset.action==='toggle') toggleCh(name,button.dataset.enabled==='true');
+  if(button.dataset.action==='delete') delCh(name);
+});
 if(TOKEN || DEMO_MODE) refresh();
 </script>
 </body>
