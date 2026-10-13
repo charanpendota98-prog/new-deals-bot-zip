@@ -133,7 +133,7 @@ Channel candidates use saved dashboard settings, not proof that the running bot 
 <button id="editsave" onclick="saveShelf()">Save shelf</button><button class="ghost" onclick="document.getElementById('shelfeditor').close()">Cancel</button>
 </dialog>
 <div class="card"><h2>Recent jobs</h2>
-<table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Error</th></tr></thead>
+<table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Held</th><th>Error</th></tr></thead>
 <tbody id="recent"></tbody></table></div>
 <div class="card"><h2>Audit (live DB)</h2><div id="audit" class="muted">loading…</div></div>
 </main>
@@ -226,12 +226,12 @@ async function refresh(){
       catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label class="category-tile"><input type="checkbox" value="${escapeHTML(k)}" onchange="setupCategoriesChanged()"><span class="tile-code">${escapeHTML(categoryDetails[k]?.[0]||'CT')}</span><strong>${escapeHTML(v)}</strong><small>${escapeHTML(categoryDetails[k]?.[1]||'Only matching category posts')}</small></label>`).join(''); }
     const r = await api('GET','/api/recent?limit=15');
     document.getElementById('recent').innerHTML = (r.jobs||[]).map(j=>
-      `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
-      || '<tr><td colspan="6" class="muted">queue is empty</td></tr>';
+      `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td>${escapeHTML(j.held||0)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
+      || '<tr><td colspan="7" class="muted">queue is empty</td></tr>';
     const a = await api('GET','/api/audit?limit=200');
     const d = a.delivery_summary||{}, l = a.link_summary||{};
     document.getElementById('audit').innerHTML =
-      `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · ` +
+      `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · held for review: <b>${d.held||0}</b> · ` +
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }

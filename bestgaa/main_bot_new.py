@@ -341,9 +341,7 @@ SAME_PRODUCT_PRICE_DROP_FRACTION = 0.05
 # offer. Past the cool-down (but inside SAME_PRODUCT_SKIP_SECONDS) a genuinely
 # better copy still posts; past the window anything posts.
 SAME_PRODUCT_COOLDOWN_SECONDS = 3600
-# Cap on exact link-identity keys per post (below): a noisy post cannot spray
-# the ledger, and the headline key always stays first.
-SAME_PRODUCT_MAX_LINK_KEYS = 7
+# Every product in a roundup participates in dedup; never truncate tail IDs.
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
 # and nothing we invent. Our own "join the loot family" footer and the folder
 # link are therefore OFF by default; set ADD_OUR_CHANNEL_FOOTER=true to put them
@@ -4827,6 +4825,16 @@ class Store:
           queue_id INTEGER NOT NULL,
           claimed_at REAL NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS target_product_claims (
+          target TEXT NOT NULL, signature TEXT NOT NULL, queue_id INTEGER NOT NULL,
+          created_at REAL NOT NULL, PRIMARY KEY(target, signature)
+        );
+        CREATE INDEX IF NOT EXISTS target_claim_owner ON target_product_claims(queue_id,target);
+        CREATE TABLE IF NOT EXISTS send_attempts (
+          queue_id INTEGER NOT NULL, target TEXT NOT NULL, chunk_index INTEGER NOT NULL,
+          payload_hash TEXT NOT NULL, state TEXT NOT NULL, updated_at REAL NOT NULL,
+          PRIMARY KEY(queue_id,target,chunk_index)
+        );
         CREATE TABLE IF NOT EXISTS price_posts (
           price INTEGER PRIMARY KEY,
           posted_at REAL NOT NULL,
@@ -5103,6 +5111,105 @@ class Store:
                                     (key, msg_id)).fetchone()
         return int(row[0]) if row else None
 
+    @staticmethod
+    def identity_aliases(keys) -> list[str]:
+        """Match legacy www/mobile merchant keys without changing product IDs.
+
+        Only established merchant hosts are aliases; unrelated shops/subdomains
+        and different product/variant IDs must never collapse.
+        """
+        result = set(keys)
+        for key in keys:
+            match = re.fullmatch(
+                r"(PID|PROD|IT|SKU):(?:www\.|m\.)?"
+                r"(meesho\.com|flipkart\.com|croma\.com):(.+)", key)
+            if match:
+                kind, host, product = match.groups()
+                result.update(f"{kind}:{prefix}{host}:{product}"
+                              for prefix in ("", "www.", "m."))
+        return sorted(result)
+
+    async def claim_target_products(self, queue_id: int, target: str, keys: list[str],
+                                    resuming: bool = False) -> bool:
+        """Durable last-mile exclusion, atomic across workers/connections.
+
+        No time-based expiry: an interrupted send may already be visible. Its
+        product stays fenced until the original job settles or is reviewed.
+        Recheck the absolute hour here to close check -> send/settle races.
+        """
+        keys = self.identity_aliases(keys)
+        async with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                for key in keys:
+                    owner = self.conn.execute(
+                        "SELECT queue_id FROM target_product_claims WHERE target=? AND signature=?",
+                        (target, key)).fetchone()
+                    if owner and owner[0] != queue_id:
+                        self.conn.rollback()
+                        return False
+                    recent = self.conn.execute(
+                        "SELECT 1 FROM posted_products WHERE target=? AND signature=? AND posted_at>?",
+                        (target, key, time.time() - SAME_PRODUCT_COOLDOWN_SECONDS)).fetchone()
+                    if recent and not resuming:
+                        self.conn.rollback()
+                        return False
+                for key in keys:
+                    self.conn.execute("INSERT OR IGNORE INTO target_product_claims VALUES(?,?,?,?)",
+                                      (target, key, queue_id, time.time()))
+                await self._commit(patient=True)
+                return True
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    async def release_target_products(self, queue_id: int, target: str) -> None:
+        async with self.lock:
+            self.conn.execute("DELETE FROM target_product_claims WHERE queue_id=? AND target=?",
+                              (queue_id, target))
+            await self._commit(patient=True)
+
+    async def send_attempt(self, queue_id: int, target: str, index: int,
+                           payload_hash: str, state: str) -> bool:
+        """Write-before-send fence. A crash/timeout is never permission to retry.
+
+        A confirmed rejection is retryable. A confirmed success advances the
+        chunk checkpoint in the SAME transaction. Started/uncertain attempts
+        need operator review; even a second process cannot send them again.
+        """
+        async with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                old = self.conn.execute(
+                    "SELECT payload_hash,state FROM send_attempts WHERE queue_id=? AND target=? AND chunk_index=?",
+                    (queue_id, target, index)).fetchone()
+                if state == "plan" and old and old[0] != payload_hash:
+                    raise AmbiguousDelivery("delivery layout changed after preparation; manual review required")
+                if state == "started" and old:
+                    if old[0] != payload_hash or old[1] in {"started", "uncertain"}:
+                        raise AmbiguousDelivery("unsettled or changed send attempt; manual review required")
+                    if old[1] == "sent":
+                        self.conn.rollback()
+                        return False
+                self.conn.execute("INSERT OR REPLACE INTO send_attempts VALUES(?,?,?,?,?,?)",
+                                  (queue_id, target, index, payload_hash, state, time.time()))
+                if state == "sent":
+                    self.conn.execute(
+                        "UPDATE deliveries SET chunks_sent=MAX(chunks_sent,?) WHERE queue_id=? AND target=?",
+                        (index + 1, queue_id, target))
+                await self._commit(patient=True)
+                return True
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    async def delivery_held(self, queue_id: int, target: str, reason: str) -> None:
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE deliveries SET status='held',last_error=?,attempts=attempts+1 WHERE queue_id=? AND target=?",
+                ("manual review: " + reason[:460], queue_id, target))
+            await self._commit(patient=True)
+
     async def product_already_posted(self, target: str, signatures: str | list[str] | tuple[str, ...],
                                      price: int | None, discount: int | None) -> tuple[bool, str]:
         """Has THIS channel already carried this product inside the skip window?
@@ -5118,7 +5225,7 @@ class Store:
         same or higher price) is the same deal wearing different numbers.
         """
         keys = [signatures] if isinstance(signatures, str) else list(signatures or [])
-        keys = [key for key in dict.fromkeys(keys) if key]
+        keys = self.identity_aliases([key for key in dict.fromkeys(keys) if key])
         if not keys or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return False, ""
         async with self.lock:
@@ -5167,7 +5274,7 @@ class Store:
 
     async def mark_product_posted(self, target: str, signature: str,
                                   price: int | None, discount: int | None,
-                                  extra_signatures: Iterable[str] = ()) -> None:
+                                  extra_signatures: Iterable[str] = (), queue_id: int | None = None) -> None:
         """Remember a posted product under its headline key plus exact link keys.
 
         extra_signatures carries the exact link identities behind the post's
@@ -5177,7 +5284,7 @@ class Store:
         the same figures, so the better-copy comparison never depends on which
         key happened to match.
         """
-        keys = [signature] + [key for key in dict.fromkeys(extra_signatures or ()) if key]
+        keys = self.identity_aliases([signature] + [key for key in dict.fromkeys(extra_signatures or ()) if key])
         if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return
         async with self.lock:
@@ -5191,6 +5298,9 @@ class Store:
                 "DELETE FROM posted_products WHERE posted_at<?",
                 (now - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
             )
+            if queue_id is not None:
+                self.conn.execute("DELETE FROM target_product_claims WHERE queue_id=? AND target=?",
+                                  (queue_id, target))
             await self._commit(patient=True)
 
     async def text_identity_keys(self, text: str) -> list[str]:
@@ -5212,7 +5322,7 @@ class Store:
             "wa.me", "telegram.me",
         }
         async with self.lock:
-            for url in urls[:12]:
+            for url in urls:
                 host = (urlparse(url).hostname or "").lower()
                 if not host or in_domains(host, skip_hosts):
                     continue
@@ -5229,8 +5339,6 @@ class Store:
                     if key and key not in seen:
                         seen.add(key)
                         keys.append(key)
-                        if len(keys) >= SAME_PRODUCT_MAX_LINK_KEYS:
-                            return keys
         return keys
 
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
@@ -6151,11 +6259,11 @@ class Store:
 
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
-            # Terminal states are never retried: 'sent' (posted) and 'skipped'
-            # (withheld by policy). Anything else ('pending', legacy 'failed')
+            # Terminal states: sent (posted), skipped (policy), held (uncertain;
+            # manual review). Anything else ('pending', legacy 'failed')
             # is still actionable.
             rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped')",
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped','held')",
                 (queue_id,),
             ).fetchall()
             return [r[0] for r in rows]
@@ -6288,7 +6396,7 @@ class Store:
                 return False, max(now + 60, float(state["next_at"] or 0))
             top = self.conn.execute(
                 """SELECT q.id FROM queue q JOIN deliveries d ON d.queue_id=q.id
-                   WHERE d.target=? AND d.status NOT IN ('sent','skipped') AND q.premium_score IS NOT NULL
+                   WHERE d.target=? AND d.status NOT IN ('sent','skipped','held') AND q.premium_score IS NOT NULL
                      AND q.status IN ('pending','processing')
                    ORDER BY q.premium_score DESC,q.created_at ASC LIMIT 1""",
                 (PREMIUM_TARGET,),
@@ -6348,7 +6456,7 @@ class Store:
                     )
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
             remaining_rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped')",
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped','held')",
                 (queue_id,),
             ).fetchall()
             remaining_targets = [r[0] for r in remaining_rows]
@@ -8083,9 +8191,9 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
 
     Telethon 1.44 has no `send_media_group` helper, so the raw `SendMultiMediaRequest`
     is used. When the source photo references are still usable nothing is uploaded at
-    all; otherwise each file is uploaded first. False means "this client or Telegram
-    would not do the grid", and the caller then sends plain files - a photo layout is
-    never worth a missing deal.
+    all; otherwise each file is uploaded first. False means preparation failed
+    BEFORE publication, so individual-file fallback is safe. A publication error
+    propagates: it may hide an accepted album and must never trigger fallback.
     """
     try:
         from telethon import functions, types as tl_types
@@ -8102,16 +8210,18 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
                 if photo is None:
                     return False
                 medias.append(tl_types.InputMediaPhoto(id=photo))
-        await client(functions.messages.SendMultiMediaRequest(
-            entity,
-            multi_media=[tl_types.InputSingleMedia(
-                media=media, message=caption if index == 0 else "", random_id=_random_id())
-                for index, media in enumerate(medias)],
-        ))
-        return True
-    except Exception as exc:  # noqa: BLE001 - the caller falls back to single files
-        log.warning("ALBUM | grouped send not possible (%s); sending the photos as usual", exc)
+    except Exception as exc:  # preparation only: no publication RPC was issued
+        log.warning("ALBUM | preparation failed (%s); using individual photos", exc)
         return False
+    # Never fall back after this call: a lost response can hide a successful
+    # album publication. deliver() holds ambiguous outcomes for review.
+    await client(functions.messages.SendMultiMediaRequest(
+        entity,
+        multi_media=[tl_types.InputSingleMedia(
+            media=media, message=caption if index == 0 else "", random_id=_random_id())
+            for index, media in enumerate(medias)],
+    ))
+    return True
 
 
 async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
@@ -8176,20 +8286,34 @@ def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
     return [("message", part) for part in chunks(text, 4096)]
 
 
+class AmbiguousDelivery(Exception):
+    """The remote send may have succeeded: never automatically send it again."""
+
+
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
-                  media_refs: list | None = None) -> tuple[bool, str]:
+                  media_refs: list | None = None, attempt_callback=None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
     parts = outbound_parts(sanitize_outbound_text(text), media_path)
+    if attempt_callback:
+        # Media disappearing or changed target formatting must not shift chunk
+        # boundaries on resume. Freeze the complete layout before publication.
+        plan_hash = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
+        await attempt_callback(-1, plan_hash, "plan")
     if start_chunk > len(parts):
         return False, "invalid chunk checkpoint"
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
         sent = False
         last_error = "unknown send failure"
+        payload_hash = hashlib.sha256((kind + "\n" + content).encode()).hexdigest()
         for attempt in range(POST_RETRIES):
+            if attempt_callback:
+                if not await attempt_callback(index, payload_hash, "started"):
+                    sent = True  # a durable success from an earlier worker/pass
+                    break
             try:
                 if kind == "file":
                     await send_media_item(client, entity, media_path, content, media_refs)
@@ -8198,6 +8322,8 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                         entity, content, parse_mode=None, link_preview=link_preview
                     )
             except FloodWaitError as exc:
+                if attempt_callback:
+                    await attempt_callback(index, payload_hash, "rejected")
                 # A Telegram rate-limit. Never let a very long flood (hours /
                 # an account soft-ban) freeze a worker for that long — cap the
                 # in-loop wait, log it loudly, and let the job fall through as
@@ -8211,12 +8337,19 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                 await asyncio.sleep(wait + 2)
                 continue
             except (ChannelPrivateError, ChatAdminRequiredError) as exc:
+                if attempt_callback:
+                    await attempt_callback(index, payload_hash, "rejected")
                 return False, str(exc)
             except Exception as exc:
-                last_error = str(exc)
-                if attempt + 1 < POST_RETRIES:
-                    await asyncio.sleep(2 ** attempt)
-                continue
+                if attempt_callback:
+                    with contextlib.suppress(Exception):
+                        await attempt_callback(index, payload_hash, "uncertain")
+                raise AmbiguousDelivery(f"send outcome unknown ({type(exc).__name__}); no automatic retry") from exc
+            if attempt_callback:
+                try:
+                    await attempt_callback(index, payload_hash, "sent")
+                except Exception as exc:
+                    raise AmbiguousDelivery("send accepted but durable receipt failed; no automatic retry") from exc
             sent = True
             break
         if not sent:
@@ -8230,11 +8363,8 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
         # A failed checkpoint is now logged loudly and the post continues; the
         # ledger write itself already retries inside Store. Re-sending an
         # already-sent chunk is never the answer to a bookkeeping failure.
-        # (Residual risk, stated honestly: Telegram offers no send idempotency,
-        # so a transport error raised AFTER Telegram accepted the message still
-        # retries above and can duplicate that chunk. Nothing in this function
-        # can distinguish that case; the ledger-driven triple-send above is
-        # what this fix eliminates.)
+        # Production also writes a durable send intent before the network call;
+        # an ambiguous result or failed receipt write is held, never retried.
         if progress_callback:
             try:
                 await progress_callback(index + 1)
@@ -8997,13 +9127,13 @@ async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
     try:
         if premium:
             await store.complete_premium(queue_id, True)
+        if identity_keys:
+            await store.mark_product_posted(target, identity_keys[0], price, discount,
+                                            identity_keys[1:], queue_id=queue_id)
         await store.delivery(queue_id, target, True, "")
         if target == SHOPPING_TARGET:
             with contextlib.suppress(Exception):
                 await store.note_shopping_sent()
-        if identity_keys:
-            await store.mark_product_posted(target, identity_keys[0], price, discount,
-                                            identity_keys[1:])
     except Exception as exc:
         log.critical(
             "SETTLE STILL FAILING | queue=%s target=%s (%s): the post is already out - "
@@ -9019,6 +9149,10 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
     media_path: list[str] = []
     media_refs: list = []
     successes = 0
+    new_sends = 0
+    settlement_retries = 0
+    held_targets = 0
+    confirmed_chunks = 0
     price = None
     try:
         # A channel we publish to is never a source. The user added the new
@@ -9188,6 +9322,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 await settle_unrecorded_target(row["id"], target, unrecorded.get("premium"),
                                                identity_keys, price, target_discount)
                 successes += 1
+                settlement_retries += 1
                 continue
             premium_claimed = False
             if target == PREMIUM_TARGET:
@@ -9226,8 +9361,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # v17.8 one product, one channel, one post: the exact merchant id can
             # differ between two sources that link the same product through
             # different shorteners, so the product's own words settle it here.
+            start_chunk = await store.delivery_progress(row["id"], target)
             target_skip_reason = ""
-            if row["source"] not in TRICKS_SOURCES and identity_keys:
+            if not start_chunk and row["source"] not in TRICKS_SOURCES and identity_keys:
                 duplicate, why = await store.product_already_posted(
                     target, identity_keys, price, target_discount)
                 if duplicate:
@@ -9239,8 +9375,6 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                          row["id"], target, target_skip_reason)
                 await store.delivery_skipped(row["id"], target, "duplicate product")
                 continue
-            start_chunk = await store.delivery_progress(row["id"], target)
-
             async def checkpoint(count: int, queue_id=row["id"], target_name=target):
                 await store.set_delivery_progress(queue_id, target_name, count)
 
@@ -9393,12 +9527,40 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             target_media = media_path
             if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:
                 target_media = []
-            ok, error = await deliver(
-                client, entity, target_text, target_media,
-                start_chunk=start_chunk, progress_callback=checkpoint,
-                link_preview=allow_preview, media_refs=media_refs,
-            )
+            if not await store.claim_target_products(row["id"], target, identity_keys,
+                                                     resuming=start_chunk > 0):
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                await store.delivery_skipped(row["id"], target, "duplicate product or unsettled prior send")
+                continue
+
+            async def send_attempt(index, digest, state, qid=row["id"], name=target):
+                nonlocal confirmed_chunks
+                result = await store.send_attempt(qid, name, index, digest, state)
+                if state == "sent":
+                    confirmed_chunks += 1
+                return result
+
+            chunks_before_target = confirmed_chunks
+            try:
+                ok, error = await deliver(
+                    client, entity, target_text, target_media,
+                    start_chunk=start_chunk, progress_callback=checkpoint,
+                    link_preview=allow_preview, media_refs=media_refs,
+                    attempt_callback=send_attempt,
+                )
+            except AmbiguousDelivery as exc:
+                held_targets += 1
+                log.critical("DELIVERY HELD | queue=%s target=%s | %s", row["id"], target, exc)
+                await store.delivery_held(row["id"], target, str(exc))
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                continue
             if ok:
+                if confirmed_chunks > chunks_before_target:
+                    new_sends += 1
+                else:
+                    settlement_retries += 1
                 # The post is OUT on Telegram. Recording that fact must NEVER
                 # throw the job back into fail_job's requeue mill: the target
                 # would still read pending and the next pass would RE-SEND an
@@ -9409,13 +9571,13 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 try:
                     if premium_claimed:
                         await store.complete_premium(row["id"], True)
+                    if identity_keys:
+                        await store.mark_product_posted(target, identity_keys[0], price,
+                                                        target_discount, identity_keys[1:], queue_id=row["id"])
                     await store.delivery(row["id"], target, True, error)
                     if target == SHOPPING_TARGET:
                         with contextlib.suppress(Exception):
                             await store.note_shopping_sent()
-                    if identity_keys:
-                        await store.mark_product_posted(target, identity_keys[0], price,
-                                                        target_discount, identity_keys[1:])
                 except Exception as exc:
                     log.critical(
                         "SETTLE FAILED | queue=%s target=%s: sent to Telegram but the "
@@ -9425,12 +9587,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     SETTLED_BUT_UNRECORDED[(row["id"], target)] = {"premium": premium_claimed}
                 successes += 1
             else:
-                # Nothing went out: the normal retry mill is correct here.
+                # Only explicit rejections reach here. Keep a partially-sent
+                # product fenced while its remaining chunks are retried.
+                if not await store.delivery_progress(row["id"], target):
+                    await store.release_target_products(row["id"], target)
                 if premium_claimed:
                     await store.complete_premium(row["id"], False)
                 await store.delivery(row["id"], target, False, error)
         await store.finish(row, successes, price, premium_defer_until)
-        log.info("JOB %s | source=%s | sent=%s", row["id"], row["source"], successes)
+        log.info("JOB %s | source=%s | sent=%s | settlement_retries=%s | held=%s | confirmed_chunks=%s",
+                 row["id"], row["source"], new_sends, settlement_retries, held_targets, confirmed_chunks)
     except DuplicateDeal as exc:
         log.info("DEDUP | queue=%s | %s", row["id"], exc)
         await store.mark_done(row["id"], str(exc))

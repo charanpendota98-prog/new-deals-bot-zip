@@ -429,7 +429,8 @@ async def api_recent(request: web.Request):
             try:
                 rows = conn.execute(
                     f"SELECT q.id, q.source, q.status, q.created_at, q.last_error, "
-                    f"{sends_expr} AS sends, {skips_expr} AS skips FROM queue q "
+                    f"{sends_expr} AS sends, {skips_expr} AS skips, "
+                    "SUM(CASE WHEN d.status='held' THEN 1 ELSE 0 END) AS held FROM queue q "
                     "LEFT JOIN deliveries d ON d.queue_id=q.id "
                     "GROUP BY q.id ORDER BY q.id DESC LIMIT ?", (limit,)).fetchall()
             except sqlite3.OperationalError:
@@ -439,6 +440,7 @@ async def api_recent(request: web.Request):
                     "id": row["id"], "source": row["source"], "status": row["status"],
                     "created_at": row["created_at"], "error": (row["last_error"] or "")[:120],
                     "sends": int(row["sends"] or 0), "skips": int(row["skips"] or 0),
+                    "held": int(row["held"] or 0),
                 })
         finally:
             conn.close()

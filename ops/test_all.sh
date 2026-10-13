@@ -124,6 +124,8 @@ run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
 run 'best-copy quality audit' "$PYTHON" test_best_copy.py
 run 'duplicate handling' "$PYTHON" test_duplicate_sim.py
+run 'durable delivery fences and restart recovery' "$PYTHON" test_delivery_fences.py
+run 'WhatsApp durable send guard' node --test test_send_guard.mjs
 run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
 run 'link category inspector' "$PYTHON" test_link_inspector.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py

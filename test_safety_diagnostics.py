@@ -85,7 +85,8 @@ class DiagnosticSafety(unittest.TestCase):
             db.executemany('INSERT INTO deliveries VALUES(?,?,?,?,?)', [
                 (1, 'a', 'sent', '', 1), (1, 'b', 'sent', '', 1), (1, 'c', 'skipped', 'duplicate', 0),
                 (2, 'a', 'skipped', 'duplicate', 0), (3, 'a', 'sent', 'duplicate (old build)', 0),
-                (4, 'a', 'pending', '', 0), (5, 'a', 'failed', 'timeout after first chunk', 1)])
+                (4, 'a', 'pending', '', 0), (5, 'a', 'failed', 'timeout after first chunk', 1),
+                (6, 'a', 'held', 'manual review: send outcome unknown', 0)])
             db.commit()
             before = path.read_bytes()
             result = report.db_report(path, 24)
@@ -94,7 +95,7 @@ class DiagnosticSafety(unittest.TestCase):
             self.assertEqual(result['rendered_links']['links'], 6)
             self.assertEqual(result['delivery_summary'], {'evidence': 'status_and_error',
                 'rendered_queues': 6, 'queues_with_sends': 1, 'target_sends': 2, 'policy_skips': 3,
-                'partial_target_sends': 1, 'queues_only_skipped': 2, 'queues_without_send_evidence': 5})
+                'partial_target_sends': 1, 'held_targets': 1, 'queues_only_skipped': 2, 'queues_without_send_evidence': 5})
             self.assertEqual(result['audit_errors'], [])
             db.execute('DROP TABLE deliveries')
             db.execute('CREATE TABLE deliveries(queue_id INTEGER, status TEXT)')

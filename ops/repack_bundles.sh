@@ -22,7 +22,7 @@ zip -X -q "$HERE/bestgaa_final_bundle.zip" \
 echo "[2/2] Packing tg_wa_bridge_bundle.zip ..."
 cd "$REPO_ROOT/tg-wa-bridge"
 zip -X -q "$HERE/tg_wa_bridge_bundle.zip" \
-  bridge.js category_classifier.js hypd_policy.py category_rules.json package.json tg-wa-bridge.service \
+  bridge.js send_guard.js category_classifier.js hypd_policy.py category_rules.json package.json tg-wa-bridge.service \
   install_bridge.sh switch_whatsapp_number.sh README_FIRST.txt .env.example
 
 echo

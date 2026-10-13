@@ -809,7 +809,7 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
     try:
         open_counts = {int(r["queue_id"]): int(r["n"]) for r in conn.execute(
             "SELECT queue_id, count(*) AS n FROM deliveries "
-            "WHERE status NOT IN ('sent','skipped') GROUP BY queue_id")}
+            "WHERE status NOT IN ('sent','skipped','held') GROUP BY queue_id")}
     except sqlite3.OperationalError:
         open_counts = {}
     try:
@@ -820,11 +820,18 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
             skip_reasons[str(reason_row["reason"] or "withheld")] = int(reason_row["n"])
     except sqlite3.OperationalError:
         skip_reasons = {}
+    try:
+        held_rows = conn.execute(
+            "SELECT queue_id,target,last_error FROM deliveries WHERE status='held'").fetchall()
+    except sqlite3.OperationalError:
+        held_rows = []
     our_links = our_minted_links(conn, our_tag, our_publisher)
     link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
                    "clean-merchant": 0, "foreign": 0}
 
-    findings: list[dict] = []
+    findings: list[dict] = [flag("DELIVERY_HELD",
+        f"@{item['target']}: {item['last_error'] or 'send outcome uncertain; manual review required'}",
+        item['queue_id']) for item in held_rows]
     for row in rows:
         text = row["rendered_text"] or ""
         sent = sent_counts.get(int(row["id"]), 0)
@@ -980,6 +987,7 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
     except sqlite3.OperationalError:
         total_posts = len(rows)
     delivery_summary = {
+        "held": len(held_rows),
         "real_sends": sum(sent_counts.values()),
         "skipped": sum(skip_counts.values()),
         "open": sum(open_counts.values()),

@@ -265,7 +265,7 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
                            "unattributed": 0, "clean-merchant": 0, "foreign": 0}}
     out["rendered_links"] = dict(out["links"])
     out["delivery_summary"] = {"evidence": "unavailable", "rendered_queues": 0,
-        "queues_with_sends": 0, "target_sends": 0, "policy_skips": 0, "partial_target_sends": 0,
+        "queues_with_sends": 0, "target_sends": 0, "policy_skips": 0, "partial_target_sends": 0, "held_targets": 0,
         "queues_only_skipped": 0, "queues_without_send_evidence": 0}
     out["audit_errors"] = []
     out["link_scope"] = ("Saved rendered links, once per queue with recorded successful delivery; "
@@ -361,6 +361,8 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
                     for row in conn.execute(
                             f"SELECT d.queue_id,d.status,d.last_error,{chunks} AS chunks_sent FROM deliveries d "
                             "JOIN queue q ON q.id=d.queue_id WHERE q.created_at>=?", (since,)):
+                        if row["status"] == "held":
+                            summary["held_targets"] += 1
                         if row["chunks_sent"] > 0 and (row["status"] != "sent" or row["last_error"]):
                             summary["partial_target_sends"] += 1
                         sent, skipped = deliveries.setdefault(row["queue_id"], [0, 0])
@@ -560,6 +562,9 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         lines.append(f"DELIVERY : {delivery.get('target_sends', 0)} recorded target send(s); "
                      f"{delivery.get('policy_skips', 0)} policy skip(s); "
                      f"{delivery.get('queues_without_send_evidence', 0)} rendered queue(s) without send evidence")
+        if delivery.get("held_targets"):
+            problems.append(f"{delivery['held_targets']} target(s) held for manual review; send outcome uncertain, do not blindly retry")
+            lines.append(f"           {delivery['held_targets']} held target(s); not counted as sends or policy skips")
         if delivery.get("partial_target_sends"):
             problems.append(f"{delivery['partial_target_sends']} partially sent target(s); inspect receipts before retrying")
             lines.append(f"           {delivery['partial_target_sends']} partial target send(s); not counted as complete")

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { guardedSend, DeliveryHeld, pruneConfirmedFences } from './send_guard.js'
 import { classifyCategory } from './category_classifier.js'
 import path from 'node:path'
 import crypto from 'node:crypto'
@@ -484,6 +485,9 @@ function loadState() {
       return loaded
     } catch {}
   }
+  if ([STATE_FILE, STATE_BACKUP_FILE].some(file => fs.existsSync(file))) {
+    throw new Error('Existing WhatsApp state is unreadable; refusing to forget send fences. Restore a verified backup before restarting.')
+  }
   return defaultState()
 }
 function saveState() {
@@ -496,6 +500,10 @@ function saveState() {
     try { fs.copyFileSync(STATE_FILE, STATE_BACKUP_FILE); fs.chmodSync(STATE_BACKUP_FILE, 0o600) } catch {}
   }
   fs.renameSync(tmp, STATE_FILE)
+  // Both recoverable snapshots must contain write-before-send fences. Failure
+  // here aborts publication; restoring yesterday's pre-intent backup is unsafe.
+  fs.copyFileSync(STATE_FILE, STATE_BACKUP_FILE)
+  fs.chmodSync(STATE_BACKUP_FILE, 0o600)
 }
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min }
@@ -1106,6 +1114,7 @@ function dealKey(text) {
   return sha(`${urls.join('|')}|${normalizedText(text)}`)
 }
 function pruneState() {
+  pruneConfirmedFences(state)
   const now = Date.now()
   const cutoff = now - 36 * 3600_000
   for (const [key, ts] of Object.entries(state.sent)) if (ts < cutoff) delete state.sent[key]
@@ -1374,9 +1383,9 @@ function watchAck(sock, messageId, windowMs = 9000) {
 }
 
 // Sends photo/video to a WhatsApp Channel using the corrected upload path and
-// verifies the ack. Throws when WhatsApp rejects the stanza, so the caller can
-// fall back to a text-only update instead of silently posting nothing.
-async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }) {
+// watches for rejection acknowledgements. Publication errors are held; only
+// failures before the publication callback can use the text-only fallback.
+async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }, publish = fn => fn()) {
   const caption = sanitizeOutbound(rawCaption)
   const isVideo = type === 'video'
   const mediaType = isVideo ? 'video' : 'image'
@@ -1384,12 +1393,12 @@ async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption:
     ? { video: buffer, mimetype: mimetype || 'video/mp4', caption: caption || undefined }
     : { image: buffer, caption: caption || undefined }
 
-  if (!NEWSLETTER_MEDIA_FIX) {
+  if (!NEWSLETTER_MEDIA_FIX) return publish(async () => {
     const sent = await withTimeout(sock.sendMessage(jid, content), 150_000, 'sendMessage(media)')
     const ack = await watchAck(sock, sent?.key?.id)
     if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
     return sent
-  }
+  })
 
   let thumbnailInfo = {}
   const message = await withTimeout(prepareWAMessageMedia(content, {
@@ -1414,17 +1423,19 @@ async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption:
   if (thumbnailInfo.thumbnailDirectPath) node.thumbnailDirectPath = thumbnailInfo.thumbnailDirectPath
   if (thumbnailInfo.thumbnailSha256) node.thumbnailSha256 = Buffer.from(thumbnailInfo.thumbnailSha256, 'base64')
 
-  const messageId = generateMessageIDV2(sock.user?.id)
-  await withTimeout(sock.sendNode({
-    tag: 'message',
-    attrs: { to: jid, id: messageId, type: 'media' },
-    content: [{ tag: 'plaintext', attrs: { mediatype: mediaType }, content: encodeNewsletterMessage(message) }],
-  }), 60_000, 'sendNode(media)')
+  return publish(async () => {
+    const messageId = generateMessageIDV2(sock.user?.id)
+    await withTimeout(sock.sendNode({
+      tag: 'message',
+      attrs: { to: jid, id: messageId, type: 'media' },
+      content: [{ tag: 'plaintext', attrs: { mediatype: mediaType }, content: encodeNewsletterMessage(message) }],
+    }), 60_000, 'sendNode(media)')
 
-  const ack = await watchAck(sock, messageId)
-  if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
-  log.info({ mediaType, directPath: String(node.directPath).slice(0, 12) }, 'Channel media accepted')
-  return { key: { id: messageId, remoteJid: jid, fromMe: true } }
+    const ack = await watchAck(sock, messageId)
+    if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
+    log.info({ mediaType, directPath: String(node.directPath).slice(0, 12) }, 'Channel media accepted')
+    return { key: { id: messageId, remoteJid: jid, fromMe: true } }
+  })
 }
 
 async function sendNewsletterText(sock, jid, rawText) {
@@ -2365,7 +2376,7 @@ function urlsForProvenance(job, urls) {
 function productIdentity(url) {
   try {
     const u = new URL(url)
-    const host = u.hostname.toLowerCase()
+    const host = u.hostname.toLowerCase().replace(/^(?:www|m)\.(?=(?:meesho|croma)\.com$)/, '')
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
       const match = u.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/)([A-Z0-9]{10})(?:[/?#]|$)/i)
       if (match) return `amazon:${match[1].toUpperCase()}`
@@ -2385,13 +2396,30 @@ function productIdentity(url) {
     return null
   }
 }
+function productIdentitiesFor(text, job = null) {
+  // Display short URLs are wrappers, not the identity of the product behind
+  // them. Keep legacy exact-wrapper keys AND the verified destination keys.
+  const ids = new Set()
+  for (const source of urlsIn(text || '')) {
+    if (job?.blockedLinks?.[source] || isShareIntent(source)) continue
+    const shown = displayUrl(job, source)
+    for (const candidate of new Set([source, shown, job?.resolvedLinks?.[source],
+      job?.provenanceDestinations?.[source], job?.provenanceDestinations?.[shown],
+      job?.verifiedHypdLinks?.[source]])) {
+      if (!candidate || isShareIntent(candidate)) continue
+      const id = productIdentity(candidate)
+      if (id) ids.add(id)
+    }
+  }
+  return [...ids]
+}
 function duplicateProductReason(text, job = null) {
   const now = Date.now()
   const windowMs = PRODUCT_DEDUP_HOURS * 3600_000
   // Direct-source jobs dedup on the RESOLVED merchant page (the real product
   // behind an amzn.to/fkrt.co shortener), so a deal already posted via our own
   // channels is never double-posted from the raw source.
-  const ids = new Set(urlsIn(text).map(url => productIdentity(displayUrl(job, url))).filter(Boolean))
+  const ids = productIdentitiesFor(text, job)
   for (const id of ids) {
     const last = state.sentProducts?.[id]
     if (last && now - last <= windowMs) return `duplicate product within ${PRODUCT_DEDUP_HOURS}h (${id})`
@@ -2405,7 +2433,7 @@ function duplicateProductReason(text, job = null) {
 function markProductSent(job) {
   state.sentProducts ||= {}
   const now = Date.now()
-  const ids = new Set(urlsIn(job.text || '').map(url => productIdentity(displayUrl(job, url))).filter(Boolean))
+  const ids = productIdentitiesFor(job.text, job)
   for (const id of ids) state.sentProducts[id] = now
   const keys = Object.keys(state.sentProducts)
   if (keys.length > 1000) {
@@ -2865,8 +2893,7 @@ function shouldKeepForWhatsApp(source, text, hasMedia, special, largeList) {
 // Product identities pending in the queue (cached per job), so a direct-source
 // copy of a deal that is already queued from our own channels never enters.
 function pendingProductIds(job) {
-  if (!job._ids) job._ids = urlsIn(job.text || '').map(url => productIdentity(displayUrl(job, url))).filter(Boolean)
-  return job._ids
+  return productIdentitiesFor(job.text, job) // provenance may have been enriched since intake
 }
 /**
  * v17.6 "best copy": several sources post the same product minutes apart at
@@ -3409,6 +3436,7 @@ async function verifyJob(job, fetchFn = fetch) {
   }
 }
 function isPermanent(error) {
+  if (error instanceof DeliveryHeld) return true
   // "Best-deal gate" = the post is not a best deal: retrying can never help,
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
@@ -3796,10 +3824,18 @@ function marksFor(job) {
 // newsletter path, groups via the normal send). A Channel failure propagates
 // (existing retry/fallback logic applies); a group failure is logged and the
 // remaining targets are still served.
+function publicationGuard(job, jid, tag, body) {
+  const owner = String(job?.id ?? `digest:${crypto.createHash('sha256').update(body || '').digest('hex')}`)
+  const products = productIdentitiesFor(job?.text || body, job)
+  return send => guardedSend({ state, save: saveState, target: jid, owner, tag, body, products, send })
+}
+
 async function broadcastText(sock, job, tag, text) {
+  if (job) job.status = 'sending'
   const targets = allTargets(job)
   if (!targets.length) throw new Error('no WhatsApp target resolved')
   const marks = marksFor(job)
+  const held = []
   for (const jid of targets) {
     const mark = `${tag}:${jid}`
     if (marks.includes(mark)) continue
@@ -3809,15 +3845,15 @@ async function broadcastText(sock, job, tag, text) {
     if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
     body = await shortenUntaggedCategoryCopy(job, jid, body)
     if (body === null) { marks.push(mark); continue } // optional category kept off when tag status is uncertain
-    if (isNewsletterTarget(jid)) {
-      await sendNewsletterText(sock, jid, body)
-    } else {
-      try {
-        await withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(body) }), 90_000, `group text send ${jid}`)
-      } catch (error) {
-        log.warn({ jid, tag, err: error.message }, 'group text delivery failed; other targets unaffected')
-        continue
-      }
+    const publish = publicationGuard(job, jid, tag, body)
+    try {
+      if (isNewsletterTarget(jid)) await publish(() => sendNewsletterText(sock, jid, body))
+      else await publish(() => withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(body) }), 90_000, `group text send ${jid}`))
+    } catch (error) {
+      if (!(error instanceof DeliveryHeld)) throw error
+      held.push(error)
+      log.error({ jid, tag, err: error.message }, 'target held for review; continuing healthy targets')
+      continue
     }
     marks.push(mark)
     state.sentTimes.push(Date.now())
@@ -3825,14 +3861,17 @@ async function broadcastText(sock, job, tag, text) {
     // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
+  if (held.length) throw held[0]
 }
 // Sends one photo/video to ALL targets. Channel media uses the corrected
 // newsletter upload path (ack-verified); groups use the normal media send.
 async function broadcastMediaItem(sock, job, item, caption) {
+  if (job) job.status = 'sending'
   const data = await telegramFile(item.fileId)
   const isVideo = item.type === 'video'
   const targets = allTargets(job)
   const marks = marksFor(job)
+  const held = []
   for (const jid of targets) {
     const mark = `media:${item.fileId}:${jid}`
     if (marks.includes(mark)) continue
@@ -3842,18 +3881,21 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (caption && itemCaption === null) { marks.push(mark); continue }
     if (itemCaption) itemCaption = await shortenUntaggedCategoryCopy(job, jid, itemCaption)
     if (caption && itemCaption === null) { marks.push(mark); continue }
-    if (isNewsletterTarget(jid)) {
-      await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption })
-    } else {
-      const groupContent = isVideo
-        ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: sanitizeOutbound(itemCaption || '') || undefined }
-        : { image: data, caption: sanitizeOutbound(itemCaption || '') || undefined }
-      try {
-        await withTimeout(sock.sendMessage(jid, groupContent), 150_000, `group media send ${jid}`)
-      } catch (error) {
-        log.warn({ jid, err: error.message }, 'group media delivery failed; other targets unaffected')
-        continue
+    const publish = publicationGuard(job, jid, `media:${item.fileId}`, itemCaption || '')
+    try {
+      if (isNewsletterTarget(jid)) {
+        await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption }, publish)
+      } else {
+        const groupContent = isVideo
+          ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: sanitizeOutbound(itemCaption || '') || undefined }
+          : { image: data, caption: sanitizeOutbound(itemCaption || '') || undefined }
+        await publish(() => withTimeout(sock.sendMessage(jid, groupContent), 150_000, `group media send ${jid}`))
       }
+    } catch (error) {
+      if (!(error instanceof DeliveryHeld)) throw error
+      held.push(error)
+      log.error({ jid, err: error.message }, 'media target held for review; continuing healthy targets')
+      continue
     }
     marks.push(mark)
     state.sentTimes.push(Date.now())
@@ -3861,6 +3903,7 @@ async function broadcastMediaItem(sock, job, item, caption) {
     // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
+  if (held.length) throw held[0]
 }
 function formatDigestItem(job, number) {
   // v17.8 A DIGEST ITEM IS THE SOURCE POST, just numbered. The old item printed a
@@ -3999,6 +4042,7 @@ async function prepareRotationalDigest(quietOnlyUnder99 = false) {
     const selected = []
     for (const job of candidates) {
       try {
+        job.status = 'sending' // protect asynchronous conversion from a better-copy rewrite
         if (job.direct) await prepareDirectJob(job) // resolve first: gate dedups on the real product
         const verdict = passesBestDealGate(job)
         if (!verdict.ok) {
@@ -4061,6 +4105,9 @@ function formatSpecialCaption(job) {
 
 
 async function sendSpecialOffer(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   if (job.direct) await prepareDirectJob(job) // resolve first: gate dedups on the real product
   const verdict = passesBestDealGate(job)
   if (!verdict.ok) throw new Error(`Best-deal gate: ${verdict.reason}`)
@@ -4149,6 +4196,9 @@ function buildLargeListChunks(job) {
   return chunks
 }
 async function sendLargeListPart(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   const key = job.key || dealKey(job.text)
   job.key = key
   const index = Number(job.largeChunkIndex || 0)
@@ -4179,6 +4229,9 @@ async function sendLargeListPart(job) {
 }
 
 async function sendStrictSourceJob(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   // VERIFY BEFORE SENDING: a post that is not a best deal is skipped, never
   // sent (the user's explicit requirement). The reason is logged and the job
   // is dropped as permanent.
@@ -4225,6 +4278,7 @@ async function sendStrictSourceJob(job) {
       job.nextMedia = index + 1
       saveState()
     } catch (error) {
+      if (error instanceof DeliveryHeld) throw error // never text-fallback an uncertain photo send
       job.mediaFailures = (job.mediaFailures || 0) + 1
       log.warn({ id: job.id, attempt: job.mediaFailures, err: error.message }, 'Channel media delivery failed')
       // Retry the upload a few times; after that never lose the deal — post the
@@ -7043,6 +7097,84 @@ https://fktr.in/MANY${i}`,
       state.jobs = savedJobs
       state.sent = savedSent
       state.sentContent = savedContent
+    }
+  }
+  // Distinct short codes and captions must converge on verified product
+  // identity, including after a display URL has been shortened again.
+  {
+    const assert = (await import('node:assert/strict')).default
+    const saved = state
+    try {
+      state = defaultState()
+      const product = 'https://www.amazon.in/dp/B0FENCE901'
+      const first = { text: 'First source https://bit.ly/fence-alpha',
+        shortLinks: { 'https://bit.ly/fence-alpha': 'https://bit.ly/fence-display' },
+        provenanceDestinations: { 'https://bit.ly/fence-alpha': product } }
+      const second = { text: 'Completely different caption https://bit.ly/fence-beta',
+        provenanceDestinations: { 'https://bit.ly/fence-beta': product } }
+      assert(productIdentitiesFor(first.text, first).includes('amazon:B0FENCE901'))
+      markProductSent(first)
+      if (PRODUCT_DEDUP_HOURS > 0) assert.match(duplicateProductReason(second.text, second), /duplicate product/)
+      const direct = { text: 'Third source https://amzn.to/fence-gamma',
+        resolvedLinks: { 'https://amzn.to/fence-gamma': product },
+        shortLinks: { 'https://amzn.to/fence-gamma': 'https://bit.ly/new-display' } }
+      assert(productIdentitiesFor(direct.text, direct).includes('amazon:B0FENCE901'))
+      const hypd = { text: 'Kurta https://hypd.store/93944/afflink/token-one',
+        verifiedHypdLinks: { 'https://hypd.store/93944/afflink/token-one': 'https://m.meesho.com/kurta/p/ABC123' } }
+      assert(productIdentitiesFor(hypd.text, hypd).includes(productIdentity('https://www.meesho.com/new-name/p/ABC123')))
+      assert.equal(productIdentitiesFor('https://t.me/addlist/folder').length, 0)
+      assert(!productIdentitiesFor(second.text, second).includes('amazon:B0FENCE902'))
+      let attempts = 0
+      first.id = 'held-first'; second.id = 'held-other-source'
+      await assert.rejects(publicationGuard(first, 'proof-test@newsletter', 'photo', first.text)(async () => {
+        attempts++; throw Error('reply lost')
+      }), DeliveryHeld)
+      await assert.rejects(publicationGuard(second, 'proof-test@newsletter', 'text', second.text)(async () => {
+        attempts++
+      }), DeliveryHeld)
+      assert.equal(attempts, 1)
+    } finally { state = saved }
+  }
+  // Actual broadcast entry points use the durable guard: lost replies must
+  // neither re-send text/media nor allow a media -> text fallback.
+  {
+    const assert = (await import('node:assert/strict')).default
+    const saved = { state, allTargets, sendNewsletterText, sendNewsletterMedia, telegramFile, shortenUntaggedCategoryCopy }
+    let sends = 0
+    try {
+      state = defaultState()
+      allTargets = () => ['fence-test@newsletter']
+      shortenUntaggedCategoryCopy = async (_job, _jid, body) => body
+      sendNewsletterText = async () => { sends++; throw new Error('lost text reply') }
+      telegramFile = async () => Buffer.from('offline-photo')
+      sendNewsletterMedia = async (_sock, _jid, _media, publish) => publish(async () => {
+        sends++; throw new Error('lost photo reply')
+      })
+      const job = { id: 'fence-text', text: 'Acme model X41 https://www.amazon.in/dp/B0FENCE001' }
+      await assert.rejects(broadcastText({}, job, 'text', job.text), DeliveryHeld)
+      await assert.rejects(broadcastText({}, job, 'text', job.text), DeliveryHeld)
+      assert.equal(sends, 1)
+      assert.deepEqual(job.sentTargets, [])
+      assert.equal(job.status, 'sending')
+      assert.equal(adoptBetterCopy(job, { chat: { id: 1 }, message_id: 1 },
+        'Acme model X41 ₹1 99% off https://www.amazon.in/dp/B0FENCE001', null), false)
+      const mediaJob = { id: 'fence-media', text: 'Acme model X42 https://www.amazon.in/dp/B0FENCE002' }
+      await assert.rejects(broadcastMediaItem({}, mediaJob, { fileId: 'photo', type: 'photo' }, mediaJob.text), DeliveryHeld)
+      await assert.rejects(broadcastMediaItem({}, mediaJob, { fileId: 'photo', type: 'photo' }, mediaJob.text), DeliveryHeld)
+      await assert.rejects(broadcastText({}, mediaJob, 'fallback', mediaJob.text), DeliveryHeld)
+      assert.equal(sends, 2)
+      assert.deepEqual(mediaJob.sentTargets, [])
+      assert.equal(state.sentTimes.length, 0) // unknown is not a recorded success
+      allTargets = () => ['bad@newsletter', 'good@newsletter']
+      sendNewsletterText = async (_sock, jid) => { sends++; if (jid.startsWith('bad')) throw Error('lost reply') }
+      const fanout = { id: 'fence-fanout', text: 'Another product https://www.amazon.in/dp/B0FENCE003' }
+      await assert.rejects(broadcastText({}, fanout, 'text', fanout.text), DeliveryHeld)
+      assert.deepEqual(fanout.sentTargets, ['text:good@newsletter'])
+      assert.equal(state.sentTimes.length, 1)
+    } finally {
+      state = saved.state; allTargets = saved.allTargets
+      sendNewsletterText = saved.sendNewsletterText; sendNewsletterMedia = saved.sendNewsletterMedia
+      telegramFile = saved.telegramFile; shortenUntaggedCategoryCopy = saved.shortenUntaggedCategoryCopy
     }
   }
   console.log('bridge self-test PASS')

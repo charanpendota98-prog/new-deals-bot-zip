@@ -709,8 +709,8 @@ def test_photos_arrive_as_the_source_posted_them():
                       bot.outbound_parts("t", paths)[0][0] == "file" and len(paths) == 1, str(paths))
 
             fallback = RecClient(no_raw_call=True)
-            await bot.send_media_item(fallback, "entity", paths, "deal text", refs)
-            check("a client that cannot group sends the first photo WITH the caption, "
+            await bot.send_media_item(fallback, "entity", paths, "deal text", [None] * len(paths))
+            check("a pre-publication upload failure sends the first photo WITH the caption, "
                   "then the rest, so no image is lost",
                   len(fallback.files_sent) == wanted
                   and fallback.files_sent[0][1] == "deal text"

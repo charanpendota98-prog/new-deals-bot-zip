@@ -675,7 +675,7 @@ def test_link_keys_catch_reworded_repeats():
                   pid_key in keys, str(keys))
             check("share/invite hosts are never identity keys",
                   not any("t.me" in key or "wa.me" in key for key in keys)
-                  and len(keys) <= bot.SAME_PRODUCT_MAX_LINK_KEYS, str(keys))
+                  and keys == [pid_key], str(keys))
 
             # ANY key match skips: the headline missed, the link key caught it.
             await store.mark_product_posted("LootZoneIndia11", "SIG:headline-A-10",

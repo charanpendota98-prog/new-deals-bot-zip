@@ -320,3 +320,11 @@ twice:
     here: the bridge reads the SOURCE channels, so WhatsApp copy stays exactly what this
     file's formatters produce. If the family link is ever wanted on WhatsApp too, that is
     a one-knob decision, not a rewrite.
+
+2026-10-14 delivery safety:
+Uncertain publication outcomes are held for manual review, never automatically
+resent. Preserve all database/state files and backups when upgrading. Do not
+clear claims/history or downgrade to an older writer to force a retry. Inspect
+the real destination history first. Telegram audits/dashboard report HELD
+separately from sends/skips; WhatsApp retains sendIntents/targetProductFences.
+See the repository README's Duplicate-delivery hardening section.

@@ -1613,3 +1613,75 @@ per-form isolation, POST/PATCH payloads, revision conflicts, safe titles and foc
 Desktop/mobile Chromium checks used an isolated demo with masked private invites,
 no Telegram connection and restart disabled. No production deployment or service
 restart was performed. Bundles are regenerated from source, not auto-deployed.
+
+### Duplicate-delivery hardening (2026-10-14; deployment requires approval)
+
+Existing channel/source/category settings are unchanged. New-channel setup stays
+**channel link → category → select joined sources → Save**. Saving configuration
+still cannot start a stopped bot. The existing access checks, channel-local
+source scope, affiliate ownership checks and strict category filters still apply.
+
+This update closes additional **reproducible code paths**, not a diagnosis of an
+unseen production duplicate:
+
+- Telegram records a durable publication intent **before** each network send.
+  A lost response, interrupted send or failed receipt write is held for review,
+  not automatically retried. Confirmed permission/rate-limit rejections can retry.
+- Durable per-target product claims prevent concurrent workers from sending the
+  same product. The absolute one-hour cooldown is rechecked atomically at the
+  final claim, including cheaper copies. A genuine better offer can still pass
+  the existing policy after that hour.
+- Confirmed chunks survive process restart independently of the in-memory
+  settlement map. A saved delivery-layout fingerprint prevents a missing photo
+  or changed formatting from shifting chunk boundaries during resume.
+- Album fallback is allowed only if preparation failed **before publication**.
+  A lost album-publication response never triggers a second album/single-photo copy.
+- Every product in a roundup participates in per-target dedup: the previous
+  seven-key/twelve-URL truncation is removed. Known www/mobile/root merchant-key
+  aliases also match legacy Telegram history without changing the product ID.
+- WhatsApp dedup now uses verified provenance/resolved/HYPD destination IDs
+  even when the displayed URL is a different short code (while retaining old
+  exact-wrapper keys). No destination fetch or merchant HTML is needed for this
+  identity check.
+- WhatsApp uses persisted write-before-send intents and per-target product fences
+  for text, media and groups. Uncertain media cannot fall back to duplicate text.
+  Healthy targets can still be attempted when another target is held. Both state
+  snapshots retain send fences; corrupt existing snapshots no longer silently
+  reset the bridge to empty history. Run only **one bridge writer** per state file.
+  A selected job is frozen before async conversion/send so intake cannot replace
+  its product/price with a different source's “better copy” mid-flight.
+- Reports/dashboard distinguish **held**, **skipped**, **partial** and confirmed
+  sends. Telegram `JOB sent=` counts new completed target publications; write-only
+  recovery is logged separately as `settlement_retries`, not another send.
+
+**Hold policy:** this is conservative at-most-once handling, not a guarantee of
+remote exactly-once delivery. A hold can represent a message that was accepted,
+not accepted, or only partly delivered. Inspect the destination's actual history
+before any intervention. Do not blindly reset a job, clear dedup history or delete
+claims to force a resend. Held product claims intentionally do not expire: an
+unresolved outcome must not become permission to publish another copy later.
+Other products/targets remain eligible. A Telegram hold appears in the dashboard
+Held column and `DELIVERY_HELD` audit findings; WhatsApp holds are retained in its
+state file's `sendIntents` / `targetProductFences` (even if the queue job is removed).
+No automatic “retry held” button is provided. Confirmed WhatsApp fence history
+for jobs no longer queued is retained for seven days; unresolved/active-job
+records are never removed by that cleanup.
+
+The safety records are additive SQLite tables (`send_attempts`,
+`target_product_claims`) and additive WhatsApp JSON fields; old channel settings
+and posting history are retained. Do not downgrade to a writer that ignores these
+records while uncertain sends exist. This does not retroactively protect sends
+made by an older running build, and cannot prove commissions or delivery without
+live receipts.
+
+Offline regression coverage includes lost acknowledgements, crashes/restarts,
+failed intent/receipt/settlement writes, simultaneous workers, album fallback,
+partial-resume layout changes, long-list tail identities, alias history, healthy
+target continuation, one-hour/no-price-exception rules and distinct-product controls:
+
+```bash
+PYTHON=/path/to/venv/bin/python bash ops/test_all.sh
+# Focused, isolated/no-Telegram tests:
+/path/to/venv/bin/python test_delivery_fences.py
+node --test test_send_guard.mjs
+```
