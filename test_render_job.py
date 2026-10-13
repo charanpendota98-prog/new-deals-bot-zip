@@ -167,7 +167,7 @@ async def test_strict_owned_link_policy(store):
         )
 
         paid_source = "https://amzn.to/strict-paid"
-        paid_destination = "https://www.amazon.in/dp/B0STRICT0001"
+        paid_destination = "https://www.amazon.in/dp/B0STRICT01"
         unsupported_source = "https://www.myntra.com/kurta/itm-unsupported"
         paid_affiliate = paid_destination + "?tag=mama086-21"
         await case(
@@ -177,7 +177,7 @@ async def test_strict_owned_link_policy(store):
             {paid_source: paid_destination, unsupported_source: unsupported_source},
             {paid_source: bot.LinkResult(
                 source=paid_source, resolved=paid_destination, affiliate=paid_affiliate,
-                deal_key="amazon:B0STRICT0001")},
+                deal_key="amazon:B0STRICT01")},
             expect_exception=bot.PermanentSkip, msg_id=9903,
         )
 
@@ -213,7 +213,7 @@ async def test_strict_owned_link_policy(store):
                   "Deal ₹399\n" + bot.OUR_FOLDER_LINK))
 
         accepted_source = "https://amzn.to/strict-owned"
-        accepted_dest = "https://www.amazon.in/dp/B0STRICT0002"
+        accepted_dest = "https://www.amazon.in/dp/B0STRICT02"
         await case(
             store, "strict-all accepts our verified Amazon-tagged link",
             "Headphones ₹799 50% OFF\n" + accepted_source,
@@ -221,7 +221,7 @@ async def test_strict_owned_link_policy(store):
             {accepted_source: bot.LinkResult(
                 source=accepted_source, resolved=accepted_dest,
                 affiliate=accepted_dest + "?tag=mama086-21",
-                deal_key="amazon:B0STRICT0002")},
+                deal_key="amazon:B0STRICT02")},
             expect_render_contains=["tag=mama086-21"], msg_id=9904,
         )
 
@@ -309,9 +309,63 @@ async def main():
         test_category_classifier()
         await test_strict_owned_link_policy(store)
 
+        # New channel-local intake must not leak through any global fan-out.
+        source = "custom_scoped_feed"
+        bot.SOURCE_TO_TARGETS[source] = ["CustomElectroShelf"]
+        bot.DASHBOARD_SCOPED_SOURCES.add(source)
+        old_filters = bot.DASHBOARD_CATEGORY_FILTERS
+        bot.DASHBOARD_CATEGORY_FILTERS = {"customelectroshelf": frozenset({"electronics"})}
+        try:
+            for index, title in enumerate(("ScopeTest Model X81 wireless earbuds", "ScopeTest Model K93 cotton kurti")):
+                url = f"https://amzn.to/scoped{index}"
+                destination = f"https://www.amazon.in/dp/B0SCOPED0{index}"
+                result = bot.LinkResult(url, destination, destination, f"amazon:B0SCOPED0{index}")
+                targets = await case(store, "channel-local source: " + title, title + " ₹499\n" + url,
+                                     {url:destination}, {url:result}, source=source, msg_id=9690+index,
+                                     expect_exception=bot.PermanentSkip if index else None)
+                if not index:
+                    check("custom source reaches only its selected matching shelf", targets == ["CustomElectroShelf"])
+        finally:
+            bot.SOURCE_TO_TARGETS.pop(source)
+            bot.DASHBOARD_SCOPED_SOURCES.discard(source)
+            bot.DASHBOARD_CATEGORY_FILTERS = old_filters
+
         # Category routing is additive: the same confident product stays on the
         # Main feed and gets exactly one configured category destination. An
         # unclear title must never be guessed into a category shelf.
+        # Exercise real render_job target selection, not only the classifier helper.
+        old_shelves = bot.DASHBOARD_CATEGORY_FILTERS
+        old_source = bot.SOURCE_TO_TARGETS.get("shelf_test_source")
+        shelves = {"ClothingShelf": "fashion", "ElectronicsShelf": "electronics",
+                   "HomeShelf": "home_kitchen", "AccessoriesShelf": "accessories"}
+        bot.DASHBOARD_CATEGORY_FILTERS = {k.lower(): frozenset({v}) for k, v in shelves.items()}
+        bot.SOURCE_TO_TARGETS["shelf_test_source"] = list(shelves)
+        try:
+            for index, (title, expected) in enumerate([
+                ("Cotton kurti", "ClothingShelf"),
+                ("Wireless earbuds", "ElectronicsShelf"),
+                ("Rice cooker", "HomeShelf"),
+                ("Travel backpack", "AccessoriesShelf"),
+                ("Shoes and shoe rack", None),
+                ("Mystery product", None),
+            ]):
+                url = f"https://amzn.to/shelf{index}"
+                destination = f"https://www.amazon.in/dp/B0SHELF00{index}"
+                result = bot.LinkResult(url, destination, destination, f"amazon:B0SHELF00{index}")
+                targets = await case(store, "strict shelf integration: " + title,
+                    title + " ₹499\n" + url, {url: destination}, {url: result},
+                    source="shelf_test_source", msg_id=9700+index,
+                    expect_targets_superset=["LootZoneIndia11"])
+                check("only the matching shelf survives delivery routing",
+                      targets is not None and set(targets).intersection(shelves) ==
+                      ({expected} if expected else set()))
+        finally:
+            bot.DASHBOARD_CATEGORY_FILTERS = old_shelves
+            if old_source is None:
+                bot.SOURCE_TO_TARGETS.pop("shelf_test_source", None)
+            else:
+                bot.SOURCE_TO_TARGETS["shelf_test_source"] = old_source
+
         saved_category_targets = dict(bot.CATEGORY_TARGETS)
         bot.CATEGORY_TARGETS["footwear"] = "TestFootwearDeals"
         bot.CATEGORY_TARGETS["electronics"] = "TestElectronicsDeals"

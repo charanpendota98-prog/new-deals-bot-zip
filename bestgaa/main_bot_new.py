@@ -85,7 +85,6 @@ import signal
 import sqlite3
 import sys
 import time
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -101,7 +100,8 @@ from telethon.errors import (
     FloodWaitError,
     UserAlreadyParticipantError,
 )
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import (
     MessageEntityTextUrl,
     MessageEntityUrl,
@@ -330,6 +330,18 @@ try:
     SAME_PRODUCT_DISCOUNT_MARGIN = 15  # STRICT: only 15%+ better discount can override 24h (prevents 5% loophole spam)
 except ValueError:
     SAME_PRODUCT_DISCOUNT_MARGIN = 5
+# A cheaper repeat of an already-posted product is news only when the drop is
+# real: a token one-rupee / rounding wobble between two captions of the same
+# deal must not repost it (same-product-multiple-times, 2026-10-12).
+SAME_PRODUCT_PRICE_DROP_FRACTION = 0.05
+# USER RULE (2026-10-12): "1 hour lopala malli post cheyoddu" - inside this
+# cool-down a same-product repeat is ALWAYS skipped, even a cheaper copy. The
+# same deal races across sources within minutes wearing different captions and
+# slightly different figures; most of that "better" is caption noise, not a new
+# offer. Past the cool-down (but inside SAME_PRODUCT_SKIP_SECONDS) a genuinely
+# better copy still posts; past the window anything posts.
+SAME_PRODUCT_COOLDOWN_SECONDS = 3600
+# Every product in a roundup participates in dedup; never truncate tail IDs.
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
 # and nothing we invent. Our own "join the loot family" footer and the folder
 # link are therefore OFF by default; set ADD_OUR_CHANNEL_FOOTER=true to put them
@@ -392,6 +404,17 @@ PASSTHROUGH_UNMONETIZED = os.getenv("PASSTHROUGH_UNMONETIZED", "true").strip().l
 STRIP_CAMPAIGN_BANNERS = os.getenv("STRIP_CAMPAIGN_BANNERS", "false").strip().lower() in ("1", "true", "yes", "on")
 EK_MAX_CONCURRENCY = max(1, int(os.getenv("EK_MAX_CONCURRENCY", "8")))
 POST_RETRIES = max(1, int(os.getenv("POST_RETRIES", "3")))
+# (queue_id, target) pairs whose post is already OUT on Telegram but whose
+# ledger record failed even after patient retries (SETTLE FAILED). The next
+# pass retries ONLY the bookkeeping for these, never the send - re-sending an
+# already-sent post is exactly the post-deploy repeat this guards against
+# (2026-10-11, second hole: the settle writes after deliver() could still
+# throw the job back into fail_job's requeue mill). Process-local: a crash
+# loses it, and the crash window stays at-least-once like any Telegram send.
+SETTLED_BUT_UNRECORDED: dict[tuple[int, str], dict] = {}
+# Breathing room between ledger-write retries for an already-sent target, so a
+# wedged database idles instead of hot-looping the claim/finish cycle.
+UNRECORDED_SETTLE_RETRY_DELAY = 30.0
 # Every outbound HTTP probe gets a real budget instead of the 18-30s default,
 # and repeated probes of the same URL are cached, so one slow merchant site can
 # no longer hold up the whole queue.
@@ -589,6 +612,7 @@ def is_own_channel_source(source: str) -> bool:
     owned = {SHOPPING_TARGET, SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET,
              POWER_FILTER_TARGET, PREMIUM_TARGET, UNDER99_TARGET, UNDER499_TARGET,
              *CATEGORY_TARGETS.values()}
+    owned.update(t for targets in globals().get("SOURCE_TO_TARGETS", {}).values() for t in targets)
     return name in {t.lower() for t in owned if t}
 
 
@@ -1159,6 +1183,93 @@ UNDER99_SOURCES = {
     "https://t.me/+LP6MYEpCwi0zOGYx",
 }
 
+# Dashboard-managed channels (2026-10-13): operator-added targets from
+# channels.json (next to the bot database) merge over the maps above at
+# startup and the upgraded live watcher handles new destinations/sources.
+# Existing policy edits still need an approved restart. Missing/corrupt files mean "no
+# dashboard channels": this block can never break startup.
+# DASHBOARD_CATEGORY_FILTERS maps a dashboard target (lowercased) to the
+# product categories it keeps - e.g. an electronics-only shelf. Targets
+# absent from the map take every category, exactly as before.
+BUILTIN_SOURCE_NAMES = frozenset(SOURCE_TO_TARGETS)
+DASHBOARD_SCOPED_SOURCES: set[str] = set()
+SOURCE_DETAILS: dict[str, dict] = {}
+SOURCE_ACTIVATED_AT: dict[str, float] = {}
+DASHBOARD_CATEGORY_FILTERS: dict[str, frozenset] = {}
+try:
+    try:
+        from bestgaa import channels_config as _dashboard_channels
+    except ImportError:
+        # Script-style launch (bestgaa/ itself on sys.path): plain import.
+        import channels_config as _dashboard_channels
+
+    _dashboard_data = _dashboard_channels.load_channels()
+    _dashboard_targets = {
+        SECRET_TARGET, "LootZoneIndia11", TRICKS_TARGET, POWER_FILTER_TARGET,
+        UNDER99_TARGET, UNDER499_TARGET, PREMIUM_TARGET, SHOPPING_TARGET,
+        *(t for t in CATEGORY_TARGETS.values() if t),
+    }
+    _dashboard_summary = _dashboard_channels.apply_to_routing(
+        SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, _dashboard_data,
+        existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES,
+        main_sources=BUILTIN_SOURCE_NAMES)
+    DASHBOARD_SCOPED_SOURCES.update(set(SOURCE_TO_TARGETS) - BUILTIN_SOURCE_NAMES)
+    AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
+    DASHBOARD_CATEGORY_FILTERS = {
+        str(name).strip().lower(): frozenset(str(c).strip().lower() for c in cats)
+        for name, cats in (_dashboard_summary.get("category_filters") or {}).items()
+        if str(name).strip()
+    }
+    _dashboard_log = logging.getLogger("bestgaa")
+    if _dashboard_summary.get("added"):
+        _dashboard_log.info(
+            "DASHBOARD CHANNELS | +%s target(s): %s",
+            len(_dashboard_summary["added"]), ", ".join(_dashboard_summary["added"]))
+    for _dashboard_cat_name, _dashboard_cat_keys in DASHBOARD_CATEGORY_FILTERS.items():
+        _dashboard_log.info("DASHBOARD CHANNELS | @%s keeps categories: %s",
+                            _dashboard_cat_name, ", ".join(sorted(_dashboard_cat_keys)))
+    for _dashboard_warning in _dashboard_summary.get("warnings", []):
+        _dashboard_log.warning("DASHBOARD CHANNELS | %s", _dashboard_warning)
+    try:
+        _snapshot_targets = set(_dashboard_targets)
+        for _targets in SOURCE_TO_TARGETS.values():
+            _snapshot_targets.update(_targets)
+        _snapshot_path = _dashboard_channels.snapshot_path()
+        _snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+        _snapshot_path.write_text(json.dumps({
+            "started_at": time.time(),
+            "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
+            "main_sources": sorted(str(s) for s in BUILTIN_SOURCE_NAMES if s not in TRICKS_SOURCES),
+            "source_details": SOURCE_DETAILS,
+            "targets": sorted(str(t) for t in _snapshot_targets),
+            "dashboard_added": list(_dashboard_summary.get("added", [])),
+            "category_rules_version": CATEGORY_RULES.get("version", 0),
+            "categories": {str(key): str(item.get("label", key))
+                           for key, item in CATEGORY_DEFINITIONS.items()
+                           if isinstance(item, dict)},
+            "channels_mtime": os.path.getmtime(_dashboard_channels.channels_json_path())
+            if _dashboard_channels.channels_json_path().exists() else 0,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+    except Exception as exc:
+        _dashboard_log.warning("DASHBOARD CHANNELS | snapshot not written: %s", exc)
+except Exception as exc:
+    logging.getLogger("bestgaa").warning("DASHBOARD CHANNELS | config not applied: %s", exc)
+
+
+def dashboard_category_ok(target: str, deal_category: str) -> bool:
+    """True when a dashboard target keeps a post of this category.
+
+    Targets without a category filter always pass; filtered targets (an
+    electronics-only shelf, ...) pass only when the post was classified into
+    one of their categories. Unclassified posts and service promos (category
+    "") never reach a filtered shelf.
+    """
+    wanted = DASHBOARD_CATEGORY_FILTERS.get(str(target or "").strip().lower())
+    if not wanted:
+        return True
+    return bool(deal_category) and str(deal_category).strip().lower() in wanted
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -1185,119 +1296,16 @@ for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
 
 
-def _normalize_category_phrase(value: str) -> str:
-    value = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
-    return re.sub(r"[\W_]+", " ", value, flags=re.UNICODE).strip()
-
-
-CATEGORY_MATCH_RULES = tuple(
-    (key, tuple((_normalize_category_phrase(alias), int(weight))
-                for alias, weight in definition.get("aliases", [])
-                if _normalize_category_phrase(alias)))
-    for key, definition in CATEGORY_DEFINITIONS.items()
-)
-
-
-CATEGORY_QUERY_KEYS = frozenset({
-    "k", "q", "keyword", "keywords", "search", "searchterm", "query",
-    "title", "name", "product", "productname", "category",
-})
-CATEGORY_URL_STOP_SEGMENTS = frozenset({
-    "", "dp", "gp", "aw", "s", "b", "p", "product", "products", "item",
-    "items", "detail", "details", "buy", "shop", "offers", "offer", "ref",
-})
-
-
-def category_words_from_url(url: str) -> str:
-    """Extract readable product/search words from a URL, never opaque IDs/tokens."""
-    try:
-        parsed = urlparse(html.unescape(str(url or "").strip()))
-        if parsed.scheme.lower() not in {"http", "https"}:
-            return ""
-        words: list[str] = []
-        for raw_segment in unquote(parsed.path or "").split("/"):
-            segment = raw_segment.replace("-", " ").replace("_", " ").strip()
-            normalized = _normalize_category_phrase(segment)
-            if not normalized or normalized in CATEGORY_URL_STOP_SEGMENTS:
-                continue
-            if re.fullmatch(r"\d{4,}", segment):
-                continue
-            if re.fullmatch(r"(?i)(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}", raw_segment):
-                continue
-            if re.fullmatch(r"(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+", raw_segment):
-                continue
-            words.append(normalized)
-        for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
-            if key.lower() in CATEGORY_QUERY_KEYS:
-                words.extend(_normalize_category_phrase(value) for value in values if value)
-        return " ".join(word for word in words if word)
-    except Exception:
-        return ""
+try:
+    from .category_classifier import classify_category
+except ImportError:
+    from category_classifier import classify_category
 
 
 def classify_deal_category(text: str | None,
                            link_context: Iterable[str] = ()) -> str | None:
-    """Return one high-confidence category from product copy and link content.
-
-    Classification combines the source's product text with readable slugs and
-    search terms extracted from its incoming/resolved merchant URLs. It does not
-    fetch or claim to inspect merchant-page HTML. Mixed/unclear roundups stay on
-    Main rather than being confidently misfiled into one category.
-    """
-    if not text or not CATEGORY_MATCH_RULES:
-        return None
-    text = str(text)
-    urls = list(URL_RE.findall(text))
-    if isinstance(link_context, str):
-        link_context = (link_context,)
-    for value in link_context or ():
-        candidate = str(value or "").strip()
-        if not candidate:
-            continue
-        extracted = URL_RE.findall(candidate)
-        urls.extend(extracted or ([candidate] if candidate.startswith(("http://", "https://")) else []))
-    link_terms = " ".join(
-        category_words_from_url(url) for url in dict.fromkeys(urls)
-    )
-    content = URL_RE.sub(" ", text) + " " + link_terms
-    normalized = " " + _normalize_category_phrase(content) + " "
-    if normalized.strip() == "":
-        return None
-    matched_rules: list[tuple[str, str, int, int]] = []
-    for key, aliases in CATEGORY_MATCH_RULES:
-        for alias, weight in aliases:
-            hits = min(2, normalized.count(f" {alias} "))
-            if hits:
-                matched_rules.append((key, alias, weight, hits))
-    if not matched_rules:
-        return None
-    category_scores: dict[str, int] = {}
-    for key, alias, weight, hits in matched_rules:
-        # Do not score the same phrase twice: "running shoes" should not get
-        # an extra boost from nested "shoes". This also avoids reading "shoe"
-        # in "shoe rack" as a second footwear product across category rules.
-        nested_in_stronger = any(
-            alias != other_alias and f" {alias} " in f" {other_alias} "
-            and other_weight >= weight
-            for _, other_alias, other_weight, _ in matched_rules
-        )
-        if not nested_in_stronger:
-            category_scores[key] = category_scores.get(key, 0) + hits * weight
-    scores = sorted(((score, key) for key, score in category_scores.items() if score),
-                    reverse=True)
-    if not scores:
-        return None
-    best_score, best_key = scores[0]
-    min_score = max(1, int(CATEGORY_RULES.get("min_score", 3)))
-    min_margin = max(0, int(CATEGORY_RULES.get("min_margin", 2)))
-    runner_up = scores[1][0] if len(scores) > 1 else 0
-    # Two independently strong categories mean a mixed roundup/post. Keep it
-    # on Main instead of picking whichever label happened to score a point more.
-    strong_categories = sum(score >= min_score for score, _ in scores)
-    if (best_score < min_score or strong_categories > 1
-            or best_score - runner_up < min_margin):
-        return None
-    return best_key
+    """Offline conservative shelf classification, shared with dashboard preview."""
+    return classify_category(text, link_context, CATEGORY_RULES)["category"]
 
 
 # Same pattern but with a CAPTURE group: re.split drops the separator itself,
@@ -1544,33 +1552,20 @@ def in_domains(host: str, domains: Iterable[str]) -> bool:
     return any(host_matches(host, d) for d in domains)
 
 
-def hypd_store_of(url: str) -> str:
-    """The store segment of a HYPD share link ("" when the URL is not one).
+try:
+    from .hypd_policy import hypd_parts, meesho_product_id, meesho_key, mapping_valid
+except ImportError:
+    from hypd_policy import hypd_parts, meesho_product_id, meesho_key, mapping_valid
 
-    https://hypd.store/93944/afflink/<token> -> "93944"
-    """
-    try:
-        parsed = urlparse(clean_url(url))
-        if not in_domains((parsed.hostname or "").lower(), HYPD_DOMAINS):
-            return ""
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 2 and parts[1].lower() == "afflink":
-            return parts[0].lower()
-        return ""
-    except Exception:
-        return ""
+
+def hypd_store_of(url: str) -> str:
+    parts = hypd_parts(url)
+    return parts[0] if parts else ""
 
 
 def hypd_afflink_token(url: str) -> str:
-    """The (store, token) pair a HYPD share link identifies."""
-    try:
-        parsed = urlparse(clean_url(url))
-        parts = [part for part in parsed.path.split("/") if part]
-        if len(parts) >= 3 and parts[1].lower() == "afflink":
-            return f"{parts[0].lower()}:{parts[2]}"
-    except Exception:
-        pass
-    return ""
+    parts = hypd_parts(url)
+    return f"{parts[0]}:{parts[1]}" if parts else ""
 
 
 def is_hypd_link(url: str) -> bool:
@@ -1590,6 +1585,11 @@ def hypd_product_keys(value: str) -> list[str]:
     if not url:
         return []
     keys: list[str] = []
+    pid = meesho_product_id(url)
+    key_match = re.fullmatch(r"PID:(?:www\.|m\.)?meesho\.com:([a-z0-9]{6,})", url, re.I)
+    pid = pid or (key_match[1].lower() if key_match else "")
+    if pid:
+        keys.extend(f"PID:{host}:{pid}" for host in ("www.meesho.com", "meesho.com", "m.meesho.com"))
     for candidate in (url, merchant_url(url), canonical_url(url)):
         candidate = clean_url(candidate)
         if candidate and candidate not in keys:
@@ -1892,6 +1892,27 @@ def extract_product_id(value: str) -> str | None:
                 return f"{label}:{host}:{'/'.join(g.lower() for g in match.groups())}"
     except Exception:
         pass
+    return None
+
+
+def verified_product_id(*urls: str | None) -> str | None:
+    """A merchant product id proven by a verified URL - never a guess.
+
+    POST-DEPLOY RULE (2026-10-11): dedup keys on VERIFIED identity only. The
+    merchant id is read from the resolved merchant page (or, failing that, from
+    the verified affiliate destination our own converter produced for it) with
+    extract_product_id(). A URL-hash fallback ("URL:...") is opaque - two
+    spellings of one product hash apart, two products behind one shortener hash
+    together - so it is NOT identity and is never returned here. No product
+    name is invented, no merchant page is fetched or inspected: the URL the
+    converter already verified is the whole evidence.
+    """
+    for url in urls:
+        if not url:
+            continue
+        product_id = extract_product_id(url)
+        if product_id:
+            return product_id
     return None
 
 
@@ -4762,7 +4783,13 @@ def marked_chat_id(value: Any) -> int:
 # ---------------------------------------------------------------------------
 class Store:
     def __init__(self, path: Path):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
+        # timeout=30: a writer blocked behind another connection (a VACUUM in
+        # maintenance, a wal_checkpoint, or an overlapping process during a
+        # deploy) waits instead of raising "database is locked" into the send
+        # path - where a raised ledger write used to retry the TELEGRAM send
+        # and post one queue up to three times (POST_RETRIES) to the same
+        # targets (post-deploy repeats, 2026-10-11).
+        self.conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
         self.conn.row_factory = sqlite3.Row
         self.lock = asyncio.Lock()
         self._schema()
@@ -4797,6 +4824,16 @@ class Store:
           deal_key TEXT PRIMARY KEY,
           queue_id INTEGER NOT NULL,
           claimed_at REAL NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS target_product_claims (
+          target TEXT NOT NULL, signature TEXT NOT NULL, queue_id INTEGER NOT NULL,
+          created_at REAL NOT NULL, PRIMARY KEY(target, signature)
+        );
+        CREATE INDEX IF NOT EXISTS target_claim_owner ON target_product_claims(queue_id,target);
+        CREATE TABLE IF NOT EXISTS send_attempts (
+          queue_id INTEGER NOT NULL, target TEXT NOT NULL, chunk_index INTEGER NOT NULL,
+          payload_hash TEXT NOT NULL, state TEXT NOT NULL, updated_at REAL NOT NULL,
+          PRIMARY KEY(queue_id,target,chunk_index)
         );
         CREATE TABLE IF NOT EXISTS price_posts (
           price INTEGER PRIMARY KEY,
@@ -4936,6 +4973,11 @@ class Store:
         )
         # HYPD share links: lookups are "which of OUR links is this product"
         # (product_key) and "where does this link go" (resolved_url).
+        # Final ownership checks inspect every pairing of an affiliate URL.
+        # Index this lookup so large caches do not require a full-table scan.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_link_cache_affiliate ON link_cache(affiliate_url,created_at DESC)"
+        )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_hypd_product ON hypd_links(product_key)"
         )
@@ -5032,6 +5074,34 @@ class Store:
         except Exception as exc:
             log.warning("Legacy dedup migration skipped: %s", exc)
 
+    async def _commit(self, patient: bool = False) -> None:
+        """Commit, riding out transient writer contention instead of raising it.
+
+        The send path treats a raised ledger write as "not recorded" and retries
+        the TELEGRAM send - which is exactly-once violated. A busy/locked commit
+        (VACUUM, checkpoint, deploy overlap) almost always clears within seconds,
+        so it is retried here with backoff; only a durable failure raises, and
+        the caller then logs it instead of re-sending an already-sent chunk.
+        patient=True is for writes that settle an ALREADY-SENT post (delivery
+        ok=True, mark_product_posted, premium completion, chunk checkpoint): a
+        stalled worker beats a duplicated post, so these wait minutes, not
+        seconds, before admitting defeat.
+        """
+        attempts = 30 if patient else 10
+        base, cap = (0.1, 10.0) if patient else (0.05, 2.0)
+        for attempt in range(attempts):
+            try:
+                self.conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                if attempt >= attempts - 1:
+                    raise
+                await asyncio.sleep(min(cap, base * (2 ** attempt)))
+        self.conn.commit()
+
     async def queue_id_for(self, chat_id: int, msg_id: int) -> int | None:
         """The queue id behind a just-queued message - so the immediacy log line
         can be paired with the "JOB N | ... sent=" line by the deploy verifier."""
@@ -5041,51 +5111,235 @@ class Store:
                                     (key, msg_id)).fetchone()
         return int(row[0]) if row else None
 
-    async def product_already_posted(self, target: str, signature: str,
+    @staticmethod
+    def identity_aliases(keys) -> list[str]:
+        """Match legacy www/mobile merchant keys without changing product IDs.
+
+        Only established merchant hosts are aliases; unrelated shops/subdomains
+        and different product/variant IDs must never collapse.
+        """
+        result = set(keys)
+        for key in keys:
+            match = re.fullmatch(
+                r"(PID|PROD|IT|SKU):(?:www\.|m\.)?"
+                r"(meesho\.com|flipkart\.com|croma\.com):(.+)", key)
+            if match:
+                kind, host, product = match.groups()
+                result.update(f"{kind}:{prefix}{host}:{product}"
+                              for prefix in ("", "www.", "m."))
+        return sorted(result)
+
+    async def claim_target_products(self, queue_id: int, target: str, keys: list[str],
+                                    resuming: bool = False) -> bool:
+        """Durable last-mile exclusion, atomic across workers/connections.
+
+        No time-based expiry: an interrupted send may already be visible. Its
+        product stays fenced until the original job settles or is reviewed.
+        Recheck the absolute hour here to close check -> send/settle races.
+        """
+        keys = self.identity_aliases(keys)
+        async with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                for key in keys:
+                    owner = self.conn.execute(
+                        "SELECT queue_id FROM target_product_claims WHERE target=? AND signature=?",
+                        (target, key)).fetchone()
+                    if owner and owner[0] != queue_id:
+                        self.conn.rollback()
+                        return False
+                    recent = self.conn.execute(
+                        "SELECT 1 FROM posted_products WHERE target=? AND signature=? AND posted_at>?",
+                        (target, key, time.time() - SAME_PRODUCT_COOLDOWN_SECONDS)).fetchone()
+                    if recent and not resuming:
+                        self.conn.rollback()
+                        return False
+                for key in keys:
+                    self.conn.execute("INSERT OR IGNORE INTO target_product_claims VALUES(?,?,?,?)",
+                                      (target, key, queue_id, time.time()))
+                await self._commit(patient=True)
+                return True
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    async def release_target_products(self, queue_id: int, target: str) -> None:
+        async with self.lock:
+            self.conn.execute("DELETE FROM target_product_claims WHERE queue_id=? AND target=?",
+                              (queue_id, target))
+            await self._commit(patient=True)
+
+    async def send_attempt(self, queue_id: int, target: str, index: int,
+                           payload_hash: str, state: str) -> bool:
+        """Write-before-send fence. A crash/timeout is never permission to retry.
+
+        A confirmed rejection is retryable. A confirmed success advances the
+        chunk checkpoint in the SAME transaction. Started/uncertain attempts
+        need operator review; even a second process cannot send them again.
+        """
+        async with self.lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                old = self.conn.execute(
+                    "SELECT payload_hash,state FROM send_attempts WHERE queue_id=? AND target=? AND chunk_index=?",
+                    (queue_id, target, index)).fetchone()
+                if state == "plan" and old and old[0] != payload_hash:
+                    raise AmbiguousDelivery("delivery layout changed after preparation; manual review required")
+                if state == "started" and old:
+                    if old[0] != payload_hash or old[1] in {"started", "uncertain"}:
+                        raise AmbiguousDelivery("unsettled or changed send attempt; manual review required")
+                    if old[1] == "sent":
+                        self.conn.rollback()
+                        return False
+                self.conn.execute("INSERT OR REPLACE INTO send_attempts VALUES(?,?,?,?,?,?)",
+                                  (queue_id, target, index, payload_hash, state, time.time()))
+                if state == "sent":
+                    self.conn.execute(
+                        "UPDATE deliveries SET chunks_sent=MAX(chunks_sent,?) WHERE queue_id=? AND target=?",
+                        (index + 1, queue_id, target))
+                await self._commit(patient=True)
+                return True
+            except BaseException:
+                self.conn.rollback()
+                raise
+
+    async def delivery_held(self, queue_id: int, target: str, reason: str) -> None:
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE deliveries SET status='held',last_error=?,attempts=attempts+1 WHERE queue_id=? AND target=?",
+                ("manual review: " + reason[:460], queue_id, target))
+            await self._commit(patient=True)
+
+    async def product_already_posted(self, target: str, signatures: str | list[str] | tuple[str, ...],
                                      price: int | None, discount: int | None) -> tuple[bool, str]:
         """Has THIS channel already carried this product inside the skip window?
 
-        Returns (skip, why). A copy that is strictly better - a lower price, or a
-        deeper discount at the same price - is never skipped, because on a deals
-        channel a cheaper repeat of the same product is a real new post.
+        Returns (skip, why). signatures is the headline key plus the exact link
+        keys from text_identity_keys: ANY match means the same product, however
+        differently the new caption is worded. Inside the 1-hour cool-down the
+        repeat is ALWAYS skipped, even a cheaper copy (user rule 2026-10-12:
+        the same deal races across sources within minutes, and most of that
+        "better" is caption noise). Past the cool-down a MEANINGFULLY better
+        copy - a real price drop, or a deeper discount at a lower price - still
+        posts; "better on paper" (a token drop, a bigger claimed percent at the
+        same or higher price) is the same deal wearing different numbers.
         """
-        if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
+        keys = [signatures] if isinstance(signatures, str) else list(signatures or [])
+        keys = self.identity_aliases([key for key in dict.fromkeys(keys) if key])
+        if not keys or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return False, ""
         async with self.lock:
-            row = self.conn.execute(
-                "SELECT price, discount, posted_at FROM posted_products "
-                "WHERE signature=? AND target=? AND posted_at>=?",
-                (signature, target, time.time() - SAME_PRODUCT_SKIP_SECONDS),
-            ).fetchone()
-        if not row:
+            placeholders = ",".join("?" for _ in keys)
+            rows = self.conn.execute(
+                "SELECT signature, price, discount, posted_at FROM posted_products "
+                f"WHERE signature IN ({placeholders}) AND target=? AND posted_at>=? "
+                "ORDER BY posted_at DESC",
+                (*keys, target, time.time() - SAME_PRODUCT_SKIP_SECONDS),
+            ).fetchall()
+        if not rows:
             return False, ""
-        last_price, last_discount, posted_at = row[0], row[1], row[2]
+        last_price, last_discount, posted_at = rows[0]["price"], rows[0]["discount"], rows[0]["posted_at"]
+        age_seconds = time.time() - (posted_at or 0)
+        if age_seconds < SAME_PRODUCT_COOLDOWN_SECONDS:
+            age_mins = max(1, int(age_seconds // 60))
+            return True, (f"same product posted to this channel {age_mins}m ago "
+                          f"(1h cool-down, {len(rows)} key{'s' if len(rows) != 1 else ''} matched)")
         # "Better" has to be MEANINGFULLY better. The discount is re-derived from
         # the post text, and a source that spells out an MRP can read one point
         # higher than the same deal written without it - a 1-point gap is noise,
         # and letting it through is exactly the repeat the user complained about.
-        better_price = price is not None and (last_price is None or price < last_price)
-        better_discount = (discount or 0) >= (last_discount or 0) + SAME_PRODUCT_DISCOUNT_MARGIN
+        # Same for the price: a token drop (a rupee, a rounding wobble between two
+        # captions of one deal) is not a PRICE DROP a reader would care about.
+        if price is not None and last_price is None:
+            better_price = True  # the earlier post had no price at all: news
+        elif price is not None and last_price:
+            drop = (last_price - price) / last_price
+            better_price = drop >= SAME_PRODUCT_PRICE_DROP_FRACTION
+        else:
+            better_price = False
+        deeper_discount = (discount or 0) >= (last_discount or 0) + SAME_PRODUCT_DISCOUNT_MARGIN
+        if deeper_discount and price is not None and last_price is not None:
+            # The SAME price with a bigger claimed percent is two sources doing
+            # different MRP math on one deal - not news. A bigger percent only
+            # counts when the reader also pays less; paying MORE for a bigger
+            # claimed percent is worse, never news.
+            better_discount = price < last_price
+        else:
+            better_discount = deeper_discount
         if better_price or better_discount:
             return False, (f"better copy (₹{price or 0} / {discount or 0}% off vs "
                            f"₹{last_price or 0} / {last_discount or 0}% off)")
-        age_hours = max(1, int((time.time() - posted_at) // 3600))
+        age_hours = max(1, int(age_seconds // 3600))
         return True, f"same product posted to this channel {age_hours}h ago"
 
     async def mark_product_posted(self, target: str, signature: str,
-                                  price: int | None, discount: int | None) -> None:
+                                  price: int | None, discount: int | None,
+                                  extra_signatures: Iterable[str] = (), queue_id: int | None = None) -> None:
+        """Remember a posted product under its headline key plus exact link keys.
+
+        extra_signatures carries the exact link identities behind the post's
+        URLs (merchant PIDs, same-link hashes from text_identity_keys): the
+        same product wearing a different caption still matches one of them, so
+        a reworded repeat cannot slip past the headline key. Every key carries
+        the same figures, so the better-copy comparison never depends on which
+        key happened to match.
+        """
+        keys = self.identity_aliases([signature] + [key for key in dict.fromkeys(extra_signatures or ()) if key])
         if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return
         async with self.lock:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO posted_products VALUES(?,?,?,?,?)",
-                (signature, target, price, discount, time.time()),
-            )
+            now = time.time()
+            for key in keys:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO posted_products VALUES(?,?,?,?,?)",
+                    (key, target, price, discount, now),
+                )
             self.conn.execute(
                 "DELETE FROM posted_products WHERE posted_at<?",
-                (time.time() - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
+                (now - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
             )
-            self.conn.commit()
+            if queue_id is not None:
+                self.conn.execute("DELETE FROM target_product_claims WHERE queue_id=? AND target=?",
+                                  (queue_id, target))
+            await self._commit(patient=True)
+
+    async def text_identity_keys(self, text: str) -> list[str]:
+        """Exact product keys behind the URLs a post carries - no guessing.
+
+        A merchant product id read straight off a URL (ASIN, PID, ...) or off
+        the cached resolved page behind an affiliate short link, plus the
+        same-link hash for URLs with no readable id. Two captions that share
+        one of these ARE the same product, however differently they are
+        worded - this is what catches the cross-source repeat whose headline
+        the word-identity missed. Share/invite/service hosts (t.me, wa.me,
+        social, aggregators) are NEVER keys: the family footer link rides on
+        every post, and keying it would "match" the whole channel.
+        """
+        keys: list[str] = []
+        seen: set[str] = set()
+        urls = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text or "")))
+        skip_hosts = NON_STORE_DOMAINS | NON_SHOP_DOMAINS | SERVICE_OFFER_DOMAINS | {
+            "wa.me", "telegram.me",
+        }
+        async with self.lock:
+            for url in urls:
+                host = (urlparse(url).hostname or "").lower()
+                if not host or in_domains(host, skip_hosts):
+                    continue
+                candidates = [url]
+                with contextlib.suppress(sqlite3.OperationalError):
+                    row = self.conn.execute(
+                        "SELECT resolved_url FROM link_cache WHERE affiliate_url=? LIMIT 1",
+                        (url,),
+                    ).fetchone()
+                    if row and row[0]:
+                        candidates.append(clean_url(row[0]))
+                for candidate in candidates:
+                    key = product_key(candidate)
+                    if key and key not in seen:
+                        seen.add(key)
+                        keys.append(key)
+        return keys
 
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
         """True when this exact source message is already known to the queue."""
@@ -5168,7 +5422,7 @@ class Store:
                  json.dumps(sorted(product_identities(text))) if text else None,
                  (text or "")[:8000] or None),
             )
-            self.conn.commit()
+            await self._commit()
         inserted = cur.rowcount > 0
         if inserted:
             # Wake the idle workers immediately: a deal must never wait for the
@@ -5239,7 +5493,7 @@ class Store:
                      max(int(priority), int(row["priority"] or 1)),
                      str(row["chat_id"]), row["msg_id"], row["id"]),
                 )
-                self.conn.commit()
+                await self._commit()
                 log.info("BEST COPY | queue=%s re-pointed at %s msg=%s for %s (score %s beats %s)",
                          row["id"], source, msg_id, ",".join(sorted(wanted)),
                          score, row["quality"] or 0)
@@ -5266,7 +5520,7 @@ class Store:
                 (int(old_chat), int(old_msg), row["source"], time.time(), 3,
                  str(raw_chat_id(int(old_chat))), 0),
             )
-            self.conn.commit()
+            await self._commit()
         if cur.rowcount:
             log.info("BEST COPY ROLLBACK | queue=%s restored the original copy (msg=%s)",
                      row["id"], old_msg)
@@ -5305,7 +5559,7 @@ class Store:
                 # next_at doubles as the claim timestamp while processing, so a
                 # job orphaned mid-flight (kill -9, OOM) can be reclaimed later.
                 self.conn.execute("UPDATE queue SET status='processing', next_at=? WHERE id=?", (now, row["id"]))
-            self.conn.commit()
+            await self._commit()
             return row
 
     async def reclaim_stuck_jobs(self, max_age_seconds: float = 1800) -> int:
@@ -5320,7 +5574,7 @@ class Store:
                 "UPDATE queue SET status='pending', next_at=0 WHERE status='processing' AND next_at<?",
                 (time.time() - max_age_seconds,),
             )
-            self.conn.commit()
+            await self._commit()
             if cur.rowcount:
                 notify_queue()
             return cur.rowcount
@@ -5347,7 +5601,7 @@ class Store:
                     (f"stale job dropped (older than {hours:g}h)", row["id"]),
                 )
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (row["id"],))
-            self.conn.commit()
+            await self._commit()
         if rows:
             log.info("STALE DROP | %s pending job(s) older than %sh skipped instead of posted late",
                      len(rows), hours)
@@ -5360,7 +5614,7 @@ class Store:
         async with self.lock:
             self.conn.execute("UPDATE queue SET product_keys=? WHERE id=?",
                               (json.dumps(list(keys)[:12]), queue_id))
-            self.conn.commit()
+            await self._commit()
 
     async def save_render(self, queue_id: int, text: str, targets: list[str], keys: list[str],
                           premium_rank: int | None = None) -> None:
@@ -5373,7 +5627,7 @@ class Store:
                 self.conn.execute(
                     "INSERT OR IGNORE INTO deliveries(queue_id,target) VALUES(?,?)", (queue_id, target)
                 )
-            self.conn.commit()
+            await self._commit()
 
     async def cached_link(self, source_url: str) -> sqlite3.Row | None:
         async with self.lock:
@@ -5389,7 +5643,10 @@ class Store:
         if (not token or not is_our_hypd_link(afflink_url)
                 or not in_domains(host, HYPD_MERCHANT_DOMAINS)):
             return False
-        # Store the clean Meesho page so a later bare Meesho product URL matches.
+        if not mapping_valid(afflink_url, resolved_url, hypd_store_of(afflink_url),
+                             product_key_value, OUR_HYPD_STORES):
+            return False
+        # Store only a single identified Meesho product, not a storefront/search.
         page = clean_url(merchant_url(resolved_url))
         async with self.lock:
             self.conn.execute(
@@ -5398,7 +5655,7 @@ class Store:
                 (token, hypd_store_of(afflink_url), clean_url(afflink_url),
                  page, product_key_value or "", time.time()),
             )
-            self.conn.commit()
+            await self._commit()
         # This product is no longer "missing our link".
         with contextlib.suppress(Exception):
             await self.forget_hypd_wanted(page, product_key_value or "", afflink_url)
@@ -5411,7 +5668,7 @@ class Store:
             return 0
         async with self.lock:
             cur = self.conn.execute("DELETE FROM hypd_links WHERE token=?", (token,))
-            self.conn.commit()
+            await self._commit()
             return max(cur.rowcount or 0, 0)
 
     async def hypd_link_for(self, *keys: str,
@@ -5433,22 +5690,34 @@ class Store:
         async with self.lock:
             for key in wanted:
                 rows = self.conn.execute(
-                    "SELECT afflink_url, resolved_url FROM hypd_links WHERE product_key=? "
+                    "SELECT afflink_url, resolved_url, store, product_key FROM hypd_links WHERE product_key=? "
                     "OR resolved_url=? OR afflink_url=? ORDER BY created_at DESC",
                     (key, key, key)).fetchall()
                 for row in rows:
                     if not row["afflink_url"]:
                         continue
                     host = (urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower()
-                    if include_outside_meesho or in_domains(host, HYPD_MERCHANT_DOMAINS):
+                    if include_outside_meesho and not in_domains(host, HYPD_MERCHANT_DOMAINS):
+                        return row["afflink_url"]  # invalidation only; never delivery
+                    if mapping_valid(row["afflink_url"], row["resolved_url"], row["store"],
+                                     row["product_key"], OUR_HYPD_STORES):
                         return row["afflink_url"]
         return None
+
+    async def hypd_product_for(self, afflink: str) -> str:
+        """Previously verified product for an exact share, including curated-only rows."""
+        async with self.lock:
+            if not self._hypd_mapping_is_valid(afflink):
+                return ""
+            row = self.conn.execute("SELECT resolved_url FROM hypd_links WHERE token=?",
+                                    (hypd_afflink_token(afflink),)).fetchone()
+            return str(row["resolved_url"] or "") if row else ""
 
     async def remember_hypd_wanted(self, product_url: str, product_key_value: str) -> bool:
         """A Meesho product we have NO HYPD link for: commission leaking."""
         url = clean_url(product_url)
         host = (urlparse(url).hostname or "").lower()
-        if not url or not in_domains(host, HYPD_MERCHANT_DOMAINS):
+        if not url or not in_domains(host, HYPD_MERCHANT_DOMAINS) or not meesho_product_id(url):
             return False
         now = time.time()
         async with self.lock:
@@ -5461,7 +5730,7 @@ class Store:
                 " product_key=COALESCE(excluded.product_key, product_key)",
                 (url, product_key_value or "", now, now),
             )
-            self.conn.commit()
+            await self._commit()
         return existing is None
 
     def recent_hypd_wanted(self, limit: int = 200) -> list[dict[str, Any]]:
@@ -5491,17 +5760,17 @@ class Store:
                         "DELETE FROM hypd_wanted WHERE product_url=? OR product_key=?",
                         (variant, key))
                     removed += max(cursor.rowcount or 0, 0)
-            self.conn.commit()
+            await self._commit()
         return removed
 
     def recent_hypd_links(self, limit: int = 500) -> list[tuple[str, str]]:
         """Meesho-only (afflink_url, resolved_url) pairs — used by ops/hypd_links.py."""
         rows = self.conn.execute(
-            "SELECT afflink_url, resolved_url FROM hypd_links ORDER BY created_at DESC").fetchall()
+            "SELECT afflink_url, resolved_url, store, product_key FROM hypd_links ORDER BY created_at DESC").fetchall()
         out = []
         for row in rows:
-            host = (urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower()
-            if in_domains(host, HYPD_MERCHANT_DOMAINS):
+            if mapping_valid(row["afflink_url"], row["resolved_url"], row["store"],
+                             row["product_key"], OUR_HYPD_STORES):
                 out.append((row["afflink_url"], row["resolved_url"] or ""))
                 if len(out) >= max(1, int(limit)):
                     break
@@ -5571,7 +5840,7 @@ class Store:
                 "INSERT OR REPLACE INTO link_cache VALUES(?,?,?,?,?)",
                 (canonical_url(source_url), affiliate, resolved, key, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def remember_owned_link_proof(self, affiliate_url: str, destination_url: str,
                                         proof_type: str) -> None:
@@ -5579,17 +5848,20 @@ class Store:
         affiliate = clean_url(affiliate_url)
         destination = clean_url(destination_url)
         if (not affiliate or not destination
-                or proof_type not in {"earnkaro_api", "amazon_native"}):
+                or proof_type not in {"earnkaro_api", "amazon_native", "hypd"}):
             return
         async with self.lock:
-            publisher_id = OUR_EK_ID if proof_type == "earnkaro_api" else ""
+            if proof_type == "hypd" and not self._hypd_mapping_is_valid(destination):
+                return
+            publisher_id = (hypd_store_of(destination) if proof_type == "hypd"
+                            else OUR_EK_ID if proof_type == "earnkaro_api" else "")
             self.conn.execute(
                 "INSERT OR REPLACE INTO owned_link_proofs "
                 "(affiliate_url,destination_url,proof_type,publisher_id,created_at) "
                 "VALUES(?,?,?,?,?)",
                 (affiliate, destination, proof_type, publisher_id, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     @staticmethod
     def is_our_amazon_tag_link(url: str) -> bool:
@@ -5632,15 +5904,41 @@ class Store:
         except Exception:
             return False
 
+    def _hypd_mapping_is_valid(self, afflink: str, expected: str = "") -> bool:
+        token = hypd_afflink_token(afflink)
+        if not token or not is_our_hypd_link(afflink):
+            return False
+        row = self.conn.execute(
+            "SELECT afflink_url,resolved_url,store,product_key FROM hypd_links WHERE token=?", (token,)
+        ).fetchone()
+        if not row or hypd_afflink_token(row["afflink_url"]) != token or not mapping_valid(
+                row["afflink_url"], row["resolved_url"], row["store"], row["product_key"], OUR_HYPD_STORES):
+            return False
+        if not expected or hypd_afflink_token(expected) == token:
+            return True
+        return bool(meesho_product_id(expected) and
+                    meesho_product_id(expected) == meesho_product_id(row["resolved_url"]))
+
     def _strict_cache_pair_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
         """Reject legacy clean-link rows; accept only verified network/native links."""
         affiliate_url = clean_url(affiliate_url)
         resolved_url = clean_url(resolved_url)
+        exact_proof = self.conn.execute(
+            "SELECT destination_url,publisher_id FROM owned_link_proofs "
+            "WHERE affiliate_url=? AND proof_type='hypd'", (affiliate_url,)).fetchone()
+        hypd_context = bool(exact_proof) or any(in_domains((urlparse(url).hostname or "").lower(),
+                                     HYPD_DOMAINS | HYPD_MERCHANT_DOMAINS)
+                           for url in (affiliate_url, resolved_url))
+        if hypd_context:
+            if is_our_hypd_link(affiliate_url):
+                return self._hypd_mapping_is_valid(affiliate_url, resolved_url)
+            return bool(exact_proof
+                        and exact_proof["publisher_id"] == hypd_store_of(exact_proof["destination_url"])
+                        and self._hypd_mapping_is_valid(exact_proof["destination_url"], resolved_url))
         if self.has_native_owned_attribution(affiliate_url):
             return True
         if self.has_native_owned_attribution(resolved_url):
             return True
-        affiliate_host = (urlparse(affiliate_url).hostname or "").lower()
         proof = self.conn.execute(
             "SELECT destination_url,proof_type,publisher_id FROM owned_link_proofs "
             "WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1",
@@ -5658,38 +5956,24 @@ class Store:
             # legacy rows without an identity) fail closed.
             proof_publisher = str(proof["publisher_id"] or "") if proof else ""
             return bool(OUR_EK_ID and proof_publisher == OUR_EK_ID)
-        hypd_candidate = next((value for value in (affiliate_url, resolved_url)
-                               if is_our_hypd_link(value)), "")
-        if hypd_candidate:
-            token = hypd_afflink_token(hypd_candidate)
-            row = self.conn.execute(
-                "SELECT resolved_url FROM hypd_links WHERE token=? AND store=?",
-                (token, hypd_store_of(hypd_candidate)),
-            ).fetchone()
-            if row and in_domains((urlparse(clean_url(row["resolved_url"] or "")).hostname or "").lower(),
-                                  HYPD_MERCHANT_DOMAINS):
-                return True
-        if affiliate_host in OUR_RUNTIME_SHORTENER_DOMAINS:
-            # Bitly/is.gd are generic services: the recorded pair must show the
-            # destination we minted was itself an owned network/native link or
-            # a product page covered by a verified HYPD mapping.
-            hypd_page = clean_url(merchant_url(resolved_url))
-            hypd_key = product_key(hypd_page)
-            verified_hypd = self.conn.execute(
-                "SELECT resolved_url FROM hypd_links WHERE resolved_url=? OR product_key=? "
-                "ORDER BY created_at DESC LIMIT 1",
-                (hypd_page, hypd_key),
-            ).fetchone()
-            verified_hypd = bool(verified_hypd and in_domains(
-                (urlparse(clean_url(verified_hypd["resolved_url"] or "")).hostname or "").lower(),
-                HYPD_MERCHANT_DOMAINS))
-            return (self.has_native_owned_attribution(resolved_url)
-                    or verified_hypd
-                    or bool(hypd_candidate and self.conn.execute(
-                        "SELECT 1 FROM hypd_links WHERE afflink_url=? AND resolved_url=? LIMIT 1",
-                        (clean_url(hypd_candidate), clean_url(resolved_url)),
-                    ).fetchone()))
+        if proof_type == "hypd":
+            share = str(proof["destination_url"] or "")
+            return (str(proof["publisher_id"] or "") == hypd_store_of(share)
+                    and self._hypd_mapping_is_valid(share, resolved_url))
+        if is_our_hypd_link(affiliate_url):
+            return self._hypd_mapping_is_valid(affiliate_url, resolved_url)
+        # A generic shortener cache row or a mapping for a similar product is
+        # not proof that THIS short URL was minted from our HYPD share link.
+
         return False
+
+    def _strict_url_is_owned(self, url: str) -> bool:
+        """Every recorded pairing must pass, not whichever row SQLite returns first."""
+        rows = self.conn.execute(
+            "SELECT affiliate_url,resolved_url FROM link_cache WHERE affiliate_url=?", (url,)
+        ).fetchall()
+        return (all(self._strict_cache_pair_is_owned(row["affiliate_url"], row["resolved_url"] or "")
+                    for row in rows) if rows else self._strict_cache_pair_is_owned(url, ""))
 
     async def cached_link_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
         """Check cached link provenance under the same lock as the final gate."""
@@ -5712,19 +5996,7 @@ class Store:
                 for url in urls:
                     if self.has_native_owned_attribution(url):
                         continue
-                    row = self.conn.execute(
-                        "SELECT affiliate_url,resolved_url FROM link_cache "
-                        "WHERE affiliate_url=? ORDER BY created_at DESC LIMIT 1", (url,),
-                    ).fetchone()
-                    if row:
-                        if not self._strict_cache_pair_is_owned(
-                                row["affiliate_url"], row["resolved_url"] or ""):
-                            return False
-                    elif not self._strict_cache_pair_is_owned(url, ""):
-                        # Amazon search/browse links deliberately avoid link_cache
-                        # because canonical_url() collapses distinct searches. A
-                        # separately persisted native-tag proof covers their Bitly
-                        # form without creating an unsafe shared cache key.
+                    if not self._strict_url_is_owned(url):
                         return False
             return True
 
@@ -5747,6 +6019,34 @@ class Store:
                 if not found:
                     return False
         return True
+
+    async def presend_links_verified(self, text: str) -> tuple[bool, str]:
+        """Last line of defense before a strict post goes out: every URL in the
+        FINAL per-target text must be ours (native owned attribution or a
+        verified converter/shortener proof) or one of our own family links.
+        Returns (True, "") or (False, offending_url). This mirrors the strict
+        branch of verify_generated_text exactly - same queries, same proof
+        helper - but runs on the text as it will be sent, after the per-target
+        rewrites (programme-safe copy, retag, disclosure). A source short
+        link, a foreign tag, or a clean merchant page that somehow survived
+        rendering is stopped here instead of posted: their links never reach a
+        channel and no commission is silently missed (user rule 2026-10-12).
+        """
+        urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+        if not urls:
+            return True, ""
+        family = {clean_url(OUR_FOLDER_LINK),
+                  *(clean_url(x) for x in OUR_MAIN_CHANNEL_LINKS)}
+        async with self.lock:
+            for url in urls:
+                if url in family:
+                    continue
+                if self.has_native_owned_attribution(url):
+                    continue
+                owned = self._strict_url_is_owned(url)
+                if not owned:
+                    return False, url
+        return True, ""
 
     async def preview_allowed(self, text: str) -> bool:
         """Keep Amazon product previews; suppress Flipkart/Myntra generic cards and wasteful list previews (user rule 2026-09-04)."""
@@ -5842,11 +6142,11 @@ class Store:
                 # content fingerprint above is the honest check for it: same text twice
                 # is still refused, this text once is a first.
                 if not keys and content_key:
-                    self.conn.commit()
+                    await self._commit()
                     return True, []
                 self.conn.rollback()
                 return False, []
-            self.conn.commit()
+            await self._commit()
             return True, new_keys
 
     async def claim_content_key(self, queue_id: int, content_key: str | None) -> bool:
@@ -5882,7 +6182,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE queue SET deal_keys_json=? WHERE id=?", (json.dumps(keys), queue_id)
                 )
-            self.conn.commit()
+            await self._commit()
             return True
 
     async def has_pending_work(self) -> bool:
@@ -5916,7 +6216,7 @@ class Store:
                 " VALUES(?,?,?,?,?)",
                 (source_url, url, url, deal_key, time.time()),
             )
-            self.conn.commit()
+            await self._commit()
 
     async def revive_edited_job(self, chat_key: str, msg_id: int) -> str | None:
         """Re-open a source post that was edited before it reached any target.
@@ -5932,7 +6232,7 @@ class Store:
             row = self.conn.execute(
                 "SELECT q.id, q.status FROM queue q WHERE q.chat_key=? AND q.msg_id=? "
                 "AND NOT EXISTS (SELECT 1 FROM deliveries d "
-                "WHERE d.queue_id=q.id AND d.status='sent')",
+                "WHERE d.queue_id=q.id AND d.status='sent' AND COALESCE(d.last_error,'')='')",
                 (str(chat_key), msg_id),
             ).fetchone()
             if not row:
@@ -5946,7 +6246,7 @@ class Store:
                 "rendered_text=NULL, last_error='' WHERE id=?",
                 (row["id"],),
             )
-            self.conn.commit()
+            await self._commit()
         notify_queue()
         return "revived"
 
@@ -5955,12 +6255,16 @@ class Store:
         after a restart) sends byte-identical chunks."""
         async with self.lock:
             self.conn.execute("UPDATE queue SET rendered_text=? WHERE id=?", (text, queue_id))
-            self.conn.commit()
+            await self._commit()
 
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
+            # Terminal states: sent (posted), skipped (policy), held (uncertain;
+            # manual review). Anything else ('pending', legacy 'failed')
+            # is still actionable.
             rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status!='sent'", (queue_id,)
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped','held')",
+                (queue_id,),
             ).fetchall()
             return [r[0] for r in rows]
 
@@ -5978,7 +6282,7 @@ class Store:
                 "UPDATE deliveries SET chunks_sent=MAX(chunks_sent,?) WHERE queue_id=? AND target=?",
                 (chunks_sent, queue_id, target),
             )
-            self.conn.commit()
+            await self._commit(patient=True)
 
     async def delivery(self, queue_id: int, target: str, ok: bool, error: str = "") -> None:
         async with self.lock:
@@ -5986,7 +6290,26 @@ class Store:
                 "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
                 ("sent" if ok else "pending", error[:500], queue_id, target),
             )
-            self.conn.commit()
+            await self._commit()
+
+    async def delivery_skipped(self, queue_id: int, target: str, reason: str) -> None:
+        """Record a target this post was deliberately WITHHELD from.
+
+        POST-DEPLOY FIX (2026-10-11): policy skips (duplicate product,
+        review-channel filters, undeclared-tag targets, unreachable extra
+        targets) used to be stored as status='sent', so the ledger - and both
+        audits - counted a withheld post as a delivered one (Adidas queues
+        351498/351502: last_error='duplicate product' on status='sent' rows).
+        'skipped' is terminal like 'sent' (never retried) but is never counted
+        as a send. Rows written by older builds keep status='sent' with a
+        non-empty last_error; the audits treat those as skips too.
+        """
+        async with self.lock:
+            self.conn.execute(
+                "UPDATE deliveries SET status=?,attempts=attempts+1,last_error=? WHERE queue_id=? AND target=?",
+                ("skipped", reason[:500], queue_id, target),
+            )
+            await self._commit()
 
     async def shopping_quota_left(self) -> int:
         """How many more posts the review channel may take today (IST)."""
@@ -6047,7 +6370,7 @@ class Store:
             # Keep the table tiny: yesterday's counters are of no further use.
             self.conn.execute("DELETE FROM shopping_quota WHERE day_key < ?",
                               ((datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d"),))
-            self.conn.commit()
+            await self._commit()
 
     async def claim_premium(self, queue_id: int) -> tuple[bool, float]:
         """Atomically gate highest-score premium job for the evening window."""
@@ -6063,32 +6386,32 @@ class Store:
                 )
                 state = self.conn.execute("SELECT * FROM premium_state WHERE id=1").fetchone()
             if not inside:
-                self.conn.commit()
+                await self._commit()
                 return False, next_window
             if state["sent_count"] >= PREMIUM_MAX_PER_NIGHT:
-                self.conn.commit()
+                await self._commit()
                 return False, next_window
             if state["claim_queue_id"] and state["claim_queue_id"] != queue_id and state["claim_at"] >= now - 600:
-                self.conn.commit()
+                await self._commit()
                 return False, max(now + 60, float(state["next_at"] or 0))
             top = self.conn.execute(
                 """SELECT q.id FROM queue q JOIN deliveries d ON d.queue_id=q.id
-                   WHERE d.target=? AND d.status!='sent' AND q.premium_score IS NOT NULL
+                   WHERE d.target=? AND d.status NOT IN ('sent','skipped','held') AND q.premium_score IS NOT NULL
                      AND q.status IN ('pending','processing')
                    ORDER BY q.premium_score DESC,q.created_at ASC LIMIT 1""",
                 (PREMIUM_TARGET,),
             ).fetchone()
             if top and int(top[0]) != queue_id:
-                self.conn.commit()
+                await self._commit()
                 return False, now + 60
             if now < float(state["next_at"] or 0):
-                self.conn.commit()
+                await self._commit()
                 return False, float(state["next_at"])
             self.conn.execute(
                 "UPDATE premium_state SET claim_queue_id=?,claim_at=? WHERE id=1",
                 (queue_id, now),
             )
-            self.conn.commit()
+            await self._commit()
             return True, now
 
     async def complete_premium(self, queue_id: int, ok: bool) -> None:
@@ -6107,7 +6430,7 @@ class Store:
                 self.conn.execute(
                     "UPDATE premium_state SET claim_queue_id=NULL,claim_at=0 WHERE id=1"
                 )
-            self.conn.commit()
+            await self._commit(patient=ok)
 
     async def finish(self, row: sqlite3.Row, successes: int, price: int | None,
                      premium_defer_until: float | None = None) -> None:
@@ -6133,7 +6456,8 @@ class Store:
                     )
                 self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
             remaining_rows = self.conn.execute(
-                "SELECT target FROM deliveries WHERE queue_id=? AND status!='sent'", (queue_id,)
+                "SELECT target FROM deliveries WHERE queue_id=? AND status NOT IN ('sent','skipped','held')",
+                (queue_id,),
             ).fetchall()
             remaining_targets = [r[0] for r in remaining_rows]
             only_scheduled_premium = (
@@ -6154,7 +6478,7 @@ class Store:
                 self.conn.execute("UPDATE queue SET status='done' WHERE id=?", (queue_id,))
                 if not successes:
                     self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
-            self.conn.commit()
+            await self._commit()
         # A job that still owes targets must be picked up immediately, not at
         # the end of the next idle poll.
         notify_queue()
@@ -6171,7 +6495,7 @@ class Store:
                 "UPDATE queue SET status=?,attempts=?,next_at=?,last_error=? WHERE id=?",
                 (status, attempts, next_at, error[:1000], row["id"]),
             )
-            self.conn.commit()
+            await self._commit()
         log.info("RETRY | queue=%s attempt=%s status=%s (%s)",
                  row["id"], attempts, status, error[:160])
         notify_queue()
@@ -6182,7 +6506,7 @@ class Store:
                 "UPDATE queue SET status='done',last_error=? WHERE id=?", (reason[:1000], queue_id)
             )
             self.conn.execute("DELETE FROM deal_claims WHERE queue_id=?", (queue_id,))
-            self.conn.commit()
+            await self._commit()
         notify_queue()
 
     async def maintenance(self) -> dict[str, int]:
@@ -6226,7 +6550,7 @@ class Store:
             self.conn.execute(
                 "DELETE FROM deliveries WHERE queue_id NOT IN (SELECT id FROM queue)"
             )
-            self.conn.commit()
+            await self._commit()
             with contextlib.suppress(sqlite3.OperationalError):
                 self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             # Compact only when the durable DB becomes unusually large; normal
@@ -6730,6 +7054,11 @@ class AffiliateClient:
                 clean_url(cached_url) != clean_url(source_url)
                 and cache_attribution_proven
             )
+            if cache_is_safe and meesho_product_id(cached_resolved) and cached_hypd_link:
+                # A cache hit is not a fresh redirect check. Revalidate the share
+                # against the cached identity, including source-share retargeting.
+                return await self._hypd_affiliate_link(cached_hypd_link, source_url, multi_link,
+                                                       destination_hint=cached_resolved)
             # Old releases cached Shopsy->HYPD results. Do not keep serving them
             # after the Meesho-only policy change; remove the stale product map and
             # re-run the normal route for that merchant instead.
@@ -6791,8 +7120,17 @@ class AffiliateClient:
                                                cached["deal_key"] or product_key(cached_resolved))
                     else:
                         log.warning("BITLY unavailable; using verified cached EarnKaro link")
-                return LinkResult(source_url, cached_resolved, cached_url,
-                                  cached["deal_key"] or product_key(source_url))
+                cached_key = cached["deal_key"] or product_key(source_url)
+                if STRICT_OUR_LINKS:
+                    # A legacy cache row can carry an opaque URL-hash key for a
+                    # merchant page that DOES name its product id. Dedup must
+                    # key on the verified identity, so upgrade the key instead
+                    # of serving the stale one (the render gate skips the post
+                    # outright when no identity exists at all).
+                    verified_key = verified_product_id(cached_resolved, cached_url)
+                    if verified_key:
+                        cached_key = verified_key
+                return LinkResult(source_url, cached_resolved, cached_url, cached_key)
         resolved = resolved_hint or await self.resolve(source_url)
         host = (urlparse(resolved).hostname or "").lower()
         if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, NON_SHOP_DOMAINS):
@@ -6806,13 +7144,11 @@ class AffiliateClient:
         non_meesho_hypd_destination = ""
         if is_our_hypd_link(source_url) or is_our_hypd_link(resolved):
             hypd_link = source_url if is_our_hypd_link(source_url) else resolved
-            destination = (resolved if resolved != hypd_link
-                           and in_domains(host, KNOWN_MERCHANT_DOMAINS)
-                           else await self._hypd_destination(hypd_link))
+            destination = await self._hypd_destination(hypd_link)
             destination_host = (urlparse(clean_url(destination)).hostname or "").lower()
             if in_domains(destination_host, HYPD_MERCHANT_DOMAINS):
                 return await self._hypd_affiliate_link(
-                    hypd_link, source_url, multi_link, destination_hint=destination)
+                    hypd_link, source_url, multi_link, destination_hint=destination, destination_verified=True)
             if destination and in_domains(destination_host, KNOWN_MERCHANT_DOMAINS):
                 # Shopsy/other merchants must not inherit our HYPD route. Continue
                 # through their ordinary affiliate path, then keep a clean merchant
@@ -6851,6 +7187,7 @@ class AffiliateClient:
                     clean_url(resolved)[:90])
                 log.info("HYPD WANTED | added to the curation list (%s product(s) pending)",
                          len(store.recent_hypd_wanted(limit=1000)))
+            return None  # fail closed: never invent a HYPD token or publish bare/source Meesho
 
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
@@ -6964,51 +7301,60 @@ class AffiliateClient:
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                                        "AppleWebKit/537.36 Chrome/131 Safari/537.36"},
             ) as response:
+                if response.status >= 400:
+                    return ""
                 final = str(response.url)
                 if final and clean_url(final) != clean_url(afflink):
                     return clean_url(final)
                 raw = await response.content.read(200_000)
                 body = raw.decode(getattr(response, "charset", None) or "utf-8", errors="ignore")
+            candidates = {}
+            body = body.replace("\\/", "/")
             for candidate in URL_RE.findall(body):
-                url = clean_url(candidate).replace("\\/", "/")
+                url = clean_url(candidate)
                 host = (urlparse(url).hostname or "").lower()
                 if not host or in_domains(host, HYPD_DOMAINS):
                     continue
                 if in_domains(host, NON_STORE_DOMAINS) or in_domains(host, {"googletagmanager.com"}):
                     continue
                 if in_domains(host, KNOWN_MERCHANT_DOMAINS) or in_domains(host, HYPD_MERCHANT_DOMAINS):
-                    return url
+                    candidates.setdefault(canonical_url(url), url)
+            if len(candidates) == 1:
+                return next(iter(candidates.values()))
         except Exception as exc:
             log.warning("HYPD destination unresolved for %s: %s", afflink[:60], exc)
         return ""
 
     async def _hypd_affiliate_link(self, afflink: str, source_url: str, multi_link: bool,
-                                   destination_hint: str = "") -> "LinkResult | None":
-        """Publish OUR HYPD link only for a verified Meesho destination."""
-        destination = destination_hint or await self._hypd_destination(afflink)
-        destination_host = (urlparse(clean_url(destination)).hostname or "").lower()
-        if not destination or not in_domains(destination_host, HYPD_MERCHANT_DOMAINS):
-            log.warning("HYPD REJECT | link destination is not verified as Meesho; "
-                        "our HYPD link will not be published (%s)", destination_host or "unknown")
+                                   destination_hint: str = "", destination_verified: bool = False) -> "LinkResult | None":
+        """Only our exact share token, resolving to the SAME identified Meesho product."""
+        if not is_our_hypd_link(afflink):
             return None
-        key = product_key(destination)
-        if not key:
-            key = "HYPD:" + (hypd_afflink_token(afflink) or canonical_url(afflink))
+        known_product = await store.hypd_product_for(afflink)
+        destination = destination_hint if destination_verified else await self._hypd_destination(afflink)
+        pid = meesho_product_id(destination)
+        expected_urls = [value for value in (destination_hint, known_product) if value]
+        expected_ids = {meesho_product_id(value) for value in expected_urls}
+        if not pid or (expected_ids and expected_ids != {pid}):
+            await store.forget_hypd_link(afflink)
+            for expected_url in expected_urls:
+                if meesho_product_id(expected_url) and meesho_product_id(expected_url) != pid:
+                    await store.remember_hypd_wanted(expected_url, meesho_key(expected_url))
+            log.warning("HYPD REJECT | unverified destination or product mapping drift; link withheld")
+            return None
+        key = meesho_key(destination)
+        if not await store.remember_hypd_link(afflink, destination, key):
+            return None
         affiliate = afflink
         if HYPD_ALWAYS_BITLY or len(afflink) > SHORTEN_MIN_LEN:
-            shortened = await self.shorten(afflink)
-            if shortened:
-                affiliate = shortened
-            else:
-                # Never lose the user's own commission link to a shortener
-                # outage: the HYPD link itself is short and always works.
-                log.warning("BITLY unavailable; posting OUR HYPD link as it is")
-        await store.cache_link(source_url, affiliate, destination or afflink, key)
-        with contextlib.suppress(Exception):
-            await store.remember_hypd_link(afflink, destination, key)
-        log.info("HYPD LINK | %s -> %s%s", afflink[:70], affiliate[:70],
-                 f" | behind it: {destination[:60]}" if destination else " | destination unknown")
-        return LinkResult(source_url, destination or afflink, affiliate, key)
+            affiliate = await self.shorten(afflink) or afflink
+            if affiliate == afflink:
+                log.warning("BITLY unavailable; keeping verified OUR HYPD link")
+        await store.cache_link(source_url, affiliate, destination, key)
+        if affiliate != afflink:
+            await store.remember_owned_link_proof(affiliate, afflink, "hypd")
+        log.info("HYPD LINK | owned store=%s product=%s", hypd_store_of(afflink), key)
+        return LinkResult(source_url, destination, affiliate, key)
 
     async def _native_amazon_link(self, source_url: str, clean: str, resolved: str,
                                   multi_link: bool) -> "LinkResult | None":
@@ -7409,6 +7755,8 @@ class AffiliateClient:
                 # the real store; tests can override it.
                 with contextlib.suppress(Exception):
                     await self.cache_link(url, shortened, url, product_key(url))
+                    if is_our_hypd_link(url):
+                        await store.remember_owned_link_proof(shortened, url, "hypd")
         for raw, shortened in replacements.items():
             out = replace_url_everywhere(out, raw, shortened)
         if compacted or replacements:
@@ -7508,12 +7856,64 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
 RESOLVED_SOURCE_IDS: dict[str, int] = {}
 
 
+async def resolve_dashboard_source(client, source):
+    """Resolve already-joined channels only. Never invokes Import/Join requests."""
+    if "/+" in source:
+        invite = await client(CheckChatInviteRequest(source.split("+", 1)[1]))
+        entity = getattr(invite, "chat", None)
+        if type(invite).__name__ != "ChatInviteAlready" or entity is None:
+            raise ValueError("Private source: join using the bot session account, then retry")
+    else:
+        entity = await client.get_entity(source)
+    if not getattr(entity, "broadcast", False):
+        raise ValueError("Source must be a Telegram broadcast channel, not a user/group")
+    participant = (await client(GetParticipantRequest(entity, "me"))).participant
+    if type(participant).__name__ in {"ChannelParticipantLeft", "ChannelParticipantBanned"} or getattr(entity, "left", False):
+        raise ValueError("Source access missing: join with the bot session account first")
+    return entity
+
+
+def dashboard_source_added(source, entity, activated):
+    RESOLVED_SOURCE_IDS[source] = fetch_chat_id(entity, entity.id)
+    if source not in BUILTIN_SOURCE_NAMES:
+        DASHBOARD_SCOPED_SOURCES.add(source)
+        SOURCE_ACTIVATED_AT.setdefault(source, activated)
+
+
+def source_message_is_current(source, msg):
+    cutoff = SOURCE_ACTIVATED_AT.get(source, 0)
+    stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
+    return not cutoff or stamp >= cutoff
+
+
+def scope_dashboard_targets(source, targets):
+    if source not in DASHBOARD_SCOPED_SOURCES:
+        return targets
+    allowed = {target.lower() for target in SOURCE_TO_TARGETS.get(source, [])}
+    return [target for target in targets if target.lower() in allowed]
+
+
 async def register_source(client: TelegramClient, source_map: dict, source: str,
-                          targets: list[str], do_backfill: bool = False) -> bool:
-    entity = await resolve_entity(client, source)
+                          targets: list[str], do_backfill: bool = False, target_map=None) -> bool:
+    if source in DASHBOARD_SCOPED_SOURCES:
+        try:
+            entity = await resolve_dashboard_source(client, source)
+        except Exception as exc:
+            SOURCE_DETAILS[source] = {"title": source, "state": "join_required", "detail": str(exc)[:160]}
+            return False
+    else:
+        entity = await resolve_entity(client, source)
     if not entity:
         return False
     fetch_id = fetch_chat_id(entity, getattr(entity, "id", 0))
+    if source in DASHBOARD_SCOPED_SOURCES:
+        aliases = {entry[0] for sid, entry in source_map.items()
+                   if abs(int(sid)) in {entity.id, 1000000000000 + entity.id}}
+        if ((aliases and source not in aliases)
+                or any(getattr(target, "id", None) == entity.id for target in (target_map or {}).values())):
+            SOURCE_DETAILS[source] = {"title": str(getattr(entity, "title", source)), "state": "blocked",
+                                      "detail": "Source aliases another intake or posting destination; select the existing source"}
+            return False
     # Map EVERY id convention that can arrive on an update (raw entity id,
     # Telethon's marked channel id, the plain -chat id of a legacy group). A
     # source that only matched one form silently received nothing at all.
@@ -7521,6 +7921,10 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
         if key:
             source_map[key] = (source, list(targets))
     RESOLVED_SOURCE_IDS[source] = fetch_id
+    SOURCE_DETAILS[source] = {"title": str(getattr(entity, "title", "") or source), "state": "ready", "checked_at": time.time()}
+    if source in DASHBOARD_SCOPED_SOURCES:
+        SOURCE_ACTIVATED_AT.setdefault(source, time.time())
+        do_backfill = False
     log.info("SOURCE OK @%s -> %s -> %s", source, fetch_id, targets)
     if do_backfill:
         await backfill_source(client, entity, source)
@@ -7543,7 +7947,7 @@ async def build_maps(client: TelegramClient):
         else:
             log.error("TARGET FAIL @%s", target)
     for source, targets in SOURCE_TO_TARGETS.items():
-        if not await register_source(client, source_map, source, targets, do_backfill=True):
+        if not await register_source(client, source_map, source, targets, do_backfill=True, target_map=target_map):
             log.error("SOURCE FAIL @%s", source)
         await asyncio.sleep(0.08)
     return source_map, target_map
@@ -7574,7 +7978,7 @@ async def maintenance_loop(stop: asyncio.Event) -> None:
 
 
 async def refresh_missing_sources(client: TelegramClient, source_map: dict,
-                                  stop: asyncio.Event) -> None:
+                                  stop: asyncio.Event, target_map=None) -> None:
     """Periodically recover private/invite sources that failed during startup."""
     while not stop.is_set():
         try:
@@ -7586,7 +7990,7 @@ async def refresh_missing_sources(client: TelegramClient, source_map: dict,
         missing = [(source, targets) for source, targets in SOURCE_TO_TARGETS.items()
                    if source not in mapped]
         for source, targets in missing:
-            if await register_source(client, source_map, source, targets, do_backfill=True):
+            if await register_source(client, source_map, source, targets, do_backfill=True, target_map=target_map):
                 log.info("SOURCE RECOVERED @%s", source)
             else:
                 log.warning("SOURCE STILL UNAVAILABLE @%s", source)
@@ -7654,7 +8058,7 @@ async def source_rescan_loop(client: TelegramClient, source_map: dict,
                     messages = await client.get_messages(chat_id, limit=SOURCE_RESCAN_LIMIT)
                 for msg in reversed(messages or []):
                     stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
-                    if stamp < window_start:
+                    if stamp < window_start or not source_message_is_current(source, msg):
                         continue
                     # Cheap pre-filter: a message already in the queue never even
                     # reaches the fingerprint/normalisation work in enqueue.
@@ -7787,9 +8191,9 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
 
     Telethon 1.44 has no `send_media_group` helper, so the raw `SendMultiMediaRequest`
     is used. When the source photo references are still usable nothing is uploaded at
-    all; otherwise each file is uploaded first. False means "this client or Telegram
-    would not do the grid", and the caller then sends plain files - a photo layout is
-    never worth a missing deal.
+    all; otherwise each file is uploaded first. False means preparation failed
+    BEFORE publication, so individual-file fallback is safe. A publication error
+    propagates: it may hide an accepted album and must never trigger fallback.
     """
     try:
         from telethon import functions, types as tl_types
@@ -7806,16 +8210,18 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
                 if photo is None:
                     return False
                 medias.append(tl_types.InputMediaPhoto(id=photo))
-        await client(functions.messages.SendMultiMediaRequest(
-            entity,
-            multi_media=[tl_types.InputSingleMedia(
-                media=media, message=caption if index == 0 else "", random_id=_random_id())
-                for index, media in enumerate(medias)],
-        ))
-        return True
-    except Exception as exc:  # noqa: BLE001 - the caller falls back to single files
-        log.warning("ALBUM | grouped send not possible (%s); sending the photos as usual", exc)
+    except Exception as exc:  # preparation only: no publication RPC was issued
+        log.warning("ALBUM | preparation failed (%s); using individual photos", exc)
         return False
+    # Never fall back after this call: a lost response can hide a successful
+    # album publication. deliver() holds ambiguous outcomes for review.
+    await client(functions.messages.SendMultiMediaRequest(
+        entity,
+        multi_media=[tl_types.InputSingleMedia(
+            media=media, message=caption if index == 0 else "", random_id=_random_id())
+            for index, media in enumerate(medias)],
+    ))
+    return True
 
 
 async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
@@ -7880,20 +8286,34 @@ def outbound_parts(text: str, media_path: str | None) -> list[tuple[str, str]]:
     return [("message", part) for part in chunks(text, 4096)]
 
 
+class AmbiguousDelivery(Exception):
+    """The remote send may have succeeded: never automatically send it again."""
+
+
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
-                  media_refs: list | None = None) -> tuple[bool, str]:
+                  media_refs: list | None = None, attempt_callback=None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
     parts = outbound_parts(sanitize_outbound_text(text), media_path)
+    if attempt_callback:
+        # Media disappearing or changed target formatting must not shift chunk
+        # boundaries on resume. Freeze the complete layout before publication.
+        plan_hash = hashlib.sha256(json.dumps(parts, ensure_ascii=False).encode()).hexdigest()
+        await attempt_callback(-1, plan_hash, "plan")
     if start_chunk > len(parts):
         return False, "invalid chunk checkpoint"
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
         sent = False
         last_error = "unknown send failure"
+        payload_hash = hashlib.sha256((kind + "\n" + content).encode()).hexdigest()
         for attempt in range(POST_RETRIES):
+            if attempt_callback:
+                if not await attempt_callback(index, payload_hash, "started"):
+                    sent = True  # a durable success from an earlier worker/pass
+                    break
             try:
                 if kind == "file":
                     await send_media_item(client, entity, media_path, content, media_refs)
@@ -7901,11 +8321,9 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                     await client.send_message(
                         entity, content, parse_mode=None, link_preview=link_preview
                     )
-                if progress_callback:
-                    await progress_callback(index + 1)
-                sent = True
-                break
             except FloodWaitError as exc:
+                if attempt_callback:
+                    await attempt_callback(index, payload_hash, "rejected")
                 # A Telegram rate-limit. Never let a very long flood (hours /
                 # an account soft-ban) freeze a worker for that long — cap the
                 # in-loop wait, log it loudly, and let the job fall through as
@@ -7917,14 +8335,44 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                             "account; posting resumes automatically.",
                             getattr(entity, "id", entity), getattr(exc, "seconds", 60), wait)
                 await asyncio.sleep(wait + 2)
+                continue
             except (ChannelPrivateError, ChatAdminRequiredError) as exc:
+                if attempt_callback:
+                    await attempt_callback(index, payload_hash, "rejected")
                 return False, str(exc)
             except Exception as exc:
-                last_error = str(exc)
-                if attempt + 1 < POST_RETRIES:
-                    await asyncio.sleep(2 ** attempt)
+                if attempt_callback:
+                    with contextlib.suppress(Exception):
+                        await attempt_callback(index, payload_hash, "uncertain")
+                raise AmbiguousDelivery(f"send outcome unknown ({type(exc).__name__}); no automatic retry") from exc
+            if attempt_callback:
+                try:
+                    await attempt_callback(index, payload_hash, "sent")
+                except Exception as exc:
+                    raise AmbiguousDelivery("send accepted but durable receipt failed; no automatic retry") from exc
+            sent = True
+            break
         if not sent:
             return False, last_error
+        # The chunk is OUT on Telegram. The checkpoint below records that fact -
+        # and it lives OUTSIDE the retry loop on purpose. It used to sit inside
+        # it, so a ledger write that threw (a locked/busy database during a
+        # VACUUM, a checkpoint, or an overlapping writer right after a deploy)
+        # retried the TELEGRAM send instead of the write: one queue went out up
+        # to POST_RETRIES (3) times to the same targets (2026-10-11 repeats).
+        # A failed checkpoint is now logged loudly and the post continues; the
+        # ledger write itself already retries inside Store. Re-sending an
+        # already-sent chunk is never the answer to a bookkeeping failure.
+        # Production also writes a durable send intent before the network call;
+        # an ambiguous result or failed receipt write is held, never retried.
+        if progress_callback:
+            try:
+                await progress_callback(index + 1)
+            except Exception as exc:  # noqa: BLE001 - bookkeeping must never resend
+                log.error("CHECKPOINT FAILED | chunk %s/%s reached Telegram but the "
+                          "ledger write failed (%s); continuing without resend - "
+                          "a later resume may re-check this target",
+                          index + 1, len(parts), exc)
     return True, ""
 
 # ---------------------------------------------------------------------------
@@ -8234,6 +8682,23 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # one source post. Collapse only an exact repeated generated URL. Product-key
     # reservation still provides global 24-hour dedup across source channels.
     converted = distinct_affiliate_results(converted)
+    if STRICT_OUR_LINKS and converted:
+        # POST-DEPLOY RULE (2026-10-11): no trustworthy product identity, no
+        # post. Every converted item must name its merchant product id on the
+        # verified merchant page (or on the verified affiliate destination our
+        # converter produced for it). A search/category/offer page and an
+        # opaque shortener URL carry no identity: posting one risks repeating a
+        # product the channels already saw - or mis-attaching a price to the
+        # wrong product - and dropping just the item would orphan its
+        # name/price lines. So the post is skipped as a unit, like any other
+        # unverified strict-all item. Nothing is invented to fill the gap: no
+        # guessed name, no merchant-page fetch, no URL-hash identity.
+        for result in converted:
+            if not verified_product_id(result.resolved, result.affiliate):
+                host = (urlparse(clean_url(result.resolved or "")).hostname or "?").lower()
+                raise PermanentSkip(
+                    "no trustworthy product identity for %s - skipping rather "
+                    "than risking a mis-posted duplicate" % host)
     keys = list(dict.fromkeys(
         [product_key(resolved) for _, resolved in service_pairs]
         + [product_key(resolved) for _, resolved in passthrough]
@@ -8484,6 +8949,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # remains on the Main feed and adds exactly one category target. This also
     # brings a genuine product out of a Tricks source into Main; unclassified
     # Tricks posts and service promos keep their existing routing.
+    deal_category = ""
+    category_reason = "service_promotion"
     if not service_pairs:
         # The category shelf follows the product, not just caption keywords:
         # include source, resolved merchant, and final affiliate URLs. Readable
@@ -8493,7 +8960,10 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             for value in (result.source, result.resolved, result.affiliate)
             if value
         ]
-        category = classify_deal_category(text, category_link_context)
+        category_decision = classify_category(text, category_link_context, CATEGORY_RULES)
+        category = category_decision["category"]
+        category_reason = category_decision["reason"]
+        deal_category = category or ""
         category_target = CATEGORY_TARGETS.get(category or "", "")
         if category_target:
             if "LootZoneIndia11" not in base_targets:
@@ -8502,6 +8972,19 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 base_targets.append(category_target)
             log.info("CATEGORY ROUTE | %s -> @%s | queue=%s",
                      CATEGORY_DEFINITIONS[category]["label"], category_target, row["id"])
+    # Dashboard category shelves (2026-10-13): a dashboard target with a
+    # category filter keeps ONLY posts classified into its categories (an
+    # electronics shelf never sees fashion, promos, or unclassified posts).
+    # Unfiltered targets - every built-in and every plain dashboard channel -
+    # pass through untouched.
+    if DASHBOARD_CATEGORY_FILTERS and base_targets:
+        withheld = [target for target in base_targets
+                    if not dashboard_category_ok(target, deal_category)]
+        if withheld:
+            log.info("CATEGORY WITHHELD | queue=%s category=%s reason=%s targets=%s",
+                     row["id"], deal_category or "unknown", category_reason, ",".join(withheld))
+        base_targets = [target for target in base_targets
+                        if dashboard_category_ok(target, deal_category)]
     # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
     # same PRODUCT deals every other channel takes, in the programme-safe form
     # rendered at delivery time (name + price + link). A trick/recharge/app promo
@@ -8514,6 +8997,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             and (not SHOPPING_AMAZON_ONLY or is_amazon_only_post(rendered))
             and SHOPPING_TARGET not in base_targets):
         base_targets.append(SHOPPING_TARGET)
+    # Custom intake is channel-local: never fan it into built-in/global routes.
+    base_targets = scope_dashboard_targets(row["source"], base_targets)
     if not base_targets:
         raise PermanentSkip("no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
@@ -8627,12 +9112,47 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
     return msg, rendered, None
 
 
+async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
+                                   identity_keys: list, price: int | None,
+                                   discount: int | None) -> None:
+    """Retry the ledger write for an already-sent target - never the send.
+
+    Called when a target's post reached Telegram but SETTLE FAILED (the
+    database refused the record even after patient retries). Success pops the
+    SETTLED_BUT_UNRECORDED entry so finish() can close the job; failure idles
+    on UNRECORDED_SETTLE_RETRY_DELAY so a wedged database waits instead of
+    hot-looping the claim/finish cycle. Either way nothing re-posts. This is
+    ledger-outage backoff, not fan-out pacing: the send path never waits on it.
+    """
+    try:
+        if premium:
+            await store.complete_premium(queue_id, True)
+        if identity_keys:
+            await store.mark_product_posted(target, identity_keys[0], price, discount,
+                                            identity_keys[1:], queue_id=queue_id)
+        await store.delivery(queue_id, target, True, "")
+        if target == SHOPPING_TARGET:
+            with contextlib.suppress(Exception):
+                await store.note_shopping_sent()
+    except Exception as exc:
+        log.critical(
+            "SETTLE STILL FAILING | queue=%s target=%s (%s): the post is already out - "
+            "retrying the ledger write, never the send", queue_id, target, exc)
+        await asyncio.sleep(UNRECORDED_SETTLE_RETRY_DELAY)
+    else:
+        SETTLED_BUT_UNRECORDED.pop((queue_id, target), None)
+
+
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
     stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
     # a list of files (with their Telegram refs) when the source posted an album
     media_path: list[str] = []
     media_refs: list = []
     successes = 0
+    new_sends = 0
+    settlement_retries = 0
+    held_targets = 0
+    confirmed_chunks = 0
     price = None
     try:
         # A channel we publish to is never a source. The user added the new
@@ -8692,6 +9212,14 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         # strictly better copy still posts, so coverage is never traded away.
         product_sig = product_signature(rendered)
         target_discount = parse_discount(rendered, price)
+        # The repeat guard matches ANY of these: the headline key (the
+        # product's own words) plus the exact link identities behind the
+        # post's URLs. The same product wearing a different caption still
+        # shares a link key, so a reworded cross-source repeat cannot slip
+        # past the headline (user rule 2026-10-12).
+        identity_keys = [product_sig] if product_sig else []
+        identity_keys += [key for key in await store.text_identity_keys(rendered)
+                          if key not in identity_keys]
         if msg and getattr(msg, "media", None) and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice)):
             if media_is_too_large(msg):
                 log.info("MEDIA SKIPPED | queue=%s oversized media; posting the deal as text",
@@ -8783,6 +9311,19 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if first_target_sent and TARGET_FANOUT_GAP_MAX > 0:
                 await asyncio.sleep(random.uniform(TARGET_FANOUT_GAP_MIN, TARGET_FANOUT_GAP_MAX))
             first_target_sent = True
+            unrecorded = SETTLED_BUT_UNRECORDED.get((row["id"], target))
+            if unrecorded is not None:
+                # This target's post is already OUT on Telegram: an earlier
+                # pass sent it and the ledger refused the record (SETTLE
+                # FAILED). Retry ONLY the bookkeeping - never the send. The
+                # ledger row still reads pending, so finish() requeues and
+                # this repeats until the write lands; each failing pass idles
+                # instead of hot-looping, and the post is never doubled.
+                await settle_unrecorded_target(row["id"], target, unrecorded.get("premium"),
+                                               identity_keys, price, target_discount)
+                successes += 1
+                settlement_retries += 1
+                continue
             premium_claimed = False
             if target == PREMIUM_TARGET:
                 premium_claimed, defer_until = await store.claim_premium(row["id"])
@@ -8808,22 +9349,23 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     # retry until the price went stale.
                     log.warning("SHOPPING TARGET UNRESOLVED | @%s not reachable; the deal "
                                 "still goes to every other channel", target)
-                    await store.delivery(row["id"], target, True, "shopping target unresolved")
+                    await store.delivery_skipped(row["id"], target, "shopping target unresolved")
                     continue
                 if target in {value for value in CATEGORY_TARGETS.values() if value}:
                     log.warning("CATEGORY TARGET UNRESOLVED | @%s not reachable; the deal "
                                 "still goes to the Main feed and other channels", target)
-                    await store.delivery(row["id"], target, True, "category target unresolved")
+                    await store.delivery_skipped(row["id"], target, "category target unresolved")
                     continue
                 await store.delivery(row["id"], target, False, "target unresolved")
                 continue
             # v17.8 one product, one channel, one post: the exact merchant id can
             # differ between two sources that link the same product through
             # different shorteners, so the product's own words settle it here.
+            start_chunk = await store.delivery_progress(row["id"], target)
             target_skip_reason = ""
-            if row["source"] not in TRICKS_SOURCES and product_sig:
+            if not start_chunk and row["source"] not in TRICKS_SOURCES and identity_keys:
                 duplicate, why = await store.product_already_posted(
-                    target, product_sig, price, target_discount)
+                    target, identity_keys, price, target_discount)
                 if duplicate:
                     target_skip_reason = why
                 elif why:
@@ -8831,10 +9373,8 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             if target_skip_reason:
                 log.info("DUPLICATE PRODUCT (signature) | queue=%s target=%s | %s",
                          row["id"], target, target_skip_reason)
-                await store.delivery(row["id"], target, True, "duplicate product")
+                await store.delivery_skipped(row["id"], target, "duplicate product")
                 continue
-            start_chunk = await store.delivery_progress(row["id"], target)
-
             async def checkpoint(count: int, queue_id=row["id"], target_name=target):
                 await store.set_delivery_progress(queue_id, target_name, count)
 
@@ -8884,7 +9424,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 if (not safe_text or not URL_RE.search(safe_text) or not _named):
                     log.info("SHOPPING SKIP | queue=%s nothing reviewable left after the "
                              "programme-safe rewrite", row["id"])
-                    await store.delivery(row["id"], target, True, "not programme-safe")
+                    await store.delivery_skipped(row["id"], target, "not programme-safe")
                     continue
                 # Off-programme store on the channel submitted for the AMAZON
                 # programme: it belongs on the other channels, not here.
@@ -8897,13 +9437,13 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 safe_text = retag_foreign_amazon_links(safe_text)
                 if SHOPPING_AMAZON_ONLY and not is_amazon_only_post(safe_text):
                     log.info("SHOPPING SKIP | queue=%s not an Amazon-only deal", row["id"])
-                    await store.delivery(row["id"], target, True, "not an amazon deal")
+                    await store.delivery_skipped(row["id"], target, "not an amazon deal")
                     continue
                 # A curated shop posts 20-30 times a day; a firehose reads as spam.
                 if await store.shopping_quota_left() <= 0:
                     log.info("SHOPPING SKIP | queue=%s daily cap of %s reached",
                              row["id"], SHOPPING_DAILY_CAP)
-                    await store.delivery(row["id"], target, True, "daily cap reached")
+                    await store.delivery_skipped(row["id"], target, "daily cap reached")
                     continue
                 # Pace it like a person: the day's allowance is spread across
                 # posting hours instead of fired off in one burst. The deal is
@@ -8923,14 +9463,14 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 if has_amazon_trademark(safe_text):
                     log.info("SHOPPING SKIP | queue=%s copy names an Amazon trademark",
                              row["id"])
-                    await store.delivery(row["id"], target, True, "amazon trademark in copy")
+                    await store.delivery_skipped(row["id"], target, "amazon trademark in copy")
                     continue
                 # The same email named t.me/LootZoneIndia11 as its example, so a
                 # reviewer must find NO route from here to a loot channel.
                 if has_telegram_pointer(safe_text):
                     log.info("SHOPPING SKIP | queue=%s copy points at another channel",
                              row["id"])
-                    await store.delivery(row["id"], target, True, "telegram pointer in copy")
+                    await store.delivery_skipped(row["id"], target, "telegram pointer in copy")
                     continue
                 # Link-level disclosure is an Amazon/FTC requirement on EVERY post
                 # (the channel bio alone is not enough) and a common rejection
@@ -8956,7 +9496,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # that does not earn for us.
                 log.warning("TARGET SKIP | queue=%s @%s is not approved for our Amazon tag; "
                             "no untagged fallback will be posted", row["id"], target)
-                await store.delivery(row["id"], target, True,
+                await store.delivery_skipped(row["id"], target,
                                      "our Amazon affiliate link is not approved for this target")
                 continue
             target_text = tagless_copy
@@ -8968,6 +9508,18 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # loot-channel folder, which is precisely what a marketplace
                 # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
+            if STRICT_OUR_LINKS:
+                # Their links never post, our commission is never missed: the
+                # final text is re-verified link by link right before the send.
+                links_ok, bad_link = await store.presend_links_verified(target_text)
+                if not links_ok:
+                    log.warning("PRESEND LINK GUARD | queue=%s target=%s: refusing to post "
+                                "an unverified link (%s) - the deal stays back so no foreign "
+                                "link and no missed commission can reach the channel",
+                                row["id"], target, bad_link[:80])
+                    await store.delivery_skipped(
+                        row["id"], target, f"unverified link at pre-send: {bad_link[:120]}")
+                    continue
             # A forwarded deal photo is nearly always a marketplace screenshot -
             # the "images (screenshots/screen recordings)" the rejection cited.
             # The review channel goes text-only; every other channel keeps its
@@ -8975,22 +9527,76 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             target_media = media_path
             if target == SHOPPING_TARGET and SHOPPING_TEXT_ONLY:
                 target_media = []
-            ok, error = await deliver(
-                client, entity, target_text, target_media,
-                start_chunk=start_chunk, progress_callback=checkpoint,
-                link_preview=allow_preview, media_refs=media_refs,
-            )
-            if premium_claimed:
-                await store.complete_premium(row["id"], ok)
-            await store.delivery(row["id"], target, ok, error)
-            if ok and target == SHOPPING_TARGET:
-                with contextlib.suppress(Exception):
-                    await store.note_shopping_sent()
-            if ok and product_sig:
-                await store.mark_product_posted(target, product_sig, price, target_discount)
-            successes += int(ok)
+            if not await store.claim_target_products(row["id"], target, identity_keys,
+                                                     resuming=start_chunk > 0):
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                await store.delivery_skipped(row["id"], target, "duplicate product or unsettled prior send")
+                continue
+
+            async def send_attempt(index, digest, state, qid=row["id"], name=target):
+                nonlocal confirmed_chunks
+                result = await store.send_attempt(qid, name, index, digest, state)
+                if state == "sent":
+                    confirmed_chunks += 1
+                return result
+
+            chunks_before_target = confirmed_chunks
+            try:
+                ok, error = await deliver(
+                    client, entity, target_text, target_media,
+                    start_chunk=start_chunk, progress_callback=checkpoint,
+                    link_preview=allow_preview, media_refs=media_refs,
+                    attempt_callback=send_attempt,
+                )
+            except AmbiguousDelivery as exc:
+                held_targets += 1
+                log.critical("DELIVERY HELD | queue=%s target=%s | %s", row["id"], target, exc)
+                await store.delivery_held(row["id"], target, str(exc))
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                continue
+            if ok:
+                if confirmed_chunks > chunks_before_target:
+                    new_sends += 1
+                else:
+                    settlement_retries += 1
+                # The post is OUT on Telegram. Recording that fact must NEVER
+                # throw the job back into fail_job's requeue mill: the target
+                # would still read pending and the next pass would RE-SEND an
+                # already-sent post. A ledger that stays unwritable after
+                # patient retries is a CRITICAL alarm, not a reason to
+                # duplicate - the next pass retries the write via
+                # SETTLED_BUT_UNRECORDED without re-posting.
+                try:
+                    if premium_claimed:
+                        await store.complete_premium(row["id"], True)
+                    if identity_keys:
+                        await store.mark_product_posted(target, identity_keys[0], price,
+                                                        target_discount, identity_keys[1:], queue_id=row["id"])
+                    await store.delivery(row["id"], target, True, error)
+                    if target == SHOPPING_TARGET:
+                        with contextlib.suppress(Exception):
+                            await store.note_shopping_sent()
+                except Exception as exc:
+                    log.critical(
+                        "SETTLE FAILED | queue=%s target=%s: sent to Telegram but the "
+                        "ledger refused the record (%s). NOT re-sending; the write "
+                        "will keep retrying without re-posting.",
+                        row["id"], target, exc)
+                    SETTLED_BUT_UNRECORDED[(row["id"], target)] = {"premium": premium_claimed}
+                successes += 1
+            else:
+                # Only explicit rejections reach here. Keep a partially-sent
+                # product fenced while its remaining chunks are retried.
+                if not await store.delivery_progress(row["id"], target):
+                    await store.release_target_products(row["id"], target)
+                if premium_claimed:
+                    await store.complete_premium(row["id"], False)
+                await store.delivery(row["id"], target, False, error)
         await store.finish(row, successes, price, premium_defer_until)
-        log.info("JOB %s | source=%s | sent=%s", row["id"], row["source"], successes)
+        log.info("JOB %s | source=%s | sent=%s | settlement_retries=%s | held=%s | confirmed_chunks=%s",
+                 row["id"], row["source"], new_sends, settlement_retries, held_targets, confirmed_chunks)
     except DuplicateDeal as exc:
         log.info("DEDUP | queue=%s | %s", row["id"], exc)
         await store.mark_done(row["id"], str(exc))
@@ -9030,6 +9636,33 @@ async def idle_wait(stop: asyncio.Event) -> None:
         await asyncio.wait_for(stop.wait(), timeout=QUEUE_IDLE_POLL_SECONDS)
 
 
+def refresh_dashboard_tag_keys():
+    global AMAZON_TAG_TARGET_KEYS
+    AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
+
+
+async def dashboard_live_loop(client, source_map, target_map, stop):
+    """Optional dashboard subsystem must never take down posting workers."""
+    try:
+        try:
+            from .live_channels import LiveChannels
+        except ImportError:
+            from live_channels import LiveChannels
+        initial_names = {n.lower() for n in _dashboard_summary.get("added", [])}
+        live_channels = LiveChannels(
+            SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, DASHBOARD_CATEGORY_FILTERS,
+            source_map, target_map,
+            [c for c in _dashboard_data["channels"] if c["name"].lower() in initial_names],
+            _dashboard_targets, CATEGORY_DEFINITIONS, TRICKS_SOURCES,
+            lambda name: client.get_entity(name), refresh_dashboard_tag_keys,
+            resolve_source=lambda source: resolve_dashboard_source(client, source),
+            on_source_added=dashboard_source_added, builtin_sources=BUILTIN_SOURCE_NAMES,
+            source_details=SOURCE_DETAILS)
+        await live_channels.run(stop)
+    except Exception:
+        log.exception("DASHBOARD LIVE ADD unavailable; existing posting continues")
+
+
 async def main() -> None:
     global QUEUE_WAKE
     log.info("BestGAA Production Bot v19.0 starting "
@@ -9062,6 +9695,8 @@ async def main() -> None:
         try:
             source, _ = entry
             msg = event.message
+            if not source_message_is_current(source, msg):
+                return
             raw = (msg.message or msg.text or "") if msg is not None else ""
             has_media = bool(
                 msg is not None and msg.media is not None and
@@ -9089,7 +9724,7 @@ async def main() -> None:
     async def on_message_edited(event):
         """An edit of a source post must not be lost (see revive_edited_job)."""
         entry = source_map.get(event.chat_id) or source_map.get(raw_chat_id(event.chat_id))
-        if not entry:
+        if not entry or not source_message_is_current(entry[0], event.message):
             return
         try:
             outcome = await store.revive_edited_job(raw_chat_id(event.chat_id), event.message.id)
@@ -9149,7 +9784,9 @@ async def main() -> None:
                 log.exception("WORKER %s crashed on job %s (continuing): %s", index, row["id"], exc)
 
     workers = [asyncio.create_task(worker(i)) for i in range(QUEUE_WORKERS)]
-    source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop))
+    # Independent task; access/config failures never stop normal posting workers.
+    dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
+    source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
     await stop.wait()
@@ -9165,6 +9802,8 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await dashboard_reload_task
     await client.disconnect()
     await session.close()
     store.conn.close()

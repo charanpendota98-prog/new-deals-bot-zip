@@ -1,0 +1,583 @@
+[
+  {
+    "text": "Women cotton kurti",
+    "expected": "fashion"
+  },
+  {
+    "text": "Mens polo t-shirts",
+    "expected": "fashion"
+  },
+  {
+    "text": "Cotton shorts",
+    "expected": "fashion"
+  },
+  {
+    "text": "Socks pack of 3",
+    "expected": "fashion"
+  },
+  {
+    "text": "Winter sweaters",
+    "expected": "fashion"
+  },
+  {
+    "text": "Denim jeans",
+    "expected": "fashion"
+  },
+  {
+    "text": "Ladies handbags",
+    "expected": "accessories"
+  },
+  {
+    "text": "Travel backpack",
+    "expected": "accessories"
+  },
+  {
+    "text": "Analog watch",
+    "expected": "accessories"
+  },
+  {
+    "text": "Bluetooth earbuds",
+    "expected": "electronics"
+  },
+  {
+    "text": "Android tablet",
+    "expected": "electronics"
+  },
+  {
+    "text": "Computer monitor",
+    "expected": "electronics"
+  },
+  {
+    "text": "Security camera",
+    "expected": "electronics"
+  },
+  {
+    "text": "Samsung phone",
+    "expected": "electronics"
+  },
+  {
+    "text": "USB charger",
+    "expected": "electronics"
+  },
+  {
+    "text": "Pressure cooker",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Washing machine",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Air conditioner",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Shoe rack organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Coffee grinder",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Rice cooker",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Tea kettle",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Milk frother",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Butter dish",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Spice rack",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Dishwasher tablets",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "TV stand",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Phone stand",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Fabric conditioner",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Bed sheets",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Hair conditioner",
+    "expected": "beauty"
+  },
+  {
+    "text": "Body butter",
+    "expected": "beauty"
+  },
+  {
+    "text": "Cleansing milk",
+    "expected": "beauty"
+  },
+  {
+    "text": "Liquid foundation",
+    "expected": "beauty"
+  },
+  {
+    "text": "Electric toothbrush",
+    "expected": "beauty"
+  },
+  {
+    "text": "Peanut butter",
+    "expected": "grocery"
+  },
+  {
+    "text": "Cow milk",
+    "expected": "grocery"
+  },
+  {
+    "text": "Cashew nuts",
+    "expected": "grocery"
+  },
+  {
+    "text": "Orange juice",
+    "expected": "grocery"
+  },
+  {
+    "text": "Running shoes",
+    "expected": "footwear"
+  },
+  {
+    "text": "Slide sandals",
+    "expected": "footwear"
+  },
+  {
+    "text": "Ankle boots",
+    "expected": "footwear"
+  },
+  {
+    "text": "చెప్పులు offer",
+    "expected": "footwear"
+  },
+  {
+    "text": "సూపర్ కుర్తా offer",
+    "expected": "fashion"
+  },
+  {
+    "text": "Shoes plus shoe rack",
+    "expected": null
+  },
+  {
+    "text": "Rice cooker and rice",
+    "expected": null
+  },
+  {
+    "text": "Coffee grinder and coffee",
+    "expected": null
+  },
+  {
+    "text": "Face cream plus shirts",
+    "expected": null
+  },
+  {
+    "text": "Smartphone plus cotton kurti",
+    "expected": null
+  },
+  {
+    "text": "Running shoes and shoe rack and earbuds",
+    "expected": null
+  },
+  {
+    "text": "Fashion electronics kitchen sale",
+    "expected": null
+  },
+  {
+    "text": "Mystery product at Rs.199",
+    "expected": null
+  },
+  {
+    "text": "electronics electronics electronics",
+    "expected": null
+  },
+  {
+    "text": "phone phone phone",
+    "expected": null
+  },
+  {
+    "text": "tablet",
+    "expected": null
+  },
+  {
+    "text": "foundation",
+    "expected": null
+  },
+  {
+    "text": "slides",
+    "expected": null
+  },
+  {
+    "text": "shirtless",
+    "expected": null
+  },
+  {
+    "text": "Rice\ncooker",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://bit.ly/shoes",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://t.me/electronics",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://www.amazon.in/dp/B0ASIN1234?tag=shoes&ref=earbuds",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti https://bit.ly/shoes",
+    "expected": "fashion"
+  },
+  {
+    "text": "Deal https://www.flipkart.com/wireless-earbuds/p/itmABC123456",
+    "expected": "electronics"
+  },
+  {
+    "text": "Deal https://www.amazon.in/s?k=wireless+earbuds",
+    "expected": "electronics"
+  },
+  {
+    "text": "Cotton kurti",
+    "expected": null,
+    "links": [
+      "https://www.flipkart.com/wireless-earbuds/p/itmABC123456"
+    ]
+  },
+  {
+    "text": "Mystery product",
+    "expected": "electronics",
+    "links": [
+      "https://www.flipkart.com/wireless-earbuds/p/itmABC123456"
+    ]
+  },
+  {
+    "text": "Mystery product",
+    "expected": null,
+    "links": [
+      "https://shop.test/running-shoes/123456",
+      "https://shop.test/air-fryer/678900"
+    ]
+  },
+  {
+    "text": "Cotton kurti and Wireless earbuds",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti and Rice cooker",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti and Backpack",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti and Running shoes",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti and Hair conditioner",
+    "expected": null
+  },
+  {
+    "text": "Cotton kurti and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Wireless earbuds and Rice cooker",
+    "expected": null
+  },
+  {
+    "text": "Wireless earbuds and Backpack",
+    "expected": null
+  },
+  {
+    "text": "Wireless earbuds and Running shoes",
+    "expected": null
+  },
+  {
+    "text": "Wireless earbuds and Hair conditioner",
+    "expected": null
+  },
+  {
+    "text": "Wireless earbuds and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Rice cooker and Backpack",
+    "expected": null
+  },
+  {
+    "text": "Rice cooker and Running shoes",
+    "expected": null
+  },
+  {
+    "text": "Rice cooker and Hair conditioner",
+    "expected": null
+  },
+  {
+    "text": "Rice cooker and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Backpack and Running shoes",
+    "expected": null
+  },
+  {
+    "text": "Backpack and Hair conditioner",
+    "expected": null
+  },
+  {
+    "text": "Backpack and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Running shoes and Hair conditioner",
+    "expected": null
+  },
+  {
+    "text": "Running shoes and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Hair conditioner and Basmati rice",
+    "expected": null
+  },
+  {
+    "text": "Rice&#32;cooker",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Cotton&nbsp;kurti",
+    "expected": "fashion"
+  },
+  {
+    "text": "t&#45;shirt",
+    "expected": "fashion"
+  },
+  {
+    "text": "shoe storage box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "shoe storage boxes",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "saree organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "saree storage bags",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "clothes organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "shirt organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment steamer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment rack",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "garment bag",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "makeup organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "cosmetic organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "jewellery box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "jewelry box",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "watch organizer",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "tea storage container",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "rice storage container",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "laptop backpack",
+    "expected": "accessories"
+  },
+  {
+    "text": "laptop bag",
+    "expected": "accessories"
+  },
+  {
+    "text": "laptop sleeve",
+    "expected": "accessories"
+  },
+  {
+    "text": "camera bag",
+    "expected": "accessories"
+  },
+  {
+    "text": "tablet sleeve",
+    "expected": "accessories"
+  },
+  {
+    "text": "green tea face wash",
+    "expected": "beauty"
+  },
+  {
+    "text": "rice face wash",
+    "expected": "beauty"
+  },
+  {
+    "text": "rice water shampoo",
+    "expected": "beauty"
+  },
+  {
+    "text": "coffee face scrub",
+    "expected": "beauty"
+  },
+  {
+    "text": "sugar body scrub",
+    "expected": "beauty"
+  },
+  {
+    "text": "chocolate lip balm",
+    "expected": "beauty"
+  },
+  {
+    "text": "coconut oil hair mask",
+    "expected": "beauty"
+  },
+  {
+    "text": "phone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "mobile back cover",
+    "expected": "electronics"
+  },
+  {
+    "text": "iphone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "smartphone case",
+    "expected": "electronics"
+  },
+  {
+    "text": "tablet case",
+    "expected": "electronics"
+  },
+  {
+    "text": "earbuds case",
+    "expected": "electronics"
+  },
+  {
+    "text": "Saree and saree organizer",
+    "expected": null
+  },
+  {
+    "text": "Laptop plus laptop backpack",
+    "expected": null
+  },
+  {
+    "text": "Green tea and green tea face wash",
+    "expected": null
+  },
+  {
+    "text": "Running shoes",
+    "links": [
+      "https://www.meesho.com/shoe-storage-box/p/abc12345"
+    ],
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/p/shirts",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.amazon.in/dp/earbuds",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://www.hypd.store/93944/afflink/shoes",
+    "expected": null
+  },
+  {
+    "text": "Mystery https://www.bit.ly/shoes",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/rice/cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/rice?q=cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://shop.test/?title=rice&name=cooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/cotton-kurti/p/abc12345",
+    "expected": "fashion"
+  },
+  {
+    "text": "Deal https://www.meesho.com/shoe-storage-box/p/shirts",
+    "expected": "home_kitchen"
+  },
+  {
+    "text": "Deal https://shop.test/rice%2Fcooker",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/%70/shirts",
+    "expected": null
+  },
+  {
+    "text": "Deal https://www.meesho.com/cotton%2Dkurti/p/abc12345",
+    "expected": "fashion"
+  }
+]

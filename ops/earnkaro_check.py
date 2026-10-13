@@ -16,8 +16,8 @@ Run this on the server (or anywhere with internet) right after setting
 Why it exists: "the EarnKaro links are not converting" has three very different
 causes that look identical in a channel —
 
-  1. the TOKEN is wrong/expired  -> every call answers 401 and the bot posts
-     clean, unmonetized merchant links;
+  1. the TOKEN is wrong/expired -> calls may be refused; strict mode must not
+     publish a clean, unmonetized fallback;
   2. the request is malformed (missing `convert_option: "convert_only"`) ->
      the API answers a shape the bot cannot read;
   3. the store genuinely has no EarnKaro campaign -> nothing to convert.
@@ -25,15 +25,18 @@ causes that look identical in a channel —
 This script separates them: it prints the token's own claims (which EarnKaro
 account gets paid), then calls the SAME endpoint with the SAME headers and body
 the bot sends, and prints the raw response next to the link the bot would
-publish. Nothing is written anywhere; the token is never echoed to the screen.
+publish. Live probes may mint external converter/Bitly links. The token is not
+intentionally echoed. Use --offline for token-only inspection without networking.
 
 `--plan --deal-url <url>` goes one step further: it imports the bot's OWN
 module (`bestgaa/main_bot_new.py`) and runs the real pipeline for that URL -
 resolve -> convert -> shorten - so the output is not a copy of the rules but
 the actual `AffiliateClient`, printing the link the channel will carry, its
 length, whether it is still short, and whose account it pays. A link the
-network cannot monetize is reported as UNMONETIZED (that deal posts clean and
-earns nothing) - never silently reported as a conversion.
+network cannot monetize is reported as UNMONETIZED and withheld in strict mode,
+never silently reported as a conversion. --plan uses the real pipeline and can
+write its cache/mapping state; it is NOT a read-only audit. Run live probes only
+with operator approval. Link attribution is not proof of delivery or payout.
 
 Exit codes: 0 = every probe converted, 1 = at least one probe failed.
 """
@@ -51,6 +54,11 @@ import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+try:
+    from hypd_policy import hypd_parts, meesho_product_id
+except ImportError:
+    sys.path.insert(0, str(REPO_ROOT))
+    from bestgaa.hypd_policy import hypd_parts, meesho_product_id
 DEFAULT_API = "https://ekaro-api.affiliaters.in/api/converter/public"
 
 # A spread of what the channels actually post: a product page, a bookstore with
@@ -439,27 +447,40 @@ def resolve_once(url: str, timeout: float) -> tuple[str, str]:
 
 
 def resolve_hypd_meesho_destination(url: str, timeout: float) -> tuple[str, str, str]:
-    """Return (final URL, status, verified Meesho destination) from the HYPD page."""
+    """Identity-only check. Never read merchant HTML or accept error-page URLs."""
     from urllib.parse import urlparse
-    request = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "Chrome/131 Safari/537.36"})
+    parts = hypd_parts(url)
+    if not parts or parts[0] not in OUR_HYPD_STORES:
+        return "", "invalid or foreign share", ""
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             final = response.url or url
-            body = response.read(200_000).decode("utf-8", "replace")
-            candidates = [final]
-            candidates.extend(match.group(0).rstrip(".,;:!?\"')*]>")
-                              for match in re.finditer(r"""https?://[^\s"'<>]+""", body))
-            for candidate in candidates:
+            status = str(response.status)
+            if not 200 <= response.status < 400:
+                return final, status, ""
+            if meesho_product_id(final):
+                return final, status, final  # no merchant body is read
+            if (urlparse(final).hostname or "").lower() not in {"hypd.store", "www.hypd.store"}:
+                return final, status, ""
+            body = response.read(200_000).decode("utf-8", "replace").replace("\\/", "/")
+            candidates = {}
+            other_merchants = {"amazon.in", "amazon.com", "flipkart.com", "myntra.com",
+                "ajio.com", "shopsy.in", "myntr.in", "myntr.it", "ajiio.co", "fkrt.co", "fkrt.cc",
+                "fktr.in", "tatacliq.com", "nykaa.com", "croma.com", "reliancedigital.in",
+                "jiomart.com", "firstcry.com", "snapdeal.com", "decathlon.in", "pepperfry.com",
+                "limeroad.com", "paytmmall.com"}
+            for match in re.finditer(r"https?://[^\s\"'<>]+", body):
+                candidate = match.group(0).rstrip(".,;:!?\"')*]>")
                 host = (urlparse(candidate).hostname or "").lower()
-                if host == "meesho.com" or host.endswith(".meesho.com"):
-                    return final, str(response.status), candidate
-            return final, str(response.status), ""
+                if any(host == h or host.endswith("." + h) for h in other_merchants):
+                    return final, status, ""
+                pid = meesho_product_id(candidate)
+                if pid:
+                    candidates[pid] = candidate
+            return final, status, next(iter(candidates.values())) if len(candidates) == 1 else ""
     except urllib.error.HTTPError as exc:
-        final = getattr(exc, "url", url) or url
-        host = (urlparse(final).hostname or "").lower()
-        return final, f"HTTP {exc.code}", final if host == "meesho.com" or host.endswith(".meesho.com") else ""
+        return getattr(exc, "url", url) or url, f"HTTP {exc.code}", ""
     except Exception as exc:
         return "", f"unreachable ({exc})", ""
 
@@ -473,9 +494,9 @@ def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
     print(f"Bitly tokens found : {len(tokens) or 'NONE (is.gd fallback would be used)'}")
     failures = 0
     ok = 0
-    from urllib.parse import urlparse
     for url in OUR_HYPD_LINKS:
-        store = url.split("/")[3] if url.count("/") >= 3 else "?"
+        parts = hypd_parts(url)
+        store = parts[0] if parts else "?"
         print(f"\n[{url[:70]}]")
         print(f"  store     : {store}  ({'OURS' if store in OUR_HYPD_STORES else 'NOT OURS'})")
         if store not in OUR_HYPD_STORES:
@@ -483,8 +504,7 @@ def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
             failures += 1
             continue
         final, status, behind = resolve_hypd_meesho_destination(url, timeout)
-        behind_host = (urlparse(behind).hostname or "").lower() if behind else ""
-        if behind_host != "meesho.com" and not behind_host.endswith(".meesho.com"):
+        if not meesho_product_id(behind):
             behind = ""
         print(f"  resolve   : {status}   "
               + (f"Meesho -> {behind[:110]}" if behind else "no Meesho destination verified"))
@@ -495,7 +515,7 @@ def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
                 print(f"  -> the link answered {status}: check it in the HYPD app")
             failures += 1
             continue
-        if status.startswith("HTTP 4") or status.startswith("HTTP 5"):
+        if not status.isdigit() or not 200 <= int(status) < 400:
             print(f"  -> the link answered {status}: check it in the HYPD app before trusting it")
             failures += 1
             continue
@@ -506,12 +526,14 @@ def check_our_hypd_links(timeout: float, verbose: bool) -> tuple[int, int]:
         short, why = bitly_shorten(url, tokens, timeout)
         if short:
             back, back_status = resolve_once(short, timeout)
-            lands_on_ours = "hypd.store" in back and any(f"/{s}/" in back for s in OUR_HYPD_STORES)
+            lands_on_ours = (hypd_parts(back) == parts and back_status.isdigit()
+                             and 200 <= int(back_status) < 400)
             print(f"  bitly     : {short}")
             print(f"  bitly ->  : {back_status} {back[:110]}")
             print("  verdict   : " + ("OUR Meesho link, shortened and still ours" if lands_on_ours
-                                     else "shortened, but it did not come back to OUR store - CHECK"))
+                                     else "exact original share was not verified on return - CHECK (no ownership proof)"))
             if lands_on_ours:
+                print("  scope     : link chain only; not delivery or commission payout proof")
                 ok += 1
             else:
                 failures += 1

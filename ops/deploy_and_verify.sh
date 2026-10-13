@@ -120,6 +120,7 @@ echo "==== 2. IS IT THE CODE WE COMMITTED? ===="
 for PAIR in "$REPO/bestgaa/main_bot_new.py|$BESTGAA_DIR/main_bot.py" \
             "$REPO/bestgaa/category_rules.json|$BESTGAA_DIR/category_rules.json" \
             "$REPO/tg-wa-bridge/bridge.js|$BRIDGE_DIR/bridge.js" \
+            "$REPO/tg-wa-bridge/send_guard.js|$BRIDGE_DIR/send_guard.js" \
             "$REPO/tg-wa-bridge/category_rules.json|$BRIDGE_DIR/category_rules.json"; do
   SRC="${PAIR%%|*}"; DST="${PAIR##*|}"
   if [[ ! -f "$DST" ]]; then warn "missing on server: $DST"; continue; fi

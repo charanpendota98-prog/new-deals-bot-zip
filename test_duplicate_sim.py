@@ -203,8 +203,12 @@ class UnresolvableAffiliate:
         return True
 
 
-async def drain(store, client, affiliate, target_map, limit=20) -> int:
-    """Run the real worker body until the queue is empty."""
+async def drain(store, client, affiliate, target_map, limit=20, between=None) -> int:
+    """Run the real worker body until the queue is empty.
+
+    between(store, handled), when given, runs after each job - the 1h
+    cool-down tests use it to age the ledger between two jobs of one run.
+    """
     handled = 0
     while handled < limit:
         row = await store.claim_job()
@@ -212,6 +216,8 @@ async def drain(store, client, affiliate, target_map, limit=20) -> int:
             break
         await bot.process_job(client, affiliate, target_map, row)
         handled += 1
+        if between is not None:
+            between(store, handled)
     return handled
 
 
@@ -234,7 +240,7 @@ def target_map_for(store_targets: set[str]) -> dict[str, Ent]:
 async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
                   enqueue_specs: list[tuple[int, int, str]], expect_posts: int,
                   crash_after_first: bool = False, affiliate: FakeAffiliate | None = None,
-                  mutate=None, client=None):
+                  mutate=None, client=None, between=None):
     """One isolated run: enqueue, drain (optionally twice), return the client."""
     store = bot.Store(Path(tempfile.mktemp(suffix="-sim.sqlite3")))
     if True:
@@ -273,10 +279,10 @@ async def scenario(tag: str, messages: dict[tuple[int, int], FakeMsg],
                                    "(SELECT target FROM deliveries WHERE queue_id=? AND status='sent')",
                                    (row["id"], row["id"]))
                 store.conn.commit()
-                await drain(store, client, aff, tmap)
+                await drain(store, client, aff, tmap, between=between)
                 print(f"    [{tag}] first pass sent {first_pass} channel(s), then resumed")
             else:
-                await drain(store, client, aff, tmap)
+                await drain(store, client, aff, tmap, between=between)
             return store, client, per_channel_sends(client), expect_posts
         finally:
             bot.store, bot.born_in_post_quiet, bot.premium_time_status = old_store, old_quiet, old_premium
@@ -494,10 +500,19 @@ def test_scenarios():
               if keep_unmonetized else not sends,
               str(kept[:1]))
 
-        # c) a cheaper copy of the same product is news, not a duplicate
+        # c) a cheaper copy of the same product is news past the cool-down, not a duplicate.
+        # USER RULE (2026-10-12): inside the 1-hour cool-down even a better copy
+        # waits, so the ledger is aged 2h between the two jobs here; S8c2 below
+        # pins the cool-down itself with both copies live.
+        def _past_cooldown(store, handled):
+            if handled == 1:
+                store.conn.execute("UPDATE posted_products SET posted_at=posted_at-7200")
+                store.conn.commit()
+
         store, client, sends, _ = await scenario(
             "s8c", {(-1009023, 1401): FakeMsg(first, 1401), (-1009024, 1402): FakeMsg(better, 1402)},
-            [(-1009023, 1401, first), (-1009024, 1402, better)], 1, affiliate=aff)
+            [(-1009023, 1401, first), (-1009024, 1402, better)], 1, affiliate=aff,
+            between=_past_cooldown)
         hits = {t: product_hits(v, word) for t, v in sends.items()}
         cheaper = [t for texts in sends.values() for t in texts if f"{R}33,490" in t]
         check("[S8c] the strictly better copy still reaches every channel",
@@ -506,6 +521,18 @@ def test_scenarios():
               str({t: len(v) for t, v in sends.items()}))
         check("[S8c] and the same product is never carried more than twice",
               all(1 <= count <= 2 for count in hits.values()), str(hits))
+
+        # c2) inside the 1h cool-down even the better copy waits (user rule 2026-10-12)
+        store, client, sends, _ = await scenario(
+            "s8c2", {(-1009023, 1401): FakeMsg(first, 1401), (-1009024, 1402): FakeMsg(better, 1402)},
+            [(-1009023, 1401, first), (-1009024, 1402, better)], 1, affiliate=aff)
+        hits = {t: product_hits(v, word) for t, v in sends.items()}
+        if keep_unmonetized:
+            check("[S8c2] inside the 1h cool-down the repeat waits: one copy per channel",
+                  bool(sends) and all(count == 1 for count in hits.values()), str(hits))
+        else:
+            check("[S8c2] with the knob off nothing is posted, so nothing repeats",
+                  not sends, str({t: len(v) for t, v in sends.items()}))
 
         # d) a DIFFERENT product from the same source is never skipped
         store, client, sends, _ = await scenario("s8d", {(-1009025, 1501): FakeMsg(other, 1501)},

@@ -709,8 +709,8 @@ def test_photos_arrive_as_the_source_posted_them():
                       bot.outbound_parts("t", paths)[0][0] == "file" and len(paths) == 1, str(paths))
 
             fallback = RecClient(no_raw_call=True)
-            await bot.send_media_item(fallback, "entity", paths, "deal text", refs)
-            check("a client that cannot group sends the first photo WITH the caption, "
+            await bot.send_media_item(fallback, "entity", paths, "deal text", [None] * len(paths))
+            check("a pre-publication upload failure sends the first photo WITH the caption, "
                   "then the rest, so no image is lost",
                   len(fallback.files_sent) == wanted
                   and fallback.files_sent[0][1] == "deal text"
@@ -1213,21 +1213,26 @@ def test_a_roundup_list_cannot_be_posted_twice_from_two_sources():
     check("a post with no products at all gets no list key",
           bot._roundup_signature("Deal of the day\nhttps://amzn.to/a") is None)
 
-    # The guard the signature feeds is per channel and still lets a cheaper
-    # repeat through, so a genuine price drop is never swallowed.
+    # The guard the signature feeds is per channel. Inside the 1h cool-down even
+    # a cheaper repeat waits (user rule 2026-10-12); past it, a genuine price
+    # drop is never swallowed.
     async def run():
         with tempfile.TemporaryDirectory() as td:
             store = bot.Store(Path(td) / "dup.sqlite3")
             await store.mark_product_posted("LootZoneIndia11", sig_first, 899, 40)
             same, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 899, 40)
             other, _ = await store.product_already_posted("Under99Deals11", sig_first, 899, 40)
+            cool, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 799, 40)
+            store.conn.execute("UPDATE posted_products SET posted_at=posted_at-7200")
+            store.conn.commit()
             cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig_first, 799, 40)
-            return same, other, cheaper
+            return same, other, cool, cheaper
 
-    same, other, cheaper = asyncio.run(run())
+    same, other, cool, cheaper = asyncio.run(run())
     check("the repeat is skipped on the channel that already carried it", same is True)
     check("but a channel that has NOT carried it still gets it", other is False)
-    check("and a cheaper repeat is still allowed through", cheaper is False)
+    check("inside the 1h cool-down even the cheaper repeat waits", cool is True)
+    check("and past the cool-down a cheaper repeat is still allowed through", cheaper is False)
 
 
 def test_our_new_associates_tag_and_the_self_source_loop():
@@ -1679,15 +1684,19 @@ def test_only_the_review_channel_is_restricted():
             await store.mark_product_posted("LootZoneIndia11", sig, 55, 0)
             same, _ = await store.product_already_posted("LootZoneIndia11", sig, 55, 0)
             other, _ = await store.product_already_posted("Under99Deals11", sig, 55, 0)
+            cool, _ = await store.product_already_posted("LootZoneIndia11", sig, 45, 0)
+            store.conn.execute("UPDATE posted_products SET posted_at=posted_at-7200")
+            store.conn.commit()
             cheaper, _ = await store.product_already_posted("LootZoneIndia11", sig, 45, 0)
             amazon = await store.preview_allowed("x\nhttps://www.amazon.in/dp/B0C8JPD1KL")
             shortener = await store.preview_allowed("x\nhttps://bitli.in/hlqmyQS")
-            return same, other, cheaper, amazon, shortener
+            return same, other, cool, cheaper, amazon, shortener
 
-    same, other, cheaper, amazon, shortener = asyncio.run(run())
+    same, other, cool, cheaper, amazon, shortener = asyncio.run(run())
     check("dedup blocks only an exact repeat on the SAME channel", same is True)
     check("another channel still receives the very same deal", other is False)
-    check("a cheaper repeat is still published", cheaper is False)
+    check("inside the 1h cool-down even the cheaper repeat waits", cool is True)
+    check("past the cool-down a cheaper repeat is still published", cheaper is False)
     check("a real product preview card is kept on the loot channels", amazon is True)
     check("only the junk shortener card is suppressed", shortener is False)
 

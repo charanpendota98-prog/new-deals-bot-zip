@@ -7,7 +7,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 echo "[1/8] Preparing separate bridge directory..."
 mkdir -p "$APP"
 if [[ "$HERE" != "$APP" ]]; then
-  cp "$HERE/bridge.js" "$HERE/category_rules.json" "$HERE/package.json" "$HERE/tg-wa-bridge.service" "$HERE/switch_whatsapp_number.sh" "$APP/"
+  cp "$HERE/hypd_policy.py" "$HERE/category_classifier.js" "$HERE/bridge.js" "$HERE/send_guard.js" "$HERE/category_rules.json" "$HERE/package.json" "$HERE/tg-wa-bridge.service" "$HERE/switch_whatsapp_number.sh" "$APP/"
 fi
 cd "$APP"
 

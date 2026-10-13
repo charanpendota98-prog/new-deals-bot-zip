@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Offline quality auditor for the deal pipeline (read-only, no network).
 
-The bot guarantees four things on every post: nothing of ours is added, the only
-links are OUR monetized links, no product is posted twice, and no eligible post
-is lost. This script proves it on the live database - run it any time (or from
-ops/diagnose.sh) and it reports every post that broke a guarantee, with queue ids,
-so a regression is visible the day it happens instead of in channel feedback.
+Checks saved posts for unwanted additions, missing affiliate ownership evidence,
+product repeats and apparent coverage gaps. Findings include queue IDs for
+investigation. This is a read-only database audit, not verification of live
+redirects, account access, delivery receipts or commission payouts.
 
     python3 ops/quality_audit.py                      # last 200 posts
     python3 ops/quality_audit.py --db <path> --limit 500 --json
@@ -24,6 +23,12 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+try:  # deployed beside the bot, or run directly from the repository's ops/
+    from hypd_policy import hypd_parts, mapping_valid, meesho_product_id
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from bestgaa.hypd_policy import hypd_parts, mapping_valid, meesho_product_id
 
 RUPEE = "\u20b9"
 OURS_MARKERS = (
@@ -696,13 +701,15 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
     except sqlite3.OperationalError:
         cache_rows = []
     proof_urls: set[str] = set()
+    hypd_proofs: dict[str, str] = {}
+    hypd_proof_urls: set[str] = set()
     try:
         proof_columns = {str(row[1]) for row in conn.execute(
             "PRAGMA table_info(owned_link_proofs)")}
         publisher_expr = "publisher_id" if "publisher_id" in proof_columns else "''"
         proof_rows = conn.execute(
             "SELECT affiliate_url,destination_url,proof_type,%s FROM owned_link_proofs "
-            "WHERE proof_type IN ('earnkaro_api','amazon_native')" % publisher_expr
+            "WHERE proof_type IN ('earnkaro_api','amazon_native','hypd')" % publisher_expr
         ).fetchall()
         for affiliate, destination, proof_type, publisher_id in proof_rows:
             affiliate = str(affiliate or "")
@@ -710,7 +717,12 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
             if not affiliate or _is_non_monetizable_url(affiliate) or \
                     _is_non_monetizable_url(destination):
                 continue
-            if proof_type == "amazon_native":
+            if proof_type == "hypd":
+                hypd_proof_urls.add(affiliate)
+                parts = hypd_parts(destination)
+                if parts and str(publisher_id or "") == parts[0]:
+                    hypd_proofs[affiliate] = destination
+            elif proof_type == "amazon_native":
                 if _has_native_owned_attribution(destination, our_tag, our_publisher):
                     proof_urls.add(affiliate)
             elif proof_type == "earnkaro_api":
@@ -724,35 +736,41 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
         pass
     try:
         hypd_rows = conn.execute(
-            "SELECT afflink_url,resolved_url,product_key FROM hypd_links").fetchall()
+            "SELECT afflink_url,resolved_url,product_key,store FROM hypd_links").fetchall()
     except sqlite3.OperationalError:
         hypd_rows = []
 
-    def is_meesho(url: str) -> bool:
-        host = link_host(url)
-        return host == "meesho.com" or host.endswith(".meesho.com")
-
-    verified_hypd_urls = {str(row[0]) for row in hypd_rows
-                          if row[0] and is_meesho(str(row[1] or ""))}
-    verified_hypd_keys = {str(row[2]) for row in hypd_rows
-                          if row[2] and is_meesho(str(row[1] or ""))}
-    owned: set[str] = set(proof_urls)
+    stores = {os.getenv("HYPD_STORE_ID", "93944").strip().lstrip("@").lower(),
+              os.getenv("HYPD_STORE_SLUG", "smartdeals").strip().lstrip("@").lower()} - {""}
+    verified = {str(row[0]): str(row[1]) for row in hypd_rows
+                if mapping_valid(row[0], row[1], row[3], row[2], stores)}
+    hypd_proofs = {short: share for short, share in hypd_proofs.items() if share in verified}
+    owned: set[str] = set(proof_urls) | set(verified) | set(hypd_proofs)
+    denied: set[str] = set()
     for affiliate, resolved, deal_key in cache_rows:
         affiliate = str(affiliate or "")
         resolved = str(resolved or "")
         if not affiliate:
             continue
+        if any(link_host(url) in {"hypd.store", "www.hypd.store", "meesho.com", "www.meesho.com", "m.meesho.com"}
+               for url in (affiliate, resolved)) or affiliate in hypd_proof_urls:
+            share = affiliate if affiliate in verified else hypd_proofs.get(affiliate, "")
+            if share and (not resolved or hypd_parts(resolved) == hypd_parts(share)
+                          or bool(meesho_product_id(resolved) and
+                                  meesho_product_id(resolved) == meesho_product_id(verified[share]))):
+                owned.add(affiliate)
+            else:
+                denied.add(affiliate)
+            continue
         if (_has_native_owned_attribution(affiliate, our_tag, our_publisher)
                 or _has_native_owned_attribution(resolved, our_tag, our_publisher)
-                or affiliate in proof_urls or resolved in proof_urls
-                or affiliate in verified_hypd_urls
-                or (deal_key and str(deal_key) in verified_hypd_keys)):
+                or affiliate in proof_urls or resolved in proof_urls):
             owned.add(affiliate)
-    return owned
+    return owned - denied
 
 
 def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
-          our_publisher: str = "") -> tuple[list[dict], int, dict]:
+          our_publisher: str = "") -> tuple[list[dict], int, dict, dict]:
     conn.row_factory = sqlite3.Row
     # Every recent row is inspected, including ones that produced no post at all:
     # "we lost a deal" is as much a quality defect as a badly formatted one.
@@ -761,15 +779,59 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
         "FROM queue ORDER BY id DESC LIMIT ?", (max(1, limit),),
     ).fetchall()
     try:
+        delivery_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(deliveries)")}
+    except sqlite3.OperationalError:
+        delivery_columns = set()
+    has_delivery_error = "last_error" in delivery_columns
+    # POST-DEPLOY FIX (2026-10-11): status='sent' alone is not a send. Older
+    # builds recorded policy skips (duplicate product, review-channel filters,
+    # undeclared-tag targets, ...) as 'sent' with the reason in last_error - a
+    # row only reached Telegram when last_error is empty (Adidas queues 351498
+    # / 351502 were exactly this shape). New builds write status='skipped' for
+    # those. Minimal schemas without last_error cannot model skips, so they
+    # keep the plain predicate.
+    real_send_predicate = ("status='sent' AND COALESCE(last_error,'')=''"
+                           if has_delivery_error else "status='sent'")
+    legacy_skip_predicate = ("(status='sent' AND COALESCE(last_error,'')<>'')"
+                             if has_delivery_error else "0")
+    try:
         sent_counts = {int(r["queue_id"]): int(r["n"]) for r in conn.execute(
-            "SELECT queue_id, count(*) AS n FROM deliveries WHERE status='sent' GROUP BY queue_id")}
+            "SELECT queue_id, count(*) AS n FROM deliveries WHERE %s GROUP BY queue_id"
+            % real_send_predicate)}
     except sqlite3.OperationalError:
         sent_counts = {}
+    try:
+        skip_counts = {int(r["queue_id"]): int(r["n"]) for r in conn.execute(
+            "SELECT queue_id, count(*) AS n FROM deliveries "
+            "WHERE status='skipped' OR %s GROUP BY queue_id" % legacy_skip_predicate)}
+    except sqlite3.OperationalError:
+        skip_counts = {}
+    try:
+        open_counts = {int(r["queue_id"]): int(r["n"]) for r in conn.execute(
+            "SELECT queue_id, count(*) AS n FROM deliveries "
+            "WHERE status NOT IN ('sent','skipped','held') GROUP BY queue_id")}
+    except sqlite3.OperationalError:
+        open_counts = {}
+    try:
+        skip_reasons: dict[str, int] = {}
+        for reason_row in conn.execute(
+                "SELECT COALESCE(last_error,'') AS reason, count(*) AS n FROM deliveries "
+                "WHERE status='skipped' OR %s GROUP BY reason" % legacy_skip_predicate):
+            skip_reasons[str(reason_row["reason"] or "withheld")] = int(reason_row["n"])
+    except sqlite3.OperationalError:
+        skip_reasons = {}
+    try:
+        held_rows = conn.execute(
+            "SELECT queue_id,target,last_error FROM deliveries WHERE status='held'").fetchall()
+    except sqlite3.OperationalError:
+        held_rows = []
     our_links = our_minted_links(conn, our_tag, our_publisher)
     link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
                    "clean-merchant": 0, "foreign": 0}
 
-    findings: list[dict] = []
+    findings: list[dict] = [flag("DELIVERY_HELD",
+        f"@{item['target']}: {item['last_error'] or 'send outcome uncertain; manual review required'}",
+        item['queue_id']) for item in held_rows]
     for row in rows:
         text = row["rendered_text"] or ""
         sent = sent_counts.get(int(row["id"]), 0)
@@ -777,7 +839,14 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
         # 5) coverage: a job that finished without sending anything and without a
         #    policy reason is a lost deal.
         if not text:
-            if (row["status"] or "") in ("done", "failed") and not sent and not any(
+            concluded_by_skips = (skip_counts.get(int(row["id"]), 0)
+                                  and not open_counts.get(int(row["id"]), 0)
+                                  and not sent)
+            # A job concluded wholly by per-target policy skips (duplicate
+            # product, review filters, ...) was withheld by design, not lost -
+            # but only when nothing is still outstanding: an open target on a
+            # closed job is a gap, and is still flagged.
+            if (row["status"] or "") in ("done", "failed") and not sent and not concluded_by_skips and not any(
                     marker.lower() in error for marker in POLICY_SKIPS):
                 findings.append(flag("COVERAGE",
                                      f"{row['status']} with no send and no policy reason "
@@ -917,7 +986,14 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
             "SELECT count(*) FROM queue WHERE rendered_text IS NOT NULL").fetchone()[0]
     except sqlite3.OperationalError:
         total_posts = len(rows)
-    return findings, total_posts, link_counts
+    delivery_summary = {
+        "held": len(held_rows),
+        "real_sends": sum(sent_counts.values()),
+        "skipped": sum(skip_counts.values()),
+        "open": sum(open_counts.values()),
+        "skip_reasons": dict(sorted(skip_reasons.items(), key=lambda kv: -kv[1])[:8]),
+    }
+    return findings, total_posts, link_counts, delivery_summary
 
 
 def main(argv=None) -> int:
@@ -962,8 +1038,8 @@ def main(argv=None) -> int:
         return 0
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
-        findings, posts, link_counts = audit(conn, args.limit, (args.tag or "").strip(),
-                                            publisher)
+        findings, posts, link_counts, delivery_summary = audit(
+            conn, args.limit, (args.tag or "").strip(), publisher)
     except sqlite3.OperationalError as exc:  # a schema too old to judge
         print(f"QUALITY AUDIT: database not readable yet ({exc})")
         return 0
@@ -979,12 +1055,18 @@ def main(argv=None) -> int:
                f"unattributed={link_counts['unattributed']} "
                f"clean-merchant={link_counts['clean-merchant']} "
                f"FOREIGN={link_counts['foreign']}")
+    sends_line = (f"SENDS vs SKIPS | real_sends={delivery_summary['real_sends']} "
+                  f"skipped={delivery_summary['skipped']} open={delivery_summary['open']}")
     if args.json:
         print(json.dumps({"db": str(args.db), "posts_checked": posts,
-                          "link_summary": link_counts, "findings": findings}))
+                          "link_summary": link_counts, "delivery_summary": delivery_summary,
+                          "findings": findings}))
     else:
         print(f"QUALITY AUDIT | db={args.db} posts={posts} findings={len(findings)}")
         print(f"  {summary}")
+        print(f"  {sends_line}")
+        for reason, count in delivery_summary["skip_reasons"].items():
+            print(f"    skip: {count}x {reason[:70]}")
         if (link_counts["foreign"] == 0 and link_counts["unattributed"] == 0
                 and link_counts["clean-merchant"] == 0 and link_counts["links"]):
             print("  every published link has verified owned attribution; no unmonetized or "

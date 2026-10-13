@@ -385,9 +385,11 @@ Behaviour (pinned by `test_hypd_links.py`):
 | An HYPD link has an unknown destination | Not learned or published as a Meesho link; the tool reports that it could not verify the merchant |
 | Another creator's `hypd.store/<other-store>/afflink/…` | **Never** published as ours; it would pay them |
 
-**Teaching the bot your HYPD links** (HYPD has no public link-creation API —
-links are minted in the HYPD creator app for a curated product, then the bot
-learns the product behind each one):
+**Teaching the bot your HYPD links.** This repository does **not** implement
+an automatic HYPD link-creation API. Create an original share in your HYPD
+creator app for the product, then teach the bot that exact link. Never substitute
+a store ID into somebody else's token. These are operator commands, not steps
+run automatically by this change; live learning requires approval:
 
 ```bash
 python3 ops/hypd_links.py                                   # what the bot knows
@@ -402,16 +404,95 @@ python3 ops/earnkaro_check.py --hypd-only
 
 Learning one link maps the **product** (`hypd_links` table: token → afflink,
 merchant page, product key), so every later post of that product — however the
-source spells the URL (with or without HYPD's tracking parameters) — earns on
-our link. Merchant pages are stored clean (tracking stripped) so a bare link
+source spells the URL (with or without HYPD's tracking parameters) — can use
+our link when the same-product redirect check succeeds. Actual payouts depend
+on the platform's attribution and eligibility rules. Merchant pages are stored clean (tracking stripped) so a bare link
 matches.
 
 Pinned HYPD scope: `HYPD_STORE_ID=93944`, `HYPD_STORE_SLUG=smartdeals`,
 `HYPD_ALWAYS_BITLY=true`, and `HYPD_MERCHANT_DOMAINS=meesho.com` (Meesho only;
-Shopsy is excluded). Reserved `HYPD_API_URL`/`HYPD_API_TOKEN` are unused until
-HYPD ships a link API. The bridge mirrors the store ids via `HYPD_STORES`
+Shopsy is excluded). Reserved `HYPD_API_URL`/`HYPD_API_TOKEN` are unused;
+no automatic share-token creation is implemented. The bridge mirrors the store ids via `HYPD_STORES`
 (`93944,smartdeals`); for direct-source posts it verifies Meesho destinations,
-uses a clean Shopsy fallback, and blocks foreign/unknown HYPD destinations.
+blocks foreign/unknown HYPD destinations, and does not publish clean Shopsy
+fallbacks in strict mode.
+
+
+### Category evidence and HYPD hardening (2026-10-14)
+
+- **Categories are evidence-based, not an AI confidence guarantee.** Shared
+  taxonomy v3 distinguishes product phrases such as `saree organizer` → Home,
+  `laptop backpack` → Bags, and `green tea face wash` → Beauty. Independent
+  conflicting items still withhold the category (e.g. `saree and saree organizer`).
+  Unknown/mixed evidence is not guessed into a category channel. Existing
+  identity, price/link-association, routing and duplicate gates still apply.
+- URL evidence excludes opaque shortener/share tokens and IDs after `/p/`,
+  `/dp/`, `/product/` and `/item/`. Separate path/query fields cannot manufacture
+  a product phrase (`/rice?q=cooker` is not evidence for “rice cooker”).
+  Classification does not fetch merchant HTML. Search-word evidence alone
+  does not satisfy the separate publishable-product identity gate.
+- **Meesho needs an identified product and our original HYPD share.** Shares
+  must have the exact HTTPS host/path shape, current configured store, and a
+  product-key-consistent stored mapping. Learned mappings, including cache
+  hits, get a fresh redirect check before bot conversion. Changed/unverifiable
+  destinations are withheld; stale mappings are invalidated. Missing products
+  remain in the curation queue, not an unrelated EarnKaro fallback.
+- A Bitly/is.gd URL needs **its own exact short → HYPD share proof**. Another
+  mapping for the same product does not establish ownership of an arbitrary
+  short URL. Telegram, WhatsApp DB provenance and the quality auditor reject
+  foreign, stale-account, inconsistent-product and unproven legacy records.
+  Old HYPD shorts without exact proofs are intentionally withheld until
+  reconverted through the verified route. No blind backfill is performed.
+- HYPD wrapper parsing rejects HTTP errors and multiple product destinations;
+  merchant HTML is not inspected. Store configuration is an operator assertion,
+  not independent verification of account access or actual commission payout.
+
+Offline validation: `PYTHON=/path/to/venv/bin/python bash ops/test_all.sh`;
+142 Python/JavaScript category parity cases, HYPD regression tests, bridge proof
+matrix, existing routing/dedup/one-hour/WhatsApp checks and syntax/lint gates.
+**No production deployment, restart, live posting or commission verification**
+is part of this change. Production must remain OFF until explicitly approved.
+
+### Further reliability audit (2026-10-14)
+
+This pass strengthens failure handling, not a claim of 100% correctness:
+
+- **Category boundaries:** URLs, real/encoded line breaks and separate query
+  fields cannot join words into a synthetic product phrase. Invalid encodings,
+  credentials and parser-dependent dot-segment URLs contribute no category
+  evidence. A separate suite adds 274 adversarial/metamorphic cases to the 142
+  existing Python/JavaScript parity cases, including repetition invariance.
+- **Conflicting HYPD records:** final Telegram render/send gates, WhatsApp
+  provenance and the auditor reject inconsistent cached product pairings for
+  the same share/short URL. They cannot pick an arbitrary first/latest row or
+  rescue a HYPD conflict using unrelated native-tag evidence. The bridge reads
+  one read-only SQLite snapshot; a missing DB fails closed instead of creating it.
+  Bot startup also creates an affiliate-URL cache index for these lookups; the
+  regression suite checks that SQLite uses it. No live index migration ran here.
+- **Honest delivery reporting:** `conversion_report.py` separates `rendered_links`
+  from `links` belonging to queues with recorded successful sends. `delivery_summary`
+  reports complete target sends, policy skips (including old `sent` + error rows),
+  partial target sends and queues without send evidence. Missing/legacy delivery
+  schemas do not imply success. Partial sends require receipt inspection, not
+  blind replay. Links are counted once per queue, not multiplied by target count;
+  these are saved renders, not a reconstruction of final per-target text. The
+  report window follows queue creation time, not live Telegram receipts.
+- **Diagnostic safety:** HYPD probes require an identified Meesho product,
+  reject error pages/ambiguous wrappers and do not inspect merchant HTML.
+  Shortener return checks require the exact original share, not a store-name
+  substring or another token in the same store. An unobservable redirect chain
+  is inconclusive, not proof of ownership. Live probes may create external
+  short links; `--plan` can write bot caches. They were not run live here.
+- **Test isolation:** `ops/test_all.sh` always overrides inherited database,
+  log, media and Telegram-session paths, and clears the inherited channel-config
+  path. Both its isolation block and a complete gate run were checked with
+  sentinel operator files; those files remained unchanged.
+
+Verification: the complete offline gate, 116 HYPD checks, six diagnostic safety
+regressions (with subcases), dashboard DOM suites, syntax/lint and deploy bundle
+source parity. Rebuild ignored bundles with `bash ops/repack_bundles.sh`.
+Production remains OFF; no deploy/restart, live sends or affiliate payout tests
+were performed. Existing one-hour/per-channel duplicate rules are unchanged.
 
 Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
 
@@ -431,6 +512,49 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
 > supersedes legacy acceptance of clean merchant pass-throughs, family/channel promo
 > URLs, and other non-earning links; those are now refused or skipped.
 
+- **Post-deploy repeats fix (2026-10-11):** right after a deploy some queues
+  posted up to three times to the same target. The delivery checkpoint (a ledger
+  write) sat *inside* the Telegram send-retry loop, so one locked-database
+  moment re-sent an already-sent chunk instead of retrying the write. The
+  checkpoint now runs once per sent chunk *outside* the loop (a failure logs
+  `CHECKPOINT FAILED` and never re-sends), ledger writes absorb transient
+  `locked`/`busy` contention with their own retry (`sqlite3` `timeout=30s`),
+  policy skips are stored as `status='skipped'` (terminal like `'sent'`, never
+  retried) instead of `'sent'` with the reason in `last_error`, both audits
+  count only empty-reason `'sent'` rows as real sends (`SENDS vs SKIPS` in
+  `quality_audit.py`; skip-aware `posted`/`dedup` in `coverage_audit.py`),
+  strict-all dedup keys on verified product identity only and skips a post with
+  no trustworthy identity as a unit, and only a real send blocks an edit
+  revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
+- **Category shelves (2026-10-13):** a dashboard channel can be a themed shelf
+  - tick Electronics (or Clothing, Footwear, Home & Kitchen, Beauty, Grocery, Bags & Accessories)
+  and it keeps ONLY posts classified into those categories, from every main
+  source or selected ones. Enforced at delivery time in `render_job`, pinned
+  by shelf tests in `test_dashboard.py`.
+- **Operator dashboard (2026-10-13):** add posting channels from a browser
+  instead of editing code - name, sources (or every main source), category
+  shelf, Amazon-tag
+  opt-in, enable/disable/remove. Channels live in `channels.json` next to the
+  bot database (a redeploy never wipes them) and apply on the next bot restart;
+  the dashboard shows a pending badge plus one-click restart when allowed.
+  Strictly additive (new names only, built-ins untouched), the tag opt-in
+  warns that Associates Central must list the channel first, and the same page
+  shows queue depth, today's sends-vs-skips, recent jobs, and the live quality
+  audit. `DASHBOARD_TOKEN='...' python3 -m dashboard.app`; localhost + SSH
+  tunnel only, never public. Pinned by `test_dashboard.py` in the gate.
+- **Same-product repeats, advanced guard (2026-10-12, user rule "1 hour lopala
+  malli post cheyoddu"):** the per-channel repeat guard now matches ANY of the
+  post's identity keys - the headline key plus the exact link identities
+  behind its URLs (merchant PIDs, same-link hashes) - so the same product in
+  different words across sources still matches and waits. Inside the 1-hour
+  cool-down the repeat is ALWAYS skipped, even a cheaper copy; past it a
+  MEANINGFULLY better copy still posts (a real ≥5% price drop, or a deeper
+  discount at a lower price - token wobbles, same-price MRP-math percent
+  bumps, and higher prices never repost). Past the 24h window a genuine
+  re-offer posts again. Separately, strict mode re-verifies EVERY link of the
+  final per-target text right before the send (`PRESEND LINK GUARD`): a source
+  short link, foreign tag, or clean merchant page stops that target instead of
+  posting, so their links never reach a channel and no commission is missed.
 - **Routing** (`ops/LATEST_ROUTING_NOTES.txt`): per-target source allowlists, dedicated LootzoneTricks sources, Premium target with ≥85% OFF / ≤₹99 / ₹100–499 ≥70% filter, IST posting windows.
 - **WhatsApp media fix** (`ops/WHATSAPP_MEDIA_FIX_NOTES.txt`): works around the Baileys 7.0.0-rc14 newsletter-media bug (issue #2199) with a custom `/newsletter/newsletter-*` upload path + `server_thumb_gen=1`, ack watching so "sent but invisible" can't happen silently, text-only fallback after 3 failed media attempts. Kill switch: `NEWSLETTER_MEDIA_FIX=false`.
 - **Queue liveness:** mature warm-up tier pinned by default (`WA_WARMUP_DONE=true`), plausibility ceiling on `nextAllowedAt`, per-step timeouts, connection watchdog, heartbeat logs.
@@ -1234,3 +1358,330 @@ Never commit or paste `.env`, `auth/`, BotFather tokens, or pairing codes/QRs.
 > Baileys client, not Meta's official Business API. It is not unlimited,
 > ban-proof, or guaranteed to keep working. Use only a dedicated number and a
 > Channel you control; no unsolicited private messaging.
+
+### Strict category channels — rules v2
+
+Create the destination Telegram channel first, give the bot/session account posting
+permission, then **Dashboard → Guided setup → select the category**. This configures
+routing; it does not create a Telegram or WhatsApp channel on those services.
+
+| Picker label | Stable key | Examples |
+| --- | --- | --- |
+| Clothing | `fashion` | Kurtis, shirts, jeans, sarees, socks |
+| Electronics | `electronics` | Earbuds, laptops, smartphones, USB chargers |
+| Home & Kitchen | `home_kitchen` | Rice cookers, washing machines, bedsheets, shoe racks |
+| Footwear | `footwear` | Shoes, sandals, slippers |
+| Beauty | `beauty` | Skincare, hair conditioner, grooming |
+| Grocery | `grocery` | Rice, flour, snacks, peanut butter |
+| Bags & Accessories | `accessories` | Handbags, backpacks, wallets, jewellery |
+
+**Migration:** the existing `fashion` key now means clothing only. Bags/wallets
+move to `accessories`. Select both keys on a dashboard channel if you want its old
+broader scope. Existing non-category/built-in routing is unchanged. Empty category
+selection in stored configuration means unrestricted. The setup wizard requires
+at least one category; the existing-channel editor offers an explicit unrestricted
+mode with confirmation. Multiple selected
+categories accept either category, but never authorize mixed-product roundups.
+
+**Conservative, not infallible:** this is an offline evidence classifier, not a
+merchant-catalog lookup or an accuracy guarantee. It abstains on unknown, weak,
+mixed or conflicting evidence. It ignores opaque short-link tokens and tracking
+parameters, caps repeated aliases, and suppresses nested words only at the same
+occurrence: “shoe rack” is Home, but “shoes and shoe rack” is withheld. Compound
+phrases distinguish rice cookers from rice and body butter from grocery butter.
+Affiliate attribution, verified identity, duplicate cooldown and delivery checks
+remain separate mandatory gates. No merchant HTML is fetched.
+
+Use **Test a category before posting** to see a match/withheld reason and the text
+or URL phrases supporting it. Preview never sends, fetches URLs or changes routing.
+It uses the installed code; the running bot adopts changes only after an approved
+restart. **Edit shelf** changes an existing channel's filter. Saved edits likewise
+require restart. Malformed filters are rejected, not silently made unrestricted.
+`CATEGORY WITHHELD` log lines explain dashboard targets removed during rendering.
+
+WhatsApp uses the same rules and a parity-tested JavaScript engine. Configure
+`WA_CHANNEL_<KEY>` for an existing WhatsApp Channel; dashboard channel CRUD is
+Telegram-only. Built-in Telegram category destinations use
+`TG_CATEGORY_<KEY>_TARGET`. Amazon-tag opt-in and channel approval requirements
+still apply. Deploy both classifier modules with the bot/bridge (bundles include
+them); changing only the main script is insufficient.
+
+Run `PYTHON=/path/to/python bash ops/test_all.sh` for the complete offline gate,
+including shared Python/JS classification fixtures, real render routing and
+authenticated dashboard preview/config tests. Production must remain stopped
+until deployment/restart is explicitly approved.
+
+### Category test lab and safer editing
+
+The dashboard now supports **bulk dry-runs** (up to 20 deals and 60,000 combined
+text/link characters). Paste complete posts separated by a line containing `---`,
+and choose their exact source. Or select JSON mode to supply per-deal sources,
+resolved URLs and expected categories:
+
+```json
+[
+  {"text": "Cotton kurti ₹499", "source": "deals", "expected_category": "fashion"},
+  {"text": "Shoes and shoe rack", "source": "deals", "expected_category": null}
+]
+```
+
+Results show category evidence, withheld reasons, optional expectation mismatches,
+and **saved dashboard channel** checks. Filter withheld/mismatching cases or
+download the report as JSON. Caption text is rendered as text, never executable
+HTML. Tests do not fetch links, enqueue jobs, send posts or write configuration.
+
+- **Candidate:** the saved category and source filters match. This is NOT approval
+  to send: identity, attribution, duplicate, service-promotion, source-access and
+  final delivery gates still apply. Built-in/WhatsApp destinations are not simulated.
+- **Blocked:** disabled channel, category mismatch/withheld, or source excluded.
+- **Undetermined:** source missing, or an older bot snapshot cannot confirm the
+  wildcard main-source list. `*` excludes Tricks sources, just like the live merge.
+- Reports include installed rules version, config revision and pending-restart
+  status. Saved config can differ from the running bot. No classifier output is
+  claimed to be a calibrated probability or guaranteed accuracy.
+
+**Edit shelf** opens a checkbox editor. Strict mode requires a category;
+unrestricted mode requires confirmation. The editor captures the config revision
+and sends `If-Match`: an intervening save returns HTTP 409 instead of overwriting
+newer filters. Close the editor, refresh and reopen to review the new state.
+This guards clients using one dashboard process, not arbitrary external file writers.
+Older API clients that omit `If-Match` remain compatible.
+
+API: authenticated `POST /api/category-batch` accepts `{"items": [...]}`.
+`POST /api/category-preview` also accepts `source` and returns channel checks.
+Neither endpoint stores submitted captions. Downloaded reports may contain your
+submitted deal text/URLs; keep them private as appropriate.
+
+The full offline gate now includes batch/source parity and HTTP concurrency tests,
+plus a syntax check of the actual served JavaScript. Optional DOM workflow test:
+
+```bash
+npm install --prefix /tmp/category-ui-test --no-package-lock jsdom
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_dashboard_ui.cjs
+```
+
+Run the dashboard from the repository (`python -m dashboard.app`); bot/bridge deploy
+bundles do not package the dashboard UI or its Python helpers. No production restart
+or deployment is performed by these tests.
+
+
+### Easy setup: link → category → channel
+
+The redesigned **Channel Studio** opens with a three-step setup wizard:
+
+1. **Category:** paste a product URL and click **Identify category**, or select a
+   category card directly. A readable `wireless-earbuds` slug can suggest Electronics;
+   `cotton-kurti` can suggest Clothing. **Use this category** selects that shelf.
+2. **Channel details:** enter the username of a Telegram channel you already
+   control and confirm posting permission. These are operator confirmations, not
+   automated Telegram checks. Sources default to every main source; Amazon-tag
+   opt-in defaults OFF. Optional settings are under Advanced.
+3. **Review & save:** verify name, categories, sources and tag policy before saving.
+   Saving config does not directly send a post, create a Telegram channel or restart the bot.
+   On the upgraded running bot, new channels can activate live after access checks.
+   Duplicate clicks are blocked. Stale config returns a conflict and preserves the
+   form for review. Restart now also requires an explicit confirmation in the UI.
+
+The inspector is **offline**: it reads only supplied URL/title text, never merchant
+HTML or redirect destinations fetched from the network. An opaque ASIN/PID or an
+`amzn.to`/`bit.ly` token cannot reveal the product category. The UI asks for the
+**original source product title** or a **user-supplied resolved URL**, rather than
+inventing a product name. Conflicting title/link evidence is withheld. A pasted
+resolved URL is not verified redirect provenance, and classification is not proof
+of affiliate ownership, identity or commission eligibility.
+
+Authenticated `POST /api/inspect-link` accepts:
+
+```json
+{"url": "https://amzn.to/example", "title": "Cotton printed kurti", "resolved_url": ""}
+```
+
+Responses include a suggestion or `needs_details`/`withheld` verdict, evidence,
+next-step guidance and existing enabled shelves for that category. Existing-shelf
+matches are not delivery approval. Inspection never writes config or queue data.
+URL/title inputs are bounded; non-web URLs and embedded credentials are rejected.
+
+The responsive UI template is now `dashboard/index.html`, loaded by `dashboard/app.py`.
+Copy the entire `dashboard/` folder when updating a standalone dashboard install.
+The full offline gate includes inspector regressions; optional setup DOM tests:
+
+```bash
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_dashboard_setup.cjs
+```
+
+### Quick add + live activation (new destinations only)
+
+**Public channel link → choose a category → select source channels → Save & request activation.**
+The dashboard accepts `https://t.me/ChannelName`, `t.me/ChannelName`, or `@ChannelName`.
+They normalize to the same username, so aliases cannot create duplicate config.
+Private invite links, message links and non-Telegram links are rejected. Create the
+channel first and grant the Telethon session account **Post Messages** permission.
+Quick add defaults to every main source, one strict category, and Amazon-tag opt-in
+OFF. The source library sits beside the channel details on desktop (below on mobile):
+search the 60 bundled source entries by channel title/handle, select multiple
+checkboxes, select visible search results, or clear selections. Selected chips and
+counts remain intact across search changes and dashboard polling. Real Telegram
+titles come from the running bot's access checks; unverified names are shown as
+handles/private-source placeholders, never invented titles.
+
+Paste a public source link, `@handle`, or private invite into **Add a source channel
+link**. Use **Add & select sources**, or save with the pasted link still present;
+both paths validate and include it. Invalid/unadded links block saving rather than
+being silently ignored. Choosing a custom source while "every main source" is on
+materializes the main-source selection plus the new link. At most 100 sources per
+channel are accepted; excess input is rejected, not truncated. Sources, categories
+and notes can also be reviewed in **edit sources & category** (existing policy edits
+still require an approved restart). Declare new affiliate channels before opting their Amazon tag in via advanced
+settings; otherwise strict affiliate policy may withhold Amazon deals.
+
+A **one-time approved deployment/start of this upgraded bot** is needed to install
+live activation. After that, a running bot checks config about every five seconds:
+
+- Only NEW destinations are added live. Existing routing, queues and deliveries
+  are not restarted or replayed. Eligible jobs rendered after activation may use
+  the new destination; this is not historical backfill.
+- New channels must resolve as broadcast channels and report creator/posting-admin
+  rights. No test message is sent. Source/destination loops and duplicate channel
+  IDs are refused. An already-joined new source can be activated live after its
+  broadcast-channel type and session membership are checked. Public links and
+  private invites are supported for sources, not for destination invites. **Join
+  with the same Telegram account used by the bot session**, not a different
+  personal account. New-source verification uses check-only requests, never
+  ImportChatInvite/JoinChannel. Missing access stays pending/needs-attention and
+  retries with backoff; a saved row is not proof of activation.
+- Resolution runs separately from posting workers with an 8-second per-channel
+  timeout, at most three channel/source lookup attempts per pass and 30-second failure backoff.
+  Larger explicit selections are staged across passes; no partial source mapping
+  is installed while remaining selected new sources are unchecked. Telegram
+  FloodWait retry windows pause all new access checks for the requested period. A failing
+  new destination does not stop existing destinations.
+- New custom intake is **channel-local**. It feeds only explicitly selected
+  destination(s), after their category filters; automatic main/price/premium/card/
+  shopping fan-out is capped to that selection. Built-in source routes remain
+  unchanged. Wildcard main-source selections do not silently inherit custom feeds,
+  regardless of config order. Event ingestion and rescan recovery ignore messages
+  before a new custom source's activation cutoff; no historical backfill is started.
+- The source list is available even while the bot is OFF, via the bundled baseline
+  catalog plus saved/snapshot sources. Catalog presence does not mean membership
+  or a live subscription. Source titles and runtime state come from the snapshot.
+- The config revision is checked again after the Telegram lookup. A save/remove
+  during that lookup cannot accidentally activate obsolete configuration.
+- **Edits, disabling and deleting already-active destinations intentionally need
+  an approved restart. Until then the old live policy CONTINUES.** This protects
+  existing queues from silently changed routing. The UI warns before these actions.
+- Malformed/unreadable config preserves existing routes. Startup configuration
+  still uses the existing startup merge; live permission preflight applies to new
+  additions after startup. `active` means routing loaded, not a successful send or
+  a guarantee about Telegram availability, prices, stock or affiliate eligibility.
+
+The dashboard displays the watcher heartbeat and per-channel activation states:
+`active`, `checking_access`, `needs_attention`, `waiting_sources`, `disabled`, or
+`restart_required`. Status is only shown for the observed config revision and a
+fresh heartbeat (under 40 seconds). Missing/stale heartbeat means **not confirmed**,
+never "running". Saving does not start a stopped service. The preview demo has no
+Telegram connection and correctly shows activation as unconfirmed.
+
+`bestgaa/live_channels.py` is included in bot deploy bundles and checked by the
+installer. New targets still pass existing product-identity, category, owned-link,
+per-channel duplicate and delivery checks. Live product processing uses the existing
+resolver/conversion pipeline, including resolved URL context for classification.
+The dashboard inspector remains offline: it does not open merchant HTML, verify
+stock/prices, or invent names from opaque links. Link resolution alone is not proof
+of product identity or category accuracy.
+
+Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
+permission failures, preservation of existing routes, deferred edits/removals,
+malformed config, source/target aliases, backoff and configuration races. Production
+is not restarted or redeployed by development tests.
+
+### Source-selection verification (2026-10-14)
+
+`ops/test_all.sh` includes `test_source_setup.py` (normalization, 100-source limits,
+real isolated HTTP saves, atomic staged activation, startup access repair, aliases,
+loops, rate limits and config races), `test_source_runtime.py` (catalog parity,
+check-only membership, no joins/history, activation cutoffs and channel-local scope),
+and render integration proving matching custom-source deals reach only their
+selected shelf while wrong-category deals are withheld. Existing affiliate,
+one-hour/per-channel duplicate, WhatsApp and dashboard suites remain enabled.
+
+Optional DOM regression:
+```bash
+NODE_PATH=/path/to/jsdom/node_modules PYTHON=/path/to/python node test_dashboard_sources.cjs
+```
+It covers 60 named feeds, multi-select/search, paste-on-save, preserved selections,
+per-form isolation, POST/PATCH payloads, revision conflicts, safe titles and focus.
+Desktop/mobile Chromium checks used an isolated demo with masked private invites,
+no Telegram connection and restart disabled. No production deployment or service
+restart was performed. Bundles are regenerated from source, not auto-deployed.
+
+### Duplicate-delivery hardening (2026-10-14; deployment requires approval)
+
+Existing channel/source/category settings are unchanged. New-channel setup stays
+**channel link → category → select joined sources → Save**. Saving configuration
+still cannot start a stopped bot. The existing access checks, channel-local
+source scope, affiliate ownership checks and strict category filters still apply.
+
+This update closes additional **reproducible code paths**, not a diagnosis of an
+unseen production duplicate:
+
+- Telegram records a durable publication intent **before** each network send.
+  A lost response, interrupted send or failed receipt write is held for review,
+  not automatically retried. Confirmed permission/rate-limit rejections can retry.
+- Durable per-target product claims prevent concurrent workers from sending the
+  same product. The absolute one-hour cooldown is rechecked atomically at the
+  final claim, including cheaper copies. A genuine better offer can still pass
+  the existing policy after that hour.
+- Confirmed chunks survive process restart independently of the in-memory
+  settlement map. A saved delivery-layout fingerprint prevents a missing photo
+  or changed formatting from shifting chunk boundaries during resume.
+- Album fallback is allowed only if preparation failed **before publication**.
+  A lost album-publication response never triggers a second album/single-photo copy.
+- Every product in a roundup participates in per-target dedup: the previous
+  seven-key/twelve-URL truncation is removed. Known www/mobile/root merchant-key
+  aliases also match legacy Telegram history without changing the product ID.
+- WhatsApp dedup now uses verified provenance/resolved/HYPD destination IDs
+  even when the displayed URL is a different short code (while retaining old
+  exact-wrapper keys). No destination fetch or merchant HTML is needed for this
+  identity check.
+- WhatsApp uses persisted write-before-send intents and per-target product fences
+  for text, media and groups. Uncertain media cannot fall back to duplicate text.
+  Healthy targets can still be attempted when another target is held. Both state
+  snapshots retain send fences; corrupt existing snapshots no longer silently
+  reset the bridge to empty history. Run only **one bridge writer** per state file.
+  A selected job is frozen before async conversion/send so intake cannot replace
+  its product/price with a different source's “better copy” mid-flight.
+- Reports/dashboard distinguish **held**, **skipped**, **partial** and confirmed
+  sends. Telegram `JOB sent=` counts new completed target publications; write-only
+  recovery is logged separately as `settlement_retries`, not another send.
+
+**Hold policy:** this is conservative at-most-once handling, not a guarantee of
+remote exactly-once delivery. A hold can represent a message that was accepted,
+not accepted, or only partly delivered. Inspect the destination's actual history
+before any intervention. Do not blindly reset a job, clear dedup history or delete
+claims to force a resend. Held product claims intentionally do not expire: an
+unresolved outcome must not become permission to publish another copy later.
+Other products/targets remain eligible. A Telegram hold appears in the dashboard
+Held column and `DELIVERY_HELD` audit findings; WhatsApp holds are retained in its
+state file's `sendIntents` / `targetProductFences` (even if the queue job is removed).
+No automatic “retry held” button is provided. Confirmed WhatsApp fence history
+for jobs no longer queued is retained for seven days; unresolved/active-job
+records are never removed by that cleanup.
+
+The safety records are additive SQLite tables (`send_attempts`,
+`target_product_claims`) and additive WhatsApp JSON fields; old channel settings
+and posting history are retained. Do not downgrade to a writer that ignores these
+records while uncertain sends exist. This does not retroactively protect sends
+made by an older running build, and cannot prove commissions or delivery without
+live receipts.
+
+Offline regression coverage includes lost acknowledgements, crashes/restarts,
+failed intent/receipt/settlement writes, simultaneous workers, album fallback,
+partial-resume layout changes, long-list tail identities, alias history, healthy
+target continuation, one-hour/no-price-exception rules and distinct-product controls:
+
+```bash
+PYTHON=/path/to/venv/bin/python bash ops/test_all.sh
+# Focused, isolated/no-Telegram tests:
+/path/to/venv/bin/python test_delivery_fences.py
+node --test test_send_guard.mjs
+```

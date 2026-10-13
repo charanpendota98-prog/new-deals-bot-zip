@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 from pathlib import Path
+from ops import quality_audit as qa
 
 _TMP = tempfile.mkdtemp(prefix="hypd-test-")
 os.environ.update(
@@ -92,7 +93,8 @@ class FakeSession:
     """GET hypd.store -> the merchant page; GET anything else -> itself (alive)."""
 
     def __init__(self, hypd_destination=DESTINATION, bitly="https://bit.ly/hypd1",
-                 hypd_body=""):
+                 hypd_body="", hypd_status=200):
+        self.hypd_status = hypd_status
         self.hypd_destination = hypd_destination
         self.bitly = bitly
         self.hypd_body = hypd_body
@@ -104,7 +106,7 @@ class FakeSession:
         if bot.is_hypd_link(url):
             # A redirect when a destination is configured; otherwise the SAME
             # url with whatever body the test wants (the JS-redirect case).
-            return FakeResponse(self.hypd_destination or url, self.hypd_body or "<html>ok</html>")
+            return FakeResponse(self.hypd_destination or url, self.hypd_body or "<html>ok</html>", status=self.hypd_status)
         return FakeResponse(url, "<html>ok</html>")
 
     def post(self, url, **kwargs):
@@ -415,7 +417,7 @@ def test_the_curation_queue_records_what_cannot_earn_yet():
                 "PID:www.meesho.com:none99999"))
             check("learning the HYPD link clears the to-do entry",
                   not bot.store.recent_hypd_wanted(limit=10), str(bot.store.recent_hypd_wanted()))
-            session = FakeSession(bitly="https://bit.ly/nowours")
+            session = FakeSession(hypd_destination=meesho, bitly="https://bit.ly/nowours")
             result = asyncio.run(Aff(session).convert(meesho, False))
             # The post carries the Bitly link; Bitly was asked to shorten OUR
             # hypd link - that is the proof the commission link is ours.
@@ -503,7 +505,115 @@ def test_deploy_wiring():
           "HYPD_MERCHANT_DOMAINS=meesho.com" in runbook, "")
 
 
+def test_strict_hypd_proof_and_identity():
+    for malformed in ("https://hypd.store/93944/afflink", "https://hypd.store/93944/afflink/token/extra",
+                      "http://hypd.store/93944/afflink/token", "https://evil.hypd.store/93944/afflink/token",
+                      "https://user@hypd.store/93944/afflink/token", "https://hypd.store/93944/afflink/token?url=evil",
+                      "https://other.test/93944/afflink/token"):
+        check("malformed/foreign-host HYPD shapes fail closed", not bot.is_our_hypd_link(malformed)
+              and not bot.hypd_afflink_token(malformed), malformed)
+    with tempfile.TemporaryDirectory() as td:
+        original = bot.store
+        bot.store = bot.Store(Path(td) / "proof.sqlite3")
+        try:
+            async def run():
+                key = bot.product_key(DESTINATION)
+                plan = bot.store.conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT affiliate_url,resolved_url FROM link_cache WHERE affiliate_url=?",
+                    ("https://bit.ly/proven-hypd",)).fetchall()
+                check("final ownership lookup uses an index instead of scanning the entire cache",
+                      any("idx_link_cache_affiliate" in row[3] for row in plan))
+                check("cannot learn a Meesho storefront as a product", not await bot.store.remember_hypd_link(
+                    OUR_LINK, "https://www.meesho.com/", "URL:opaque"))
+                check("cannot learn a mismatched supplied product identity", not await bot.store.remember_hypd_link(
+                    OUR_LINK, DESTINATION, "PID:www.meesho.com:wrong123"))
+                # A poisoned/legacy row must not be trusted because its merchant is Meesho.
+                bot.store.conn.execute("INSERT INTO hypd_links VALUES(?,?,?,?,?,?)", (
+                    "88888:someoneelsestoken1", "88888", FOREIGN_LINK, DESTINATION, key, 1))
+                bot.store.conn.commit()
+                check("foreign mapping is not returned as our link", await bot.store.hypd_link_for(key) is None)
+                foreign = await Aff(FakeSession())._hypd_affiliate_link(FOREIGN_LINK, DESTINATION, False, DESTINATION)
+                check("foreign store rejected at final HYPD conversion boundary", foreign is None)
+                from ops import hypd_links as curation
+                check("successful curation returns True instead of misleading failure",
+                      await curation.remember(OUR_LINK, DESTINATION, key) is True)
+                check("mobile/root Meesho URL variants find the same curated product",
+                      await bot.store.hypd_link_for("https://m.meesho.com/new-slug/p/abc12345") == OUR_LINK
+                      and await bot.store.hypd_link_for("PID:meesho.com:abc12345") == OUR_LINK)
+                check("read-only listing hides foreign records",
+                      bot.store.recent_hypd_links() == [(OUR_LINK, bot.clean_url(bot.merchant_url(DESTINATION)))])
+                await bot.store.cache_link("source", "https://bit.ly/unproven", DESTINATION, key)
+                check("an arbitrary short is not proven by a mapping for the same product",
+                      not await bot.store.verify_generated_text("https://bit.ly/unproven"))
+                good = await Aff(FakeSession(bitly="https://bit.ly/proven-hypd")).convert(OUR_LINK, False)
+                check("our exact minted short has durable HYPD proof",
+                      good and await bot.store.verify_generated_text(good.affiliate))
+                proof = bot.store.conn.execute("SELECT * FROM owned_link_proofs WHERE affiliate_url=?", (good.affiliate,)).fetchone()
+                check("short proof binds to the actual share and configured store",
+                      proof["proof_type"] == "hypd" and proof["destination_url"] == OUR_LINK and proof["publisher_id"] == "93944")
+                owned = qa.our_minted_links(bot.store.conn)
+                check("auditor accepts exact proof but not arbitrary short or foreign mapping",
+                      good.affiliate in owned and OUR_LINK in owned
+                      and "https://bit.ly/unproven" not in owned and FOREIGN_LINK not in owned)
+                stores = bot.OUR_HYPD_STORES
+                try:
+                    bot.OUR_HYPD_STORES = {"changed-store"}
+                    check("changed store settings revoke old HYPD proof",
+                          not await bot.store.verify_generated_text(good.affiliate)
+                          and not await bot.store.hypd_link_for(key))
+                finally:
+                    bot.OUR_HYPD_STORES = stores
+                wrong = "https://www.meesho.com/earbuds/p/wrong123"
+                for conflicting in (wrong, "https://www.amazon.in/dp/B012345678?tag=mama086-21"):
+                    await bot.store.cache_link("conflicting-source", good.affiliate, conflicting, "")
+                    check("all cached HYPD pairings must agree at the final render/send/audit gates",
+                          not await bot.store.verify_generated_text(good.affiliate)
+                          and not (await bot.store.presend_links_verified(good.affiliate))[0]
+                          and good.affiliate not in qa.our_minted_links(bot.store.conn))
+                    bot.store.conn.execute("DELETE FROM link_cache WHERE source_url=?", (bot.canonical_url("conflicting-source"),))
+                    bot.store.conn.commit()
+                check("consistent proof remains usable after conflicting rows are removed",
+                      await bot.store.verify_generated_text(good.affiliate))
+
+                check("exact short proof cannot be reused for a different product",
+                      not await bot.store.cached_link_is_owned(good.affiliate, wrong))
+                # Reusing a learned share performs a redirect check; drift must not post wrong item.
+                drift = await Aff(FakeSession(hypd_destination=wrong)).convert(OUR_LINK, False)
+                check("retargeted share is withheld and mapping invalidated", drift is None
+                      and await bot.store.hypd_link_for(key) is None)
+                check("the old short loses its proof when its mapping is invalidated",
+                      not await bot.store.verify_generated_text(good.affiliate))
+                check("auditor revokes the orphaned shortener proof", good.affiliate not in qa.our_minted_links(bot.store.conn))
+                await bot.store.remember_hypd_link(OUR_LINK, DESTINATION, key)
+                bot.store.conn.execute("DELETE FROM link_cache WHERE source_url=?", (OUR_LINK,))
+                bot.store.conn.commit()
+                check("curated-only shares cannot silently change products before their first conversion",
+                      await Aff(FakeSession(hypd_destination=wrong)).convert(OUR_LINK, False) is None
+                      and await bot.store.hypd_link_for(key) is None)
+
+                check("HTTP errors cannot establish an owned product mapping",
+                      not await Aff(FakeSession(hypd_status=500))._hypd_destination(OUR_LINK))
+                escaped = DESTINATION.replace("/", "\\/")
+                check("JSON-escaped wrapper URLs still resolve without merchant HTML",
+                      await Aff(FakeSession(hypd_destination="", hypd_body='{"url":"'+escaped+'"}'))._hypd_destination(OUR_LINK) == DESTINATION)
+                failure_session = FakeSession(hypd_destination="https://www.meesho.com/")
+                check("Meesho homepage cannot be published as a verified product",
+                      await Aff(failure_session).convert(OUR_LINK, False) is None)
+                missing_session = FakeSession()
+                result = await Aff(missing_session).convert(wrong, False)
+                check("unmapped Meesho never falls through to unrelated EarnKaro conversion",
+                      result is None and not getattr(missing_session, "ek_calls", 0))
+                body = '<script>go("'+DESTINATION+'");go("'+wrong+'")</script>'
+                check("ambiguous HYPD redirect markup is rejected", not await Aff(FakeSession(
+                    hypd_destination="", hypd_body=body))._hypd_destination(OUR_LINK))
+            asyncio.run(run())
+        finally:
+            bot.store.conn.close()
+            bot.store = original
+
+
 def main():
+    test_strict_hypd_proof_and_identity()
     test_recognition()
     test_resolve_never_unwraps_our_link()
     test_convert_publishes_the_hypd_link_bitly_shortened()

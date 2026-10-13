@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { guardedSend, DeliveryHeld, pruneConfirmedFences } from './send_guard.js'
+import { classifyCategory } from './category_classifier.js'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
@@ -397,13 +399,19 @@ function isHypdHost(host) {
 function hypdStoreOf(url) {
   try {
     const u = new URL(url)
-    if (!isHypdHost(u.hostname.toLowerCase())) return ''
-    const parts = u.pathname.split('/').filter(Boolean)
-    if (parts.length >= 2 && parts[1].toLowerCase() === 'afflink') return parts[0].toLowerCase()
-    return ''
-  } catch {
-    return ''
-  }
+    if (u.protocol !== 'https:' || !['hypd.store','www.hypd.store'].includes(u.hostname)
+      || u.username || u.password || u.port || u.search || u.hash) return ''
+    const parts = u.pathname.match(/^\/([A-Za-z0-9_-]{1,80})\/afflink\/([A-Za-z0-9_-]{1,256})\/?$/)
+    return parts ? parts[1].toLowerCase() : ''
+  } catch { return '' }
+}
+function meeshoProductId(value) {
+  try {
+    const u = new URL(value)
+    if (!['http:','https:'].includes(u.protocol) || !['meesho.com','www.meesho.com','m.meesho.com'].includes(u.hostname)
+      || u.username || u.password || u.port) return ''
+    return (u.pathname.match(/\/p\/([a-z0-9]{6,})\/?$/i)?.[1] || '').toLowerCase()
+  } catch { return '' }
 }
 function isOurHypdLink(url) {
   const store = hypdStoreOf(url)
@@ -477,6 +485,9 @@ function loadState() {
       return loaded
     } catch {}
   }
+  if ([STATE_FILE, STATE_BACKUP_FILE].some(file => fs.existsSync(file))) {
+    throw new Error('Existing WhatsApp state is unreadable; refusing to forget send fences. Restore a verified backup before restarting.')
+  }
   return defaultState()
 }
 function saveState() {
@@ -489,6 +500,10 @@ function saveState() {
     try { fs.copyFileSync(STATE_FILE, STATE_BACKUP_FILE); fs.chmodSync(STATE_BACKUP_FILE, 0o600) } catch {}
   }
   fs.renameSync(tmp, STATE_FILE)
+  // Both recoverable snapshots must contain write-before-send fences. Failure
+  // here aborts publication; restoring yesterday's pre-intent backup is unsafe.
+  fs.copyFileSync(STATE_FILE, STATE_BACKUP_FILE)
+  fs.chmodSync(STATE_BACKUP_FILE, 0o600)
 }
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min }
@@ -545,22 +560,32 @@ async function resolveOwnedHypdDestination(url, fetchFn = fetch) {
     })
     if (Number(response.status) >= 400) return ''
     const final = cleanUrl(response.url || url)
-    if (isMeeshoUrl(final)) return final
+    if (isMeeshoUrl(final)) return meeshoProductId(final) ? final : ''
     const finalHost = hostOf(final)
     if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => finalHost === domain || finalHost.endsWith('.' + domain))) {
       return cleanHypdDestination(final)
     }
+    if (!isHypdHost(finalHost)) return '' // never inspect merchant HTML
     let body = ''
     try { body = (await response.text()).slice(0, 200_000) } catch { /* fail closed below */ }
     // HYPD client-side redirect pages may escape slashes inside a script URL.
     body = body.replace(/\\\//g, '/')
+    const candidates = new Map()
     for (const candidate of urlsIn(body)) {
-      if (isMeeshoUrl(candidate)) return candidate
+      if (isMeeshoUrl(candidate) && meeshoProductId(candidate)) candidates.set('meesho:'+meeshoProductId(candidate),candidate)
       const candidateHost = hostOf(candidate)
+      // A wrapper mentioning another supported merchant is ambiguous, even if
+      // one of its URLs is a valid Meesho product. Never just choose the first.
+      if (['amazon.in','amazon.com','flipkart.com','myntra.com','ajio.com','myntr.in',
+        'myntr.it','ajiio.co','fkrt.co','fkrt.cc','fktr.in','tatacliq.com','nykaa.com',
+        'croma.com','reliancedigital.in','jiomart.com','firstcry.com','snapdeal.com',
+        'decathlon.in','pepperfry.com','limeroad.com','paytmmall.com'].some(domain =>
+          candidateHost === domain || candidateHost.endsWith('.'+domain))) return ''
       if ([...HYPD_CLEAN_FALLBACK_DOMAINS].some(domain => candidateHost === domain || candidateHost.endsWith('.' + domain))) {
-        return cleanHypdDestination(candidate)
+        candidates.set(cleanHypdDestination(candidate),cleanHypdDestination(candidate))
       }
     }
+    if (candidates.size === 1) return [...candidates.values()][0]
   } catch (error) {
     log.warn({ url: url.slice(0, 60), err: error.message }, 'HYPD destination could not be verified')
   }
@@ -1089,6 +1114,7 @@ function dealKey(text) {
   return sha(`${urls.join('|')}|${normalizedText(text)}`)
 }
 function pruneState() {
+  pruneConfirmedFences(state)
   const now = Date.now()
   const cutoff = now - 36 * 3600_000
   for (const [key, ts] of Object.entries(state.sent)) if (ts < cutoff) delete state.sent[key]
@@ -1357,9 +1383,9 @@ function watchAck(sock, messageId, windowMs = 9000) {
 }
 
 // Sends photo/video to a WhatsApp Channel using the corrected upload path and
-// verifies the ack. Throws when WhatsApp rejects the stanza, so the caller can
-// fall back to a text-only update instead of silently posting nothing.
-async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }) {
+// watches for rejection acknowledgements. Publication errors are held; only
+// failures before the publication callback can use the text-only fallback.
+async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }, publish = fn => fn()) {
   const caption = sanitizeOutbound(rawCaption)
   const isVideo = type === 'video'
   const mediaType = isVideo ? 'video' : 'image'
@@ -1367,12 +1393,12 @@ async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption:
     ? { video: buffer, mimetype: mimetype || 'video/mp4', caption: caption || undefined }
     : { image: buffer, caption: caption || undefined }
 
-  if (!NEWSLETTER_MEDIA_FIX) {
+  if (!NEWSLETTER_MEDIA_FIX) return publish(async () => {
     const sent = await withTimeout(sock.sendMessage(jid, content), 150_000, 'sendMessage(media)')
     const ack = await watchAck(sock, sent?.key?.id)
     if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
     return sent
-  }
+  })
 
   let thumbnailInfo = {}
   const message = await withTimeout(prepareWAMessageMedia(content, {
@@ -1397,17 +1423,19 @@ async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption:
   if (thumbnailInfo.thumbnailDirectPath) node.thumbnailDirectPath = thumbnailInfo.thumbnailDirectPath
   if (thumbnailInfo.thumbnailSha256) node.thumbnailSha256 = Buffer.from(thumbnailInfo.thumbnailSha256, 'base64')
 
-  const messageId = generateMessageIDV2(sock.user?.id)
-  await withTimeout(sock.sendNode({
-    tag: 'message',
-    attrs: { to: jid, id: messageId, type: 'media' },
-    content: [{ tag: 'plaintext', attrs: { mediatype: mediaType }, content: encodeNewsletterMessage(message) }],
-  }), 60_000, 'sendNode(media)')
+  return publish(async () => {
+    const messageId = generateMessageIDV2(sock.user?.id)
+    await withTimeout(sock.sendNode({
+      tag: 'message',
+      attrs: { to: jid, id: messageId, type: 'media' },
+      content: [{ tag: 'plaintext', attrs: { mediatype: mediaType }, content: encodeNewsletterMessage(message) }],
+    }), 60_000, 'sendNode(media)')
 
-  const ack = await watchAck(sock, messageId)
-  if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
-  log.info({ mediaType, directPath: String(node.directPath).slice(0, 12) }, 'Channel media accepted')
-  return { key: { id: messageId, remoteJid: jid, fromMe: true } }
+    const ack = await watchAck(sock, messageId)
+    if (!ack.ok) throw new Error(`WhatsApp rejected Channel media (ack ${ack.error})`)
+    log.info({ mediaType, directPath: String(node.directPath).slice(0, 12) }, 'Channel media accepted')
+    return { key: { id: messageId, remoteJid: jid, fromMe: true } }
+  })
 }
 
 async function sendNewsletterText(sock, jid, rawText) {
@@ -2348,7 +2376,7 @@ function urlsForProvenance(job, urls) {
 function productIdentity(url) {
   try {
     const u = new URL(url)
-    const host = u.hostname.toLowerCase()
+    const host = u.hostname.toLowerCase().replace(/^(?:www|m)\.(?=(?:meesho|croma)\.com$)/, '')
     if (host === 'amazon.in' || host.endsWith('.amazon.in') || host === 'amazon.com' || host.endsWith('.amazon.com')) {
       const match = u.pathname.match(/(?:\/dp\/|\/gp\/product\/|\/gp\/aw\/d\/)([A-Z0-9]{10})(?:[/?#]|$)/i)
       if (match) return `amazon:${match[1].toUpperCase()}`
@@ -2368,13 +2396,30 @@ function productIdentity(url) {
     return null
   }
 }
+function productIdentitiesFor(text, job = null) {
+  // Display short URLs are wrappers, not the identity of the product behind
+  // them. Keep legacy exact-wrapper keys AND the verified destination keys.
+  const ids = new Set()
+  for (const source of urlsIn(text || '')) {
+    if (job?.blockedLinks?.[source] || isShareIntent(source)) continue
+    const shown = displayUrl(job, source)
+    for (const candidate of new Set([source, shown, job?.resolvedLinks?.[source],
+      job?.provenanceDestinations?.[source], job?.provenanceDestinations?.[shown],
+      job?.verifiedHypdLinks?.[source]])) {
+      if (!candidate || isShareIntent(candidate)) continue
+      const id = productIdentity(candidate)
+      if (id) ids.add(id)
+    }
+  }
+  return [...ids]
+}
 function duplicateProductReason(text, job = null) {
   const now = Date.now()
   const windowMs = PRODUCT_DEDUP_HOURS * 3600_000
   // Direct-source jobs dedup on the RESOLVED merchant page (the real product
   // behind an amzn.to/fkrt.co shortener), so a deal already posted via our own
   // channels is never double-posted from the raw source.
-  const ids = new Set(urlsIn(text).map(url => productIdentity(displayUrl(job, url))).filter(Boolean))
+  const ids = productIdentitiesFor(text, job)
   for (const id of ids) {
     const last = state.sentProducts?.[id]
     if (last && now - last <= windowMs) return `duplicate product within ${PRODUCT_DEDUP_HOURS}h (${id})`
@@ -2388,7 +2433,7 @@ function duplicateProductReason(text, job = null) {
 function markProductSent(job) {
   state.sentProducts ||= {}
   const now = Date.now()
-  const ids = new Set(urlsIn(job.text || '').map(url => productIdentity(displayUrl(job, url))).filter(Boolean))
+  const ids = productIdentitiesFor(job.text, job)
   for (const id of ids) state.sentProducts[id] = now
   const keys = Object.keys(state.sentProducts)
   if (keys.length > 1000) {
@@ -2848,8 +2893,7 @@ function shouldKeepForWhatsApp(source, text, hasMedia, special, largeList) {
 // Product identities pending in the queue (cached per job), so a direct-source
 // copy of a deal that is already queued from our own channels never enters.
 function pendingProductIds(job) {
-  if (!job._ids) job._ids = urlsIn(job.text || '').map(url => productIdentity(displayUrl(job, url))).filter(Boolean)
-  return job._ids
+  return productIdentitiesFor(job.text, job) // provenance may have been enriched since intake
 }
 /**
  * v17.6 "best copy": several sources post the same product minutes apart at
@@ -3067,8 +3111,13 @@ async function verifyBestGaaProvenance(urls, job = null) {
   const script = String.raw`
 import json,sqlite3,sys
 from urllib.parse import urlparse,parse_qs
+from pathlib import Path
+sys.path.insert(0,sys.argv[5])
+from hypd_policy import hypd_parts,mapping_valid,meesho_product_id
 urls=json.load(sys.stdin)
-db=sqlite3.connect(sys.argv[1])
+db=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True,timeout=5)
+db.execute('PRAGMA query_only=ON')
+db.execute('BEGIN')  # one consistent proof snapshot, including WAL; no writes/migrations
 publisher=sys.argv[2].strip()
 tag=sys.argv[3].strip()
 stores={x.strip().lower() for x in sys.argv[4].split(',') if x.strip()}
@@ -3105,28 +3154,36 @@ except sqlite3.OperationalError: hypd_columns=set()
 has_hypd={'afflink_url','resolved_url','product_key','store'}.issubset(hypd_columns)
 for url in urls:
  if forbidden(url): continue
- try: row=db.execute('SELECT affiliate_url,resolved_url,deal_key FROM link_cache WHERE affiliate_url=? LIMIT 1',(url,)).fetchone()
- except sqlite3.OperationalError: row=None
+ try: rows=db.execute('SELECT affiliate_url,resolved_url,deal_key FROM link_cache WHERE affiliate_url=?',(url,)).fetchall()
+ except sqlite3.OperationalError: rows=[]
+ row=rows[0] if rows else None
  affiliate,resolved,deal_key=row if row else (url,'','')
  if forbidden(affiliate) or forbidden(resolved): continue
- owned=native_owned(affiliate) or native_owned(resolved)
+ try: exact_hypd=db.execute("SELECT destination_url,publisher_id FROM owned_link_proofs WHERE affiliate_url=? AND proof_type='hypd'",(affiliate,)).fetchone()
+ except sqlite3.OperationalError: exact_hypd=None
+ hypd_context=bool(exact_hypd) or any(is_meesho(r[1]) or host(r[1]) in ('hypd.store','www.hypd.store') for r in rows) or host(affiliate) in ('hypd.store','www.hypd.store')
+ owned=(native_owned(affiliate) or native_owned(resolved)) and not hypd_context
+ proof=None
  if not owned:
   try: proof=db.execute('SELECT destination_url,proof_type,'+proof_publisher+' FROM owned_link_proofs WHERE affiliate_url IN (?,?) ORDER BY created_at DESC LIMIT 1',(affiliate,resolved)).fetchone()
   except sqlite3.OperationalError: proof=None
   if proof:
    destination,kind,proof_account=proof
    if forbidden(destination): continue
-   if kind=='amazon_native': owned=amazon_owned(destination)
-   elif kind=='earnkaro_api': owned=bool(publisher and proof_account==publisher)
+   if kind=='amazon_native' and not hypd_context: owned=amazon_owned(destination)
+   elif kind=='earnkaro_api' and not hypd_context: owned=bool(publisher and proof_account==publisher)
    if owned and not resolved: resolved=destination
  if not owned and has_hypd:
   try:
-   if host(url)=='hypd.store':
-    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(url,)).fetchall()
-   elif row and deal_key and host(affiliate) in ('bit.ly','is.gd'):
-    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE product_key=?',(deal_key,)).fetchall()
-   else: candidates=[]
-   verified=[item for item in candidates if str(item[3] or '').lower() in stores and is_meesho(str(item[1] or ''))]
+   share=affiliate if hypd_parts(affiliate) else ''
+   if not share:
+    hp=exact_hypd
+    if hp and hypd_parts(hp[0]) and hp[1]==hypd_parts(hp[0])[0]: share=hp[0]
+   candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(share,)).fetchall() if share else []
+   verified=[item for item in candidates if mapping_valid(item[0],item[1],item[3],item[2],stores)
+     and all(not expected or hypd_parts(expected)==hypd_parts(share) or
+          bool(meesho_product_id(expected) and meesho_product_id(expected)==meesho_product_id(item[1]))
+          for expected in ([str(row[1] or '') for row in rows] or [resolved]))]
    if verified:
     owned=True
     resolved=str(verified[0][1] or resolved)
@@ -3137,7 +3194,7 @@ print(json.dumps(found))
 
   const found = await new Promise((resolve, reject) => {
     const child = spawn('python3', ['-c', script, BESTGAA_DB_PATH, PUBLISHER_ID, AMAZON_TAG,
-      [...HYPD_STORES].join(',')], { stdio: ['pipe', 'pipe', 'pipe'] })
+      [...HYPD_STORES].join(','), BASE], { stdio: ['pipe', 'pipe', 'pipe'] })
     const output = [], errors = []
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('provenance DB timeout')) }, 12_000)
     child.stdout.on('data', chunk => output.push(chunk))
@@ -3379,6 +3436,7 @@ async function verifyJob(job, fetchFn = fetch) {
   }
 }
 function isPermanent(error) {
+  if (error instanceof DeliveryHeld) return true
   // "Best-deal gate" = the post is not a best deal: retrying can never help,
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
@@ -3592,49 +3650,6 @@ async function shortenUntaggedCategoryCopy(job, jid, text) {
 // Channel policy evaluation. The facts are computed once per job so every rule
 // is readable, testable and identical across channels.
 // ---------------------------------------------------------------------------
-function normalizeCategoryPhrase(value) {
-  return String(value || '')
-    .normalize('NFKC')
-    .replace(/https?:\/\/[^\s<>\[\](){}"']+/giu, ' ')
-    .replace(/&amp;/giu, ' ')
-    .toLocaleLowerCase('en-IN')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .replace(/\s+/g, ' ')
-}
-const CATEGORY_QUERY_KEYS = new Set([
-  'k', 'q', 'keyword', 'keywords', 'search', 'searchterm', 'query',
-  'title', 'name', 'product', 'productname', 'category',
-])
-const CATEGORY_URL_STOP_SEGMENTS = new Set([
-  '', 'dp', 'gp', 'aw', 's', 'b', 'p', 'product', 'products', 'item',
-  'items', 'detail', 'details', 'buy', 'shop', 'offers', 'offer', 'ref',
-])
-function categoryWordsFromUrl(value) {
-  try {
-    const url = new URL(String(value || '').replace(/&amp;/giu, '&').trim())
-    const words = []
-    for (const raw of url.pathname.split('/').filter(Boolean)) {
-      let segment
-      try { segment = decodeURIComponent(raw) } catch { segment = raw }
-      const normalized = normalizeCategoryPhrase(segment.replace(/[-_]+/gu, ' '))
-      if (!normalized || CATEGORY_URL_STOP_SEGMENTS.has(normalized)) continue
-      if (/^\d{4,}$/u.test(segment)) continue
-      if (/^(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}$/iu.test(raw)) continue
-      if (/^(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+$/u.test(raw)) continue
-      words.push(normalized)
-    }
-    for (const [key, val] of url.searchParams.entries()) {
-      if (CATEGORY_QUERY_KEYS.has(key.toLowerCase())) {
-        const normalized = normalizeCategoryPhrase(val)
-        if (normalized) words.push(normalized)
-      }
-    }
-    return words.join(' ')
-  } catch {
-    return ''
-  }
-}
 function categoryContextUrls(job) {
   const urls = [...urlsIn(job?.text || '')]
   for (const mapping of [job?.resolvedLinks, job?.provenanceDestinations,
@@ -3648,42 +3663,7 @@ function categoryContextUrls(job) {
   return [...new Set(urls)]
 }
 function classifyDealCategory(text, linkContext = []) {
-  if (!text || !CATEGORY_RULES.categories?.length) return null
-  if (typeof linkContext === 'string') linkContext = [linkContext]
-  const urls = [...urlsIn(text), ...(linkContext || []).filter(value => typeof value === 'string')]
-  const linkWords = [...new Set(urls)].map(categoryWordsFromUrl).filter(Boolean).join(' ')
-  const normalized = ` ${normalizeCategoryPhrase(`${text} ${linkWords}`)} `
-  if (!normalized.trim()) return null
-  const matchedRules = []
-  for (const category of CATEGORY_RULES.categories) {
-    for (const [rawAlias, rawWeight] of (category.aliases || [])) {
-      const alias = normalizeCategoryPhrase(rawAlias)
-      const hits = alias ? Math.min(2, normalized.split(` ${alias} `).length - 1) : 0
-      if (hits) matchedRules.push({ key: category.key, alias, weight: Number(rawWeight || 0), hits })
-    }
-  }
-  if (!matchedRules.length) return null
-  const categoryScores = new Map()
-  for (const item of matchedRules) {
-    // Avoid inflating one product phrase twice ("running shoes" and nested
-    // "shoes"), and don't read "shoe" inside "shoe rack" as footwear too.
-    const nestedInStronger = matchedRules.some(other => other.alias !== item.alias
-      && ` ${other.alias} `.includes(` ${item.alias} `)
-      && other.weight >= item.weight)
-    if (!nestedInStronger) {
-      categoryScores.set(item.key, (categoryScores.get(item.key) || 0) + item.hits * item.weight)
-    }
-  }
-  const scores = [...categoryScores.entries()].map(([key, score]) => ({ key, score }))
-    .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.key.localeCompare(a.key))
-  if (!scores.length) return null
-  const minScore = Math.max(1, Number(CATEGORY_RULES.min_score) || 3)
-  const minMargin = Math.max(0, Number(CATEGORY_RULES.min_margin) || 0)
-  const strongCategories = scores.filter(item => item.score >= minScore).length
-  if (scores[0].score < minScore || strongCategories > 1
-      || scores[0].score - (scores[1]?.score || 0) < minMargin) return null
-  return scores[0].key
+  return classifyCategory(text, linkContext, CATEGORY_RULES).category
 }
 function channelFacts(job) {
   const text = (job && job.text) || ''
@@ -3844,10 +3824,18 @@ function marksFor(job) {
 // newsletter path, groups via the normal send). A Channel failure propagates
 // (existing retry/fallback logic applies); a group failure is logged and the
 // remaining targets are still served.
+function publicationGuard(job, jid, tag, body) {
+  const owner = String(job?.id ?? `digest:${crypto.createHash('sha256').update(body || '').digest('hex')}`)
+  const products = productIdentitiesFor(job?.text || body, job)
+  return send => guardedSend({ state, save: saveState, target: jid, owner, tag, body, products, send })
+}
+
 async function broadcastText(sock, job, tag, text) {
+  if (job) job.status = 'sending'
   const targets = allTargets(job)
   if (!targets.length) throw new Error('no WhatsApp target resolved')
   const marks = marksFor(job)
+  const held = []
   for (const jid of targets) {
     const mark = `${tag}:${jid}`
     if (marks.includes(mark)) continue
@@ -3857,15 +3845,15 @@ async function broadcastText(sock, job, tag, text) {
     if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
     body = await shortenUntaggedCategoryCopy(job, jid, body)
     if (body === null) { marks.push(mark); continue } // optional category kept off when tag status is uncertain
-    if (isNewsletterTarget(jid)) {
-      await sendNewsletterText(sock, jid, body)
-    } else {
-      try {
-        await withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(body) }), 90_000, `group text send ${jid}`)
-      } catch (error) {
-        log.warn({ jid, tag, err: error.message }, 'group text delivery failed; other targets unaffected')
-        continue
-      }
+    const publish = publicationGuard(job, jid, tag, body)
+    try {
+      if (isNewsletterTarget(jid)) await publish(() => sendNewsletterText(sock, jid, body))
+      else await publish(() => withTimeout(sock.sendMessage(jid, { text: sanitizeOutbound(body) }), 90_000, `group text send ${jid}`))
+    } catch (error) {
+      if (!(error instanceof DeliveryHeld)) throw error
+      held.push(error)
+      log.error({ jid, tag, err: error.message }, 'target held for review; continuing healthy targets')
+      continue
     }
     marks.push(mark)
     state.sentTimes.push(Date.now())
@@ -3873,14 +3861,17 @@ async function broadcastText(sock, job, tag, text) {
     // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
+  if (held.length) throw held[0]
 }
 // Sends one photo/video to ALL targets. Channel media uses the corrected
 // newsletter upload path (ack-verified); groups use the normal media send.
 async function broadcastMediaItem(sock, job, item, caption) {
+  if (job) job.status = 'sending'
   const data = await telegramFile(item.fileId)
   const isVideo = item.type === 'video'
   const targets = allTargets(job)
   const marks = marksFor(job)
+  const held = []
   for (const jid of targets) {
     const mark = `media:${item.fileId}:${jid}`
     if (marks.includes(mark)) continue
@@ -3890,18 +3881,21 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (caption && itemCaption === null) { marks.push(mark); continue }
     if (itemCaption) itemCaption = await shortenUntaggedCategoryCopy(job, jid, itemCaption)
     if (caption && itemCaption === null) { marks.push(mark); continue }
-    if (isNewsletterTarget(jid)) {
-      await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption })
-    } else {
-      const groupContent = isVideo
-        ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: sanitizeOutbound(itemCaption || '') || undefined }
-        : { image: data, caption: sanitizeOutbound(itemCaption || '') || undefined }
-      try {
-        await withTimeout(sock.sendMessage(jid, groupContent), 150_000, `group media send ${jid}`)
-      } catch (error) {
-        log.warn({ jid, err: error.message }, 'group media delivery failed; other targets unaffected')
-        continue
+    const publish = publicationGuard(job, jid, `media:${item.fileId}`, itemCaption || '')
+    try {
+      if (isNewsletterTarget(jid)) {
+        await sendNewsletterMedia(sock, jid, { buffer: data, type: item.type, mimetype: item.mimetype, caption: itemCaption }, publish)
+      } else {
+        const groupContent = isVideo
+          ? { video: data, mimetype: item.mimetype || 'video/mp4', caption: sanitizeOutbound(itemCaption || '') || undefined }
+          : { image: data, caption: sanitizeOutbound(itemCaption || '') || undefined }
+        await publish(() => withTimeout(sock.sendMessage(jid, groupContent), 150_000, `group media send ${jid}`))
       }
+    } catch (error) {
+      if (!(error instanceof DeliveryHeld)) throw error
+      held.push(error)
+      log.error({ jid, err: error.message }, 'media target held for review; continuing healthy targets')
+      continue
     }
     marks.push(mark)
     state.sentTimes.push(Date.now())
@@ -3909,6 +3903,7 @@ async function broadcastMediaItem(sock, job, item, caption) {
     // USER RULE: 70-80 s random breather between our two channels.
     if (jid !== targets[targets.length - 1]) await crossChannelGap()
   }
+  if (held.length) throw held[0]
 }
 function formatDigestItem(job, number) {
   // v17.8 A DIGEST ITEM IS THE SOURCE POST, just numbered. The old item printed a
@@ -4047,6 +4042,7 @@ async function prepareRotationalDigest(quietOnlyUnder99 = false) {
     const selected = []
     for (const job of candidates) {
       try {
+        job.status = 'sending' // protect asynchronous conversion from a better-copy rewrite
         if (job.direct) await prepareDirectJob(job) // resolve first: gate dedups on the real product
         const verdict = passesBestDealGate(job)
         if (!verdict.ok) {
@@ -4109,6 +4105,9 @@ function formatSpecialCaption(job) {
 
 
 async function sendSpecialOffer(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   if (job.direct) await prepareDirectJob(job) // resolve first: gate dedups on the real product
   const verdict = passesBestDealGate(job)
   if (!verdict.ok) throw new Error(`Best-deal gate: ${verdict.reason}`)
@@ -4197,6 +4196,9 @@ function buildLargeListChunks(job) {
   return chunks
 }
 async function sendLargeListPart(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   const key = job.key || dealKey(job.text)
   job.key = key
   const index = Number(job.largeChunkIndex || 0)
@@ -4227,6 +4229,9 @@ async function sendLargeListPart(job) {
 }
 
 async function sendStrictSourceJob(job) {
+  // Freeze the selected copy before the first await. Intake must not replace
+  // its product/price while conversion or publication is already in flight.
+  job.status = 'sending'
   // VERIFY BEFORE SENDING: a post that is not a best deal is skipped, never
   // sent (the user's explicit requirement). The reason is logged and the job
   // is dropped as permanent.
@@ -4273,6 +4278,7 @@ async function sendStrictSourceJob(job) {
       job.nextMedia = index + 1
       saveState()
     } catch (error) {
+      if (error instanceof DeliveryHeld) throw error // never text-fallback an uncertain photo send
       job.mediaFailures = (job.mediaFailures || 0) + 1
       log.warn({ id: job.id, attempt: job.mediaFailures, err: error.message }, 'Channel media delivery failed')
       // Retry the upload a few times; after that never lose the deal — post the
@@ -5507,6 +5513,12 @@ https://fktr.in/MANY${i}`,
     const wrongAccount = process.env.SELF_TEST_WRONG_ACCOUNT_URL || 'https://foreign.invalid/wrong-account'
     const amazonProof = process.env.SELF_TEST_AMAZON_PROOF_URL || 'https://foreign.invalid/amazon-proof'
     const staleAmazon = process.env.SELF_TEST_STALE_AMAZON_URL || 'https://foreign.invalid/stale-amazon'
+    const matrixBad = ['unproven','wrong-product','wrong-store','legacy-ek'].map(x=>'https://bit.ly/hypd-matrix-'+x)
+    matrixBad.push('https://hypd.store/88888/afflink/matrix-foreign','https://hypd.store/93944/afflink/matrix-bad-key')
+    const matrixMissing = await verifyBestGaaProvenance(['https://bit.ly/hypd-matrix-exact', ...matrixBad])
+    if (matrixMissing.length !== matrixBad.length || matrixBad.some(url => !matrixMissing.includes(url))) {
+      throw new Error('HYPD proof matrix failed: exact share proof plus consistent product identity and current store required')
+    }
     const missing = await verifyBestGaaProvenance([
       owned, cacheOnly, hypd, wrongAccount, amazonProof, staleAmazon,
       'https://foreign.invalid/not-ours',
@@ -5917,6 +5929,11 @@ https://fktr.in/MANY${i}`,
     throw new Error('another store hypd link is shortened by the normal length rule only')
   }
   {
+    for (const bad of ['https://hypd.store/93944/afflink','http://hypd.store/93944/afflink/token',
+      'https://evil.hypd.store/93944/afflink/token','https://user@hypd.store/93944/afflink/token',
+      'https://hypd.store/93944/afflink/token/extra','https://hypd.store/93944/afflink/token?url=evil']) {
+      if (isOurHypdLink(bad)) throw new Error('malformed HYPD link accepted: '+bad)
+    }
     const hypd = 'https://hypd.store/93944/afflink/verifiedMeeshoToken'
     const destination = 'https://www.meesho.com/women-kurta/p/MEESHO123?affid=infhypd'
     const fakeFetch = async url => ({
@@ -5927,6 +5944,19 @@ https://fktr.in/MANY${i}`,
     const job = { id: 'hypd-meesho', direct: true, text: `Kurta deal ₹499\n${hypd}` }
     await prepareDirectJob(job, fakeFetch)
     if (job.verifiedHypdLinks?.[hypd] !== destination) throw new Error('direct HYPD Meesho destination was not verified')
+    const homepage = await resolveOwnedHypdDestination(hypd, async () => ({url:'https://www.meesho.com/',status:200,text:async()=>''}))
+    if (homepage) throw new Error('Meesho homepage is not a product')
+    const mixed = await resolveOwnedHypdDestination(hypd, async () => ({url:hypd,status:200,
+      text:async()=>`<script>go("${destination}");go("https://www.meesho.com/earbuds/p/OTHER123")</script>`}))
+    if (mixed) throw new Error('ambiguous HYPD redirect page cannot select the first product')
+    const mixedMerchant = await resolveOwnedHypdDestination(hypd, async () => ({url:hypd,status:200,
+      text:async()=>`<script>go("${destination}");go("https://www.amazon.in/dp/B012345678")</script>`}))
+    if (mixedMerchant) throw new Error('HYPD wrapper containing multiple merchants must be withheld')
+    let merchantRead = false
+    await resolveOwnedHypdDestination(hypd, async () => ({url:'https://www.amazon.in/dp/B012345678',status:200,
+      text:async()=>{ merchantRead = true; return '' }}))
+    if (merchantRead) throw new Error('HYPD verifier must not inspect merchant HTML')
+
     if (displayUrl(job, hypd) !== hypd) throw new Error('verified Meesho HYPD share link must remain the displayed destination')
     if (urlsForProvenance(job, [hypd]).includes(hypd)) throw new Error('verified direct HYPD should not require a bot-cache row')
     if (!needsShortening(displayUrl(job, hypd))) throw new Error('verified Meesho HYPD should be shortened')
@@ -7067,6 +7097,84 @@ https://fktr.in/MANY${i}`,
       state.jobs = savedJobs
       state.sent = savedSent
       state.sentContent = savedContent
+    }
+  }
+  // Distinct short codes and captions must converge on verified product
+  // identity, including after a display URL has been shortened again.
+  {
+    const assert = (await import('node:assert/strict')).default
+    const saved = state
+    try {
+      state = defaultState()
+      const product = 'https://www.amazon.in/dp/B0FENCE901'
+      const first = { text: 'First source https://bit.ly/fence-alpha',
+        shortLinks: { 'https://bit.ly/fence-alpha': 'https://bit.ly/fence-display' },
+        provenanceDestinations: { 'https://bit.ly/fence-alpha': product } }
+      const second = { text: 'Completely different caption https://bit.ly/fence-beta',
+        provenanceDestinations: { 'https://bit.ly/fence-beta': product } }
+      assert(productIdentitiesFor(first.text, first).includes('amazon:B0FENCE901'))
+      markProductSent(first)
+      if (PRODUCT_DEDUP_HOURS > 0) assert.match(duplicateProductReason(second.text, second), /duplicate product/)
+      const direct = { text: 'Third source https://amzn.to/fence-gamma',
+        resolvedLinks: { 'https://amzn.to/fence-gamma': product },
+        shortLinks: { 'https://amzn.to/fence-gamma': 'https://bit.ly/new-display' } }
+      assert(productIdentitiesFor(direct.text, direct).includes('amazon:B0FENCE901'))
+      const hypd = { text: 'Kurta https://hypd.store/93944/afflink/token-one',
+        verifiedHypdLinks: { 'https://hypd.store/93944/afflink/token-one': 'https://m.meesho.com/kurta/p/ABC123' } }
+      assert(productIdentitiesFor(hypd.text, hypd).includes(productIdentity('https://www.meesho.com/new-name/p/ABC123')))
+      assert.equal(productIdentitiesFor('https://t.me/addlist/folder').length, 0)
+      assert(!productIdentitiesFor(second.text, second).includes('amazon:B0FENCE902'))
+      let attempts = 0
+      first.id = 'held-first'; second.id = 'held-other-source'
+      await assert.rejects(publicationGuard(first, 'proof-test@newsletter', 'photo', first.text)(async () => {
+        attempts++; throw Error('reply lost')
+      }), DeliveryHeld)
+      await assert.rejects(publicationGuard(second, 'proof-test@newsletter', 'text', second.text)(async () => {
+        attempts++
+      }), DeliveryHeld)
+      assert.equal(attempts, 1)
+    } finally { state = saved }
+  }
+  // Actual broadcast entry points use the durable guard: lost replies must
+  // neither re-send text/media nor allow a media -> text fallback.
+  {
+    const assert = (await import('node:assert/strict')).default
+    const saved = { state, allTargets, sendNewsletterText, sendNewsletterMedia, telegramFile, shortenUntaggedCategoryCopy }
+    let sends = 0
+    try {
+      state = defaultState()
+      allTargets = () => ['fence-test@newsletter']
+      shortenUntaggedCategoryCopy = async (_job, _jid, body) => body
+      sendNewsletterText = async () => { sends++; throw new Error('lost text reply') }
+      telegramFile = async () => Buffer.from('offline-photo')
+      sendNewsletterMedia = async (_sock, _jid, _media, publish) => publish(async () => {
+        sends++; throw new Error('lost photo reply')
+      })
+      const job = { id: 'fence-text', text: 'Acme model X41 https://www.amazon.in/dp/B0FENCE001' }
+      await assert.rejects(broadcastText({}, job, 'text', job.text), DeliveryHeld)
+      await assert.rejects(broadcastText({}, job, 'text', job.text), DeliveryHeld)
+      assert.equal(sends, 1)
+      assert.deepEqual(job.sentTargets, [])
+      assert.equal(job.status, 'sending')
+      assert.equal(adoptBetterCopy(job, { chat: { id: 1 }, message_id: 1 },
+        'Acme model X41 ₹1 99% off https://www.amazon.in/dp/B0FENCE001', null), false)
+      const mediaJob = { id: 'fence-media', text: 'Acme model X42 https://www.amazon.in/dp/B0FENCE002' }
+      await assert.rejects(broadcastMediaItem({}, mediaJob, { fileId: 'photo', type: 'photo' }, mediaJob.text), DeliveryHeld)
+      await assert.rejects(broadcastMediaItem({}, mediaJob, { fileId: 'photo', type: 'photo' }, mediaJob.text), DeliveryHeld)
+      await assert.rejects(broadcastText({}, mediaJob, 'fallback', mediaJob.text), DeliveryHeld)
+      assert.equal(sends, 2)
+      assert.deepEqual(mediaJob.sentTargets, [])
+      assert.equal(state.sentTimes.length, 0) // unknown is not a recorded success
+      allTargets = () => ['bad@newsletter', 'good@newsletter']
+      sendNewsletterText = async (_sock, jid) => { sends++; if (jid.startsWith('bad')) throw Error('lost reply') }
+      const fanout = { id: 'fence-fanout', text: 'Another product https://www.amazon.in/dp/B0FENCE003' }
+      await assert.rejects(broadcastText({}, fanout, 'text', fanout.text), DeliveryHeld)
+      assert.deepEqual(fanout.sentTargets, ['text:good@newsletter'])
+      assert.equal(state.sentTimes.length, 1)
+    } finally {
+      state = saved.state; allTargets = saved.allTargets
+      sendNewsletterText = saved.sendNewsletterText; sendNewsletterMedia = saved.sendNewsletterMedia
+      telegramFile = saved.telegramFile; shortenUntaggedCategoryCopy = saved.shortenUntaggedCategoryCopy
     }
   }
   console.log('bridge self-test PASS')
