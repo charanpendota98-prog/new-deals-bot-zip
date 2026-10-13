@@ -4957,6 +4957,11 @@ class Store:
         )
         # HYPD share links: lookups are "which of OUR links is this product"
         # (product_key) and "where does this link go" (resolved_url).
+        # Final ownership checks inspect every pairing of an affiliate URL.
+        # Index this lookup so large caches do not require a full-table scan.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_link_cache_affiliate ON link_cache(affiliate_url,created_at DESC)"
+        )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_hypd_product ON hypd_links(product_key)"
         )
@@ -5802,15 +5807,15 @@ class Store:
         """Reject legacy clean-link rows; accept only verified network/native links."""
         affiliate_url = clean_url(affiliate_url)
         resolved_url = clean_url(resolved_url)
-        hypd_context = any(in_domains((urlparse(url).hostname or "").lower(),
+        exact_proof = self.conn.execute(
+            "SELECT destination_url,publisher_id FROM owned_link_proofs "
+            "WHERE affiliate_url=? AND proof_type='hypd'", (affiliate_url,)).fetchone()
+        hypd_context = bool(exact_proof) or any(in_domains((urlparse(url).hostname or "").lower(),
                                      HYPD_DOMAINS | HYPD_MERCHANT_DOMAINS)
                            for url in (affiliate_url, resolved_url))
         if hypd_context:
             if is_our_hypd_link(affiliate_url):
                 return self._hypd_mapping_is_valid(affiliate_url, resolved_url)
-            exact_proof = self.conn.execute(
-                "SELECT destination_url,publisher_id FROM owned_link_proofs "
-                "WHERE affiliate_url=? AND proof_type='hypd'", (affiliate_url,)).fetchone()
             return bool(exact_proof
                         and exact_proof["publisher_id"] == hypd_store_of(exact_proof["destination_url"])
                         and self._hypd_mapping_is_valid(exact_proof["destination_url"], resolved_url))
@@ -5846,6 +5851,14 @@ class Store:
 
         return False
 
+    def _strict_url_is_owned(self, url: str) -> bool:
+        """Every recorded pairing must pass, not whichever row SQLite returns first."""
+        rows = self.conn.execute(
+            "SELECT affiliate_url,resolved_url FROM link_cache WHERE affiliate_url=?", (url,)
+        ).fetchall()
+        return (all(self._strict_cache_pair_is_owned(row["affiliate_url"], row["resolved_url"] or "")
+                    for row in rows) if rows else self._strict_cache_pair_is_owned(url, ""))
+
     async def cached_link_is_owned(self, affiliate_url: str, resolved_url: str) -> bool:
         """Check cached link provenance under the same lock as the final gate."""
         async with self.lock:
@@ -5867,19 +5880,7 @@ class Store:
                 for url in urls:
                     if self.has_native_owned_attribution(url):
                         continue
-                    row = self.conn.execute(
-                        "SELECT affiliate_url,resolved_url FROM link_cache "
-                        "WHERE affiliate_url=? ORDER BY created_at DESC LIMIT 1", (url,),
-                    ).fetchone()
-                    if row:
-                        if not self._strict_cache_pair_is_owned(
-                                row["affiliate_url"], row["resolved_url"] or ""):
-                            return False
-                    elif not self._strict_cache_pair_is_owned(url, ""):
-                        # Amazon search/browse links deliberately avoid link_cache
-                        # because canonical_url() collapses distinct searches. A
-                        # separately persisted native-tag proof covers their Bitly
-                        # form without creating an unsafe shared cache key.
+                    if not self._strict_url_is_owned(url):
                         return False
             return True
 
@@ -5926,15 +5927,7 @@ class Store:
                     continue
                 if self.has_native_owned_attribution(url):
                     continue
-                row = self.conn.execute(
-                    "SELECT affiliate_url,resolved_url FROM link_cache "
-                    "WHERE affiliate_url=? ORDER BY created_at DESC LIMIT 1", (url,),
-                ).fetchone()
-                if row:
-                    owned = self._strict_cache_pair_is_owned(
-                        row["affiliate_url"], row["resolved_url"] or "")
-                else:
-                    owned = self._strict_cache_pair_is_owned(url, "")
+                owned = self._strict_url_is_owned(url)
                 if not owned:
                     return False, url
         return True, ""

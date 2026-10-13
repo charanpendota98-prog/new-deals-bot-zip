@@ -3084,10 +3084,13 @@ async function verifyBestGaaProvenance(urls, job = null) {
   const script = String.raw`
 import json,sqlite3,sys
 from urllib.parse import urlparse,parse_qs
+from pathlib import Path
 sys.path.insert(0,sys.argv[5])
 from hypd_policy import hypd_parts,mapping_valid,meesho_product_id
 urls=json.load(sys.stdin)
-db=sqlite3.connect(sys.argv[1])
+db=sqlite3.connect(Path(sys.argv[1]).resolve().as_uri()+'?mode=ro',uri=True,timeout=5)
+db.execute('PRAGMA query_only=ON')
+db.execute('BEGIN')  # one consistent proof snapshot, including WAL; no writes/migrations
 publisher=sys.argv[2].strip()
 tag=sys.argv[3].strip()
 stores={x.strip().lower() for x in sys.argv[4].split(',') if x.strip()}
@@ -3124,11 +3127,14 @@ except sqlite3.OperationalError: hypd_columns=set()
 has_hypd={'afflink_url','resolved_url','product_key','store'}.issubset(hypd_columns)
 for url in urls:
  if forbidden(url): continue
- try: row=db.execute('SELECT affiliate_url,resolved_url,deal_key FROM link_cache WHERE affiliate_url=? LIMIT 1',(url,)).fetchone()
- except sqlite3.OperationalError: row=None
+ try: rows=db.execute('SELECT affiliate_url,resolved_url,deal_key FROM link_cache WHERE affiliate_url=?',(url,)).fetchall()
+ except sqlite3.OperationalError: rows=[]
+ row=rows[0] if rows else None
  affiliate,resolved,deal_key=row if row else (url,'','')
  if forbidden(affiliate) or forbidden(resolved): continue
- hypd_context=is_meesho(resolved) or host(affiliate) in ('hypd.store','www.hypd.store') or host(resolved) in ('hypd.store','www.hypd.store')
+ try: exact_hypd=db.execute("SELECT destination_url,publisher_id FROM owned_link_proofs WHERE affiliate_url=? AND proof_type='hypd'",(affiliate,)).fetchone()
+ except sqlite3.OperationalError: exact_hypd=None
+ hypd_context=bool(exact_hypd) or any(is_meesho(r[1]) or host(r[1]) in ('hypd.store','www.hypd.store') for r in rows) or host(affiliate) in ('hypd.store','www.hypd.store')
  owned=(native_owned(affiliate) or native_owned(resolved)) and not hypd_context
  proof=None
  if not owned:
@@ -3144,12 +3150,13 @@ for url in urls:
   try:
    share=affiliate if hypd_parts(affiliate) else ''
    if not share:
-    hp=db.execute("SELECT destination_url,publisher_id FROM owned_link_proofs WHERE affiliate_url=? AND proof_type='hypd'",(affiliate,)).fetchone()
+    hp=exact_hypd
     if hp and hypd_parts(hp[0]) and hp[1]==hypd_parts(hp[0])[0]: share=hp[0]
    candidates=db.execute('SELECT afflink_url,resolved_url,product_key,store FROM hypd_links WHERE afflink_url=?',(share,)).fetchall() if share else []
    verified=[item for item in candidates if mapping_valid(item[0],item[1],item[3],item[2],stores)
-     and (not resolved or hypd_parts(resolved)==hypd_parts(share) or
-          bool(meesho_product_id(resolved) and meesho_product_id(resolved)==meesho_product_id(item[1])))]
+     and all(not expected or hypd_parts(expected)==hypd_parts(share) or
+          bool(meesho_product_id(expected) and meesho_product_id(expected)==meesho_product_id(item[1]))
+          for expected in ([str(row[1] or '') for row in rows] or [resolved]))]
    if verified:
     owned=True
     resolved=str(verified[0][1] or resolved)

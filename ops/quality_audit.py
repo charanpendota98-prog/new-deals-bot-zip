@@ -702,6 +702,7 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
         cache_rows = []
     proof_urls: set[str] = set()
     hypd_proofs: dict[str, str] = {}
+    hypd_proof_urls: set[str] = set()
     try:
         proof_columns = {str(row[1]) for row in conn.execute(
             "PRAGMA table_info(owned_link_proofs)")}
@@ -717,6 +718,7 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
                     _is_non_monetizable_url(destination):
                 continue
             if proof_type == "hypd":
+                hypd_proof_urls.add(affiliate)
                 parts = hypd_parts(destination)
                 if parts and str(publisher_id or "") == parts[0]:
                     hypd_proofs[affiliate] = destination
@@ -744,26 +746,27 @@ def our_minted_links(conn: sqlite3.Connection, our_tag: str = "",
                 if mapping_valid(row[0], row[1], row[3], row[2], stores)}
     hypd_proofs = {short: share for short, share in hypd_proofs.items() if share in verified}
     owned: set[str] = set(proof_urls) | set(verified) | set(hypd_proofs)
+    denied: set[str] = set()
     for affiliate, resolved, deal_key in cache_rows:
         affiliate = str(affiliate or "")
         resolved = str(resolved or "")
         if not affiliate:
             continue
         if any(link_host(url) in {"hypd.store", "www.hypd.store", "meesho.com", "www.meesho.com", "m.meesho.com"}
-               for url in (affiliate, resolved)) or affiliate in hypd_proofs:
+               for url in (affiliate, resolved)) or affiliate in hypd_proof_urls:
             share = affiliate if affiliate in verified else hypd_proofs.get(affiliate, "")
             if share and (not resolved or hypd_parts(resolved) == hypd_parts(share)
                           or bool(meesho_product_id(resolved) and
                                   meesho_product_id(resolved) == meesho_product_id(verified[share]))):
                 owned.add(affiliate)
             else:
-                owned.discard(affiliate)
+                denied.add(affiliate)
             continue
         if (_has_native_owned_attribution(affiliate, our_tag, our_publisher)
                 or _has_native_owned_attribution(resolved, our_tag, our_publisher)
                 or affiliate in proof_urls or resolved in proof_urls):
             owned.add(affiliate)
-    return owned
+    return owned - denied
 
 
 def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",

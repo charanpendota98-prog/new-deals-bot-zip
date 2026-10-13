@@ -263,6 +263,13 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
                  "hypd_learned": [], "hypd_wanted": [], "posted_deals": 0,
                  "links": {"links": 0, "our-short": 0, "our-publisher": 0,
                            "unattributed": 0, "clean-merchant": 0, "foreign": 0}}
+    out["rendered_links"] = dict(out["links"])
+    out["delivery_summary"] = {"evidence": "unavailable", "rendered_queues": 0,
+        "queues_with_sends": 0, "target_sends": 0, "policy_skips": 0, "partial_target_sends": 0,
+        "queues_only_skipped": 0, "queues_without_send_evidence": 0}
+    out["audit_errors"] = []
+    out["link_scope"] = ("Saved rendered links, once per queue with recorded successful delivery; "
+                         "not per-target final text or live receipts. Window uses queue creation time.")
     if not db.exists():
         return out
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -340,19 +347,55 @@ def db_report(db: Path, hours: float, publisher: str = "", our_tag: str = "") ->
                 "SELECT product_url, times, last_seen FROM hypd_wanted"
                 " ORDER BY times DESC, last_seen DESC").fetchall()
             if in_hosts(host_of(row["product_url"] or ""), ("meesho.com",))][:10]
-    # LINK PERFECTION: every link in every post of the window, classified with the
-    # auditor's own rule (data-backed: link_cache + our tag/publisher id).
+    # A render/cache/conversion is not a send. Policy skips in old databases
+    # may say status=sent but carry a last_error; those never count as sends.
     if qa is not None and table_exists("queue"):
         try:
+            deliveries = {}
+            summary = out["delivery_summary"]
+            if table_exists("deliveries"):
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(deliveries)")}
+                if {"queue_id", "status", "last_error"}.issubset(columns):
+                    summary["evidence"] = "status_and_error"
+                    chunks = "COALESCE(d.chunks_sent,0)" if "chunks_sent" in columns else "0"
+                    for row in conn.execute(
+                            f"SELECT d.queue_id,d.status,d.last_error,{chunks} AS chunks_sent FROM deliveries d "
+                            "JOIN queue q ON q.id=d.queue_id WHERE q.created_at>=?", (since,)):
+                        if row["chunks_sent"] > 0 and (row["status"] != "sent" or row["last_error"]):
+                            summary["partial_target_sends"] += 1
+                        sent, skipped = deliveries.setdefault(row["queue_id"], [0, 0])
+                        if row["status"] == "sent" and not row["last_error"]:
+                            sent += 1
+                        elif row["status"] == "skipped" or (row["status"] == "sent" and row["last_error"]):
+                            skipped += 1
+                        deliveries[row["queue_id"]] = [sent, skipped]
+                else:
+                    summary["evidence"] = "legacy_schema_unverifiable"
             for row in conn.execute(
-                    "SELECT rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
-                    (since,)).fetchall():
+                    "SELECT id,rendered_text FROM queue WHERE created_at>=? AND rendered_text IS NOT NULL",
+                    (since,)):
+                summary["rendered_queues"] += 1
+                sent, skipped = deliveries.get(row["id"], [0, 0])
+                summary["target_sends"] += sent
+                summary["policy_skips"] += skipped
+                if sent:
+                    summary["queues_with_sends"] += 1
+                else:
+                    summary["queues_without_send_evidence"] += 1
+                    if skipped:
+                        summary["queues_only_skipped"] += 1
                 for url in qa.ANY_LINK.findall(row["rendered_text"] or ""):
                     url = url.rstrip(")】.,;'\"")
-                    out["links"]["links"] += 1
-                    out["links"][qa.classify_link(url, our_tag, publisher, our_links)] += 1
-        except Exception:
-            pass
+                    bucket = qa.classify_link(url, our_tag, publisher, our_links)
+                    out["rendered_links"]["links"] += 1
+                    out["rendered_links"][bucket] += 1
+                    if sent:
+                        out["links"]["links"] += 1
+                        out["links"][bucket] += 1
+        except Exception as exc:
+            out["audit_errors"].append(f"delivery/link audit incomplete: {type(exc).__name__}")
+    elif qa is None:
+        out["audit_errors"].append("ownership policy module unavailable")
 
     if table_exists("posted_deals"):
         out["posted_deals"] = conn.execute(
@@ -510,7 +553,21 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
         problems.append(f"{unmon} logged post(s) contained a clean merchant link "
                         "with no proven earning attribution")
         lines.append(f"Plain    : ATTENTION - {unmon} unmonetized post(s) in the log window")
-    # --- link ownership across every rendered post in the window: use the same
+    for error in db.get("audit_errors", []):
+        problems.append(error)
+    delivery = db.get("delivery_summary") or {}
+    if delivery:
+        lines.append(f"DELIVERY : {delivery.get('target_sends', 0)} recorded target send(s); "
+                     f"{delivery.get('policy_skips', 0)} policy skip(s); "
+                     f"{delivery.get('queues_without_send_evidence', 0)} rendered queue(s) without send evidence")
+        if delivery.get("partial_target_sends"):
+            problems.append(f"{delivery['partial_target_sends']} partially sent target(s); inspect receipts before retrying")
+            lines.append(f"           {delivery['partial_target_sends']} partial target send(s); not counted as complete")
+        if delivery.get("evidence") != "status_and_error":
+            lines.append("           delivery evidence unavailable/incomplete; no sends inferred from renders")
+            if delivery.get("rendered_queues"):
+                problems.append("rendered queues exist but delivery evidence is unavailable/incomplete")
+    # --- link ownership for queues with recorded sends: use the same
     # data-backed rule as ops/quality_audit.py; cache rows/hostnames never count.
     links = db.get("links") or {}
     if links.get("links"):
@@ -518,14 +575,14 @@ def verdict(cfg: dict, db: dict, lg: dict) -> tuple[list[str], list[str]]:
                       for key in ("foreign", "unattributed", "clean-merchant"))
         if unowned:
             problems.append(
-                f"{unowned} published link(s) lack verified ownership "
+                f"{unowned} saved link(s) from sent queues lack verified ownership "
                 f"({links.get('foreign', 0)} foreign, {links.get('unattributed', 0)} "
                 f"without publisher attribution, {links.get('clean-merchant', 0)} "
                 "clean merchant); run `python3 ops/quality_audit.py --strict` for queue ids")
             lines.append(f"LINKS    : NEEDS ATTENTION - {unowned}/{links['links']} "
-                         "published link(s) lack verified earning attribution")
+                         "saved link(s) from sent queues lack verified earning attribution")
         else:
-            lines.append(f"LINKS    : VERIFIED - {links['links']} published link(s) all have "
+            lines.append(f"LINKS    : VERIFIED - {links['links']} saved link(s) from sent queues all have "
                          f"our account attribution ({links['our-short']} short, "
                          f"{links['our-publisher']} publisher, {links['clean-merchant']} "
                          "clean merchant)")
@@ -583,19 +640,20 @@ def main() -> int:
         for url in db_rep.get("passthrough_examples", []):
             print(f"      clean-link cache sample (not ownership proof): {url[:100]}")
         print(f"  posted_deals in window: {db_rep.get('posted_deals', 0)}")
+        print("  " + db_rep.get("link_scope", ""))
         links = db_rep.get("links") or {}
         if links.get("links"):
-            print("\nLINK PERFECTION (every link printed in this window's posts)")
+            print("\nLINK OWNERSHIP (saved renders from queues with recorded sends)")
             print(f"  links={links['links']}  our-short={links['our-short']}  "
                   f"our-publisher={links['our-publisher']}  "
                   f"unattributed={links.get('unattributed', 0)}  "
                   f"clean-merchant={links['clean-merchant']}  FOREIGN={links['foreign']}")
             if links.get("foreign") or links.get("unattributed") or links.get("clean-merchant"):
-                print("  -> one or more published links have no verified earning proof; "
+                print("  -> one or more saved links from sent queues have no verified attribution proof; "
                       "cache rows and clean merchant URLs are not proof. Run "
                       "python3 ops/quality_audit.py --strict for queue ids.")
             else:
-                print("  -> every published link has verified account-bound or native attribution")
+                print("  -> saved links from sent queues have account-bound or native attribution evidence")
             posture = []
             for marker, label in (("LINK ATTRIBUTED", "page(s) stamped with our id"),
                                   ("AMAZON LINK SHORTENED", "Amazon link(s) shortened"),

@@ -1151,9 +1151,9 @@ def test_hypd_diagnostic_only_shortens_verified_meesho_links():
         check("unverified destinations are never sent to Bitly", not shorten_calls,
               str(shorten_calls))
 
-        destinations = {link: "https://www.meesho.com/product/p/abc" for link in links}
+        destinations = {link: "https://www.meesho.com/product/p/abc123" for link in links}
         checker.resolve_once = lambda _url, _timeout: (
-            "https://hypd.store/93944/afflink/verified-token", "200")
+            shorten_calls[-1], "200")
         checker.bitly_shorten = lambda url, _tokens, _timeout: (
             shorten_calls.append(url) or "https://bit.ly/verified", "")
         failures, ok = checker.check_our_hypd_links(1.0, False)
@@ -1375,6 +1375,8 @@ def test_status_report_answers_are_we_converting():
                 resolved_url TEXT, product_key TEXT, created_at REAL);
             CREATE TABLE hypd_wanted (product_url TEXT, product_key TEXT, times INTEGER,
                 first_seen REAL, last_seen REAL);
+            CREATE TABLE deliveries(queue_id INTEGER, target TEXT, status TEXT, last_error TEXT);
+            INSERT INTO deliveries VALUES(1, 'test_channel', 'sent', '');
             CREATE TABLE queue (id INTEGER PRIMARY KEY, created_at REAL, status TEXT,
                 rendered_text TEXT);
         """)
@@ -1443,6 +1445,8 @@ def test_status_report_answers_are_we_converting():
             CREATE TABLE owned_link_proofs(affiliate_url TEXT PRIMARY KEY,
                 destination_url TEXT NOT NULL, proof_type TEXT NOT NULL,
                 publisher_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL);
+            CREATE TABLE deliveries(queue_id INTEGER, target TEXT, status TEXT, last_error TEXT);
+            INSERT INTO deliveries VALUES(1, 'test_channel', 'sent', '');
             CREATE TABLE queue(id INTEGER PRIMARY KEY, created_at REAL, rendered_text TEXT);
         """)
         stamp = time.time()

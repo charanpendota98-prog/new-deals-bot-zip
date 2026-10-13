@@ -39,7 +39,19 @@ CATEGORY_URL_STOP_SEGMENTS = frozenset({
 def category_words_from_url(url: str) -> str:
     """Extract readable product/search words from a URL, never opaque IDs/tokens."""
     try:
-        parsed = urlparse(html.unescape(str(url or "").strip()))
+        value = html.unescape(str(url or "").strip())
+        if "\\" in value or re.search(r"%(?![a-fA-F0-9]{2})", value):
+            return ""
+        parsed = urlparse(value)
+        if not parsed.hostname or parsed.username or parsed.password or "%" in parsed.netloc:
+            return ""
+        # Invalid encodings and dot-segment normalization differ between URL
+        # parsers. Such URLs provide no trustworthy category evidence.
+        path = unquote(parsed.path, errors="strict")
+        if (any(part in {".", ".."} for part in path.split("/"))
+                or any(c.isspace() and c != " " for c in path)):
+            return ""
+        parsed.port  # reject malformed ports rather than accepting their slugs
         if parsed.scheme.lower() not in {"http", "https"}:
             return ""
         if any((parsed.hostname or "").lower() == host or
@@ -47,7 +59,7 @@ def category_words_from_url(url: str) -> str:
             return ""
         words: list[str] = []
         previous = ""
-        for raw_segment in unquote(parsed.path or "").split("/"):
+        for raw_segment in path.split("/"):
             is_identifier = previous.lower() in {"p", "dp", "product", "item"}
             previous = raw_segment
             if is_identifier:
@@ -65,7 +77,8 @@ def category_words_from_url(url: str) -> str:
             words.append(normalized)
         for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
             if key.lower() in CATEGORY_QUERY_KEYS:
-                words.extend(_normalize_category_phrase(value) for value in values if value)
+                words.extend(_normalize_category_phrase(part) for value in values
+                             for part in html.unescape(value).splitlines() if part)
         return "\n".join(word for word in words if word)
     except Exception:
         return ""
@@ -90,7 +103,8 @@ def classify_category(text, link_context=(), rules=None):
     for value in link_context or ():
         if isinstance(value, str):
             urls.extend(URL_RE.findall(value))
-    segments = [("text", line) for line in URL_RE.sub(" ", text).splitlines()]
+    segments = [("text", part) for line in URL_RE.sub("\n", text).splitlines()
+                for part in html.unescape(line).splitlines()]
     # Never invent a product phrase across path components or query fields.
     segments += [("link", part) for url in dict.fromkeys(urls)
                  for part in category_words_from_url(url).splitlines()]

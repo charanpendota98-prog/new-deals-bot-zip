@@ -453,6 +453,47 @@ matrix, existing routing/dedup/one-hour/WhatsApp checks and syntax/lint gates.
 **No production deployment, restart, live posting or commission verification**
 is part of this change. Production must remain OFF until explicitly approved.
 
+### Further reliability audit (2026-10-14)
+
+This pass strengthens failure handling, not a claim of 100% correctness:
+
+- **Category boundaries:** URLs, real/encoded line breaks and separate query
+  fields cannot join words into a synthetic product phrase. Invalid encodings,
+  credentials and parser-dependent dot-segment URLs contribute no category
+  evidence. A separate suite adds 274 adversarial/metamorphic cases to the 142
+  existing Python/JavaScript parity cases, including repetition invariance.
+- **Conflicting HYPD records:** final Telegram render/send gates, WhatsApp
+  provenance and the auditor reject inconsistent cached product pairings for
+  the same share/short URL. They cannot pick an arbitrary first/latest row or
+  rescue a HYPD conflict using unrelated native-tag evidence. The bridge reads
+  one read-only SQLite snapshot; a missing DB fails closed instead of creating it.
+  Bot startup also creates an affiliate-URL cache index for these lookups; the
+  regression suite checks that SQLite uses it. No live index migration ran here.
+- **Honest delivery reporting:** `conversion_report.py` separates `rendered_links`
+  from `links` belonging to queues with recorded successful sends. `delivery_summary`
+  reports complete target sends, policy skips (including old `sent` + error rows),
+  partial target sends and queues without send evidence. Missing/legacy delivery
+  schemas do not imply success. Partial sends require receipt inspection, not
+  blind replay. Links are counted once per queue, not multiplied by target count;
+  these are saved renders, not a reconstruction of final per-target text. The
+  report window follows queue creation time, not live Telegram receipts.
+- **Diagnostic safety:** HYPD probes require an identified Meesho product,
+  reject error pages/ambiguous wrappers and do not inspect merchant HTML.
+  Shortener return checks require the exact original share, not a store-name
+  substring or another token in the same store. An unobservable redirect chain
+  is inconclusive, not proof of ownership. Live probes may create external
+  short links; `--plan` can write bot caches. They were not run live here.
+- **Test isolation:** `ops/test_all.sh` always overrides inherited database,
+  log, media and Telegram-session paths, and clears the inherited channel-config
+  path. Both its isolation block and a complete gate run were checked with
+  sentinel operator files; those files remained unchanged.
+
+Verification: the complete offline gate, 116 HYPD checks, six diagnostic safety
+regressions (with subcases), dashboard DOM suites, syntax/lint and deploy bundle
+source parity. Rebuild ignored bundles with `bash ops/repack_bundles.sh`.
+Production remains OFF; no deploy/restart, live sends or affiliate payout tests
+were performed. Existing one-hour/per-channel duplicate rules are unchanged.
+
 Server runbook (steps, verification, knobs): `ops/HYPD_OUR_LINKS_2026-09-24.txt`.
 
 **Nothing earns nothing silently.** A Meesho product we have no HYPD

@@ -518,6 +518,11 @@ def test_strict_hypd_proof_and_identity():
         try:
             async def run():
                 key = bot.product_key(DESTINATION)
+                plan = bot.store.conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT affiliate_url,resolved_url FROM link_cache WHERE affiliate_url=?",
+                    ("https://bit.ly/proven-hypd",)).fetchall()
+                check("final ownership lookup uses an index instead of scanning the entire cache",
+                      any("idx_link_cache_affiliate" in row[3] for row in plan))
                 check("cannot learn a Meesho storefront as a product", not await bot.store.remember_hypd_link(
                     OUR_LINK, "https://www.meesho.com/", "URL:opaque"))
                 check("cannot learn a mismatched supplied product identity", not await bot.store.remember_hypd_link(
@@ -559,6 +564,17 @@ def test_strict_hypd_proof_and_identity():
                 finally:
                     bot.OUR_HYPD_STORES = stores
                 wrong = "https://www.meesho.com/earbuds/p/wrong123"
+                for conflicting in (wrong, "https://www.amazon.in/dp/B012345678?tag=mama086-21"):
+                    await bot.store.cache_link("conflicting-source", good.affiliate, conflicting, "")
+                    check("all cached HYPD pairings must agree at the final render/send/audit gates",
+                          not await bot.store.verify_generated_text(good.affiliate)
+                          and not (await bot.store.presend_links_verified(good.affiliate))[0]
+                          and good.affiliate not in qa.our_minted_links(bot.store.conn))
+                    bot.store.conn.execute("DELETE FROM link_cache WHERE source_url=?", (bot.canonical_url("conflicting-source"),))
+                    bot.store.conn.commit()
+                check("consistent proof remains usable after conflicting rows are removed",
+                      await bot.store.verify_generated_text(good.affiliate))
+
                 check("exact short proof cannot be reused for a different product",
                       not await bot.store.cached_link_is_owned(good.affiliate, wrong))
                 # Reusing a learned share performs a redirect check; drift must not post wrong item.

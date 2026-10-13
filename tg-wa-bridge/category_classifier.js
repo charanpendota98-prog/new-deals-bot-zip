@@ -3,15 +3,21 @@ const OPAQUE_HOSTS = new Set(['bit.ly', 'bitli.in', 'bitl.in', 'bitly.com', 'amz
   'amzn.in', 'a.co', 'ekaro.in', 'clnk.in', 't.me', 'telegram.me', 'tinyurl.com',
   'cutt.ly', 'fkrt.co', 'fkrt.cc', 'hypd.store'])
 const URL_RE = /https?:\/\/[^\s<>\[\](){}"']+/giu
-function normalizeCategoryPhrase(value) {
+function decodeCategoryEntities(value) {
   return String(value || '')
-    .normalize('NFKC')
-    .replace(/https?:\/\/[^\s<>\[\](){}"']+/giu, ' ')
     .replace(/&#(x[0-9a-f]+|[0-9]+);/giu, (_, code) => {
       const n = code[0].toLowerCase() === 'x' ? parseInt(code.slice(1), 16) : Number(code)
       return n > 0 && n <= 0x10ffff ? String.fromCodePoint(n) : ' '
     })
-    .replace(/&(amp|quot|apos|lt|gt|nbsp);/giu, ' ')
+    .replace(/&(amp|quot|apos|lt|gt|nbsp|NewLine|Tab);/gu, (_, name) =>
+      ({amp:'&',quot:'"',apos:"'",lt:'<',gt:'>',nbsp:' ',NewLine:'\n',Tab:'\t'})[name])
+}
+function categoryLines(value) {
+  return String(value).split(/\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]/u)
+}
+function normalizeCategoryPhrase(value) {
+  return decodeCategoryEntities(value)
+    .normalize('NFKC')
     .toLocaleLowerCase('en-IN')
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .trim()
@@ -27,13 +33,19 @@ const CATEGORY_URL_STOP_SEGMENTS = new Set([
 ])
 function categoryWordsFromUrl(value) {
   try {
-    const url = new URL(String(value || '').replace(/&amp;/giu, '&').trim())
+    const input = decodeCategoryEntities(value).trim()
+    if (input.includes('\\') || /%(?![a-fA-F0-9]{2})/u.test(input)) return ''
+    const rawParts = input.match(/^https?:\/\/([^/?#]+)([^?#]*)/iu)
+    if (!rawParts || rawParts[1].includes('%')) return ''
+    const url = new URL(input)
+    if (url.username || url.password) return ''
+    const decodedPath = decodeURIComponent(rawParts[2])
+    if (decodedPath.split('/').some(part => part === '.' || part === '..')
+      || /[\t-\r\x1c-\x1f\x85\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]/u.test(decodedPath)) return ''
     if (!['http:', 'https:'].includes(url.protocol) || [...OPAQUE_HOSTS].some(host =>
       url.hostname === host || url.hostname.endsWith('.'+host))) return ''
     const words = []
     let previous = ''
-    let decodedPath
-    try { decodedPath = decodeURIComponent(url.pathname) } catch { decodedPath = url.pathname }
     for (const raw of decodedPath.split('/')) {
       const isIdentifier = ['p', 'dp', 'product', 'item'].includes(previous.toLowerCase())
       previous = raw
@@ -48,8 +60,10 @@ function categoryWordsFromUrl(value) {
     }
     for (const [key, val] of url.searchParams.entries()) {
       if (CATEGORY_QUERY_KEYS.has(key.toLowerCase())) {
-        const normalized = normalizeCategoryPhrase(val)
-        if (normalized) words.push(normalized)
+        for (const part of categoryLines(decodeCategoryEntities(val))) {
+          const normalized = normalizeCategoryPhrase(part)
+          if (normalized) words.push(normalized)
+        }
       }
     }
     return words.join('\n')
@@ -67,7 +81,8 @@ export function classifyCategory(text, linkContext = [], rules = {}) {
   for (const value of linkContext || []) {
     if (typeof value === 'string') urls.push(...(value.match(URL_RE) || []))
   }
-  const segments = text.replace(URL_RE, ' ').split(/\r?\n/u).map(line => ['text', line])
+  const segments = categoryLines(text.replace(URL_RE, '\n'))
+    .flatMap(line => categoryLines(decodeCategoryEntities(line)).map(part => ['text', part]))
   for (const url of new Set(urls)) {
     for (const part of categoryWordsFromUrl(url).split('\n')) segments.push(['link', part])
   }

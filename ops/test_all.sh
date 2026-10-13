@@ -37,11 +37,14 @@ run() {
 # Importing the bot creates logs/ and (on first write) a default DB next to the
 # source. Keep the gate's artifacts out of the checkout: a checkout full of test
 # logs is exactly what made conversion_report describe a build that was not live
-# (2026-10-04). Only fills what is not already configured.
+# (2026-10-04). ALWAYS override inherited live paths: this is an offline gate,
+# never an operator DB test. Individual tests can create further private paths.
 GATE_TMP="$(mktemp -d /tmp/bestgaa-gate-XXXXXX)"
-export BOT_DB_PATH="${BOT_DB_PATH:-$GATE_TMP/gate.sqlite3}"
-export BOT_LOG_DIR="${BOT_LOG_DIR:-$GATE_TMP/logs}"
-export BOT_MEDIA_DIR="${BOT_MEDIA_DIR:-$GATE_TMP/media}"
+export BOT_DB_PATH="$GATE_TMP/gate.sqlite3"
+export BOT_LOG_DIR="$GATE_TMP/logs"
+export BOT_MEDIA_DIR="$GATE_TMP/media"
+unset CHANNELS_JSON_PATH
+export TELEGRAM_SESSION="$GATE_TMP/test-session"
 export BESTGAA_DB_PATH="$GATE_TMP/bridge-provenance.sqlite3"
 trap 'rm -rf "$GATE_TMP"' EXIT
 
@@ -114,6 +117,8 @@ PY
 run 'shared HYPD identity policy parity' cmp bestgaa/hypd_policy.py tg-wa-bridge/hypd_policy.py
 run 'shared category taxonomy parity' cmp bestgaa/category_rules.json tg-wa-bridge/category_rules.json
 run 'strict category evidence and cross-language parity' "$PYTHON" test_category_classifier.py
+run 'read-only diagnostics and receipt evidence' "$PYTHON" test_safety_diagnostics.py
+run 'category adversarial and metamorphic invariants' "$PYTHON" test_category_invariants.py
 run 'render and routing' "$PYTHON" test_render_job.py
 run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
