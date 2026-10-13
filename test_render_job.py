@@ -309,6 +309,27 @@ async def main():
         test_category_classifier()
         await test_strict_owned_link_policy(store)
 
+        # New channel-local intake must not leak through any global fan-out.
+        source = "custom_scoped_feed"
+        bot.SOURCE_TO_TARGETS[source] = ["CustomElectroShelf"]
+        bot.DASHBOARD_SCOPED_SOURCES.add(source)
+        old_filters = bot.DASHBOARD_CATEGORY_FILTERS
+        bot.DASHBOARD_CATEGORY_FILTERS = {"customelectroshelf": frozenset({"electronics"})}
+        try:
+            for index, title in enumerate(("ScopeTest Model X81 wireless earbuds", "ScopeTest Model K93 cotton kurti")):
+                url = f"https://amzn.to/scoped{index}"
+                destination = f"https://www.amazon.in/dp/B0SCOPED0{index}"
+                result = bot.LinkResult(url, destination, destination, f"amazon:B0SCOPED0{index}")
+                targets = await case(store, "channel-local source: " + title, title + " ₹499\n" + url,
+                                     {url:destination}, {url:result}, source=source, msg_id=9690+index,
+                                     expect_exception=bot.PermanentSkip if index else None)
+                if not index:
+                    check("custom source reaches only its selected matching shelf", targets == ["CustomElectroShelf"])
+        finally:
+            bot.SOURCE_TO_TARGETS.pop(source)
+            bot.DASHBOARD_SCOPED_SOURCES.discard(source)
+            bot.DASHBOARD_CATEGORY_FILTERS = old_filters
+
         # Category routing is additive: the same confident product stays on the
         # Main feed and gets exactly one configured category destination. An
         # unclear title must never be guessed into a category shelf.

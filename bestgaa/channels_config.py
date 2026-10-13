@@ -84,6 +84,49 @@ def normalize_handle(name: str) -> str:
     return value.lstrip("@").strip()
 
 
+MAX_SOURCES = 100
+
+
+def normalize_source(value, known_sources=()):
+    """Canonical public handle or private invite; never accept a message URL."""
+    raw = str(value or "").strip()
+    if raw == "*":
+        return raw
+    invite = re.fullmatch(r"(?:https?://)?(?:t\.me|telegram\.me|telegram\.org)/(?:\+|joinchat/)([A-Za-z0-9_-]+)/*", raw)
+    candidate = "https://t.me/+" + invite[1] if invite else normalize_handle(raw)
+    # Keep legacy configured keys (including their casing/invite spelling).
+    for known in known_sources:
+        existing = str(known)
+        equivalent = ("https://t.me/+" + existing.split("+", 1)[1]) if "/+" in existing else normalize_handle(existing)
+        if ((candidate.startswith("https://") and candidate == equivalent)
+                or (not candidate.startswith("https://") and candidate.lower() == equivalent.lower())):
+            return existing
+    if HANDLE_RE.fullmatch(candidate) or re.fullmatch(r"https://t\.me/\+[A-Za-z0-9_-]+", candidate):
+        return candidate
+    raise ValueError("source must be a public channel link, @username, or private invite (not a message link)")
+
+
+def source_keys(raw, known_sources=()):
+    if not isinstance(raw, list) or any(not isinstance(s, str) for s in raw):
+        raise ValueError("sources must be a list of strings")
+    if len(raw) > MAX_SOURCES:
+        raise ValueError(f"select at most {MAX_SOURCES} sources; nothing was truncated")
+    sources, seen = [], set()
+    for value in raw:
+        if not value.strip():
+            continue
+        source = normalize_source(value, known_sources)
+        identity = source if "/+" in source else source.lower()
+        if identity not in seen:
+            seen.add(identity)
+            sources.append(source)
+    if not sources:
+        raise ValueError("pick at least one source (or '*' for every main source)")
+    if "*" in sources and sources != ["*"]:
+        raise ValueError("choose either every main source or selected sources, not both")
+    return sources
+
+
 def category_keys(raw) -> list[str]:
     """Only an explicit empty list (or absent field) means unrestricted.
 
@@ -117,14 +160,14 @@ def load_channels(path: Path | None = None) -> dict:
         if isinstance(entry, dict) and normalize_handle(entry.get("name", "")):
             try:
                 raw_cats = category_keys(entry.get("categories", []))
+                normalized_sources = source_keys(entry.get("sources", []))
             except ValueError:
                 continue
             if not isinstance(entry.get("sources", []), list):
                 continue
             channels.append({
                 "name": normalize_handle(entry.get("name", "")),
-                "sources": [str(s).strip() for s in (entry.get("sources") or [])
-                            if str(s).strip()][:60],
+                "sources": normalized_sources,
                 "categories": [str(c).strip().lower() for c in raw_cats
                                if str(c).strip()][:20],
                 "amazon_tag": bool(entry.get("amazon_tag", False)),
@@ -167,8 +210,8 @@ def validate_channel(entry: dict, known_sources: set[str],
     """Validate one dashboard channel. Returns (cleaned, errors, warnings).
 
     errors blocks the save; warnings are shown but allowed (e.g. a source the
-    bot has never seen - it may be a brand-new source, the bot resolves names
-    at startup and logs SOURCE FAIL for anything unreachable). A mistyped
+    bot has never seen - it may be a brand-new source that still needs joined-account
+    access checks on the running bot or at approved startup). A mistyped
     category would silently starve the channel, so an unknown category is an
     error whenever the bot has told us its real category keys (and a warning
     when it has not reported yet).
@@ -183,22 +226,18 @@ def validate_channel(entry: dict, known_sources: set[str],
     known_lower = {str(s).lower() for s in (known_sources or set())}
     if name.lower() in {str(t).lower() for t in (existing_targets or set())}:
         errors.append(f"@{name} is already a channel - dashboard entries must be new names")
-    raw_sources = entry.get("sources", [])
-    if not isinstance(raw_sources, list) or any(not isinstance(s, str) for s in raw_sources):
-        errors.append("sources must be a list of strings")
-        raw_sources = []
-    sources = [s.strip() for s in raw_sources if s.strip()]
-    if not sources:
-        errors.append("pick at least one source (or '*' for every main source)")
-    elif sources != ["*"]:
-        for source in sources[:60]:
-            if len(source) > 120:
-                errors.append(f"source {source[:40]!r} is too long")
-            elif (source.lower() not in known_lower
-                    and not INVITE_RE.match(source) and not HANDLE_RE.match(source)):
-                errors.append(f"source {source[:40]!r} is not a username or invite link")
-            elif source.lower() not in known_lower:
-                warnings.append(f"source {source} is new to the bot - it will be resolved at startup")
+    try:
+        sources = source_keys(entry.get("sources", []), known_sources)
+    except ValueError as exc:
+        errors.append(str(exc))
+        sources = []
+    for source in sources:
+        if source == "*":
+            continue
+        if source.lower() == name.lower() or source.lower() in {normalize_handle(t).lower() for t in existing_targets}:
+            errors.append(f"source {source} is a destination; refusing a repost loop")
+        if source.lower() not in known_lower:
+            warnings.append(f"source {source} needs access verification; join with the bot session account first. No automatic joining or history replay.")
     try:
         raw_cats = category_keys(entry.get("categories", []))
     except ValueError as exc:
@@ -220,7 +259,7 @@ def validate_channel(entry: dict, known_sources: set[str],
         categories.append(key)
     cleaned = {
         "name": name,
-        "sources": ["*"] if sources == ["*"] else sources[:60],
+        "sources": sources,
         "categories": categories[:20],
         "amazon_tag": bool((entry or {}).get("amazon_tag", False)),
         "enabled": bool((entry or {}).get("enabled", True)),
@@ -234,7 +273,8 @@ def validate_channel(entry: dict, known_sources: set[str],
 
 def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dict,
                      existing_targets: set[str] | None = None,
-                     tricks_sources: set[str] | frozenset | None = None) -> dict:
+                     tricks_sources: set[str] | frozenset | None = None,
+                     main_sources=None) -> dict:
     """Merge dashboard channels into live routing maps (mutates them).
 
     source_to_targets: SOURCE_TO_TARGETS (targets appended per channel).
@@ -254,6 +294,7 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
     tricks = {str(s) for s in (tricks_sources or set())}
     in_use = {str(t).lower() for targets in source_to_targets.values() for t in targets}
     in_use |= {str(t).lower() for t in (existing_targets or set())}
+    wildcard_sources = list(main_sources) if main_sources is not None else list(source_to_targets)
     for entry in channels:
         try:
             if not isinstance(entry, dict):
@@ -273,11 +314,11 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
                 continue
             # Validate BEFORE mutating any routing or tag maps.
             cats = category_keys(entry.get("categories", []))
-            sources = entry.get("sources") or []
-            if not isinstance(sources, list) or any(not isinstance(s, str) for s in sources):
-                raise ValueError("sources must be a list of strings")
+            sources = source_keys(entry.get("sources", []), source_to_targets)
             if sources == ["*"]:
-                sources = [s for s in source_to_targets if s not in tricks]
+                sources = [s for s in wildcard_sources if s not in tricks]
+            if any(s.lower() == name.lower() or s.lower() in in_use for s in sources):
+                raise ValueError("source is a posting destination; refusing a loop")
             routed = 0
             for source in sources:
                 source = str(source)

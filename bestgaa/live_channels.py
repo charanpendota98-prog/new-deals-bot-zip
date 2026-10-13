@@ -1,6 +1,6 @@
 """Append-only live activation for dashboard destinations.
 
-No service restarts, history replay, source subscriptions or merchant requests.
+No service restarts, history replay, automatic joins or merchant requests.
 Existing routing is deliberately immutable here: edits/removals require an
 approved restart. New public channels are staged and permission-checked first.
 """
@@ -49,12 +49,20 @@ def atomic_snapshot(path, payload):
 class LiveChannels:
     def __init__(self, routing, tag_targets, category_filters, source_map, target_map,
                  initial_channels, builtin_targets, known_categories, tricks_sources,
-                 resolve_target, on_applied=lambda: None, path=None, snapshot_file=None):
+                 resolve_target, on_applied=lambda: None, path=None, snapshot_file=None,
+                 resolve_source=None, on_source_added=lambda *args: None,
+                 builtin_sources=None, source_details=None):
         self.routing, self.tags, self.filters = routing, tag_targets, category_filters
         self.source_map, self.target_map = source_map, target_map
+        self.builtin_sources = set(builtin_sources) if builtin_sources is not None else set(routing)
+        self.resolve_source = resolve_source
+        self.on_source_added = on_source_added
+        self.source_details = source_details if source_details is not None else {}
+        self.source_checks = {}
         self.applied = {}
         for channel in initial_channels:
             if channel.get("enabled", True):
+                channel = dict(channel, sources=config.source_keys(channel["sources"], routing))
                 self.applied.setdefault(channel["name"].lower(), channel)
         self.builtins = set(builtin_targets)
         self.categories, self.tricks = set(known_categories), set(tricks_sources)
@@ -75,12 +83,13 @@ class LiveChannels:
                 base = {}
         except (OSError, ValueError):
             base = {}
-        base.update(live_reload=True, heartbeat_at=time.time(),
+        base.update(live_reload=True, live_sources=self.resolve_source is not None, heartbeat_at=time.time(),
                     started_at=base.get("started_at", self.started_at),
                     live_channels=states, live_error=error,
                     observed_revision=observed, applied_revision=self.applied_revision,
                     sources=sorted(self.routing),
-                    main_sources=sorted(s for s in self.routing if s not in self.tricks),
+                    main_sources=sorted(s for s in self.builtin_sources if s not in self.tricks),
+                    source_details=self.source_details,
                     dashboard_added=sorted(c["name"] for c in self.applied.values()),
                     targets=sorted(self.builtins | {t for values in self.routing.values() for t in values}))
         atomic_snapshot(self.snapshot_file, base)
@@ -97,6 +106,7 @@ class LiveChannels:
             self.publish({}, None, f"Invalid/unreadable config; existing routes unchanged: {type(exc).__name__}")
             return
         if observed != self.last_observed:
+            self.source_checks.clear()
             self.retry_after.clear()
             self.cached_errors.clear()
             self.last_observed = observed
@@ -121,21 +131,36 @@ class LiveChannels:
             if errors:
                 states[name] = {"state": "invalid", "detail": "; ".join(errors)}
                 continue
+            repair_existing = False
             if key in self.applied:
                 same = policy(cleaned) == policy(self.applied[key])
-                states[name] = {"state": "active" if same else "restart_required",
-                                "detail": "Routing loaded; normal send safeguards apply" if same else
-                                "Existing route kept unchanged. Approve a restart to apply this edit."}
-                continue
+                if not same:
+                    states[name] = {"state": "restart_required", "detail": "Existing route kept unchanged. Approve a restart to apply this edit."}
+                    continue
+                current = self.target_map.get(name)
+                wanted_now = self.builtin_sources - self.tricks if cleaned["sources"] == ["*"] else set(cleaned["sources"])
+                mapped_now = {entry[0] for entry in self.source_map.values()}
+                source_ready = bool(wanted_now & mapped_now) if cleaned["sources"] == ["*"] else wanted_now <= mapped_now
+                access_ready = current and (getattr(current, "creator", False) or getattr(getattr(current, "admin_rights", None), "post_messages", False))
+                if source_ready and access_ready:
+                    states[name] = {"state": "active", "detail": "Routing loaded; normal send safeguards apply"}
+                    continue
+                repair_existing = True  # same saved policy; retry access, never change its rules
             if not cleaned["enabled"]:
                 states[name] = {"state": "disabled", "detail": "Not added to live routing"}
                 continue
-            wanted = ([s for s in self.routing if s not in self.tricks]
+            wanted = ([s for s in self.builtin_sources if s not in self.tricks]
                       if cleaned["sources"] == ["*"] else cleaned["sources"])
+            wanted = sorted(wanted)
             mapped = {v[0] for v in self.source_map.values()}
-            if not wanted or any(s not in self.routing for s in wanted) or not any(s in mapped for s in wanted):
-                states[name] = {"state": "waiting_sources", "detail": "No usable existing source, or new intake requested. Existing intake is not changed live."}
+            missing = [s for s in wanted if s not in mapped]
+            if not wanted or (self.resolve_source is None and (any(s not in self.routing for s in wanted) or not any(s in mapped for s in wanted))):
+                states[name] = {"state": "waiting_sources", "detail": "Source access is not confirmed. Join using the bot session account; existing routes stay unchanged."}
                 continue
+            # A wildcard covers only the original main feeds, not channel-local
+            # custom sources. Existing unavailable feeds retain their recovery flow.
+            if cleaned["sources"] == ["*"] and any(s in mapped for s in wanted):
+                missing = []
             if self.retry_after.get(key, 0) > time.time():
                 states[name] = self.cached_errors[key]
                 continue
@@ -156,10 +181,40 @@ class LiveChannels:
                         getattr(getattr(entity, "admin_rights", None), "post_messages", False)):
                     raise ValueError("Posting permission missing: make the bot/session account an admin with Post Messages")
                 entity_id = getattr(entity, "id", None)
-                if not entity_id or any(getattr(e, "id", None) == entity_id for e in self.target_map.values()):
+                if not entity_id or any(getattr(e, "id", None) == entity_id for target_name, e in self.target_map.items()
+                                            if not (repair_existing and target_name == name)):
                     raise ValueError("This destination is already configured under another name")
                 if any(abs(int(source_id)) in {entity_id, 1000000000000 + entity_id} for source_id in self.source_map):
                     raise ValueError("Destination is an intake source; refusing a repost loop")
+                staged_sources = {}
+                deferred = False
+                for source in missing:
+                    cached = self.source_checks.get(source)
+                    if cached and time.time() - cached[1] < 1800:
+                        source_entity = cached[0]
+                    else:
+                        if attempts >= 3:
+                            states[name] = {"state": "checking_sources", "detail": f"Checking selected sources in batches; next: {source}. No routes changed yet."}
+                            deferred = True
+                            break
+                        attempts += 1
+                        source_entity = await asyncio.wait_for(self.resolve_source(source), timeout=8)
+                        if (not source_entity or not getattr(source_entity, "broadcast", False)
+                                or getattr(source_entity, "left", False)):
+                            raise ValueError(f"Source {source}: join this broadcast channel with the bot session account first")
+                        self.source_checks[source] = (source_entity, time.time())
+                    sid = getattr(source_entity, "id", None)
+                    if not sid or sid == entity_id or any(getattr(e, "id", None) == sid for e in self.target_map.values()):
+                        raise ValueError(f"Source {source} is a posting destination; refusing a loop")
+                    aliases = {entry[0] for key, entry in self.source_map.items()
+                               if abs(int(key)) in {sid, 1000000000000 + sid}}
+                    if aliases and source not in aliases:
+                        raise ValueError(f"Source {source} is already configured as {sorted(aliases)[0]}; select that source instead")
+                    if any(getattr(e, "id", None) == sid for e in staged_sources.values()):
+                        raise ValueError("Two selected source links identify the same channel; keep just one")
+                    staged_sources[source] = source_entity
+                if deferred:
+                    continue
                 # Recheck after the network await: do not activate deleted/edited config.
                 latest = self.path.read_bytes() if self.path.exists() else b""
                 if revision(latest) != observed:
@@ -168,10 +223,21 @@ class LiveChannels:
                 # Stage all routing without mutation. Commit below has no awaits.
                 staged = {source: list(targets) for source, targets in self.routing.items()}
                 staged_tags = set(self.tags)
-                summary = config.apply_to_routing(staged, staged_tags, {"channels": [cleaned]},
-                                                  self.builtins, self.tricks)
+                summary = ({"added": [name]} if repair_existing else
+                           config.apply_to_routing(staged, staged_tags, {"channels": [cleaned]},
+                                                   self.builtins, self.tricks,
+                                                   main_sources=self.builtin_sources))
                 if summary["added"] != [name]:
                     raise ValueError("Destination conflicts with existing routing")
+                activated = time.time()
+                for source, source_entity in staged_sources.items():
+                    sid = int(source_entity.id)
+                    for source_id in (sid, -(1000000000000 + sid)):
+                        self.source_map[source_id] = (source, list(staged.get(source, [])))
+                    self.source_details[source] = {"title": str(getattr(source_entity, "title", "") or source),
+                                                   "state": "ready", "checked_at": self.source_checks[source][1],
+                                                   "activated_at": activated}
+                    self.on_source_added(source, source_entity, activated)
                 self.routing.clear()
                 self.routing.update(staged)
                 self.tags.clear()

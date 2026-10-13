@@ -12,9 +12,10 @@ What it does
   * Channels: list every posting channel (built-in + dashboard-added), add a
     new channel (name, sources, category shelf, Amazon-tag opt-in),
     enable/disable/remove it.
-    Changes land in channels.json next to the bot database and apply on the
-    next bot restart (the dashboard shows a pending badge and offers a
-    one-click restart when it has permission).
+    Changes land in channels.json next to the bot database. New destinations
+    and already-joined source channels can activate on an upgraded running bot
+    after access checks. Existing policy edits/removals need an approved restart.
+    Saving never starts the bot or joins Telegram channels.
   * Status: queue depth, today's real sends vs skips per the ledger, last
     posted deal, bot uptime.
   * Recent: latest jobs with per-job send/skip counts.
@@ -265,6 +266,34 @@ def category_catalog() -> dict:
     return {c["key"]: c["label"] for c in load_rules().get("categories", [])}
 
 
+def source_catalog(snap=None, data=None):
+    """All configured choices, without importing/starting Telegram or the bot."""
+    snap = snapshot() if snap is None else snap
+    data = channels_config.load_channels() if data is None else data
+    try:
+        defaults = json.loads((ROOT / "bestgaa" / "source_catalog.json").read_text())["sources"]
+    except (OSError, ValueError, KeyError):
+        defaults = []
+    known = snap.get("sources", [])
+    metadata = snap.get("source_details", {})
+    main = set(snap.get("main_sources", [row["key"] for row in defaults if row.get("main")]))
+    keys = [row["key"] for row in defaults] + list(known)
+    keys += [source for channel in data.get("channels", []) for source in channel["sources"] if source != "*"]
+    result = {}
+    for value in keys:
+        try:
+            key = channels_config.normalize_source(value, known)
+        except ValueError:
+            continue
+        identity = key if "/+" in key else key.lower()
+        detail = metadata.get(key, {})
+        title = detail.get("title") or ("Private source · …" + key[-6:] if "/+" in key else "@" + key)
+        result[identity] = {"key": key, "title": str(title), "main": key in main,
+                            "private": "/+" in key, "state": detail.get("state", "configured"),
+                            "detail": detail.get("detail", "Access is checked by the running bot, not by saving this form.")}
+    return sorted(result.values(), key=lambda item: (item["title"].casefold(), item["key"]))
+
+
 def activation_status(snap=None):
     snap = snapshot() if snap is None else snap
     try:
@@ -274,10 +303,10 @@ def activation_status(snap=None):
     fresh = bool(snap.get("live_reload") and 0 <= age < 40)
     same = snap.get("observed_revision") == config_revision()
     return {"watcher_online": fresh, "heartbeat_at": snap.get("heartbeat_at"),
-            "new_channels_live": fresh, "config_observed": same,
+            "new_channels_live": fresh, "new_sources_live": fresh and bool(snap.get("live_sources")), "config_observed": same,
             "channels": snap.get("live_channels", {}) if fresh and same else {},
             "error": snap.get("live_error", "") if fresh else "",
-            "message": ("Bot online: new channels get access checks and live activation; existing edits/removals need an approved restart."
+            "message": ("Bot online: new channels get access checks and live activation; joined custom sources need the source-enabled release. Existing edits/removals need an approved restart."
                         if fresh else "Live activation not confirmed: bot may be OFF, starting, or on older code. Saving alone cannot start it.")}
 
 
@@ -293,7 +322,9 @@ async def api_channels(request: web.Request):
         "dashboard": data["channels"],
         "revision": config_revision(),
         "activation": activation_status(snap),
-        "sources": snap.get("sources", []),
+        "sources": [item["key"] for item in source_catalog(snap, data)],
+        "source_catalog": source_catalog(snap, data),
+        "source_limit": channels_config.MAX_SOURCES,
         "categories": category_catalog(),
         "category_rules_version": load_rules().get("version", 0),
         "bot_category_rules_version": snap.get("category_rules_version"),
@@ -310,7 +341,7 @@ async def api_add_channel(request: web.Request):
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
     snap = snapshot()
     cleaned, errors, warnings = channels_config.validate_channel(
-        entry or {}, set(snap.get("sources", [])) if snap else set(),
+        entry or {}, {item["key"] for item in source_catalog(snap)},
         set(snap.get("targets", [])) if snap else set(),
         set(category_catalog()))
     if errors:
@@ -352,7 +383,7 @@ async def api_edit_channel(request: web.Request):
     snap = snapshot()
     others = {t for t in snap.get("targets", [])} if snap else set()
     cleaned, errors, warnings = channels_config.validate_channel(
-        merged, set(snap.get("sources", [])) if snap else set(), others - {entry["name"]},
+        merged, {item["key"] for item in source_catalog(snap)}, others - {entry["name"]},
         set(category_catalog()))
     # validate_channel rejects names already in use: ours is the entry itself.
     errors = [e for e in errors if "already a channel" not in e]

@@ -100,7 +100,8 @@ from telethon.errors import (
     FloodWaitError,
     UserAlreadyParticipantError,
 )
-from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import (
     MessageEntityTextUrl,
     MessageEntityUrl,
@@ -1186,12 +1187,16 @@ UNDER99_SOURCES = {
 
 # Dashboard-managed channels (2026-10-13): operator-added targets from
 # channels.json (next to the bot database) merge over the maps above at
-# startup, so a new channel needs no code change and no redeploy - only a
-# restart. Additive only, and a missing/corrupt file simply means "no
+# startup and the upgraded live watcher handles new destinations/sources.
+# Existing policy edits still need an approved restart. Missing/corrupt files mean "no
 # dashboard channels": this block can never break startup.
 # DASHBOARD_CATEGORY_FILTERS maps a dashboard target (lowercased) to the
 # product categories it keeps - e.g. an electronics-only shelf. Targets
 # absent from the map take every category, exactly as before.
+BUILTIN_SOURCE_NAMES = frozenset(SOURCE_TO_TARGETS)
+DASHBOARD_SCOPED_SOURCES: set[str] = set()
+SOURCE_DETAILS: dict[str, dict] = {}
+SOURCE_ACTIVATED_AT: dict[str, float] = {}
 DASHBOARD_CATEGORY_FILTERS: dict[str, frozenset] = {}
 try:
     try:
@@ -1208,7 +1213,9 @@ try:
     }
     _dashboard_summary = _dashboard_channels.apply_to_routing(
         SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, _dashboard_data,
-        existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES)
+        existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES,
+        main_sources=BUILTIN_SOURCE_NAMES)
+    DASHBOARD_SCOPED_SOURCES.update(set(SOURCE_TO_TARGETS) - BUILTIN_SOURCE_NAMES)
     AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
     DASHBOARD_CATEGORY_FILTERS = {
         str(name).strip().lower(): frozenset(str(c).strip().lower() for c in cats)
@@ -1234,7 +1241,8 @@ try:
         _snapshot_path.write_text(json.dumps({
             "started_at": time.time(),
             "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
-            "main_sources": sorted(str(s) for s in SOURCE_TO_TARGETS if s not in TRICKS_SOURCES),
+            "main_sources": sorted(str(s) for s in BUILTIN_SOURCE_NAMES if s not in TRICKS_SOURCES),
+            "source_details": SOURCE_DETAILS,
             "targets": sorted(str(t) for t in _snapshot_targets),
             "dashboard_added": list(_dashboard_summary.get("added", [])),
             "category_rules_version": CATEGORY_RULES.get("version", 0),
@@ -7740,12 +7748,64 @@ async def backfill_source(client: TelegramClient, entity, source: str) -> None:
 RESOLVED_SOURCE_IDS: dict[str, int] = {}
 
 
+async def resolve_dashboard_source(client, source):
+    """Resolve already-joined channels only. Never invokes Import/Join requests."""
+    if "/+" in source:
+        invite = await client(CheckChatInviteRequest(source.split("+", 1)[1]))
+        entity = getattr(invite, "chat", None)
+        if type(invite).__name__ != "ChatInviteAlready" or entity is None:
+            raise ValueError("Private source: join using the bot session account, then retry")
+    else:
+        entity = await client.get_entity(source)
+    if not getattr(entity, "broadcast", False):
+        raise ValueError("Source must be a Telegram broadcast channel, not a user/group")
+    participant = (await client(GetParticipantRequest(entity, "me"))).participant
+    if type(participant).__name__ in {"ChannelParticipantLeft", "ChannelParticipantBanned"} or getattr(entity, "left", False):
+        raise ValueError("Source access missing: join with the bot session account first")
+    return entity
+
+
+def dashboard_source_added(source, entity, activated):
+    RESOLVED_SOURCE_IDS[source] = fetch_chat_id(entity, entity.id)
+    if source not in BUILTIN_SOURCE_NAMES:
+        DASHBOARD_SCOPED_SOURCES.add(source)
+        SOURCE_ACTIVATED_AT.setdefault(source, activated)
+
+
+def source_message_is_current(source, msg):
+    cutoff = SOURCE_ACTIVATED_AT.get(source, 0)
+    stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
+    return not cutoff or stamp >= cutoff
+
+
+def scope_dashboard_targets(source, targets):
+    if source not in DASHBOARD_SCOPED_SOURCES:
+        return targets
+    allowed = {target.lower() for target in SOURCE_TO_TARGETS.get(source, [])}
+    return [target for target in targets if target.lower() in allowed]
+
+
 async def register_source(client: TelegramClient, source_map: dict, source: str,
-                          targets: list[str], do_backfill: bool = False) -> bool:
-    entity = await resolve_entity(client, source)
+                          targets: list[str], do_backfill: bool = False, target_map=None) -> bool:
+    if source in DASHBOARD_SCOPED_SOURCES:
+        try:
+            entity = await resolve_dashboard_source(client, source)
+        except Exception as exc:
+            SOURCE_DETAILS[source] = {"title": source, "state": "join_required", "detail": str(exc)[:160]}
+            return False
+    else:
+        entity = await resolve_entity(client, source)
     if not entity:
         return False
     fetch_id = fetch_chat_id(entity, getattr(entity, "id", 0))
+    if source in DASHBOARD_SCOPED_SOURCES:
+        aliases = {entry[0] for sid, entry in source_map.items()
+                   if abs(int(sid)) in {entity.id, 1000000000000 + entity.id}}
+        if ((aliases and source not in aliases)
+                or any(getattr(target, "id", None) == entity.id for target in (target_map or {}).values())):
+            SOURCE_DETAILS[source] = {"title": str(getattr(entity, "title", source)), "state": "blocked",
+                                      "detail": "Source aliases another intake or posting destination; select the existing source"}
+            return False
     # Map EVERY id convention that can arrive on an update (raw entity id,
     # Telethon's marked channel id, the plain -chat id of a legacy group). A
     # source that only matched one form silently received nothing at all.
@@ -7753,6 +7813,10 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
         if key:
             source_map[key] = (source, list(targets))
     RESOLVED_SOURCE_IDS[source] = fetch_id
+    SOURCE_DETAILS[source] = {"title": str(getattr(entity, "title", "") or source), "state": "ready", "checked_at": time.time()}
+    if source in DASHBOARD_SCOPED_SOURCES:
+        SOURCE_ACTIVATED_AT.setdefault(source, time.time())
+        do_backfill = False
     log.info("SOURCE OK @%s -> %s -> %s", source, fetch_id, targets)
     if do_backfill:
         await backfill_source(client, entity, source)
@@ -7775,7 +7839,7 @@ async def build_maps(client: TelegramClient):
         else:
             log.error("TARGET FAIL @%s", target)
     for source, targets in SOURCE_TO_TARGETS.items():
-        if not await register_source(client, source_map, source, targets, do_backfill=True):
+        if not await register_source(client, source_map, source, targets, do_backfill=True, target_map=target_map):
             log.error("SOURCE FAIL @%s", source)
         await asyncio.sleep(0.08)
     return source_map, target_map
@@ -7806,7 +7870,7 @@ async def maintenance_loop(stop: asyncio.Event) -> None:
 
 
 async def refresh_missing_sources(client: TelegramClient, source_map: dict,
-                                  stop: asyncio.Event) -> None:
+                                  stop: asyncio.Event, target_map=None) -> None:
     """Periodically recover private/invite sources that failed during startup."""
     while not stop.is_set():
         try:
@@ -7818,7 +7882,7 @@ async def refresh_missing_sources(client: TelegramClient, source_map: dict,
         missing = [(source, targets) for source, targets in SOURCE_TO_TARGETS.items()
                    if source not in mapped]
         for source, targets in missing:
-            if await register_source(client, source_map, source, targets, do_backfill=True):
+            if await register_source(client, source_map, source, targets, do_backfill=True, target_map=target_map):
                 log.info("SOURCE RECOVERED @%s", source)
             else:
                 log.warning("SOURCE STILL UNAVAILABLE @%s", source)
@@ -7886,7 +7950,7 @@ async def source_rescan_loop(client: TelegramClient, source_map: dict,
                     messages = await client.get_messages(chat_id, limit=SOURCE_RESCAN_LIMIT)
                 for msg in reversed(messages or []):
                     stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
-                    if stamp < window_start:
+                    if stamp < window_start or not source_message_is_current(source, msg):
                         continue
                     # Cheap pre-filter: a message already in the queue never even
                     # reaches the fingerprint/normalisation work in enqueue.
@@ -8803,6 +8867,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             and (not SHOPPING_AMAZON_ONLY or is_amazon_only_post(rendered))
             and SHOPPING_TARGET not in base_targets):
         base_targets.append(SHOPPING_TARGET)
+    # Custom intake is channel-local: never fan it into built-in/global routes.
+    base_targets = scope_dashboard_targets(row["source"], base_targets)
     if not base_targets:
         raise PermanentSkip("no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
@@ -9422,7 +9488,10 @@ async def dashboard_live_loop(client, source_map, target_map, stop):
             source_map, target_map,
             [c for c in _dashboard_data["channels"] if c["name"].lower() in initial_names],
             _dashboard_targets, CATEGORY_DEFINITIONS, TRICKS_SOURCES,
-            lambda name: client.get_entity(name), refresh_dashboard_tag_keys)
+            lambda name: client.get_entity(name), refresh_dashboard_tag_keys,
+            resolve_source=lambda source: resolve_dashboard_source(client, source),
+            on_source_added=dashboard_source_added, builtin_sources=BUILTIN_SOURCE_NAMES,
+            source_details=SOURCE_DETAILS)
         await live_channels.run(stop)
     except Exception:
         log.exception("DASHBOARD LIVE ADD unavailable; existing posting continues")
@@ -9460,6 +9529,8 @@ async def main() -> None:
         try:
             source, _ = entry
             msg = event.message
+            if not source_message_is_current(source, msg):
+                return
             raw = (msg.message or msg.text or "") if msg is not None else ""
             has_media = bool(
                 msg is not None and msg.media is not None and
@@ -9487,7 +9558,7 @@ async def main() -> None:
     async def on_message_edited(event):
         """An edit of a source post must not be lost (see revive_edited_job)."""
         entry = source_map.get(event.chat_id) or source_map.get(raw_chat_id(event.chat_id))
-        if not entry:
+        if not entry or not source_message_is_current(entry[0], event.message):
             return
         try:
             outcome = await store.revive_edited_job(raw_chat_id(event.chat_id), event.message.id)
@@ -9549,7 +9620,7 @@ async def main() -> None:
     workers = [asyncio.create_task(worker(i)) for i in range(QUEUE_WORKERS)]
     # Independent task; access/config failures never stop normal posting workers.
     dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
-    source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop))
+    source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
     await stop.wait()

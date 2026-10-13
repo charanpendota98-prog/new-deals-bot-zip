@@ -1511,13 +1511,27 @@ NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=/path/to/python node test_da
 
 ### Quick add + live activation (new destinations only)
 
-**Public channel link → select one category → Save & request activation.**
+**Public channel link → choose a category → select source channels → Save & request activation.**
 The dashboard accepts `https://t.me/ChannelName`, `t.me/ChannelName`, or `@ChannelName`.
 They normalize to the same username, so aliases cannot create duplicate config.
 Private invite links, message links and non-Telegram links are rejected. Create the
 channel first and grant the Telethon session account **Post Messages** permission.
 Quick add defaults to every main source, one strict category, and Amazon-tag opt-in
-OFF. Declare new affiliate channels before opting their Amazon tag in via advanced
+OFF. The source library sits beside the channel details on desktop (below on mobile):
+search the 60 bundled source entries by channel title/handle, select multiple
+checkboxes, select visible search results, or clear selections. Selected chips and
+counts remain intact across search changes and dashboard polling. Real Telegram
+titles come from the running bot's access checks; unverified names are shown as
+handles/private-source placeholders, never invented titles.
+
+Paste a public source link, `@handle`, or private invite into **Add a source channel
+link**. Use **Add & select sources**, or save with the pasted link still present;
+both paths validate and include it. Invalid/unadded links block saving rather than
+being silently ignored. Choosing a custom source while "every main source" is on
+materializes the main-source selection plus the new link. At most 100 sources per
+channel are accepted; excess input is rejected, not truncated. Sources, categories
+and notes can also be reviewed in **edit sources & category** (existing policy edits
+still require an approved restart). Declare new affiliate channels before opting their Amazon tag in via advanced
 settings; otherwise strict affiliate policy may withhold Amazon deals.
 
 A **one-time approved deployment/start of this upgraded bot** is needed to install
@@ -1528,11 +1542,28 @@ live activation. After that, a running bot checks config about every five second
   the new destination; this is not historical backfill.
 - New channels must resolve as broadcast channels and report creator/posting-admin
   rights. No test message is sent. Source/destination loops and duplicate channel
-  IDs are refused. Unknown/new intake sources are not subscribed live.
+  IDs are refused. An already-joined new source can be activated live after its
+  broadcast-channel type and session membership are checked. Public links and
+  private invites are supported for sources, not for destination invites. **Join
+  with the same Telegram account used by the bot session**, not a different
+  personal account. New-source verification uses check-only requests, never
+  ImportChatInvite/JoinChannel. Missing access stays pending/needs-attention and
+  retries with backoff; a saved row is not proof of activation.
 - Resolution runs separately from posting workers with an 8-second per-channel
-  timeout, at most three attempts per pass and 30-second failure backoff. Telegram
+  timeout, at most three channel/source lookup attempts per pass and 30-second failure backoff.
+  Larger explicit selections are staged across passes; no partial source mapping
+  is installed while remaining selected new sources are unchecked. Telegram
   FloodWait retry windows pause all new access checks for the requested period. A failing
   new destination does not stop existing destinations.
+- New custom intake is **channel-local**. It feeds only explicitly selected
+  destination(s), after their category filters; automatic main/price/premium/card/
+  shopping fan-out is capped to that selection. Built-in source routes remain
+  unchanged. Wildcard main-source selections do not silently inherit custom feeds,
+  regardless of config order. Event ingestion and rescan recovery ignore messages
+  before a new custom source's activation cutoff; no historical backfill is started.
+- The source list is available even while the bot is OFF, via the bundled baseline
+  catalog plus saved/snapshot sources. Catalog presence does not mean membership
+  or a live subscription. Source titles and runtime state come from the snapshot.
 - The config revision is checked again after the Telegram lookup. A save/remove
   during that lookup cannot accidentally activate obsolete configuration.
 - **Edits, disabling and deleting already-active destinations intentionally need
@@ -1562,3 +1593,23 @@ Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
 permission failures, preservation of existing routes, deferred edits/removals,
 malformed config, source/target aliases, backoff and configuration races. Production
 is not restarted or redeployed by development tests.
+
+### Source-selection verification (2026-10-14)
+
+`ops/test_all.sh` includes `test_source_setup.py` (normalization, 100-source limits,
+real isolated HTTP saves, atomic staged activation, startup access repair, aliases,
+loops, rate limits and config races), `test_source_runtime.py` (catalog parity,
+check-only membership, no joins/history, activation cutoffs and channel-local scope),
+and render integration proving matching custom-source deals reach only their
+selected shelf while wrong-category deals are withheld. Existing affiliate,
+one-hour/per-channel duplicate, WhatsApp and dashboard suites remain enabled.
+
+Optional DOM regression:
+```bash
+NODE_PATH=/path/to/jsdom/node_modules PYTHON=/path/to/python node test_dashboard_sources.cjs
+```
+It covers 60 named feeds, multi-select/search, paste-on-save, preserved selections,
+per-form isolation, POST/PATCH payloads, revision conflicts, safe titles and focus.
+Desktop/mobile Chromium checks used an isolated demo with masked private invites,
+no Telegram connection and restart disabled. No production deployment or service
+restart was performed. Bundles are regenerated from source, not auto-deployed.

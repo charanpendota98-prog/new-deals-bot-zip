@@ -33,6 +33,8 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{o
 .card{background:#111a27;border:1px solid #253146;padding:24px;margin:20px 0}.topbar,.brand,.topbar nav,.section-heading,.step-actions{display:flex;align-items:center;justify-content:space-between;gap:16px}.brand{justify-content:flex-start;font-weight:700;font-size:19px}.brand-icon{display:grid;place-items:center;width:36px;height:36px;background:#80f0cf;color:#10241e;border-radius:10px}.topbar nav{font-size:13px;color:#aab8ca}.hero{display:flex;justify-content:space-between;align-items:center;padding:32px 4px 24px;gap:32px}.eyebrow{color:#80f0cf;font-size:10px;letter-spacing:2px;font-weight:700}.hero h1{font-size:clamp(34px,5vw,56px);line-height:1.06;letter-spacing:-2px;margin:12px 0 20px}.hero h1 span{color:#80f0cf}.hero p{color:#aab8ca;font-size:14px}.hero-note{border-left:1px solid #34445b;padding:16px 25px;font-size:10px;letter-spacing:1px;color:#b6c5d8;min-width:180px}.hero-note p{letter-spacing:0;font-size:12px}.pulse{display:inline-block;width:7px;height:7px;border-radius:50%;background:#80f0cf;margin-right:5px}
 h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0}.muted{color:#9dacc1;font-size:12px}#tokenbar{align-items:center;padding:12px 16px}#token{max-width:350px}#authstate{margin-left:auto}input,textarea,select{background:#0b131f;border-color:#344259;padding:11px 12px}.setup-card{border-color:#364e60;padding:28px}.steps{display:flex;gap:12px;padding:20px 0;margin-bottom:4px}.step{flex:1;background:transparent;color:#8fa2bb;border-color:#26364c;font-size:12px;text-align:left}.step.active{color:#80f0cf;border-color:#80f0cf;background:#132f2c}.inspector-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:24px;margin:14px 0 24px}.inspect-input{padding:2px 0}.inspect-input button{margin-top:14px}.inspect-result{border:1px solid #2c4057;background:linear-gradient(150deg,#14283a,#111a27);border-radius:12px;padding:24px;display:flex;flex-direction:column;align-items:flex-start}.inspect-result h3{font-size:25px;margin-top:20px}.inspect-result #inext{font-size:13px;color:#c7d4e5}.inspect-result #iuse{margin-top:auto}.category-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.category-tile{position:relative;background:#0d1521;border:1px solid #29374c;border-radius:10px;padding:16px;cursor:pointer;font-size:13px;display:flex;flex-direction:column;gap:7px}.category-tile:has(input:checked){border-color:#80f0cf;background:#142d2a}.category-tile input{position:absolute;top:10px;right:12px;width:auto;accent-color:#80f0cf}.tile-code{display:inline-block;color:#80f0cf;font-family:monospace;font-size:11px;margin-bottom:8px}.category-tile small{color:#8fa2bb;font-size:10px;line-height:1.45}.step-actions{border-top:1px solid #26364c;margin-top:24px;padding-top:20px}.advanced{margin:22px 0;padding:16px;border:1px solid #2a3a50;border-radius:8px}summary{cursor:pointer;color:#b5c7dd;font-size:13px;margin:7px 0}.checkline{display:flex;align-items:center;gap:10px;margin:15px 0}.checkline input{width:auto}.review-box{background:#0b131f;border:1px solid #304059;border-radius:10px;padding:22px;white-space:pre-wrap;line-height:1.9}.badge{background:#25364a;color:#c2d5e7}.badge.ours{color:#a6f3d2}#addmsg{color:#f6c98c}#addmsg.ok{color:#80f0cf}[hidden]{display:none!important}
 @media(max-width:760px){main{padding:14px}.hero-note{display:none}.hero{padding:22px 0}.card,.setup-card{padding:18px}.inspector-grid{grid-template-columns:1fr}.category-grid{grid-template-columns:repeat(2,1fr)}.steps{gap:6px}.step{font-size:10px;padding:10px 6px}.topbar nav{gap:10px}.brand .muted{display:none}.section-heading{align-items:flex-start}#tokenbar{flex-wrap:wrap}#token{max-width:none;width:75%}#authstate{margin-left:0}}
+
+.quick-workbench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr);gap:28px;align-items:start}.quick-workbench .inspector-grid{grid-template-columns:1fr;gap:12px}.source-picker{border:1px solid #345146;border-radius:14px;padding:20px;background:linear-gradient(140deg,#122a28,#101b29)}.source-picker h3{margin:5px 0 10px}.source-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.source-tools button{font-size:11px;padding:7px 10px}.source-list{max-height:310px;overflow:auto;display:grid;gap:6px;padding:5px 3px}.source-option{display:flex;align-items:center;gap:12px;padding:11px;border:1px solid #283e4b;border-radius:9px;margin:0;background:#0d1b26;cursor:pointer}.source-option:has(input:checked){border-color:#74dabb;background:#15332f}.source-option input{width:auto;flex-shrink:0;accent-color:#80f0cf}.source-option span{min-width:0;display:grid;gap:4px}.source-option strong{font-size:12px;overflow-wrap:anywhere}.source-option small{font-size:10px;color:#9dafc0;overflow-wrap:anywhere}.source-picker input[type=search],.source-picker textarea{width:100%;box-sizing:border-box}.source-selected{display:flex;gap:6px;flex-wrap:wrap;max-height:92px;overflow:auto;margin:10px 0}.source-selected button{font-size:10px;padding:5px 8px;background:#203d38;color:#b3efdb;border:1px solid #395c52}.source-count{font-size:12px;color:#8ce6cb;margin:10px 0}.source-picker details{border-top:1px solid #304652;margin-top:14px;padding-top:8px}.source-error{font-size:12px;color:#ffd49a}.setup-source-layout{display:grid;grid-template-columns:1fr 1.2fr;gap:24px}dialog{max-width:850px;width:calc(100% - 50px)}@media(max-width:760px){.quick-workbench,.setup-source-layout{grid-template-columns:1fr}.source-picker{padding:15px}.source-list{max-height:280px}}
 </style>
 </head>
 <body>
@@ -53,11 +55,11 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <h1>Right deals.<br><span>Right channels.</span></h1><p>Paste a product link, choose its category, and configure your channel.<br>Simple setup. Strict category filtering. You stay in control.</p></div>
 <div class="hero-note"><span class="pulse"></span> CONFIGURE, THEN REVIEW<p>Existing routes stay intact.<br>New routes checked first.</p></div></section>
 <section class="card" id="quick-setup">
-<div class="section-heading"><div><span class="eyebrow">QUICK ADD · NO CODE CHANGES</span><h2>Channel link + category. Save.</h2></div><span class="badge">Live additions</span></div>
+<div class="section-heading"><div><span class="eyebrow">QUICK ADD · NO CODE CHANGES</span><h2>Your channel. Your sources. Your category.</h2></div><span class="badge">Live additions</span></div>
 <p class="muted">Create your Telegram channel first and give the bot/session account Post Messages permission. A running bot checks access, then routes eligible newly rendered deals. No history replay.</p>
-<div class="inspector-grid"><div><label for="quicklink">Public channel link or @username</label><input id="quicklink" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off"></div><div><label for="quickcategory">Category</label><select id="quickcategory"><option value="">Choose a category</option></select></div></div>
+<div class="quick-workbench"><div><div class="inspector-grid"><div><label for="quicklink">Public channel link or @username</label><input id="quicklink" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off"></div><div><label for="quickcategory">Category</label><select id="quickcategory"><option value="">Choose a category</option></select></div></div>
 <button id="quicksave" onclick="quickSave()">Save &amp; request activation</button><p id="quickmsg" aria-live="polite"></p>
-<p class="muted">Defaults: every main source, one strict category, Amazon-tag opt-in OFF. Existing channels keep their current rules.</p>
+<p class="muted">Only the selected category qualifies. Source selection belongs to this channel. Amazon-tag opt-in stays OFF.</p></div><aside id="qsourcepicker" class="source-picker"></aside></div>
 <div class="review-box"><strong id="livestate">Bot activation not confirmed</strong><p id="livedetail" class="muted">Connect to see the bot heartbeat and activation results.</p><div id="liveerrors" class="muted"></div></div>
 </section>
 <section class="card setup-card" id="setup">
@@ -78,12 +80,11 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </div>
 <div id="setupstep2" hidden>
 <h3>Connect your existing Telegram channel</h3><p class="muted">This saves routing settings. It does not create a channel on Telegram or verify admin access.</p>
-<label for="fname">Public channel link or username</label><input id="fname" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off">
+<div class="setup-source-layout"><div><label for="fname">Public channel link or username</label><input id="fname" maxlength="150" placeholder="https://t.me/MyElectronicsDeals" autocomplete="off">
 <label class="checkline"><input id="channelready" type="checkbox"> I created this Telegram channel and control it.</label>
 <label class="checkline"><input id="postingready" type="checkbox"> The bot/session account has permission to post there.</label>
-<details class="advanced"><summary>Advanced settings · sources, affiliate tag &amp; note</summary>
-<label class="checkline"><input type="checkbox" id="fall" checked onchange="toggleSrcs()"> Every main source (recommended; excludes Tricks-only sources)</label>
-<div class="srcs" id="fsrcs" style="display:none"></div>
+</div><aside id="fsourcepicker" class="source-picker"></aside></div>
+<details class="advanced"><summary>Affiliate settings &amp; note</summary>
 <label class="checkline"><input type="checkbox" id="ftag"> Include our Amazon tag (only after declaring this channel in Associates Central)</label>
 <p class="muted">Tag opt-in is OFF by default. Strict affiliate checks still apply; this setup does not verify commission eligibility.</p>
 <label for="fnote">Operator note</label><input id="fnote" maxlength="200" placeholder="Optional">
@@ -127,6 +128,7 @@ Channel candidates use saved dashboard settings, not proof that the running bot 
 <label for="editmode">Delivery category policy</label><select id="editmode" onchange="toggleEditMode()"><option value="strict">Strict selected categories</option><option value="all">Unrestricted — ALL categories</option></select>
 <div id="editcats" class="srcs"></div>
 <p class="muted">Strict mode requires at least one category. Mixed/unclear posts are withheld. Edits to an already-active route apply only after an approved restart; its current policy remains active until then.</p>
+<div id="esourcepicker" class="source-picker"></div>
 <p id="editerror" role="alert"></p>
 <button id="editsave" onclick="saveShelf()">Save shelf</button><button class="ghost" onclick="document.getElementById('shelfeditor').close()">Cancel</button>
 </dialog>
@@ -144,6 +146,8 @@ let editingShelf = null;
 let batchReport = null;
 let batchGeneration = 0;
 let quickSaving = false;
+const sourceRows = new Map();
+let sourceLimit = 100;
 let setupStep = 1, setupDraft = null, setupSaving = false;
 let inspection = null, inspectGeneration = 0;
 const categoryDetails = {
@@ -203,20 +207,20 @@ async function refresh(){
     let rows = '';
     (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="6" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
-      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
+      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.length+' selected · '+t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
       + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
       + `<td class="muted">${escapeHTML(activation.channels?.[t.name]?.state||'awaiting bot')}<br>${escapeHTML(activation.channels?.[t.name]?.detail||'Not confirmed active for this saved config')}</td>`
-      + `<td><button class="ghost" data-action="edit" data-name="${escapeHTML(t.name)}">edit shelf</button> <button class="danger" data-action="delete" data-name="${escapeHTML(t.name)}">remove</button></td></tr>`; });
+      + `<td><button class="ghost" data-action="edit" data-name="${escapeHTML(t.name)}">edit sources &amp; category</button> <button class="danger" data-action="delete" data-name="${escapeHTML(t.name)}">remove</button></td></tr>`; });
     const savedNames=new Set((c.dashboard||[]).map(channel=>channel.name.toLowerCase()));
     for(const [name,state] of Object.entries(activation.channels||{})){
       if(state.state==='restart_required' && !savedNames.has(name.toLowerCase())) rows+=`<tr><td>@${escapeHTML(name)}</td><td><span class="badge warn">live-only</span></td><td colspan="4" class="muted">Removed from saved config; previous live route still runs</td><td class="muted">${escapeHTML(state.detail)}</td><td class="muted">Approved restart required</td></tr>`;
     }
     document.getElementById('channels').innerHTML = rows || '<tr><td colspan="8" class="muted">no channels yet</td></tr>';
-    const box = document.getElementById('fsrcs');
-    if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
-      box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${escapeHTML(s)}" style="width:auto"> ${escapeHTML(s)}</label>`).join(''); }
+    sourceLimit=c.source_limit||100;
+    for(const item of c.source_catalog || (c.sources||[]).map(key=>({key,title:'@'+key,main:true}))) sourceRows.set(item.key,item);
+    for(const prefix of ['q','f','e']) renderSourcePicker(prefix);
     const catbox = document.getElementById('fcats');
     if(!catbox.dataset.filled && c.categories && Object.keys(c.categories).length){ catbox.dataset.filled = '1';
       catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label class="category-tile"><input type="checkbox" value="${escapeHTML(k)}" onchange="setupCategoriesChanged()"><span class="tile-code">${escapeHTML(categoryDetails[k]?.[0]||'CT')}</span><strong>${escapeHTML(v)}</strong><small>${escapeHTML(categoryDetails[k]?.[1]||'Only matching category posts')}</small></label>`).join(''); }
@@ -234,8 +238,7 @@ async function refresh(){
   finally { refreshBusy=false; }
 }
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
-function toggleSrcs(){ document.getElementById('fsrcs').style.display =
-  document.getElementById('fall').checked ? 'none' : 'block'; }
+function toggleSrcs(){ sourceSummary('f'); }
 async function previewCategory(){
   const out = document.getElementById('cresult'); out.textContent = 'checking…';
   try {
@@ -262,6 +265,8 @@ function editShelf(name){
     input.type='checkbox'; input.value=key; input.style.width='auto'; input.checked=(channel.categories||[]).includes(key);
     label.append(input,document.createTextNode(' '+(categoryLabels[key]||key+' (unavailable)'))); box.append(label);
   }
+  renderSourcePicker('e',new Set((channel.sources||[]).filter(s=>s!=='*')));
+  document.getElementById('eall').checked=(channel.sources||[]).includes('*');sourceSummary('e');
   toggleEditMode(); const dialog=document.getElementById('shelfeditor'); if(!dialog.open) dialog.showModal();
 }
 function toggleEditMode(){
@@ -276,7 +281,8 @@ async function saveShelf(){
   if(!all && !categories.length){ error.textContent='Select at least one category for a strict shelf.'; return; }
   if(all && !confirm('This channel will accept ALL categories. Remove the shelf restriction?')) return;
   const button=document.getElementById('editsave'); button.disabled=true;
-  try { await api('PATCH','/api/channels/'+encodeURIComponent(editingShelf.name),{categories},editingShelf.revision);
+  try { const sources=selectedSourceValues('e');
+    await api('PATCH','/api/channels/'+encodeURIComponent(editingShelf.name),{categories,sources},editingShelf.revision);
     document.getElementById('shelfeditor').close(); editingShelf=null; await refresh(); }
   catch(e){ error.textContent=e.message; }
   finally { button.disabled=false; }
@@ -337,6 +343,89 @@ function exportBatch(){
   const url=URL.createObjectURL(blob), a=document.createElement('a');
   a.href=url; a.download='category-dry-run.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
+function sourcePickerMarkup(prefix){
+  return `<span class="eyebrow">SOURCE LIBRARY · MULTI-SELECT</span><h3>Choose where deals come from</h3>
+    <p class="muted">Search channel names, select multiple feeds, or add a Telegram source link.</p>
+    <label class="checkline"><input type="checkbox" id="${prefix}all" checked onchange="sourceSummary('${prefix}')"> Every main source (not Tricks-only or custom feeds)</label>
+    <label for="${prefix}search" class="muted">Find a source</label><input type="search" id="${prefix}search" placeholder="Search name or @username" oninput="filterSources('${prefix}')">
+    <div class="source-tools"><button type="button" class="ghost" onclick="selectVisibleSources('${prefix}')">Select visible</button><button type="button" class="ghost" onclick="clearSources('${prefix}')">Clear selections</button></div>
+    <p id="${prefix}count" class="source-count" aria-live="polite"></p><div id="${prefix}selected" class="source-selected"></div>
+    <div id="${prefix}srcs" class="source-list" aria-label="Available source channels"></div>
+    <p id="${prefix}empty" class="muted" hidden>No sources match. Change the search or paste a source link below.</p>
+    <details><summary>Add a source channel link</summary><label for="${prefix}links" class="muted">Public link, @username or private invite · one per line</label>
+    <textarea id="${prefix}links" rows="2" maxlength="12000" placeholder="https://t.me/SourceChannel"></textarea>
+    <button type="button" class="ghost" onclick="addSourceLinks('${prefix}')">Add &amp; select sources</button>
+    <p class="muted">Join using the same Telegram account the bot session uses. Access is checked on activation. No automatic joining, messages or history replay.</p></details>
+    <p id="${prefix}sourceerror" class="source-error" role="alert"></p>
+    <p class="muted">Titles appear after Telegram access checks; until then the exact handle/invite identifies the source. Saving does not prove access.</p>`;
+}
+function sourceChecks(prefix){return [...document.querySelectorAll('#'+prefix+'srcs input[type=checkbox]')];}
+function renderSourcePicker(prefix, selected=null){
+  if(!document.getElementById(prefix+'srcs')) return;
+  selected=selected||new Set(sourceChecks(prefix).filter(i=>i.checked).map(i=>i.value));
+  for(const key of selected) if(!sourceRows.has(key)) sourceRows.set(key,{key,title:key,main:false});
+  const box=document.getElementById(prefix+'srcs'), scrollTop=box.scrollTop;
+  const focused=box.contains(document.activeElement)?document.activeElement.value:null;
+  box.replaceChildren();
+  for(const item of [...sourceRows.values()].sort((a,b)=>a.title.localeCompare(b.title))){
+    const label=document.createElement('label');label.className='source-option';
+    const input=document.createElement('input');input.type='checkbox';input.value=item.key;input.checked=selected.has(item.key);
+    const text=document.createElement('span'),title=document.createElement('strong'),detail=document.createElement('small');
+    title.textContent=item.title;detail.textContent=item.key+' · '+(item.main?'Main feed':'Selected-only / custom feed');text.append(title,detail);label.append(input,text);box.append(label);
+  }
+  filterSources(prefix);sourceSummary(prefix);box.scrollTop=scrollTop;
+  if(focused) sourceChecks(prefix).find(input=>input.value===focused)?.focus({preventScroll:true});
+}
+function filterSources(prefix){
+  const query=document.getElementById(prefix+'search').value.trim().toLowerCase();let visible=0;
+  for(const input of sourceChecks(prefix)){
+    const label=input.closest('label');label.hidden=!label.textContent.toLowerCase().includes(query);if(!label.hidden) visible++;
+  }
+  document.getElementById(prefix+'empty').hidden=visible>0;
+}
+function sourceSummary(prefix){
+  const all=document.getElementById(prefix+'all').checked, checked=sourceChecks(prefix).filter(i=>i.checked);
+  document.getElementById(prefix+'count').textContent=(all?'Every main source':checked.length+' selected')+' · '+sourceRows.size+' available';
+  const chips=document.getElementById(prefix+'selected');chips.replaceChildren();
+  if(!all) for(const input of checked){const button=document.createElement('button');button.type='button';button.textContent=(sourceRows.get(input.value)?.title||input.value)+' ×';button.setAttribute('aria-label','Remove '+input.value);button.onclick=()=>{input.checked=false;sourceSummary(prefix);};chips.append(button);}
+}
+function selectedSourceValues(prefix){
+  const pending=document.getElementById(prefix+'links');
+  if(pending.value.trim()){
+    addSourceLinks(prefix);
+    if(pending.value.trim())throw new Error(document.getElementById(prefix+'sourceerror').textContent||'Fix the pasted source link before saving.');
+  }
+  if(document.getElementById(prefix+'all').checked) return ['*'];
+  const selected=sourceChecks(prefix).filter(i=>i.checked).map(i=>i.value);
+  if(!selected.length) throw new Error('Choose at least one source, or enable Every main source.');
+  if(selected.length>sourceLimit) throw new Error('Select at most '+sourceLimit+' sources. Nothing was truncated.');
+  return selected;
+}
+function clearSources(prefix){setupDraft=null;document.getElementById(prefix+'all').checked=false;for(const input of sourceChecks(prefix))input.checked=false;sourceSummary(prefix);}
+function selectVisibleSources(prefix){setupDraft=null;document.getElementById(prefix+'all').checked=false;for(const input of sourceChecks(prefix))if(!input.closest('label').hidden)input.checked=true;sourceSummary(prefix);}
+function normalizeSourceInput(value){
+  const raw=value.trim(), invite=raw.match(/^(?:https?:\/\/)?(?:t\.me|telegram\.me|telegram\.org)\/(?:\+|joinchat\/)([A-Za-z0-9_-]+)\/*$/);
+  const key=invite?'https://t.me/+'+invite[1]:publicChannelName(raw);
+  for(const existing of sourceRows.keys()){
+    if(invite && existing.replace('https://telegram.me/+','https://t.me/+')===key) return existing;
+    if(!invite && existing.toLowerCase()===key.toLowerCase()) return existing;
+  }
+  return key;
+}
+function addSourceLinks(prefix){setupDraft=null;
+  const error=document.getElementById(prefix+'sourceerror');error.textContent='';
+  try{
+    const raw=document.getElementById(prefix+'links').value.trim();if(!raw)throw new Error('Paste at least one source link.');
+    const added=[...new Map(raw.split(/[\s,]+/).map(normalizeSourceInput).map(key=>[key.includes('/+')?key:key.toLowerCase(),key])).values()];
+    const selected=new Set(sourceChecks(prefix).filter(i=>i.checked).map(i=>i.value));
+    if(document.getElementById(prefix+'all').checked)for(const item of sourceRows.values())if(item.main)selected.add(item.key);
+    added.forEach(key=>selected.add(key));if(selected.size>sourceLimit)throw new Error('Select at most '+sourceLimit+' sources. Nothing was added.');
+    for(const key of added)if(!sourceRows.has(key))sourceRows.set(key,{key,title:key.startsWith('https:')?'Private source · …'+key.slice(-6):'@'+key,main:false});
+    document.getElementById(prefix+'all').checked=false;renderSourcePicker(prefix,selected);document.getElementById(prefix+'links').value='';
+    error.textContent='Selected '+added.length+' source(s). Save this channel to request access checks.';
+  }catch(e){error.textContent=e.message;}
+}
+
 function publicChannelName(value){
   let text=String(value||'').trim();
   if(/^(?:t\.me|telegram\.me|www\.t\.me)\//i.test(text)) text='https://'+text;
@@ -358,7 +447,7 @@ async function quickSave(){
   if(!configRevision){out.textContent='Connect/refresh the dashboard first.';return;}
   quickSaving=true;document.getElementById('quicksave').disabled=true;
   try{
-    const result=await api('POST','/api/channels',{name,sources:['*'],categories:[category],enabled:true,amazon_tag:false,note:''},configRevision);
+    const result=await api('POST','/api/channels',{name,sources:selectedSourceValues('q'),categories:[category],enabled:true,amazon_tag:false,note:''},configRevision);
     out.textContent='Saved @'+result.channel.name+'. '+(result.activation?.message||'Waiting for bot activation checks.');
     document.getElementById('quicklink').value='';await refresh();
   }catch(e){out.textContent=e.message+' Your input is preserved.';}
@@ -388,7 +477,7 @@ function setupNext(){
 function readSetup(){
   const name=publicChannelName(document.getElementById('fname').value);
   const categories=selectedCategories();
-  const sources=document.getElementById('fall').checked ? ['*'] : [...document.querySelectorAll('#fsrcs input:checked')].map(i=>i.value);
+  const sources=selectedSourceValues('f');
   if(!categories.length) throw new Error('Select at least one category.');
   if(!/^[A-Za-z0-9_]{5,64}$/.test(name)) throw new Error('Enter a Telegram username: 5–64 letters, digits or underscores. Not an invite link.');
   if(!document.getElementById('channelready').checked || !document.getElementById('postingready').checked) throw new Error('Confirm that you created the channel and granted posting permission. These checks are your confirmation, not automatic verification.');
@@ -474,6 +563,11 @@ async function addChannel(){
     setupSaving=false; setSetupStep(1); await refresh();
   }catch(e){ msg.textContent=e.message+' Your form is preserved. Refresh, review, and try again.'; setupDraft=null; }
   finally{ setupSaving=false; for(const [node,disabled] of controls) node.disabled=disabled; button.disabled=false; button.textContent='Save channel configuration'; }
+}
+for(const prefix of ['q','f','e']){
+  document.getElementById(prefix+'sourcepicker').innerHTML=sourcePickerMarkup(prefix);
+  document.getElementById(prefix+'srcs').addEventListener('change',()=>{setupDraft=null;document.getElementById(prefix+'all').checked=false;sourceSummary(prefix);});
+  document.getElementById(prefix+'all').addEventListener('change',()=>{setupDraft=null;});
 }
 for(const id of ['ilink','ititle','iresolved']) document.getElementById(id).addEventListener('input',invalidateInspection);
 for(const id of ['fname','channelready','postingready','fall','ftag','fnote','fsrcs']) document.getElementById(id).addEventListener('input',()=>{setupDraft=null;});

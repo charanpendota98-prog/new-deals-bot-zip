@@ -127,6 +127,8 @@ run 'duplicate handling' "$PYTHON" test_duplicate_sim.py
 run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
 run 'link category inspector' "$PYTHON" test_link_inspector.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
+run 'channel-local source setup' "$PYTHON" test_source_setup.py
+run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py

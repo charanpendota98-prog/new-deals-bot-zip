@@ -13,7 +13,7 @@ cd "$APP_DIR"
 
 echo "[1/9] Checking uploaded files..."
 [[ -f "$NEW_FILE" ]] || { echo "ERROR: main_bot_new.py not found"; exit 1; }
-for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py; do
+for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py source_catalog.json; do
   [[ -f "$APP_DIR/$helper" ]] || { echo "ERROR: $helper missing; upload it beside main_bot_new.py"; exit 1; }
 done
 [[ -f "$APP_DIR/category_rules.json" ]] || { echo "ERROR: category_rules.json missing; upload it beside main_bot_new.py"; exit 1; }
