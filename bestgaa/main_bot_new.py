@@ -334,6 +334,16 @@ except ValueError:
 # real: a token one-rupee / rounding wobble between two captions of the same
 # deal must not repost it (same-product-multiple-times, 2026-10-12).
 SAME_PRODUCT_PRICE_DROP_FRACTION = 0.05
+# USER RULE (2026-10-12): "1 hour lopala malli post cheyoddu" - inside this
+# cool-down a same-product repeat is ALWAYS skipped, even a cheaper copy. The
+# same deal races across sources within minutes wearing different captions and
+# slightly different figures; most of that "better" is caption noise, not a new
+# offer. Past the cool-down (but inside SAME_PRODUCT_SKIP_SECONDS) a genuinely
+# better copy still posts; past the window anything posts.
+SAME_PRODUCT_COOLDOWN_SECONDS = 3600
+# Cap on exact link-identity keys per post (below): a noisy post cannot spray
+# the ledger, and the headline key always stays first.
+SAME_PRODUCT_MAX_LINK_KEYS = 7
 # User rule (round 7, restated round 10): a post carries what the SOURCE wrote,
 # and nothing we invent. Our own "join the loot family" footer and the folder
 # link are therefore OFF by default; set ADD_OUR_CHANNEL_FOOTER=true to put them
@@ -5111,29 +5121,40 @@ class Store:
                                     (key, msg_id)).fetchone()
         return int(row[0]) if row else None
 
-    async def product_already_posted(self, target: str, signature: str,
+    async def product_already_posted(self, target: str, signatures: str | list[str] | tuple[str, ...],
                                      price: int | None, discount: int | None) -> tuple[bool, str]:
         """Has THIS channel already carried this product inside the skip window?
 
-        Returns (skip, why). A copy that is MEANINGFULLY better - a real price
-        drop, or a deeper discount at no higher price - is never skipped,
-        because on a deals channel a cheaper repeat of the same product is a
-        real new post. But "better on paper" is not better: a one-rupee drop
-        and a bigger claimed percent at the same (or higher) price are the
-        same deal wearing different numbers, and reposting them is exactly the
-        "same product multiple times" the user refused (2026-10-12).
+        Returns (skip, why). signatures is the headline key plus the exact link
+        keys from text_identity_keys: ANY match means the same product, however
+        differently the new caption is worded. Inside the 1-hour cool-down the
+        repeat is ALWAYS skipped, even a cheaper copy (user rule 2026-10-12:
+        the same deal races across sources within minutes, and most of that
+        "better" is caption noise). Past the cool-down a MEANINGFULLY better
+        copy - a real price drop, or a deeper discount at a lower price - still
+        posts; "better on paper" (a token drop, a bigger claimed percent at the
+        same or higher price) is the same deal wearing different numbers.
         """
-        if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
+        keys = [signatures] if isinstance(signatures, str) else list(signatures or [])
+        keys = [key for key in dict.fromkeys(keys) if key]
+        if not keys or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return False, ""
         async with self.lock:
-            row = self.conn.execute(
-                "SELECT price, discount, posted_at FROM posted_products "
-                "WHERE signature=? AND target=? AND posted_at>=?",
-                (signature, target, time.time() - SAME_PRODUCT_SKIP_SECONDS),
-            ).fetchone()
-        if not row:
+            placeholders = ",".join("?" for _ in keys)
+            rows = self.conn.execute(
+                "SELECT signature, price, discount, posted_at FROM posted_products "
+                f"WHERE signature IN ({placeholders}) AND target=? AND posted_at>=? "
+                "ORDER BY posted_at DESC",
+                (*keys, target, time.time() - SAME_PRODUCT_SKIP_SECONDS),
+            ).fetchall()
+        if not rows:
             return False, ""
-        last_price, last_discount, posted_at = row[0], row[1], row[2]
+        last_price, last_discount, posted_at = rows[0]["price"], rows[0]["discount"], rows[0]["posted_at"]
+        age_seconds = time.time() - (posted_at or 0)
+        if age_seconds < SAME_PRODUCT_COOLDOWN_SECONDS:
+            age_mins = max(1, int(age_seconds // 60))
+            return True, (f"same product posted to this channel {age_mins}m ago "
+                          f"(1h cool-down, {len(rows)} key{'s' if len(rows) != 1 else ''} matched)")
         # "Better" has to be MEANINGFULLY better. The discount is re-derived from
         # the post text, and a source that spells out an MRP can read one point
         # higher than the same deal written without it - a 1-point gap is noise,
@@ -5159,23 +5180,76 @@ class Store:
         if better_price or better_discount:
             return False, (f"better copy (₹{price or 0} / {discount or 0}% off vs "
                            f"₹{last_price or 0} / {last_discount or 0}% off)")
-        age_hours = max(1, int((time.time() - posted_at) // 3600))
+        age_hours = max(1, int(age_seconds // 3600))
         return True, f"same product posted to this channel {age_hours}h ago"
 
     async def mark_product_posted(self, target: str, signature: str,
-                                  price: int | None, discount: int | None) -> None:
+                                  price: int | None, discount: int | None,
+                                  extra_signatures: Iterable[str] = ()) -> None:
+        """Remember a posted product under its headline key plus exact link keys.
+
+        extra_signatures carries the exact link identities behind the post's
+        URLs (merchant PIDs, same-link hashes from text_identity_keys): the
+        same product wearing a different caption still matches one of them, so
+        a reworded repeat cannot slip past the headline key. Every key carries
+        the same figures, so the better-copy comparison never depends on which
+        key happened to match.
+        """
+        keys = [signature] + [key for key in dict.fromkeys(extra_signatures or ()) if key]
         if not signature or SAME_PRODUCT_SKIP_SECONDS <= 0:
             return
         async with self.lock:
-            self.conn.execute(
-                "INSERT OR REPLACE INTO posted_products VALUES(?,?,?,?,?)",
-                (signature, target, price, discount, time.time()),
-            )
+            now = time.time()
+            for key in keys:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO posted_products VALUES(?,?,?,?,?)",
+                    (key, target, price, discount, now),
+                )
             self.conn.execute(
                 "DELETE FROM posted_products WHERE posted_at<?",
-                (time.time() - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
+                (now - max(SAME_PRODUCT_SKIP_SECONDS, 3 * 24 * 3600),),
             )
-            await self._commit()
+            await self._commit(patient=True)
+
+    async def text_identity_keys(self, text: str) -> list[str]:
+        """Exact product keys behind the URLs a post carries - no guessing.
+
+        A merchant product id read straight off a URL (ASIN, PID, ...) or off
+        the cached resolved page behind an affiliate short link, plus the
+        same-link hash for URLs with no readable id. Two captions that share
+        one of these ARE the same product, however differently they are
+        worded - this is what catches the cross-source repeat whose headline
+        the word-identity missed. Share/invite/service hosts (t.me, wa.me,
+        social, aggregators) are NEVER keys: the family footer link rides on
+        every post, and keying it would "match" the whole channel.
+        """
+        keys: list[str] = []
+        seen: set[str] = set()
+        urls = list(dict.fromkeys(clean_url(u) for u in URL_RE.findall(text or "")))
+        skip_hosts = NON_STORE_DOMAINS | NON_SHOP_DOMAINS | SERVICE_OFFER_DOMAINS | {
+            "wa.me", "telegram.me",
+        }
+        async with self.lock:
+            for url in urls[:12]:
+                host = (urlparse(url).hostname or "").lower()
+                if not host or in_domains(host, skip_hosts):
+                    continue
+                candidates = [url]
+                with contextlib.suppress(sqlite3.OperationalError):
+                    row = self.conn.execute(
+                        "SELECT resolved_url FROM link_cache WHERE affiliate_url=? LIMIT 1",
+                        (url,),
+                    ).fetchone()
+                    if row and row[0]:
+                        candidates.append(clean_url(row[0]))
+                for candidate in candidates:
+                    key = product_key(candidate)
+                    if key and key not in seen:
+                        seen.add(key)
+                        keys.append(key)
+                        if len(keys) >= SAME_PRODUCT_MAX_LINK_KEYS:
+                            return keys
+        return keys
 
     async def seen_message(self, chat_id: int, msg_id: int) -> bool:
         """True when this exact source message is already known to the queue."""
@@ -5838,6 +5912,42 @@ class Store:
                     return False
         return True
 
+    async def presend_links_verified(self, text: str) -> tuple[bool, str]:
+        """Last line of defense before a strict post goes out: every URL in the
+        FINAL per-target text must be ours (native owned attribution or a
+        verified converter/shortener proof) or one of our own family links.
+        Returns (True, "") or (False, offending_url). This mirrors the strict
+        branch of verify_generated_text exactly - same queries, same proof
+        helper - but runs on the text as it will be sent, after the per-target
+        rewrites (programme-safe copy, retag, disclosure). A source short
+        link, a foreign tag, or a clean merchant page that somehow survived
+        rendering is stopped here instead of posted: their links never reach a
+        channel and no commission is silently missed (user rule 2026-10-12).
+        """
+        urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+        if not urls:
+            return True, ""
+        family = {clean_url(OUR_FOLDER_LINK),
+                  *(clean_url(x) for x in OUR_MAIN_CHANNEL_LINKS)}
+        async with self.lock:
+            for url in urls:
+                if url in family:
+                    continue
+                if self.has_native_owned_attribution(url):
+                    continue
+                row = self.conn.execute(
+                    "SELECT affiliate_url,resolved_url FROM link_cache "
+                    "WHERE affiliate_url=? ORDER BY created_at DESC LIMIT 1", (url,),
+                ).fetchone()
+                if row:
+                    owned = self._strict_cache_pair_is_owned(
+                        row["affiliate_url"], row["resolved_url"] or "")
+                else:
+                    owned = self._strict_cache_pair_is_owned(url, "")
+                if not owned:
+                    return False, url
+        return True, ""
+
     async def preview_allowed(self, text: str) -> bool:
         """Keep Amazon product previews; suppress Flipkart/Myntra generic cards and wasteful list previews (user rule 2026-09-04)."""
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
@@ -6072,7 +6182,7 @@ class Store:
                 "UPDATE deliveries SET chunks_sent=MAX(chunks_sent,?) WHERE queue_id=? AND target=?",
                 (chunks_sent, queue_id, target),
             )
-            await self._commit()
+            await self._commit(patient=True)
 
     async def delivery(self, queue_id: int, target: str, ok: bool, error: str = "") -> None:
         async with self.lock:
@@ -8790,7 +8900,7 @@ async def render_trick_promo(row: sqlite3.Row, msg, raw_text: str):
 
 
 async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
-                                   product_sig: str | None, price: int | None,
+                                   identity_keys: list, price: int | None,
                                    discount: int | None) -> None:
     """Retry the ledger write for an already-sent target - never the send.
 
@@ -8808,8 +8918,9 @@ async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
         if target == SHOPPING_TARGET:
             with contextlib.suppress(Exception):
                 await store.note_shopping_sent()
-        if product_sig:
-            await store.mark_product_posted(target, product_sig, price, discount)
+        if identity_keys:
+            await store.mark_product_posted(target, identity_keys[0], price, discount,
+                                            identity_keys[1:])
     except Exception as exc:
         log.critical(
             "SETTLE STILL FAILING | queue=%s target=%s (%s): the post is already out - "
@@ -8884,6 +8995,14 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         # strictly better copy still posts, so coverage is never traded away.
         product_sig = product_signature(rendered)
         target_discount = parse_discount(rendered, price)
+        # The repeat guard matches ANY of these: the headline key (the
+        # product's own words) plus the exact link identities behind the
+        # post's URLs. The same product wearing a different caption still
+        # shares a link key, so a reworded cross-source repeat cannot slip
+        # past the headline (user rule 2026-10-12).
+        identity_keys = [product_sig] if product_sig else []
+        identity_keys += [key for key in await store.text_identity_keys(rendered)
+                          if key not in identity_keys]
         if msg and getattr(msg, "media", None) and not isinstance(msg.media, (MessageMediaWebPage, MessageMediaInvoice)):
             if media_is_too_large(msg):
                 log.info("MEDIA SKIPPED | queue=%s oversized media; posting the deal as text",
@@ -8984,7 +9103,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # this repeats until the write lands; each failing pass idles
                 # instead of hot-looping, and the post is never doubled.
                 await settle_unrecorded_target(row["id"], target, unrecorded.get("premium"),
-                                               product_sig, price, target_discount)
+                                               identity_keys, price, target_discount)
                 successes += 1
                 continue
             premium_claimed = False
@@ -9025,9 +9144,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
             # differ between two sources that link the same product through
             # different shorteners, so the product's own words settle it here.
             target_skip_reason = ""
-            if row["source"] not in TRICKS_SOURCES and product_sig:
+            if row["source"] not in TRICKS_SOURCES and identity_keys:
                 duplicate, why = await store.product_already_posted(
-                    target, product_sig, price, target_discount)
+                    target, identity_keys, price, target_discount)
                 if duplicate:
                     target_skip_reason = why
                 elif why:
@@ -9172,6 +9291,18 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # loot-channel folder, which is precisely what a marketplace
                 # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
+            if STRICT_OUR_LINKS:
+                # Their links never post, our commission is never missed: the
+                # final text is re-verified link by link right before the send.
+                links_ok, bad_link = await store.presend_links_verified(target_text)
+                if not links_ok:
+                    log.warning("PRESEND LINK GUARD | queue=%s target=%s: refusing to post "
+                                "an unverified link (%s) - the deal stays back so no foreign "
+                                "link and no missed commission can reach the channel",
+                                row["id"], target, bad_link[:80])
+                    await store.delivery_skipped(
+                        row["id"], target, f"unverified link at pre-send: {bad_link[:120]}")
+                    continue
             # A forwarded deal photo is nearly always a marketplace screenshot -
             # the "images (screenshots/screen recordings)" the rejection cited.
             # The review channel goes text-only; every other channel keeps its
@@ -9199,9 +9330,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     if target == SHOPPING_TARGET:
                         with contextlib.suppress(Exception):
                             await store.note_shopping_sent()
-                    if product_sig:
-                        await store.mark_product_posted(target, product_sig, price,
-                                                        target_discount)
+                    if identity_keys:
+                        await store.mark_product_posted(target, identity_keys[0], price,
+                                                        target_discount, identity_keys[1:])
                 except Exception as exc:
                     log.critical(
                         "SETTLE FAILED | queue=%s target=%s: sent to Telegram but the "

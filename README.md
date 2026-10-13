@@ -445,6 +445,19 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   strict-all dedup keys on verified product identity only and skips a post with
   no trustworthy identity as a unit, and only a real send blocks an edit
   revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
+- **Same-product repeats, advanced guard (2026-10-12, user rule "1 hour lopala
+  malli post cheyoddu"):** the per-channel repeat guard now matches ANY of the
+  post's identity keys - the headline key plus the exact link identities
+  behind its URLs (merchant PIDs, same-link hashes) - so the same product in
+  different words across sources still matches and waits. Inside the 1-hour
+  cool-down the repeat is ALWAYS skipped, even a cheaper copy; past it a
+  MEANINGFULLY better copy still posts (a real ≥5% price drop, or a deeper
+  discount at a lower price - token wobbles, same-price MRP-math percent
+  bumps, and higher prices never repost). Past the 24h window a genuine
+  re-offer posts again. Separately, strict mode re-verifies EVERY link of the
+  final per-target text right before the send (`PRESEND LINK GUARD`): a source
+  short link, foreign tag, or clean merchant page stops that target instead of
+  posting, so their links never reach a channel and no commission is missed.
 - **Routing** (`ops/LATEST_ROUTING_NOTES.txt`): per-target source allowlists, dedicated LootzoneTricks sources, Premium target with ≥85% OFF / ≤₹99 / ₹100–499 ≥70% filter, IST posting windows.
 - **WhatsApp media fix** (`ops/WHATSAPP_MEDIA_FIX_NOTES.txt`): works around the Baileys 7.0.0-rc14 newsletter-media bug (issue #2199) with a custom `/newsletter/newsletter-*` upload path + `server_thumb_gen=1`, ack watching so "sent but invisible" can't happen silently, text-only fallback after 3 failed media attempts. Kill switch: `NEWSLETTER_MEDIA_FIX=false`.
 - **Queue liveness:** mature warm-up tier pinned by default (`WA_WARMUP_DONE=true`), plausibility ceiling on `nextAllowedAt`, per-step timeouts, connection watchdog, heartbeat logs.

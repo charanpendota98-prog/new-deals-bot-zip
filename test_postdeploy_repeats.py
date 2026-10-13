@@ -413,6 +413,15 @@ class MapAffiliate:
     async def shorten_long_urls_in_text(self, rendered):
         return rendered
 
+    async def link_not_broken(self, url):
+        return True
+
+    async def rendered_links_not_broken(self, text):
+        return True
+
+    async def cache_link(self, *args, **kwargs):
+        return None
+
 
 async def _queue_row(store, text, msg_id):
     store.conn.execute(
@@ -617,6 +626,12 @@ def test_better_copy_bar_is_meaningful():
                     "LootZoneIndia11", sig, price, discount)
                 return skip
 
+            # Inside the 1h cool-down EVERYTHING waits - even a real drop.
+            check("cool-down: same figures wait", await skipped(36990, 50))
+            check("cool-down: even a real 9.5% drop waits", await skipped(33490, 54))
+            # Past the cool-down the meaningful-better bar applies.
+            store.conn.execute("UPDATE posted_products SET posted_at=posted_at-7200")
+            store.conn.commit()
             check("same product, same figures: skipped", await skipped(36990, 50))
             check("a one-rupee drop is not news: skipped", await skipped(36989, 50))
             check("a 1.3% caption wobble is not news: skipped", await skipped(36500, 50))
@@ -630,10 +645,171 @@ def test_better_copy_bar_is_meaningful():
             other, _ = await store.product_already_posted("PowerLoots1", sig, 36990, 50)
             check("a channel that never carried it still posts", not other)
             await store.mark_product_posted("LootZoneIndia11", "SIG:noprice-9", None, None)
+            store.conn.execute("UPDATE posted_products SET posted_at=posted_at-7200 "
+                               "WHERE signature='SIG:noprice-9'")
+            store.conn.commit()
             priced, _ = await store.product_already_posted(
                 "LootZoneIndia11", "SIG:noprice-9", 999, 10)
             check("a price where none was known is still news", not priced)
         finally:
+            store.conn.close()
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# T10: exact link keys catch the same product in different words
+# ---------------------------------------------------------------------------
+def test_link_keys_catch_reworded_repeats():
+    print("\n== T10: a repeat whose headline missed still shares a link key ==")
+
+    async def run():
+        store = bot.Store(Path(tempfile.mktemp(suffix="-repeats-t10.sqlite3")))
+        try:
+            pid_url = "https://www.flipkart.com/boat-airdopes-141/p/itmABCDEF123?pid=XYZ987654"
+            pid_key = "PID:XYZ987654"
+            assert bot.product_key(pid_url) == pid_key
+            keys = await store.text_identity_keys(
+                f"boAt Airdopes 141 {R}999\n{pid_url}\n{bot.OUR_FOLDER_LINK}\n"
+                "https://wa.me/?text=share-this-deal")
+            check("a merchant PID behind the URL becomes an identity key",
+                  pid_key in keys, str(keys))
+            check("share/invite hosts are never identity keys",
+                  not any("t.me" in key or "wa.me" in key for key in keys)
+                  and len(keys) <= bot.SAME_PRODUCT_MAX_LINK_KEYS, str(keys))
+
+            # ANY key match skips: the headline missed, the link key caught it.
+            await store.mark_product_posted("LootZoneIndia11", "SIG:headline-A-10",
+                                            999, 60, [pid_key])
+            skip, why = await store.product_already_posted(
+                "LootZoneIndia11", ["SIG:headline-B-10", pid_key], 999, 60)
+            check("a different headline with the same link key is skipped",
+                  skip and "cool-down" in why, why)
+            post, _ = await store.product_already_posted(
+                "LootZoneIndia11", ["SIG:headline-B-10"], 999, 60)
+            check("without the shared key it would post (the key did it)", not post)
+
+            # End to end: a stale-name repost of the same product link waits.
+            caption_a = f"boAt Airdopes 141 TWS Earbuds {R}999 60% OFF\n{pid_url}"
+            caption_b = (f"boAt Rockerz 255 Pro+ Neckband {R}999 60% OFF\n{pid_url}\n"
+                         "Price drop alert, grab fast!")
+            sig_a, sig_b = bot.product_signature(caption_a), bot.product_signature(caption_b)
+            check("the two headlines read as different products (test is meaningful)",
+                  sig_a and sig_b and sig_a != sig_b, f"{sig_a} vs {sig_b}")
+            old_store = bot.store
+            live = bot.Store(Path(tempfile.mktemp(suffix="-repeats-t10b.sqlite3")))
+            bot.store = live
+            try:
+                # Raw inserts: enqueue() would merge the two same-product rows
+                # via swap_in_better_copy before the send-time guard is reached.
+                # Two rows also arrive in real life (second lands after the
+                # first is claimed), and that is the layer pinned here.
+                await _queue_row(live, caption_a, 401)
+                row_a = live.conn.execute("SELECT * FROM queue ORDER BY id DESC LIMIT 1").fetchone()
+                live.conn.execute("UPDATE queue SET chat_id=?, msg_id=? WHERE id=?",
+                                  (-1009401, 401, row_a["id"]))
+                await _queue_row(live, caption_b, 402)
+                row_b = live.conn.execute("SELECT * FROM queue ORDER BY id DESC LIMIT 1").fetchone()
+                live.conn.execute("UPDATE queue SET chat_id=?, msg_id=? WHERE id=?",
+                                  (-1009402, 402, row_b["id"]))
+                live.conn.commit()
+                client = JobClient({(-1009401, 401): JobMsg(caption_a, 401),
+                                    (-1009402, 402): JobMsg(caption_b, 402)})
+                tmap = {name: Ent(name) for name in
+                        set(bot.SOURCE_TO_TARGETS["dealsvelocity"]) | {"LootZoneIndia11"}}
+                affiliate = PassthroughAffiliate(live)
+                await bot.process_job(client, affiliate, tmap, await live.claim_job())
+                first_sends = len(client.sends)
+                await bot.process_job(client, affiliate, tmap, await live.claim_job())
+                check("the same-link repost sends nothing more",
+                      first_sends >= 1 and len(client.sends) == first_sends,
+                      f"sends={len(client.sends)}")
+            finally:
+                bot.store = old_store
+                live.conn.close()
+
+            # Past the 24h window a genuine re-offer posts again.
+            store.conn.execute("UPDATE posted_products SET posted_at=posted_at-90000")
+            store.conn.commit()
+            post, _ = await store.product_already_posted(
+                "LootZoneIndia11", ["SIG:headline-B-10", pid_key], 999, 60)
+            check("past the window the re-offer posts again", not post)
+        finally:
+            store.conn.close()
+    asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# T11: strict pre-send link guard - their links never post
+# ---------------------------------------------------------------------------
+def test_presend_link_guard():
+    print("\n== T11: final text re-verified link by link before a strict send ==")
+
+    async def run():
+        store = bot.Store(Path(tempfile.mktemp(suffix="-repeats-t11.sqlite3")))
+        saved = (bot.store, bot.STRICT_OUR_LINKS, bot.OUR_TAG, bot.OUR_EK_ID)
+        bot.store, bot.STRICT_OUR_LINKS, bot.OUR_TAG, bot.OUR_EK_ID = (
+            store, True, "mama086-21", "5478322")
+        try:
+            owned_short = "https://ekaro.in/enkr-presend-11"
+            resolved = "https://www.flipkart.com/boat-airdopes-141/p/itmABCDEF123?pid=XYZ987654"
+            now = time.time()
+            store.conn.execute(
+                "INSERT INTO link_cache VALUES(?,?,?,?,?)",
+                ("https://bitli.in/presend-src-11", owned_short, resolved,
+                 "PID:XYZ987654", now))
+            store.conn.execute(
+                "INSERT INTO owned_link_proofs(affiliate_url,destination_url,proof_type,"
+                "publisher_id,created_at) VALUES(?,?,?,?,?)",
+                (owned_short, owned_short, "earnkaro_api", "5478322", now))
+            store.conn.commit()
+
+            ok, _ = await store.presend_links_verified(f"Deal {R}999\n{owned_short}")
+            check("our proven short link passes", ok)
+            ok, _ = await store.presend_links_verified(
+                f"Deal {R}999\nhttps://www.amazon.in/dp/B0GUARD0001?tag=mama086-21")
+            check("our tagged Amazon link passes", ok)
+            ok, _ = await store.presend_links_verified(
+                f"Deal {R}999\n{owned_short}\n{bot.OUR_FOLDER_LINK}")
+            check("our own family link alongside passes", ok)
+            ok, bad = await store.presend_links_verified(
+                f"Deal {R}999\n{owned_short}\nhttps://bitli.in/their-link-11")
+            check("a source short link stops the post",
+                  not ok and bad == "https://bitli.in/their-link-11", bad)
+            ok, bad = await store.presend_links_verified(
+                "Deal\nhttps://www.amazon.in/dp/B0GUARD0001?tag=someoneelse-21")
+            check("a foreign Amazon tag stops the post", not ok, bad)
+            ok, bad = await store.presend_links_verified(f"Deal {R}999\n{resolved}")
+            check("a clean merchant page with no proof stops the post", not ok, bad)
+            ok, _ = await store.presend_links_verified("Just words, no links at all")
+            check("linkless text has nothing to leak: passes", ok)
+
+            # Wiring: a guard failure skips the target instead of posting.
+            text = f"boAt Airdopes 141 TWS Earbuds {R}999 60% OFF\nhttps://bitli.in/presend-src-11"
+            row = await _queue_row(store, text, 511)
+            client = JobClient({(111, 511): JobMsg(text, 511)})
+            tmap = {"LootZoneIndia11": Ent("LootZoneIndia11"),
+                    "PowerLoots1": Ent("PowerLoots1")}
+            affiliate = MapAffiliate(
+                {"https://bitli.in/presend-src-11": resolved},
+                {"https://bitli.in/presend-src-11": bot.LinkResult(
+                    "https://bitli.in/presend-src-11", resolved, owned_short, "PID:XYZ987654")})
+            real_guard = store.presend_links_verified
+
+            async def failing_guard(_text):
+                return False, "https://evil.invalid/x"
+
+            store.presend_links_verified = failing_guard
+            await bot.process_job(client, affiliate, tmap, row)
+            check("a guard failure posts nothing",
+                  len(client.sends) == 0, f"sends={len(client.sends)}")
+            states = [tuple(r) for r in store.conn.execute(
+                "SELECT status,last_error FROM deliveries WHERE queue_id=?", (row["id"],))]
+            check("the guarded target is recorded skipped with the reason",
+                  bool(states) and all(status == "skipped" and "pre-send" in (err or "")
+                                        for status, err in states), str(states))
+            store.presend_links_verified = real_guard
+        finally:
+            bot.store, bot.STRICT_OUR_LINKS, bot.OUR_TAG, bot.OUR_EK_ID = saved
             store.conn.close()
     asyncio.run(run())
 
@@ -647,6 +823,8 @@ if __name__ == "__main__":
     test_revive_ignores_skip_rows()
     test_failed_settle_never_resends()
     test_better_copy_bar_is_meaningful()
+    test_link_keys_catch_reworded_repeats()
+    test_presend_link_guard()
     print("\n" + ("POSTDEPLOY REPEAT TESTS: FAILURES: " + ", ".join(FAILS) if FAILS
                   else "test_postdeploy_repeats: all checks PASS"))
     sys.exit(1 if FAILS else 0)
