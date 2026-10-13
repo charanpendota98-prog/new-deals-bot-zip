@@ -68,6 +68,21 @@ def normalize_handle(name: str) -> str:
     return str(name or "").strip().lstrip("@").strip()
 
 
+def category_keys(raw) -> list[str]:
+    """Only an explicit empty list (or absent field) means unrestricted.
+
+    A malformed shelf must NEVER silently become an all-category channel.
+    Accept a single nonempty string for legacy hand-written configurations.
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if (not isinstance(raw, list) or len(raw) > 20
+            or any(not isinstance(key, str) or not CATEGORY_KEY_RE.fullmatch(key.strip().lower())
+                   for key in raw)):
+        raise ValueError("categories must be a list of up to 20 nonempty category keys; [] means all")
+    return list(dict.fromkeys(key.strip().lower() for key in raw))
+
+
 def load_channels(path: Path | None = None) -> dict:
     """Read channels.json, tolerantly: missing/corrupt/legacy means empty."""
     target = Path(path) if path else channels_json_path()
@@ -84,9 +99,12 @@ def load_channels(path: Path | None = None) -> dict:
     channels = []
     for entry in data["channels"]:
         if isinstance(entry, dict) and normalize_handle(entry.get("name", "")):
-            raw_cats = entry.get("categories") or []
-            if isinstance(raw_cats, str):
-                raw_cats = [raw_cats]
+            try:
+                raw_cats = category_keys(entry.get("categories", []))
+            except ValueError:
+                continue
+            if not isinstance(entry.get("sources", []), list):
+                continue
             channels.append({
                 "name": normalize_handle(entry.get("name", "")),
                 "sources": [str(s).strip() for s in (entry.get("sources") or [])
@@ -141,13 +159,19 @@ def validate_channel(entry: dict, known_sources: set[str],
     """
     errors: list[str] = []
     warnings: list[str] = []
+    if not isinstance(entry, dict):
+        return {}, ["channel must be a JSON object"], []
     name = normalize_handle((entry or {}).get("name", ""))
     if not HANDLE_RE.match(name):
         errors.append("name must be a Telegram username: 5-64 letters/digits/_ (no @, no invite link)")
     known_lower = {str(s).lower() for s in (known_sources or set())}
     if name.lower() in {str(t).lower() for t in (existing_targets or set())}:
         errors.append(f"@{name} is already a channel - dashboard entries must be new names")
-    sources = [str(s).strip() for s in ((entry or {}).get("sources") or []) if str(s).strip()]
+    raw_sources = entry.get("sources", [])
+    if not isinstance(raw_sources, list) or any(not isinstance(s, str) for s in raw_sources):
+        errors.append("sources must be a list of strings")
+        raw_sources = []
+    sources = [s.strip() for s in raw_sources if s.strip()]
     if not sources:
         errors.append("pick at least one source (or '*' for every main source)")
     elif sources != ["*"]:
@@ -159,9 +183,11 @@ def validate_channel(entry: dict, known_sources: set[str],
                 errors.append(f"source {source[:40]!r} is not a username or invite link")
             elif source.lower() not in known_lower:
                 warnings.append(f"source {source} is new to the bot - it will be resolved at startup")
-    raw_cats = (entry or {}).get("categories") or []
-    if isinstance(raw_cats, str):
-        raw_cats = [raw_cats]
+    try:
+        raw_cats = category_keys(entry.get("categories", []))
+    except ValueError as exc:
+        errors.append(str(exc))
+        raw_cats = []
     categories: list[str] = []
     known_cats = {str(c).lower() for c in (known_categories or set())}
     for cat in raw_cats:
@@ -229,7 +255,11 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
                 summary["warnings"].append(
                     f"skipped @{name}: a channel by that name already exists")
                 continue
+            # Validate BEFORE mutating any routing or tag maps.
+            cats = category_keys(entry.get("categories", []))
             sources = entry.get("sources") or []
+            if not isinstance(sources, list) or any(not isinstance(s, str) for s in sources):
+                raise ValueError("sources must be a list of strings")
             if sources == ["*"]:
                 sources = [s for s in source_to_targets if s not in tricks]
             routed = 0
@@ -244,10 +274,6 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
             if entry.get("amazon_tag"):
                 amazon_tag_targets.add(name)
                 summary["tag_added"].append(name)
-            cats = entry.get("categories") or []
-            if isinstance(cats, str):
-                cats = [cats]
-            cats = [str(c).strip().lower() for c in cats if str(c).strip()][:20]
             if cats:
                 summary["category_filters"][name] = cats
             summary["added"].append(name)

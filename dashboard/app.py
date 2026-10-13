@@ -41,6 +41,7 @@ from aiohttp import web
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
+from category_classifier import classify_category, load_rules  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -196,6 +197,31 @@ async def api_status(request: web.Request):
 
 
 @require_token
+async def api_category_preview(request: web.Request):
+    """Diagnostic only: no sends, URL fetches, DB writes or bot startup."""
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if (not isinstance(body, dict) or not isinstance(body.get("text"), str)
+            or not body["text"].strip() or len(body["text"]) > 12000):
+        return web.json_response({"errors": ["text must contain 1–12000 characters"]}, status=400)
+    links = body.get("links", [])
+    if (not isinstance(links, list) or len(links) > 20
+            or any(not isinstance(link, str) or len(link) > 2000 for link in links)):
+        return web.json_response({"errors": ["links must be at most 20 URL strings (2000 characters each)"]}, status=400)
+    decision = classify_category(body["text"], links)
+    decision["notice"] = "Category check only — identity, affiliate, source, dedup and delivery checks still apply."
+    return web.json_response(decision)
+
+
+def category_catalog() -> dict:
+    # The installed classifier is authoritative, even while the bot is OFF or
+    # its snapshot is from an older release. Configuration applies on restart.
+    return {c["key"]: c["label"] for c in load_rules().get("categories", [])}
+
+
+@require_token
 async def api_channels(request: web.Request):
     snap = snapshot()
     data = channels_config.load_channels()
@@ -205,7 +231,9 @@ async def api_channels(request: web.Request):
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
         "sources": snap.get("sources", []),
-        "categories": snap.get("categories", {}),
+        "categories": category_catalog(),
+        "category_rules_version": load_rules().get("version", 0),
+        "bot_category_rules_version": snap.get("category_rules_version"),
         "snapshot_at": snap.get("started_at", 0),
         "pending_restart": pending_restart(),
     })
@@ -221,7 +249,7 @@ async def api_add_channel(request: web.Request):
     cleaned, errors, warnings = channels_config.validate_channel(
         entry or {}, set(snap.get("sources", [])) if snap else set(),
         set(snap.get("targets", [])) if snap else set(),
-        set((snap.get("categories") or {})) if snap else set())
+        set(category_catalog()))
     if errors:
         return web.json_response({"errors": errors, "warnings": warnings}, status=400)
     data = channels_config.load_channels()
@@ -241,6 +269,8 @@ async def api_edit_channel(request: web.Request):
         patch = await request.json()
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(patch, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
     data = channels_config.load_channels()
     entry = next((c for c in data["channels"] if c["name"].lower() == name), None)
     if entry is None:
@@ -253,7 +283,7 @@ async def api_edit_channel(request: web.Request):
     others = {t for t in snap.get("targets", [])} if snap else set()
     cleaned, errors, warnings = channels_config.validate_channel(
         merged, set(snap.get("sources", [])) if snap else set(), others - {entry["name"]},
-        set((snap.get("categories") or {})) if snap else set())
+        set(category_catalog()))
     # validate_channel rejects names already in use: ours is the entry itself.
     errors = [e for e in errors if "already a channel" not in e]
     if errors:
@@ -368,7 +398,9 @@ async def api_restart(request: web.Request):
 
 
 async def index(request: web.Request):
-    return web.Response(text=UI_HTML, content_type="text/html")
+    demo = os.environ.get("DASHBOARD_INSECURE") == "1" and not os.environ.get("DASHBOARD_TOKEN")
+    page = UI_HTML.replace("const DEMO_MODE = false;", "const DEMO_MODE = true;") if demo else UI_HTML
+    return web.Response(text=page, content_type="text/html")
 
 
 def create_app() -> web.Application:
@@ -376,6 +408,7 @@ def create_app() -> web.Application:
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/channels", api_channels)
+    app.router.add_post("/api/category-preview", api_category_preview)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
@@ -435,11 +468,21 @@ label{font-size:13px;color:#cbd5e1}
 <label>Telegram username (no @)</label><input id="fname" placeholder="MyNewDeals" autocomplete="off">
 <label><input type="checkbox" id="fall" checked style="width:auto" onchange="toggleSrcs()"> Every main source (recommended)</label>
 <div class="srcs" id="fsrcs" style="display:none"></div>
-<label>Category shelf (leave all unticked for every category; tick for a themed channel e.g. only Electronics)</label>
+<label>Category shelf — select Clothing, Electronics, Home &amp; Kitchen, or another category</label>
+<p class="muted">Strict mode: only confident category matches. Mixed/unclear posts are withheld from shelves.
+No selection = ALL categories (not a themed channel). Multiple selections = either category, not mixed-product posts.</p>
 <div class="srcs" id="fcats"></div>
+<p id="categoryversion" class="muted"></p>
 <label><input type="checkbox" id="ftag" style="width:auto"> Our Amazon tag on this channel (ONLY after declaring it in Associates Central)</label>
 <label>Note</label><input id="fnote" placeholder="optional" autocomplete="off">
 <button onclick="addChannel()">Add channel</button> <span id="addmsg"></span>
+</div>
+<div class="card"><h2>Test a category before posting</h2>
+<p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
+<label>Deal text</label><textarea id="ctext" rows="4" maxlength="12000" style="width:100%;box-sizing:border-box" placeholder="Cotton kurti ₹499"></textarea>
+<label>Resolved product URLs (one per line, optional)</label><textarea id="clinks" rows="2" style="width:100%;box-sizing:border-box"></textarea>
+<button onclick="previewCategory()">Check category</button>
+<pre id="cresult" style="white-space:pre-wrap" aria-live="polite"></pre>
 </div>
 <div class="card"><h2>Recent jobs</h2>
 <table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Error</th></tr></thead>
@@ -447,6 +490,9 @@ label{font-size:13px;color:#cbd5e1}
 <div class="card"><h2>Audit (live DB)</h2><div id="audit" class="muted">loading…</div></div>
 </main>
 <script>
+const DEMO_MODE = false;
+let categoryLabels = {};
+let channelRows = [];
 let TOKEN = sessionStorage.getItem('dash_token') || '';
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
@@ -462,7 +508,7 @@ async function api(method, path, body){
 function fmtTime(ts){ if(!ts) return '—'; const d = new Date(ts*1000);
   return d.toLocaleString('en-IN',{hour12:false}) ; }
 async function refresh(){
-  if(!TOKEN){ document.getElementById('authstate').textContent = 'paste the token to begin'; return; }
+  if(!TOKEN && !DEMO_MODE){ document.getElementById('authstate').textContent = 'paste the token to begin'; return; }
   try {
     const s = await api('GET','/api/status');
     document.getElementById('authstate').textContent = s.insecure ? 'INSECURE MODE (no token set)' : 'connected';
@@ -476,14 +522,18 @@ async function refresh(){
       (s.db_exists?'':' · NO DATABASE YET');
     document.getElementById('pending').style.display = s.pending_restart ? 'block' : 'none';
     const c = await api('GET','/api/channels');
+    categoryLabels = c.categories || {};
+    document.getElementById('categoryversion').textContent = 'Installed category rules v'+(c.category_rules_version||'?')
+      +' · bot reported v'+(c.bot_category_rules_version||'unknown')+' · saved changes require an approved restart';
+    channelRows = c.dashboard || [];
     let rows = '';
     (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${t}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${t.name}</td><td><span class="badge new">dashboard</span></td>`
       + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':t.sources.slice(0,3).join(', ')+(t.sources.length>3?'…':'')}</td>`
-      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${k}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
+      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${categoryLabels[k] || k}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" onclick="toggleCh('${t.name}',${!t.enabled})">${t.enabled?'ON':'OFF'}</button></td>`
-      + `<td><button class="danger" onclick="delCh('${t.name}')">remove</button></td></tr>`; });
+      + `<td><button class="ghost" onclick="editShelf('${t.name}')">edit shelf</button> <button class="danger" onclick="delCh('${t.name}')">remove</button></td></tr>`; });
     document.getElementById('channels').innerHTML = rows || '<tr><td colspan="7" class="muted">no channels yet</td></tr>';
     const box = document.getElementById('fsrcs');
     if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
@@ -506,11 +556,34 @@ async function refresh(){
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
 function toggleSrcs(){ document.getElementById('fsrcs').style.display =
   document.getElementById('fall').checked ? 'none' : 'block'; }
+async function previewCategory(){
+  const out = document.getElementById('cresult'); out.textContent = 'checking…';
+  try {
+    const j = await api('POST','/api/category-preview',{
+      text:document.getElementById('ctext').value,
+      links:document.getElementById('clinks').value.split(/\\n/).map(s=>s.trim()).filter(Boolean)});
+    out.textContent = (j.category ? 'MATCH: '+(categoryLabels[j.category]||j.category) : 'WITHHELD from category shelves')
+      +'\\nReason: '+j.reason+'\\nRules version: '+j.rules_version
+      +'\\nEvidence: '+(j.evidence.map(e=>e.phrase+' → '+e.category+' ('+e.source+')').join(', ')||'none')
+      +'\\n'+j.notice;
+  } catch(e){ out.textContent = e.message; }
+}
+async function editShelf(name){
+  const channel = channelRows.find(c=>c.name===name);
+  const choices = Object.entries(categoryLabels).map(([k,v])=>k+' = '+v).join('\\n');
+  const value = prompt('Shelf keys, comma separated. Blank = ALL categories.\\n'+choices, (channel.categories||[]).join(', '));
+  if(value===null) return;
+  const categories = value.split(',').map(s=>s.trim()).filter(Boolean);
+  if(!categories.length && !confirm('Remove the category filter? This channel will accept every category.')) return;
+  try { await api('PATCH','/api/channels/'+encodeURIComponent(name),{categories}); refresh(); }
+  catch(e){ alert(e.message); }
+}
 async function addChannel(){
   const msg = document.getElementById('addmsg'); msg.textContent = ''; msg.className = '';
   const useAll = document.getElementById('fall').checked;
   const srcs = useAll ? ['*'] : [...document.querySelectorAll('#fsrcs input:checked')].map(i=>i.value);
   const cats = [...document.querySelectorAll('#fcats input:checked')].map(i=>i.value);
+  if(!cats.length && !confirm('No category selected: this will be an ALL-category channel. Continue?')) return;
   try {
     const j = await api('POST','/api/channels',{name:document.getElementById('fname').value,
       sources:srcs, categories:cats, amazon_tag:document.getElementById('ftag').checked,
@@ -533,7 +606,7 @@ async function doRestart(){
   try { const j = await api('POST','/api/restart'); out.textContent = j.output||'restart requested';
     setTimeout(refresh, 8000); }
   catch(e){ out.textContent = e.message; } }
-if(TOKEN) refresh();
+if(TOKEN || DEMO_MODE) refresh();
 </script>
 </body>
 </html>

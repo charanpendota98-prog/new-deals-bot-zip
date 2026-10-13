@@ -94,6 +94,7 @@ conn.close()
 PY
 
 run 'shared category taxonomy parity' cmp bestgaa/category_rules.json tg-wa-bridge/category_rules.json
+run 'strict category evidence and cross-language parity' "$PYTHON" test_category_classifier.py
 run 'render and routing' "$PYTHON" test_render_job.py
 run 'rescan and recovery' "$PYTHON" test_rescan.py
 run 'pipeline fixes' "$PYTHON" test_pipeline_fixes.py
@@ -106,9 +107,9 @@ run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'
 run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py dashboard/app.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
-  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py dashboard/app.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

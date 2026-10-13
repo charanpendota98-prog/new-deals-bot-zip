@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs'
+import { classifyCategory } from './category_classifier.js'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
@@ -3592,49 +3593,6 @@ async function shortenUntaggedCategoryCopy(job, jid, text) {
 // Channel policy evaluation. The facts are computed once per job so every rule
 // is readable, testable and identical across channels.
 // ---------------------------------------------------------------------------
-function normalizeCategoryPhrase(value) {
-  return String(value || '')
-    .normalize('NFKC')
-    .replace(/https?:\/\/[^\s<>\[\](){}"']+/giu, ' ')
-    .replace(/&amp;/giu, ' ')
-    .toLocaleLowerCase('en-IN')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .replace(/\s+/g, ' ')
-}
-const CATEGORY_QUERY_KEYS = new Set([
-  'k', 'q', 'keyword', 'keywords', 'search', 'searchterm', 'query',
-  'title', 'name', 'product', 'productname', 'category',
-])
-const CATEGORY_URL_STOP_SEGMENTS = new Set([
-  '', 'dp', 'gp', 'aw', 's', 'b', 'p', 'product', 'products', 'item',
-  'items', 'detail', 'details', 'buy', 'shop', 'offers', 'offer', 'ref',
-])
-function categoryWordsFromUrl(value) {
-  try {
-    const url = new URL(String(value || '').replace(/&amp;/giu, '&').trim())
-    const words = []
-    for (const raw of url.pathname.split('/').filter(Boolean)) {
-      let segment
-      try { segment = decodeURIComponent(raw) } catch { segment = raw }
-      const normalized = normalizeCategoryPhrase(segment.replace(/[-_]+/gu, ' '))
-      if (!normalized || CATEGORY_URL_STOP_SEGMENTS.has(normalized)) continue
-      if (/^\d{4,}$/u.test(segment)) continue
-      if (/^(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}$/iu.test(raw)) continue
-      if (/^(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+$/u.test(raw)) continue
-      words.push(normalized)
-    }
-    for (const [key, val] of url.searchParams.entries()) {
-      if (CATEGORY_QUERY_KEYS.has(key.toLowerCase())) {
-        const normalized = normalizeCategoryPhrase(val)
-        if (normalized) words.push(normalized)
-      }
-    }
-    return words.join(' ')
-  } catch {
-    return ''
-  }
-}
 function categoryContextUrls(job) {
   const urls = [...urlsIn(job?.text || '')]
   for (const mapping of [job?.resolvedLinks, job?.provenanceDestinations,
@@ -3648,42 +3606,7 @@ function categoryContextUrls(job) {
   return [...new Set(urls)]
 }
 function classifyDealCategory(text, linkContext = []) {
-  if (!text || !CATEGORY_RULES.categories?.length) return null
-  if (typeof linkContext === 'string') linkContext = [linkContext]
-  const urls = [...urlsIn(text), ...(linkContext || []).filter(value => typeof value === 'string')]
-  const linkWords = [...new Set(urls)].map(categoryWordsFromUrl).filter(Boolean).join(' ')
-  const normalized = ` ${normalizeCategoryPhrase(`${text} ${linkWords}`)} `
-  if (!normalized.trim()) return null
-  const matchedRules = []
-  for (const category of CATEGORY_RULES.categories) {
-    for (const [rawAlias, rawWeight] of (category.aliases || [])) {
-      const alias = normalizeCategoryPhrase(rawAlias)
-      const hits = alias ? Math.min(2, normalized.split(` ${alias} `).length - 1) : 0
-      if (hits) matchedRules.push({ key: category.key, alias, weight: Number(rawWeight || 0), hits })
-    }
-  }
-  if (!matchedRules.length) return null
-  const categoryScores = new Map()
-  for (const item of matchedRules) {
-    // Avoid inflating one product phrase twice ("running shoes" and nested
-    // "shoes"), and don't read "shoe" inside "shoe rack" as footwear too.
-    const nestedInStronger = matchedRules.some(other => other.alias !== item.alias
-      && ` ${other.alias} `.includes(` ${item.alias} `)
-      && other.weight >= item.weight)
-    if (!nestedInStronger) {
-      categoryScores.set(item.key, (categoryScores.get(item.key) || 0) + item.hits * item.weight)
-    }
-  }
-  const scores = [...categoryScores.entries()].map(([key, score]) => ({ key, score }))
-    .filter(item => item.score > 0)
-    .sort((a, b) => b.score - a.score || b.key.localeCompare(a.key))
-  if (!scores.length) return null
-  const minScore = Math.max(1, Number(CATEGORY_RULES.min_score) || 3)
-  const minMargin = Math.max(0, Number(CATEGORY_RULES.min_margin) || 0)
-  const strongCategories = scores.filter(item => item.score >= minScore).length
-  if (scores[0].score < minScore || strongCategories > 1
-      || scores[0].score - (scores[1]?.score || 0) < minMargin) return null
-  return scores[0].key
+  return classifyCategory(text, linkContext, CATEGORY_RULES).category
 }
 function channelFacts(job) {
   const text = (job && job.text) || ''

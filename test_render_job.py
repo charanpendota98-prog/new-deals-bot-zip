@@ -312,6 +312,39 @@ async def main():
         # Category routing is additive: the same confident product stays on the
         # Main feed and gets exactly one configured category destination. An
         # unclear title must never be guessed into a category shelf.
+        # Exercise real render_job target selection, not only the classifier helper.
+        old_shelves = bot.DASHBOARD_CATEGORY_FILTERS
+        old_source = bot.SOURCE_TO_TARGETS.get("shelf_test_source")
+        shelves = {"ClothingShelf": "fashion", "ElectronicsShelf": "electronics",
+                   "HomeShelf": "home_kitchen", "AccessoriesShelf": "accessories"}
+        bot.DASHBOARD_CATEGORY_FILTERS = {k.lower(): frozenset({v}) for k, v in shelves.items()}
+        bot.SOURCE_TO_TARGETS["shelf_test_source"] = list(shelves)
+        try:
+            for index, (title, expected) in enumerate([
+                ("Cotton kurti", "ClothingShelf"),
+                ("Wireless earbuds", "ElectronicsShelf"),
+                ("Rice cooker", "HomeShelf"),
+                ("Travel backpack", "AccessoriesShelf"),
+                ("Shoes and shoe rack", None),
+                ("Mystery product", None),
+            ]):
+                url = f"https://amzn.to/shelf{index}"
+                destination = f"https://www.amazon.in/dp/B0SHELF00{index}"
+                result = bot.LinkResult(url, destination, destination, f"amazon:B0SHELF00{index}")
+                targets = await case(store, "strict shelf integration: " + title,
+                    title + " ₹499\n" + url, {url: destination}, {url: result},
+                    source="shelf_test_source", msg_id=9700+index,
+                    expect_targets_superset=["LootZoneIndia11"])
+                check("only the matching shelf survives delivery routing",
+                      targets is not None and set(targets).intersection(shelves) ==
+                      ({expected} if expected else set()))
+        finally:
+            bot.DASHBOARD_CATEGORY_FILTERS = old_shelves
+            if old_source is None:
+                bot.SOURCE_TO_TARGETS.pop("shelf_test_source", None)
+            else:
+                bot.SOURCE_TO_TARGETS["shelf_test_source"] = old_source
+
         saved_category_targets = dict(bot.CATEGORY_TARGETS)
         bot.CATEGORY_TARGETS["footwear"] = "TestFootwearDeals"
         bot.CATEGORY_TARGETS["electronics"] = "TestElectronicsDeals"

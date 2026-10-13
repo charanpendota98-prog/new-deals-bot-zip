@@ -85,7 +85,6 @@ import signal
 import sqlite3
 import sys
 import time
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1236,6 +1235,7 @@ try:
             "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
             "targets": sorted(str(t) for t in _snapshot_targets),
             "dashboard_added": list(_dashboard_summary.get("added", [])),
+            "category_rules_version": CATEGORY_RULES.get("version", 0),
             "categories": {str(key): str(item.get("label", key))
                            for key, item in CATEGORY_DEFINITIONS.items()
                            if isinstance(item, dict)},
@@ -1288,119 +1288,16 @@ for _target_name, _category_keys in CATEGORY_TARGET_COLLISIONS.items():
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
 
 
-def _normalize_category_phrase(value: str) -> str:
-    value = unicodedata.normalize("NFKC", html.unescape(str(value or ""))).casefold()
-    return re.sub(r"[\W_]+", " ", value, flags=re.UNICODE).strip()
-
-
-CATEGORY_MATCH_RULES = tuple(
-    (key, tuple((_normalize_category_phrase(alias), int(weight))
-                for alias, weight in definition.get("aliases", [])
-                if _normalize_category_phrase(alias)))
-    for key, definition in CATEGORY_DEFINITIONS.items()
-)
-
-
-CATEGORY_QUERY_KEYS = frozenset({
-    "k", "q", "keyword", "keywords", "search", "searchterm", "query",
-    "title", "name", "product", "productname", "category",
-})
-CATEGORY_URL_STOP_SEGMENTS = frozenset({
-    "", "dp", "gp", "aw", "s", "b", "p", "product", "products", "item",
-    "items", "detail", "details", "buy", "shop", "offers", "offer", "ref",
-})
-
-
-def category_words_from_url(url: str) -> str:
-    """Extract readable product/search words from a URL, never opaque IDs/tokens."""
-    try:
-        parsed = urlparse(html.unescape(str(url or "").strip()))
-        if parsed.scheme.lower() not in {"http", "https"}:
-            return ""
-        words: list[str] = []
-        for raw_segment in unquote(parsed.path or "").split("/"):
-            segment = raw_segment.replace("-", " ").replace("_", " ").strip()
-            normalized = _normalize_category_phrase(segment)
-            if not normalized or normalized in CATEGORY_URL_STOP_SEGMENTS:
-                continue
-            if re.fullmatch(r"\d{4,}", segment):
-                continue
-            if re.fullmatch(r"(?i)(?:itm|pid|sku|asin|product)[-_]?[a-z0-9]{5,}", raw_segment):
-                continue
-            if re.fullmatch(r"(?=[A-Z0-9]{8,}$)(?=.*[A-Z])(?=.*[0-9])[A-Z0-9]+", raw_segment):
-                continue
-            words.append(normalized)
-        for key, values in parse_qs(parsed.query, keep_blank_values=False).items():
-            if key.lower() in CATEGORY_QUERY_KEYS:
-                words.extend(_normalize_category_phrase(value) for value in values if value)
-        return " ".join(word for word in words if word)
-    except Exception:
-        return ""
+try:
+    from .category_classifier import classify_category
+except ImportError:
+    from category_classifier import classify_category
 
 
 def classify_deal_category(text: str | None,
                            link_context: Iterable[str] = ()) -> str | None:
-    """Return one high-confidence category from product copy and link content.
-
-    Classification combines the source's product text with readable slugs and
-    search terms extracted from its incoming/resolved merchant URLs. It does not
-    fetch or claim to inspect merchant-page HTML. Mixed/unclear roundups stay on
-    Main rather than being confidently misfiled into one category.
-    """
-    if not text or not CATEGORY_MATCH_RULES:
-        return None
-    text = str(text)
-    urls = list(URL_RE.findall(text))
-    if isinstance(link_context, str):
-        link_context = (link_context,)
-    for value in link_context or ():
-        candidate = str(value or "").strip()
-        if not candidate:
-            continue
-        extracted = URL_RE.findall(candidate)
-        urls.extend(extracted or ([candidate] if candidate.startswith(("http://", "https://")) else []))
-    link_terms = " ".join(
-        category_words_from_url(url) for url in dict.fromkeys(urls)
-    )
-    content = URL_RE.sub(" ", text) + " " + link_terms
-    normalized = " " + _normalize_category_phrase(content) + " "
-    if normalized.strip() == "":
-        return None
-    matched_rules: list[tuple[str, str, int, int]] = []
-    for key, aliases in CATEGORY_MATCH_RULES:
-        for alias, weight in aliases:
-            hits = min(2, normalized.count(f" {alias} "))
-            if hits:
-                matched_rules.append((key, alias, weight, hits))
-    if not matched_rules:
-        return None
-    category_scores: dict[str, int] = {}
-    for key, alias, weight, hits in matched_rules:
-        # Do not score the same phrase twice: "running shoes" should not get
-        # an extra boost from nested "shoes". This also avoids reading "shoe"
-        # in "shoe rack" as a second footwear product across category rules.
-        nested_in_stronger = any(
-            alias != other_alias and f" {alias} " in f" {other_alias} "
-            and other_weight >= weight
-            for _, other_alias, other_weight, _ in matched_rules
-        )
-        if not nested_in_stronger:
-            category_scores[key] = category_scores.get(key, 0) + hits * weight
-    scores = sorted(((score, key) for key, score in category_scores.items() if score),
-                    reverse=True)
-    if not scores:
-        return None
-    best_score, best_key = scores[0]
-    min_score = max(1, int(CATEGORY_RULES.get("min_score", 3)))
-    min_margin = max(0, int(CATEGORY_RULES.get("min_margin", 2)))
-    runner_up = scores[1][0] if len(scores) > 1 else 0
-    # Two independently strong categories mean a mixed roundup/post. Keep it
-    # on Main instead of picking whichever label happened to score a point more.
-    strong_categories = sum(score >= min_score for score, _ in scores)
-    if (best_score < min_score or strong_categories > 1
-            or best_score - runner_up < min_margin):
-        return None
-    return best_key
+    """Offline conservative shelf classification, shared with dashboard preview."""
+    return classify_category(text, link_context, CATEGORY_RULES)["category"]
 
 
 # Same pattern but with a CAPTURE group: re.split drops the separator itself,
@@ -8835,6 +8732,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # brings a genuine product out of a Tricks source into Main; unclassified
     # Tricks posts and service promos keep their existing routing.
     deal_category = ""
+    category_reason = "service_promotion"
     if not service_pairs:
         # The category shelf follows the product, not just caption keywords:
         # include source, resolved merchant, and final affiliate URLs. Readable
@@ -8844,7 +8742,9 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             for value in (result.source, result.resolved, result.affiliate)
             if value
         ]
-        category = classify_deal_category(text, category_link_context)
+        category_decision = classify_category(text, category_link_context, CATEGORY_RULES)
+        category = category_decision["category"]
+        category_reason = category_decision["reason"]
         deal_category = category or ""
         category_target = CATEGORY_TARGETS.get(category or "", "")
         if category_target:
@@ -8860,6 +8760,11 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # Unfiltered targets - every built-in and every plain dashboard channel -
     # pass through untouched.
     if DASHBOARD_CATEGORY_FILTERS and base_targets:
+        withheld = [target for target in base_targets
+                    if not dashboard_category_ok(target, deal_category)]
+        if withheld:
+            log.info("CATEGORY WITHHELD | queue=%s category=%s reason=%s targets=%s",
+                     row["id"], deal_category or "unknown", category_reason, ",".join(withheld))
         base_targets = [target for target in base_targets
                         if dashboard_category_ok(target, deal_category)]
     # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the

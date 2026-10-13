@@ -446,7 +446,7 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   no trustworthy identity as a unit, and only a real send blocks an edit
   revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
 - **Category shelves (2026-10-13):** a dashboard channel can be a themed shelf
-  - tick Electronics (or Fashion, Footwear, Home & Kitchen, Beauty, Grocery)
+  - tick Electronics (or Clothing, Footwear, Home & Kitchen, Beauty, Grocery, Bags & Accessories)
   and it keeps ONLY posts classified into those categories, from every main
   source or selected ones. Enforced at delivery time in `render_job`, pinned
   by shelf tests in `test_dashboard.py`.
@@ -1277,3 +1277,53 @@ Never commit or paste `.env`, `auth/`, BotFather tokens, or pairing codes/QRs.
 > Baileys client, not Meta's official Business API. It is not unlimited,
 > ban-proof, or guaranteed to keep working. Use only a dedicated number and a
 > Channel you control; no unsolicited private messaging.
+
+### Strict category channels — rules v2
+
+Create the destination Telegram channel first, give the bot/session account posting
+permission, then **Dashboard → Add a channel → select the category**. This configures
+routing; it does not create a Telegram or WhatsApp channel on those services.
+
+| Picker label | Stable key | Examples |
+| --- | --- | --- |
+| Clothing | `fashion` | Kurtis, shirts, jeans, sarees, socks |
+| Electronics | `electronics` | Earbuds, laptops, smartphones, USB chargers |
+| Home & Kitchen | `home_kitchen` | Rice cookers, washing machines, bedsheets, shoe racks |
+| Footwear | `footwear` | Shoes, sandals, slippers |
+| Beauty | `beauty` | Skincare, hair conditioner, grooming |
+| Grocery | `grocery` | Rice, flour, snacks, peanut butter |
+| Bags & Accessories | `accessories` | Handbags, backpacks, wallets, jewellery |
+
+**Migration:** the existing `fashion` key now means clothing only. Bags/wallets
+move to `accessories`. Select both keys on a dashboard channel if you want its old
+broader scope. Existing non-category/built-in routing is unchanged. Empty category
+selection means unrestricted; the UI asks for confirmation. Multiple selected
+categories accept either category, but never authorize mixed-product roundups.
+
+**Conservative, not infallible:** this is an offline evidence classifier, not a
+merchant-catalog lookup or an accuracy guarantee. It abstains on unknown, weak,
+mixed or conflicting evidence. It ignores opaque short-link tokens and tracking
+parameters, caps repeated aliases, and suppresses nested words only at the same
+occurrence: “shoe rack” is Home, but “shoes and shoe rack” is withheld. Compound
+phrases distinguish rice cookers from rice and body butter from grocery butter.
+Affiliate attribution, verified identity, duplicate cooldown and delivery checks
+remain separate mandatory gates. No merchant HTML is fetched.
+
+Use **Test a category before posting** to see a match/withheld reason and the text
+or URL phrases supporting it. Preview never sends, fetches URLs or changes routing.
+It uses the installed code; the running bot adopts changes only after an approved
+restart. **Edit shelf** changes an existing channel's filter. Saved edits likewise
+require restart. Malformed filters are rejected, not silently made unrestricted.
+`CATEGORY WITHHELD` log lines explain dashboard targets removed during rendering.
+
+WhatsApp uses the same rules and a parity-tested JavaScript engine. Configure
+`WA_CHANNEL_<KEY>` for an existing WhatsApp Channel; dashboard channel CRUD is
+Telegram-only. Built-in Telegram category destinations use
+`TG_CATEGORY_<KEY>_TARGET`. Amazon-tag opt-in and channel approval requirements
+still apply. Deploy both classifier modules with the bot/bridge (bundles include
+them); changing only the main script is insufficient.
+
+Run `PYTHON=/path/to/python bash ops/test_all.sh` for the complete offline gate,
+including shared Python/JS classification fixtures, real render routing and
+authenticated dashboard preview/config tests. Production must remain stopped
+until deployment/restart is explicitly approved.

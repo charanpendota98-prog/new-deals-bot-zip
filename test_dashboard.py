@@ -76,6 +76,20 @@ def test_config_manager():
     check("without reported keys the category warns but passes",
           not errors and any("not confirmed" in w for w in warnings), str(errors))
 
+    for bad in (None, False, 42, {}, "", [""], [None], ["electronics", ""]):
+        entry = {"name": "UnsafeShelf", "sources": ["*"], "categories": bad}
+        _, errors, _ = channels_config.validate_channel(entry, known, existing, cats)
+        check("malformed shelf filter is rejected", bool(errors), repr(bad))
+        routes = {"deals": ["LootZoneIndia11"]}
+        summary = channels_config.apply_to_routing(routes, set(), {"channels": [entry]})
+        check("malformed shelf never partially joins routing",
+              routes == {"deals": ["LootZoneIndia11"]} and not summary["added"], repr(bad))
+        with tempfile.TemporaryDirectory() as bad_dir:
+            config = Path(bad_dir) / "channels.json"
+            config.write_text(json.dumps({"channels": [entry]}))
+            check("malformed stored shelf never becomes unrestricted",
+                  not channels_config.load_channels(config)["channels"], repr(bad))
+
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "channels.json"
         data = {"version": 1, "channels": [cleaned]}
@@ -184,6 +198,24 @@ def test_http_api():
 
                     status, _ = await call("GET", "/api/status", token=False)
                     check("no token -> 401", status == 401, str(status))
+                    status, body = await call("POST", "/api/category-preview", token=False,
+                                              json={"text": "Cotton kurti"})
+                    check("category preview requires auth", status == 401)
+                    status, body = await call("POST", "/api/category-preview",
+                                              json={"text": "Cotton kurti"})
+                    check("preview explains clothing evidence without sending",
+                          status == 200 and body.get("category") == "fashion"
+                          and body.get("reason") == "matched" and bool(body.get("evidence")))
+                    status, body = await call("POST", "/api/category-preview",
+                                              json={"text": "Shoes and shoe rack"})
+                    check("preview withholds mixed posts", status == 200
+                          and body.get("category") is None
+                          and body.get("reason") == "mixed_or_conflicting")
+                    for bad_body in ([], {}, {"text": "x" * 12001},
+                                     {"text": "earbuds", "links": "not-a-list"}):
+                        status, body = await call("POST", "/api/category-preview", json=bad_body)
+                        check("invalid preview payload returns 400", status == 400)
+
                     status, body = await call("GET", "/api/status")
                     check("status reports queue + today's sends",
                           status == 200 and body.get("queue", {}).get("done") == 1
@@ -197,6 +229,11 @@ def test_http_api():
                           and "deals" in body.get("sources", [])
                           and body.get("categories", {}).get("electronics") == "Electronics",
                           str(body)[:200])
+
+                    check("installed taxonomy is available despite an older bot snapshot",
+                          body.get("category_rules_version") == 2
+                          and body.get("categories", {}).get("accessories") == "Bags & Accessories"
+                          and body.get("categories", {}).get("fashion") == "Clothing")
 
                     status, body = await call("POST", "/api/channels",
                                               json={"name": "ab", "sources": ["deals"]})
@@ -242,6 +279,14 @@ def test_http_api():
                                                     "categories": ["nope"]})
                     check("an unknown category is rejected by the API",
                           status == 400 and bool(body.get("errors")), str(body)[:200])
+                    for bad in (False, None, 42, [""]):
+                        status, body = await call("PATCH", "/api/channels/ElectroShelf",
+                                                  json={"categories": bad})
+                        check("API rejects malformed filters without clearing the shelf", status == 400)
+                    status, body = await call("GET", "/api/channels")
+                    shelf = next(c for c in body["dashboard"] if c["name"] == "ElectroShelf")
+                    check("rejected edits preserve the old electronics filter",
+                          shelf["categories"] == ["electronics"])
                     status, body = await call("PATCH", "/api/channels/ElectroShelf",
                                               json={"categories": ["fashion"]})
                     check("the shelf filter is editable",
