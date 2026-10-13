@@ -10,7 +10,8 @@ token can change where deals post.
 
 What it does
   * Channels: list every posting channel (built-in + dashboard-added), add a
-    new channel (name, sources, Amazon-tag opt-in), enable/disable/remove it.
+    new channel (name, sources, category shelf, Amazon-tag opt-in),
+    enable/disable/remove it.
     Changes land in channels.json next to the bot database and apply on the
     next bot restart (the dashboard shows a pending badge and offers a
     one-click restart when it has permission).
@@ -204,6 +205,7 @@ async def api_channels(request: web.Request):
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
         "sources": snap.get("sources", []),
+        "categories": snap.get("categories", {}),
         "snapshot_at": snap.get("started_at", 0),
         "pending_restart": pending_restart(),
     })
@@ -218,7 +220,8 @@ async def api_add_channel(request: web.Request):
     snap = snapshot()
     cleaned, errors, warnings = channels_config.validate_channel(
         entry or {}, set(snap.get("sources", [])) if snap else set(),
-        set(snap.get("targets", [])) if snap else set())
+        set(snap.get("targets", [])) if snap else set(),
+        set((snap.get("categories") or {})) if snap else set())
     if errors:
         return web.json_response({"errors": errors, "warnings": warnings}, status=400)
     data = channels_config.load_channels()
@@ -243,13 +246,14 @@ async def api_edit_channel(request: web.Request):
     if entry is None:
         return web.json_response({"errors": ["no such dashboard channel"]}, status=404)
     merged = dict(entry)
-    for field in ("sources", "amazon_tag", "enabled", "note"):
+    for field in ("sources", "categories", "amazon_tag", "enabled", "note"):
         if field in (patch or {}):
             merged[field] = patch[field]
     snap = snapshot()
     others = {t for t in snap.get("targets", [])} if snap else set()
     cleaned, errors, warnings = channels_config.validate_channel(
-        merged, set(snap.get("sources", [])) if snap else set(), others - {entry["name"]})
+        merged, set(snap.get("sources", [])) if snap else set(), others - {entry["name"]},
+        set((snap.get("categories") or {})) if snap else set())
     # validate_channel rejects names already in use: ours is the entry itself.
     errors = [e for e in errors if "already a channel" not in e]
     if errors:
@@ -425,12 +429,14 @@ label{font-size:13px;color:#cbd5e1}
 </div>
 <div class="card"><h2>Status</h2><div class="row" id="stats"></div><div id="uptime" class="muted"></div></div>
 <div class="card"><h2>Channels</h2>
-<table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Tag</th><th>On</th><th></th></tr></thead>
+<table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table>
 <h2>Add a channel</h2>
 <label>Telegram username (no @)</label><input id="fname" placeholder="MyNewDeals" autocomplete="off">
 <label><input type="checkbox" id="fall" checked style="width:auto" onchange="toggleSrcs()"> Every main source (recommended)</label>
 <div class="srcs" id="fsrcs" style="display:none"></div>
+<label>Category shelf (leave all unticked for every category; tick for a themed channel e.g. only Electronics)</label>
+<div class="srcs" id="fcats"></div>
 <label><input type="checkbox" id="ftag" style="width:auto"> Our Amazon tag on this channel (ONLY after declaring it in Associates Central)</label>
 <label>Note</label><input id="fnote" placeholder="optional" autocomplete="off">
 <button onclick="addChannel()">Add channel</button> <span id="addmsg"></span>
@@ -471,16 +477,20 @@ async function refresh(){
     document.getElementById('pending').style.display = s.pending_restart ? 'block' : 'none';
     const c = await api('GET','/api/channels');
     let rows = '';
-    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${t}</td><td><span class="badge ours">built-in</span></td><td colspan="4" class="muted">code-managed</td></tr>`; });
+    (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${t}</td><td><span class="badge ours">built-in</span></td><td colspan="5" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${t.name}</td><td><span class="badge new">dashboard</span></td>`
       + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':t.sources.slice(0,3).join(', ')+(t.sources.length>3?'…':'')}</td>`
+      + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${k}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" onclick="toggleCh('${t.name}',${!t.enabled})">${t.enabled?'ON':'OFF'}</button></td>`
       + `<td><button class="danger" onclick="delCh('${t.name}')">remove</button></td></tr>`; });
-    document.getElementById('channels').innerHTML = rows || '<tr><td colspan="6" class="muted">no channels yet</td></tr>';
+    document.getElementById('channels').innerHTML = rows || '<tr><td colspan="7" class="muted">no channels yet</td></tr>';
     const box = document.getElementById('fsrcs');
     if(!box.dataset.filled && (c.sources||[]).length){ box.dataset.filled = '1';
       box.innerHTML = c.sources.map(s=>`<label><input type="checkbox" value="${s}" style="width:auto"> ${s}</label>`).join(''); }
+    const catbox = document.getElementById('fcats');
+    if(!catbox.dataset.filled && c.categories && Object.keys(c.categories).length){ catbox.dataset.filled = '1';
+      catbox.innerHTML = Object.entries(c.categories).map(([k,v])=>`<label><input type="checkbox" value="${k}" style="width:auto"> ${v}</label>`).join(''); }
     const r = await api('GET','/api/recent?limit=15');
     document.getElementById('recent').innerHTML = (r.jobs||[]).map(j=>
       `<tr><td>${j.id}</td><td>${j.source}</td><td>${j.status}</td><td>${j.sends}</td><td>${j.skips}</td><td class="muted">${j.error||''}</td></tr>`).join('')
@@ -500,9 +510,10 @@ async function addChannel(){
   const msg = document.getElementById('addmsg'); msg.textContent = ''; msg.className = '';
   const useAll = document.getElementById('fall').checked;
   const srcs = useAll ? ['*'] : [...document.querySelectorAll('#fsrcs input:checked')].map(i=>i.value);
+  const cats = [...document.querySelectorAll('#fcats input:checked')].map(i=>i.value);
   try {
     const j = await api('POST','/api/channels',{name:document.getElementById('fname').value,
-      sources:srcs, amazon_tag:document.getElementById('ftag').checked,
+      sources:srcs, categories:cats, amazon_tag:document.getElementById('ftag').checked,
       note:document.getElementById('fnote').value});
     msg.textContent = 'added @'+j.channel.name+' - restart the bot to apply' +
       (j.warnings&&j.warnings.length ? ' ('+j.warnings.join('; ')+')' : '');

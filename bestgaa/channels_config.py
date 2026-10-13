@@ -16,10 +16,14 @@ Schema (channels.json)::
     {"version": 1,
      "channels": [{"name": "MyNewDeals",
                    "sources": ["dealsvelocity", "deals"] | ["*"],
+                   "categories": ["electronics"],
                    "amazon_tag": false,
                    "enabled": true,
                    "note": "added from dashboard"}]}
     "*" routes every known source except the Tricks-only ones.
+    "categories" is optional: empty/missing means every product category, while
+    a list (e.g. ["electronics"]) keeps ONLY posts classified into those
+    categories - a category shelf like an electronics-only channel.
 
 Stdlib only: importing this must never require telethon, aiohttp, or bot env.
 """
@@ -80,10 +84,15 @@ def load_channels(path: Path | None = None) -> dict:
     channels = []
     for entry in data["channels"]:
         if isinstance(entry, dict) and normalize_handle(entry.get("name", "")):
+            raw_cats = entry.get("categories") or []
+            if isinstance(raw_cats, str):
+                raw_cats = [raw_cats]
             channels.append({
                 "name": normalize_handle(entry.get("name", "")),
                 "sources": [str(s).strip() for s in (entry.get("sources") or [])
                             if str(s).strip()][:60],
+                "categories": [str(c).strip().lower() for c in raw_cats
+                               if str(c).strip()][:20],
                 "amazon_tag": bool(entry.get("amazon_tag", False)),
                 "enabled": bool(entry.get("enabled", True)),
                 "note": str(entry.get("note", ""))[:200],
@@ -114,13 +123,21 @@ def save_channels(data: dict, path: Path | None = None) -> Path:
     return target
 
 
+CATEGORY_KEY_RE = re.compile(r"^[a-z0-9_]{2,40}$")
+
+
 def validate_channel(entry: dict, known_sources: set[str],
-                     existing_targets: set[str]) -> tuple[dict, list[str], list[str]]:
+                     existing_targets: set[str],
+                     known_categories: set[str] | None = None,
+                     ) -> tuple[dict, list[str], list[str]]:
     """Validate one dashboard channel. Returns (cleaned, errors, warnings).
 
     errors blocks the save; warnings are shown but allowed (e.g. a source the
     bot has never seen - it may be a brand-new source, the bot resolves names
-    at startup and logs SOURCE FAIL for anything unreachable).
+    at startup and logs SOURCE FAIL for anything unreachable). A mistyped
+    category would silently starve the channel, so an unknown category is an
+    error whenever the bot has told us its real category keys (and a warning
+    when it has not reported yet).
     """
     errors: list[str] = []
     warnings: list[str] = []
@@ -142,9 +159,27 @@ def validate_channel(entry: dict, known_sources: set[str],
                 errors.append(f"source {source[:40]!r} is not a username or invite link")
             elif source.lower() not in known_lower:
                 warnings.append(f"source {source} is new to the bot - it will be resolved at startup")
+    raw_cats = (entry or {}).get("categories") or []
+    if isinstance(raw_cats, str):
+        raw_cats = [raw_cats]
+    categories: list[str] = []
+    known_cats = {str(c).lower() for c in (known_categories or set())}
+    for cat in raw_cats:
+        key = str(cat).strip().lower()
+        if not key or key in categories:
+            continue
+        if not CATEGORY_KEY_RE.match(key):
+            errors.append(f"category {str(cat)[:40]!r} is not a valid category key")
+        elif known_cats and key not in known_cats:
+            errors.append(f"unknown category {key!r} - pick from {sorted(known_cats)}")
+        elif not known_cats:
+            warnings.append(f"category {key} is not confirmed yet (bot has not reported "
+                            "its categories) - it applies after the next restart")
+        categories.append(key)
     cleaned = {
         "name": name,
         "sources": ["*"] if sources == ["*"] else sources[:60],
+        "categories": categories[:20],
         "amazon_tag": bool((entry or {}).get("amazon_tag", False)),
         "enabled": bool((entry or {}).get("enabled", True)),
         "note": str((entry or {}).get("note", ""))[:200],
@@ -162,10 +197,12 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
 
     source_to_targets: SOURCE_TO_TARGETS (targets appended per channel).
     amazon_tag_targets: AMAZON_TAG_TARGETS (added only when the entry opts in).
-    Returns {"added": [...], "tag_added": [...], "skipped": [...], "warnings": [...]}.
+    Returns {"added": [...], "tag_added": [...], "category_filters": {name: [...]},
+             "skipped": [...], "warnings": [...]}.
     Never raises on bad data: a broken entry is skipped with a warning.
     """
-    summary: dict[str, list] = {"added": [], "tag_added": [], "skipped": [], "warnings": []}
+    summary: dict = {"added": [], "tag_added": [], "category_filters": {},
+                     "skipped": [], "warnings": []}
     try:
         channels = (data or {}).get("channels") or []
     except Exception:
@@ -207,6 +244,12 @@ def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dic
             if entry.get("amazon_tag"):
                 amazon_tag_targets.add(name)
                 summary["tag_added"].append(name)
+            cats = entry.get("categories") or []
+            if isinstance(cats, str):
+                cats = [cats]
+            cats = [str(c).strip().lower() for c in cats if str(c).strip()][:20]
+            if cats:
+                summary["category_filters"][name] = cats
             summary["added"].append(name)
             in_use.add(name.lower())
             if not routed:

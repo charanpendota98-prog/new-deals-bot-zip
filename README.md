@@ -445,8 +445,14 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   strict-all dedup keys on verified product identity only and skips a post with
   no trustworthy identity as a unit, and only a real send blocks an edit
   revive. Pinned by `test_postdeploy_repeats.py` in the offline gate.
+- **Category shelves (2026-10-13):** a dashboard channel can be a themed shelf
+  - tick Electronics (or Fashion, Footwear, Home & Kitchen, Beauty, Grocery)
+  and it keeps ONLY posts classified into those categories, from every main
+  source or selected ones. Enforced at delivery time in `render_job`, pinned
+  by shelf tests in `test_dashboard.py`.
 - **Operator dashboard (2026-10-13):** add posting channels from a browser
-  instead of editing code - name, sources (or every main source), Amazon-tag
+  instead of editing code - name, sources (or every main source), category
+  shelf, Amazon-tag
   opt-in, enable/disable/remove. Channels live in `channels.json` next to the
   bot database (a redeploy never wipes them) and apply on the next bot restart;
   the dashboard shows a pending badge plus one-click restart when allowed.

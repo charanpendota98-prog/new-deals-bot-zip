@@ -1189,6 +1189,10 @@ UNDER99_SOURCES = {
 # startup, so a new channel needs no code change and no redeploy - only a
 # restart. Additive only, and a missing/corrupt file simply means "no
 # dashboard channels": this block can never break startup.
+# DASHBOARD_CATEGORY_FILTERS maps a dashboard target (lowercased) to the
+# product categories it keeps - e.g. an electronics-only shelf. Targets
+# absent from the map take every category, exactly as before.
+DASHBOARD_CATEGORY_FILTERS: dict[str, frozenset] = {}
 try:
     try:
         from bestgaa import channels_config as _dashboard_channels
@@ -1206,11 +1210,19 @@ try:
         SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, _dashboard_data,
         existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES)
     AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
+    DASHBOARD_CATEGORY_FILTERS = {
+        str(name).strip().lower(): frozenset(str(c).strip().lower() for c in cats)
+        for name, cats in (_dashboard_summary.get("category_filters") or {}).items()
+        if str(name).strip()
+    }
     _dashboard_log = logging.getLogger("bestgaa")
     if _dashboard_summary.get("added"):
         _dashboard_log.info(
             "DASHBOARD CHANNELS | +%s target(s): %s",
             len(_dashboard_summary["added"]), ", ".join(_dashboard_summary["added"]))
+    for _dashboard_cat_name, _dashboard_cat_keys in DASHBOARD_CATEGORY_FILTERS.items():
+        _dashboard_log.info("DASHBOARD CHANNELS | @%s keeps categories: %s",
+                            _dashboard_cat_name, ", ".join(sorted(_dashboard_cat_keys)))
     for _dashboard_warning in _dashboard_summary.get("warnings", []):
         _dashboard_log.warning("DASHBOARD CHANNELS | %s", _dashboard_warning)
     try:
@@ -1224,6 +1236,9 @@ try:
             "sources": sorted(str(s) for s in SOURCE_TO_TARGETS),
             "targets": sorted(str(t) for t in _snapshot_targets),
             "dashboard_added": list(_dashboard_summary.get("added", [])),
+            "categories": {str(key): str(item.get("label", key))
+                           for key, item in CATEGORY_DEFINITIONS.items()
+                           if isinstance(item, dict)},
             "channels_mtime": os.path.getmtime(_dashboard_channels.channels_json_path())
             if _dashboard_channels.channels_json_path().exists() else 0,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -1231,6 +1246,21 @@ try:
         _dashboard_log.warning("DASHBOARD CHANNELS | snapshot not written: %s", exc)
 except Exception as exc:
     logging.getLogger("bestgaa").warning("DASHBOARD CHANNELS | config not applied: %s", exc)
+
+
+def dashboard_category_ok(target: str, deal_category: str) -> bool:
+    """True when a dashboard target keeps a post of this category.
+
+    Targets without a category filter always pass; filtered targets (an
+    electronics-only shelf, ...) pass only when the post was classified into
+    one of their categories. Unclassified posts and service promos (category
+    "") never reach a filtered shelf.
+    """
+    wanted = DASHBOARD_CATEGORY_FILTERS.get(str(target or "").strip().lower())
+    if not wanted:
+        return True
+    return bool(deal_category) and str(deal_category).strip().lower() in wanted
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -8804,6 +8834,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # remains on the Main feed and adds exactly one category target. This also
     # brings a genuine product out of a Tricks source into Main; unclassified
     # Tricks posts and service promos keep their existing routing.
+    deal_category = ""
     if not service_pairs:
         # The category shelf follows the product, not just caption keywords:
         # include source, resolved merchant, and final affiliate URLs. Readable
@@ -8814,6 +8845,7 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
             if value
         ]
         category = classify_deal_category(text, category_link_context)
+        deal_category = category or ""
         category_target = CATEGORY_TARGETS.get(category or "", "")
         if category_target:
             if "LootZoneIndia11" not in base_targets:
@@ -8822,6 +8854,14 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 base_targets.append(category_target)
             log.info("CATEGORY ROUTE | %s -> @%s | queue=%s",
                      CATEGORY_DEFINITIONS[category]["label"], category_target, row["id"])
+    # Dashboard category shelves (2026-10-13): a dashboard target with a
+    # category filter keeps ONLY posts classified into its categories (an
+    # electronics shelf never sees fashion, promos, or unclassified posts).
+    # Unfiltered targets - every built-in and every plain dashboard channel -
+    # pass through untouched.
+    if DASHBOARD_CATEGORY_FILTERS and base_targets:
+        base_targets = [target for target in base_targets
+                        if dashboard_category_ok(target, deal_category)]
     # USER RULE (2026-09-05): the Amazon-Associates review channel. It takes the
     # same PRODUCT deals every other channel takes, in the programme-safe form
     # rendered at delivery time (name + price + link). A trick/recharge/app promo

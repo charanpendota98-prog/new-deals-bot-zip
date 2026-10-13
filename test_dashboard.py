@@ -62,6 +62,20 @@ def test_config_manager():
     check("the Amazon-tag opt-in carries its Associates warning",
           any("Associates" in w for w in warnings), str(warnings))
 
+    cats = {"electronics", "fashion"}
+    cleaned_cat, errors, _ = channels_config.validate_channel(
+        {"name": "ElectroShelf", "sources": ["*"], "categories": ["Electronics"]},
+        known, existing, cats)
+    check("a category shelf validates (key lowercased)",
+          not errors and cleaned_cat["categories"] == ["electronics"], str(errors))
+    _, errors, _ = channels_config.validate_channel(
+        {"name": "BadShelf", "sources": ["*"], "categories": ["nope"]}, known, existing, cats)
+    check("an unknown category is rejected when keys are known", bool(errors), str(errors))
+    _, errors, warnings = channels_config.validate_channel(
+        {"name": "EarlyShelf", "sources": ["*"], "categories": ["electronics"]}, known, existing)
+    check("without reported keys the category warns but passes",
+          not errors and any("not confirmed" in w for w in warnings), str(errors))
+
     with tempfile.TemporaryDirectory() as td:
         path = Path(td) / "channels.json"
         data = {"version": 1, "channels": [cleaned]}
@@ -90,6 +104,14 @@ def test_config_manager():
     check("disabled + colliding + malformed entries are skipped, never fatal",
           sorted(summary["skipped"]) == ["??", "LootZoneIndia11", "OffDeals"]
           and summary["added"] == ["StarDeals"], str(summary))
+
+    routing2 = {"deals": ["LootZoneIndia11"]}
+    summary2 = channels_config.apply_to_routing(routing2, set(), {"version": 1, "channels": [
+        {"name": "ElectroShelf", "sources": ["deals"], "categories": ["electronics"],
+         "enabled": True}]})
+    check("apply_to_routing reports the shelf filter",
+          summary2["category_filters"] == {"ElectroShelf": ["electronics"]}
+          and "ElectroShelf" in routing2["deals"], str(summary2))
 
 
 async def _started_app():
@@ -144,6 +166,7 @@ def test_http_api():
             (tdp / "routing_snapshot.json").write_text(json.dumps({
                 "started_at": now - 100, "sources": ["deals", "dealsvelocity"],
                 "targets": ["LootZoneIndia11", "PowerLoots1"], "dashboard_added": [],
+                "categories": {"electronics": "Electronics", "fashion": "Fashion"},
                 "channels_mtime": 0}), encoding="utf-8")
             runner = None
             try:
@@ -169,9 +192,11 @@ def test_http_api():
                           body.get("pending_restart") is False, str(body.get("pending_restart")))
 
                     status, body = await call("GET", "/api/channels")
-                    check("channels lists builtin + sources from the snapshot",
+                    check("channels lists builtin + sources + categories from the snapshot",
                           status == 200 and "LootZoneIndia11" in body.get("builtin", [])
-                          and "deals" in body.get("sources", []), str(body)[:200])
+                          and "deals" in body.get("sources", [])
+                          and body.get("categories", {}).get("electronics") == "Electronics",
+                          str(body)[:200])
 
                     status, body = await call("POST", "/api/channels",
                                               json={"name": "ab", "sources": ["deals"]})
@@ -205,6 +230,23 @@ def test_http_api():
                           str(body)[:200])
                     status, body = await call("DELETE", "/api/channels/MyNewDeals")
                     check("deleting twice 404s", status == 404, str(status))
+
+                    status, body = await call("POST", "/api/channels",
+                                              json={"name": "ElectroShelf", "sources": ["*"],
+                                                    "categories": ["electronics"]})
+                    check("a category shelf is added with its filter",
+                          status == 200 and body["channel"]["categories"] == ["electronics"],
+                          str(body)[:200])
+                    status, body = await call("POST", "/api/channels",
+                                              json={"name": "BadShelf", "sources": ["*"],
+                                                    "categories": ["nope"]})
+                    check("an unknown category is rejected by the API",
+                          status == 400 and bool(body.get("errors")), str(body)[:200])
+                    status, body = await call("PATCH", "/api/channels/ElectroShelf",
+                                              json={"categories": ["fashion"]})
+                    check("the shelf filter is editable",
+                          status == 200 and body["channel"]["categories"] == ["fashion"],
+                          str(body)[:200])
 
                     status, body = await call("GET", "/api/recent?limit=5")
                     jobs = body.get("jobs", [])
@@ -272,11 +314,30 @@ def test_package_import_merge():
     check("package-style import snapshots dashboard_added", "SNAP-OK" in proc.stdout, out[-300:])
 
 
+def test_category_shelf():
+    print("\n== category shelf: dashboard targets keep only their categories ==")
+    old = bot.DASHBOARD_CATEGORY_FILTERS
+    bot.DASHBOARD_CATEGORY_FILTERS = {"electroshelf": frozenset({"electronics"})}
+    try:
+        check("the shelf keeps its own category",
+              bot.dashboard_category_ok("ElectroShelf", "electronics"))
+        check("the shelf drops other categories",
+              not bot.dashboard_category_ok("ElectroShelf", "fashion"))
+        check("the shelf drops unclassified posts and promos",
+              not bot.dashboard_category_ok("ElectroShelf", ""))
+        check("unfiltered channels and built-ins pass everything",
+              bot.dashboard_category_ok("MyNewDeals", "fashion")
+              and bot.dashboard_category_ok("LootZoneIndia11", ""))
+    finally:
+        bot.DASHBOARD_CATEGORY_FILTERS = old
+
+
 if __name__ == "__main__":
     test_config_manager()
     test_http_api()
     test_bot_merge()
     test_package_import_merge()
+    test_category_shelf()
     print("\n" + ("DASHBOARD TESTS: FAILURES: " + ", ".join(FAILS) if FAILS
                   else "test_dashboard: all checks PASS"))
     sys.exit(1 if FAILS else 0)
