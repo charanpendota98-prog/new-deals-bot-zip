@@ -47,9 +47,16 @@ Three questions a total can never answer, answered per shelf:
            anything else is masked, so an invite link in the same .env cannot be
            echoed by a report.
 
+Two more questions, answered from numbers the bot already keeps: the shelf's
+deal quality (its own `premium_score` average/min/max over the posts it received,
+plus the rupee spread from `posted_deals.price`) and which sources actually fed
+it, against the sources its channels declare - a renamed source shows up as
+undeclared traffic, a silent one as a dead declaration.
+
 `--expand <key>` adds the newest delivery rows for one shelf (queue id, IST time,
 target, status, bucketed reason, money verdict, text snippet) so a number can be
-opened instead of argued with.
+opened instead of argued with. `--html PATH` writes the whole report as one
+self-contained HTML file: no JavaScript, no external asset, every value escaped.
 
 Findings are the part that saves a week of guessing:
 
@@ -91,10 +98,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import os
 import re
 import sqlite3
+import statistics
 import sys
 import time
 from collections import Counter
@@ -176,6 +185,20 @@ def normalize_target(name: str) -> str:
     return str(name or "").strip().lstrip("@").lower()
 
 
+def source_id(value: str) -> str:
+    """Compare sources the way channels_config does.
+
+    A handle is case-insensitive; an invite link's code is not (`t.me/+AbC` and
+    `t.me/+abc` are different chats). Without this a declared source and the same
+    source in the ledger can look like two different things, and "undeclared
+    traffic" would be pure noise.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return "(no source)"
+    return text if "/+" in text else text.lower()
+
+
 def channels_view(data: dict, rules: dict) -> dict:
     """channels.json split into category shelves and unfiltered (Main) targets."""
     known = {str(c.get("key", "")).lower() for c in rules.get("categories", []) if isinstance(c, dict)}
@@ -194,6 +217,8 @@ def channels_view(data: dict, rules: dict) -> dict:
             "enabled": bool(entry.get("enabled", True)),
             "amazon_tag": bool(entry.get("amazon_tag", False)),
             "sources": len(entry.get("sources") or []),
+            "source_names": [source_id(v) for v in (entry.get("sources") or [])
+                             if str(v).strip()],
             "all_sources": "*" in (entry.get("sources") or []),
             "categories": cats,
         }
@@ -570,9 +595,12 @@ def ledger_rows(conn, since: float, max_posts: int = 20000) -> dict:
     queue_cols = table_columns(conn, "queue")
     error_expr = "COALESCE(d.last_error,'')" if "last_error" in delivery_cols else "''"
     text_expr = "q.rendered_text" if "rendered_text" in queue_cols else "NULL"
+    source_expr = "q.source" if "source" in queue_cols else "NULL"
+    score_expr = "q.premium_score" if "premium_score" in queue_cols else "NULL"
     query = (f"SELECT d.queue_id AS queue_id, d.target AS target, d.status AS status, "
              f"{error_expr} AS error, q.created_at AS created_at, "
-             f"COALESCE({text_expr},'') AS text "
+             f"COALESCE({text_expr},'') AS text, {source_expr} AS source, "
+             f"{score_expr} AS score "
              "FROM deliveries d JOIN queue q ON q.id = d.queue_id "
              "WHERE q.created_at >= ? ORDER BY q.created_at DESC LIMIT ?")
     try:
@@ -589,8 +617,131 @@ def ledger_rows(conn, since: float, max_posts: int = 20000) -> dict:
             "error": str(row["error"] or ""),
             "created_at": float(row["created_at"] or 0.0),
             "text": str(row["text"] or ""),
+            "source": str(row["source"] or "") or "(no source)",
+            "score": (None if row["score"] is None else int(row["score"])),
         })
     return result
+
+
+def price_index(conn) -> dict[int, list[int]]:
+    """queue_id -> the rupee prices the bot recorded for what it posted.
+
+    `posted_deals.price` is the price behind the published deal, so a shelf's
+    price spread is read from the bot's own record instead of parsed back out of
+    the caption text.
+    """
+    out: dict[int, list[int]] = {}
+    if conn is None or not table_columns(conn, "posted_deals"):
+        return out
+    try:
+        for row in conn.execute(
+                "SELECT queue_id, price FROM posted_deals WHERE price IS NOT NULL"):
+            price = int(row[1] or 0)
+            if price > 0:
+                out.setdefault(int(row[0] or 0), []).append(price)
+    except (sqlite3.OperationalError, ValueError, TypeError):
+        return out
+    return out
+
+
+def deal_quality(rows, index: dict, prices: dict[int, list[int]]) -> dict:
+    """Per destination: how good were the deals it actually received?
+
+    `premium_score` is the bot's own ranking (discount x10, a sub-Rs99 / Rs499
+    bonus, a lowest-price-claim bonus) and `posted_deals.price` is the rupee price
+    it published. Both are read, never recomputed or re-judged here, so "this
+    shelf gets weak deals" is the bot's own opinion of them, not a new one.
+    """
+    def empty() -> dict:
+        return {"posts": 0, "scores": [], "prices": [], "unscored": 0, "sources": Counter()}
+
+    # "_fleet" is every delivered post once, so a shelf can be compared against
+    # the whole operation without double-counting multi-category channels.
+    out: dict = {"main": empty(), "_fleet": empty()}
+    for row in rows:
+        if row["status"] != "sent" or row["error"]:
+            continue
+        fleet = out["_fleet"]
+        fleet["posts"] += 1
+        fleet["sources"][source_id(row["source"])] += 1
+        if row["score"] is None:
+            fleet["unscored"] += 1
+        else:
+            fleet["scores"].append(int(row["score"]))
+        fleet["prices"].extend(prices.get(int(row["queue_id"]), []))
+        for key in keys_for(row["target"], index):
+            shelf = out.setdefault(key, empty())
+            shelf["posts"] += 1
+            shelf["sources"][source_id(row["source"])] += 1
+            if row["score"] is None:
+                shelf["unscored"] += 1
+            else:
+                shelf["scores"].append(int(row["score"]))
+            shelf["prices"].extend(prices.get(int(row["queue_id"]), []))
+    return out
+
+
+def quality_view(bucket: dict) -> dict:
+    scores = sorted(bucket.get("scores") or [])
+    prices = sorted(bucket.get("prices") or [])
+    return {
+        "posts": int(bucket.get("posts", 0)),
+        "scored": len(scores),
+        "unscored": int(bucket.get("unscored", 0)),
+        "avg_score": round(statistics.fmean(scores), 1) if scores else None,
+        "min_score": scores[0] if scores else None,
+        "max_score": scores[-1] if scores else None,
+        "zero_score": sum(1 for value in scores if value <= 0),
+        "price_rows": len(prices),
+        "price_min": prices[0] if prices else None,
+        "price_median": int(statistics.median(prices)) if prices else None,
+        "price_max": prices[-1] if prices else None,
+        "under_99": sum(1 for value in prices if value <= 99),
+        "under_499": sum(1 for value in prices if 100 <= value <= 499),
+        "sources": dict((bucket.get("sources") or Counter()).most_common()),
+    }
+
+
+def source_matrix(quality: dict, view: dict, rules: dict) -> dict:
+    """Which source actually feeds which shelf - and which declared source is dead.
+
+    `channels.json` declares the sources a channel listens to; the ledger says
+    what really arrived. The difference is the drift: a renamed source shows up
+    as undeclared traffic, a dead one as a declaration nobody ever fulfils.
+    """
+    keys = [str(c.get("key", "")).strip().lower()
+            for c in rules.get("categories", []) if isinstance(c, dict) and c.get("key")]
+    columns = keys + ["main"]
+    cells: dict[str, dict[str, int]] = {}
+    totals: Counter = Counter()
+    for column in columns:
+        for source, count in (quality.get(column) or {}).get("sources", Counter()).items():
+            cells.setdefault(source, {})[column] = int(count)
+            totals[source] += int(count)
+    declared: dict[str, list[str]] = {}
+    unrestricted: dict[str, bool] = {}
+    for key in keys:
+        rows = view["shelves"].get(key, [])
+        enabled = [r for r in rows if r["enabled"]]
+        sources: set[str] = set()
+        for row in enabled:
+            if row["all_sources"]:
+                sources.add("*")
+            sources.update(row.get("source_names") or [])
+        declared[key] = sorted(sources)
+        unrestricted[key] = any(row["all_sources"] for row in enabled) or not enabled
+    declared_only = sorted(
+        {source for values in declared.values() for source in values if source != "*"}
+        - set(cells))
+    return {
+        "columns": columns,
+        "sources": [name for name, _count in totals.most_common()],
+        "cells": {name: cells.get(name, {}) for name in totals},
+        "totals": dict(totals.most_common()),
+        "declared": declared,
+        "unrestricted": unrestricted,
+        "declared_only": declared_only,
+    }
 
 
 def count_money(rows, index: dict, links: dict, our_tags: frozenset) -> dict:
@@ -994,6 +1145,8 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
     ledger: dict = {}
     pending: Counter = Counter()
     money: dict = {}
+    quality: dict = {}
+    prices: dict = {}
     links = link_index(None)
     rows: list[dict] = []
     capped = False
@@ -1013,6 +1166,8 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             pending = count_pending(pending_rows(conn), index)
             money = count_money(rows, index, links, our_tags)
             hist = history(rows, index, max(1, int(days)))
+            prices = price_index(conn)
+            quality = deal_quality(rows, index, prices)
         finally:
             conn.close()
 
@@ -1065,7 +1220,8 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "tag_targets": tagged,
             "tagless_targets": sorted(set(active) - set(tagged)),
             "channels": [{"name": r["name"], "enabled": r["enabled"], "amazon_tag": r["amazon_tag"],
-                          "sources": r["sources"], "all_sources": r["all_sources"]}
+                          "sources": r["sources"], "source_names": r.get("source_names") or [],
+                          "all_sources": r["all_sources"]}
                          for r in shelf_rows],
             "env_target": declared.get(key, ""),
             "deliveries": {"sent": bucket["sent"], "skipped": bucket["skipped"],
@@ -1080,6 +1236,7 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "skip_reasons": dict(bucket["reasons"].most_common(6)),
             "unresolved_targets": unresolved_here,
             "money": money_view(money, key),
+            "quality": quality_view(quality.get(key) or {}),
             "history": history_view(hist, key),
             "surfaces": {
                 "telegram": {"targets": active, "amazon_tag": bool(tagged)},
@@ -1122,10 +1279,14 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "pending": int(pending.get("main", 0)),
             "skip_reasons": dict(main_bucket["reasons"].most_common(6)),
             "money": money_view(money, "main"),
+            "quality": quality_view(quality.get("main") or {}),
             "history": history_view(hist, "main"),
         },
         "history_days": hist["days"],
         "money_totals": money_totals(rows, links, our_tags),
+        "quality_fleet": quality_view(quality.get("_fleet") or {}),
+        "source_matrix": source_matrix(quality, view, rules),
+        "price_rows": sum(len(v) for v in prices.values()),
         "our_amazon_tags": {"bestgaa": sorted(tags["bestgaa"]), "bridge": sorted(tags["bridge"]),
                             "read_error": tags["read_error"]},
         "link_tables": links["tables"],
@@ -1241,6 +1402,43 @@ def findings(report: dict) -> list[dict]:
                 f"link_cache/owned_link_proofs ({', '.join(report['link_tables']) or 'no tables'}), "
                 "so commission here is unproven rather than absent")
 
+    fleet = report["quality_fleet"]
+    fleet_avg = fleet.get("avg_score")
+
+    def quality_findings(label: str, key: str, earned: dict, declared=None,
+                         unrestricted: bool = False) -> None:
+        """Was this destination given good deals, and by the sources it declares?
+
+        `premium_score` and `posted_deals.price` are the bot's own numbers; this
+        only compares a shelf against the fleet, and says "unproven" when the
+        columns are empty rather than inventing a verdict.
+        """
+        if earned["posts"] and not earned["scored"]:
+            add("info", "quality_blind", key,
+                f"none of the {earned['posts']} post(s) on '{label}' carry a premium_score, so "
+                "deal quality here is unproven (rows rendered before that column existed?)")
+        elif (earned["scored"] >= 3 and fleet_avg and earned["avg_score"] is not None
+                and earned["avg_score"] < 0.5 * fleet_avg):
+            add("warn", "weak_shelf_quality", key,
+                f"'{label}' averages a premium_score of {earned['avg_score']} over "
+                f"{earned['scored']} scored post(s) against {fleet_avg} fleet-wide: the weakest "
+                "deals are landing on this shelf")
+        if earned["posts"] and not earned["price_rows"]:
+            add("info", "price_blind", key,
+                f"no posted_deals.price rows sit behind '{label}' posts, so its rupee spread is "
+                "unknown rather than cheap")
+        if earned.get("zero_score"):
+            add("info", "zero_score_posts", key,
+                f"{earned['zero_score']} post(s) on '{label}' scored 0: no discount, no price "
+                "bonus and no lowest-price claim")
+        if declared is not None and not unrestricted:
+            undeclared = sorted(set(earned["sources"]) - set(declared) - {"(no source)"})
+            if undeclared:
+                add("warn", "undeclared_source", key,
+                    f"'{label}' received posts from {', '.join(undeclared)}, which its channels do "
+                    "not declare now - either the config changed after those posts or a renamed "
+                    "source is still feeding this shelf")
+
     wa = report["whatsapp"]
     if wa["configured"]:
         for collision in wa["collisions"]:
@@ -1294,6 +1492,9 @@ def findings(report: dict) -> list[dict]:
                 "not the other")
 
         money_findings(shelf["label"], key, shelf["money"])
+        quality_findings(shelf["label"], key, shelf["quality"],
+                         declared=report["source_matrix"]["declared"].get(key),
+                         unrestricted=bool(report["source_matrix"]["unrestricted"].get(key)))
 
         if not shelf["targets"]:
             add("warn", "no_channel", key,
@@ -1326,6 +1527,13 @@ def findings(report: dict) -> list[dict]:
                 "until the tag is declared (AMAZON_TAG_CATEGORY_TARGETS / the channel's amazon_tag) - "
                 "this is the documented policy, not a fault")
     money_findings("Main", "", report["main"]["money"])
+    quality_findings("Main", "", report["main"]["quality"], declared=None, unrestricted=True)
+    dead = report["source_matrix"]["declared_only"]
+    if dead:
+        add("info", "dead_source", "",
+            f"{len(dead)} declared source(s) produced nothing in this window: "
+            f"{', '.join(dead[:6])}{' …' if len(dead) > 6 else ''} - widen --hours before "
+            "concluding they are dead")
     unclassified_total = report["unclassified_withheld"]["total"]
     if unclassified_total:
         routed_total = report["totals"]["routed"]
@@ -1420,6 +1628,25 @@ def render(report: dict) -> str:
             days=len(sent_series), spark=sparkline(sent_series),
             sent="/".join(str(v) for v in sent_series) or "-",
             skipped="/".join(str(day["skipped"]) for day in shelf["history"]) or "-"))
+        earned_q = shelf["quality"]
+        if earned_q["posts"]:
+            score_text = (f"avg {earned_q['avg_score']} (min {earned_q['min_score']}, "
+                          f"max {earned_q['max_score']}) over {earned_q['scored']} scored"
+                          if earned_q["scored"] else "no premium_score on any post")
+            price_text = (f" | price Rs{earned_q['price_min']}-Rs{earned_q['price_max']}, "
+                          f"median Rs{earned_q['price_median']} "
+                          f"({earned_q['under_99']} under Rs99)"
+                          if earned_q["price_rows"] else " | no recorded prices")
+            lines.append(f"    quality : {score_text}{price_text}")
+        else:
+            lines.append("    quality : nothing delivered in this window")
+        observed = ", ".join(f"{name} x{count}" for name, count in
+                             list(earned_q["sources"].items())[:5]) or "none"
+        declared_here = report["source_matrix"]["declared"].get(shelf["key"]) or []
+        lines.append("    sources : {observed}{declared}".format(
+            observed=observed,
+            declared=("" if report["source_matrix"]["unrestricted"].get(shelf["key"])
+                      else f" | declared: {', '.join(declared_here) or 'none'}")))
         surface = shelf["surfaces"]
         whatsapp = surface["whatsapp"]
         lines.append("    surface : telegram {tg}{tgtag} | whatsapp {wa}{policy}{watag}".format(
@@ -1444,6 +1671,29 @@ def render(report: dict) -> str:
                      "unattributed={unattributed}{routes}".format(**money))
     else:
         lines.append("  MONEY | nothing delivered in this window, so nothing to attribute")
+    fleet = report["quality_fleet"]
+    if fleet["posts"]:
+        lines.append("  QUALITY | fleet avg premium_score {avg} over {scored} scored post(s)"
+                     "{price} | sources: {sources}".format(
+                         avg=fleet["avg_score"] if fleet["avg_score"] is not None else "-",
+                         scored=fleet["scored"],
+                         price=(f" | price median Rs{fleet['price_median']}"
+                                f" (Rs{fleet['price_min']}-Rs{fleet['price_max']},"
+                                f" {fleet['under_99']} under Rs99)")
+                         if fleet["price_rows"] else "",
+                         sources=", ".join(f"{name} x{count}" for name, count in
+                                           list(fleet["sources"].items())[:6]) or "none"))
+    matrix = report["source_matrix"]
+    if matrix["sources"]:
+        lines.append("  SOURCE MATRIX | sends per source per shelf"
+                     + (" (DEAD = declared, nothing arrived)" if matrix["declared_only"] else ""))
+        for source in matrix["sources"]:
+            cells = ", ".join(f"{column} {count}" for column, count in
+                              sorted(matrix["cells"].get(source, {}).items()))
+            lines.append(f"    {source:<24}: {cells}")
+        for source in matrix["declared_only"]:
+            owners = sorted(key for key, names in matrix["declared"].items() if source in names)
+            lines.append(f"    {source:<24}: DEAD (declared by {', '.join(owners) or 'nobody'})")
     whatsapp = report["whatsapp"]
     lines.append("  WHATSAPP | {channels} category channel(s), {core} core, tags: {tags}"
                  "{state}".format(
@@ -1490,6 +1740,214 @@ def render(report: dict) -> str:
     return "\n".join(lines)
 
 
+HTML_CSS = """
+:root{color-scheme:dark}
+body{margin:0;padding:24px;background:#0b131f;color:#e2e8f0;
+     font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:26px 0 8px;color:#c7d4e5}
+.sub{color:#94a3b8;font-size:12px;margin:0 0 18px}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:6px 0 4px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1d2b3f;vertical-align:top}
+th{color:#9dacc1;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+tr.error td{background:#2a1215}tr.warn td{background:#241a12}tr.info td{background:#101a24}
+.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;background:#25364a}
+.pill.ok{background:#14532d}.pill.warn{background:#7c2d12}.pill.error{background:#7f1d1d}
+.muted{color:#94a3b8;font-size:12px}.bad{color:#fca5a5}.good{color:#86efac}
+.spark{font-size:15px;letter-spacing:1px}
+.stats{display:flex;flex-wrap:wrap;gap:10px;margin:10px 0 4px}
+.stat{background:#101a27;border:1px solid #1d2b3f;border-radius:10px;padding:8px 12px;min-width:110px}
+.stat b{display:block;font-size:19px}.stat span{color:#94a3b8;font-size:11px}
+footer{margin-top:26px;color:#94a3b8;font-size:12px;border-top:1px solid #1d2b3f;padding-top:10px}
+code{background:#101a27;padding:1px 5px;border-radius:5px;font-size:12px}
+"""
+
+
+def render_html(report: dict) -> str:
+    """A shareable weekly/shift report: one self-contained HTML file.
+
+    No JavaScript, no external asset, no font or CDN reference - it opens from a
+    phone, an email attachment or `file://` and cannot fetch or run anything.
+    Every value passes through `html.escape`, because shelf labels, channel names,
+    source names and logged reasons are all operator-controlled text.
+    """
+    def e(value) -> str:
+        """html.escape wants str; report values are ints, floats and None too."""
+        return html.escape(str(value if value is not None else ""))
+
+    totals = report["totals"]
+    fleet = report["quality_fleet"]
+    matrix = report["source_matrix"]
+    findings = report["findings"]
+    parts: list[str] = []
+    parts.append("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">")
+    parts.append('<meta name="viewport" content="width=device-width,initial-scale=1">')
+    parts.append(f"<title>Category report {e(ist_text(report['generated_at']))}</title>")
+    parts.append(f"<style>{HTML_CSS}</style></head><body>")
+    parts.append("<h1>What each shelf actually received</h1>")
+    parts.append(
+        '<p class="sub">window {hours:g}h &middot; generated {stamp} &middot; installed rules '
+        'v{version} &middot; bot reported v{bot} &middot; database <code>{db}</code>{dbstate}'
+        '</p>'.format(
+            hours=report["window_hours"], stamp=e(ist_text(report["generated_at"])),
+            version=e(report["rules_version"]),
+            bot=e(report.get("bot_rules_version") if report.get("bot_rules_version") is not None
+                  else "never"),
+            db=e(report["db"] or "-"),
+            dbstate="" if report["db_readable"] else ' <span class="bad">(NOT READABLE)</span>'))
+    money = report["money_totals"]
+    stats = [
+        (totals["shelves_with_channel"], "shelves reachable"),
+        (totals["sent"], "shelf sends"),
+        (totals["skipped"], "shelf skips"),
+        (totals["routed"], "routed by classifier"),
+        (totals["withheld"], "withheld from shelves"),
+        (totals["main_sent"], "Main sends"),
+        (money["owned"], "posts that pay us"),
+        (money["earns_nothing"] + money["foreign_tag"], "posts paying nobody/stranger"),
+        (fleet["avg_score"] if fleet["avg_score"] is not None else "-", "fleet avg score"),
+    ]
+    parts.append('<div class="stats">' + "".join(
+        f'<div class="stat"><b>{e(value)}</b><span>{e(label)}</span></div>'
+        for value, label in stats) + "</div>")
+
+    parts.append(f"<h2>Findings ({len(findings)})</h2>")
+    if findings:
+        parts.append("<table><thead><tr><th>Severity</th><th>Finding</th><th>Shelf</th>"
+                     "<th>What it means</th></tr></thead><tbody>")
+        for item in findings:
+            parts.append('<tr class="{sev}"><td><span class="pill {sev}">{sev}</span></td>'
+                         "<td>{kind}</td><td>{where}</td><td>{detail}</td></tr>".format(
+                             sev=e(item["severity"]), kind=e(item["kind"]),
+                             where=e(item["category"] or "-"), detail=e(item["detail"])))
+        parts.append("</tbody></table>")
+    else:
+        parts.append('<p class="good">No findings: every reachable shelf received posts, no '
+                     'category route was disabled, and both services classify with the same '
+                     'rules.</p>')
+
+    parts.append("<h2>Per shelf</h2>")
+    parts.append("<table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th>"
+                 "<th>Skip</th><th>Hold</th><th>Pend</th><th>Routed</th><th>Withheld</th>"
+                 "<th>Money</th><th>Quality</th><th>Trend</th><th>Surfaces</th>"
+                 "<th>Last send</th></tr></thead><tbody>")
+    for shelf in report["categories"]:
+        earned, quality = shelf["money"], shelf["quality"]
+        surface = shelf["surfaces"]
+        targets = ", ".join(
+            "@{name}{state}{tag}".format(
+                name=e(t),
+                state="" if t in shelf["active_targets"] else " (disabled)",
+                tag="" if t in shelf["tag_targets"] else " (tagless)")
+            for t in shelf["targets"]) or '<span class="muted">none</span>'
+        money_cell = ("{owned} paid &middot; {nothing} earn nothing{foreign}{unproven}"
+                      '<br><span class="muted">{posts} post(s)</span>'.format(
+                          owned=e(earned["owned"]), nothing=e(earned["earns_nothing"]),
+                          foreign=(f' &middot; <span class="bad">{e(earned["foreign_tag"])}'
+                                   ' foreign tag</span>') if earned["foreign_tag"] else "",
+                          unproven=(f' &middot; {e(earned["unattributed"])} unproven')
+                          if earned["unattributed"] else "",
+                          posts=e(earned["posts"]))
+                      ) if earned["posts"] else '<span class="muted">nothing delivered</span>'
+        quality_cell = ("avg {avg} (min {lo}, max {hi})<br><span class=\"muted\">{price}</span>"
+                        .format(avg=e(quality["avg_score"]), lo=e(quality["min_score"]),
+                                hi=e(quality["max_score"]),
+                                price=(f"Rs{e(quality['price_min'])}-Rs{e(quality['price_max'])}, "
+                                       f"median Rs{e(quality['price_median'])}")
+                        if quality["price_rows"] else "no recorded prices")) \
+            if quality["scored"] else '<span class="muted">unscored</span>'
+        series = shelf["history"]
+        trend_cell = ('<span class="spark" title="{title}">{spark}</span>'
+                      '<br><span class="muted">{days}d</span>'.format(
+                          title=e("sends per IST day: "
+                                  + "/".join(str(d["sent"]) for d in series) or "none"),
+                          spark=e(sparkline(series)), days=e(len(series)))
+                      ) if series else '<span class="muted">no trend</span>'
+        surface_cell = ("TG {tg}{tgtag}<br>WA {wa}".format(
+            tg=", ".join("@" + e(t) for t in surface["telegram"]["targets"])
+            or '<span class="muted">none</span>',
+            tgtag="" if surface["telegram"]["amazon_tag"] else ' <span class="muted">(tagless)</span>',
+            wa=(e(surface["whatsapp"]["channel"])
+                + (f' <span class="pill ok">{e(surface["whatsapp"]["policy"])}</span>'
+                   if surface["whatsapp"]["filtered"]
+                   else ' <span class="pill warn">not filtered</span>'))
+            if surface["whatsapp"]["channel"] else '<span class="muted">not configured</span>'))
+        skips = ", ".join(f"{e(r)} x{e(n)}" for r, n in list(shelf["skip_reasons"].items())[:3])
+        withheld = ", ".join(f"{e(r)} x{e(n)}" for r, n in
+                             list(shelf["withheld"]["reasons"].items())[:3])
+        parts.append(
+            "<tr><td><b>{label}</b><br><span class=\"muted\">{key} &middot; {aliases} aliases"
+            "</span></td><td><span class=\"pill {statecls}\">{state}</span></td>"
+            "<td>{targets}</td><td>{sent}</td><td>{skipped}{skips}</td><td>{held}</td>"
+            "<td>{pending}</td><td>{routed}</td><td>{withheld_total}{withheld_reasons}</td>"
+            "<td>{money}</td><td>{quality}</td><td>{trend}</td><td>{surface}</td>"
+            "<td class=\"muted\">{last}</td></tr>".format(
+                label=e(shelf["label"]), key=e(shelf["key"]), aliases=e(shelf["aliases"]),
+                state=e(shelf["state"]),
+                statecls="ok" if shelf["state"] == "ok" else "warn",
+                targets=targets, sent=e(shelf["deliveries"]["sent"]),
+                skipped=e(shelf["deliveries"]["skipped"]),
+                skips=f'<br><span class="muted">{skips}</span>' if skips else "",
+                held=e(shelf["deliveries"]["held"]), pending=e(shelf["pending"]),
+                routed=e(shelf["routed"]), withheld_total=e(shelf["withheld"]["total"]),
+                withheld_reasons=(f'<br><span class="muted">{withheld}</span>' if withheld else ""),
+                money=money_cell, quality=quality_cell, trend=trend_cell, surface=surface_cell,
+                last=e(shelf["last_sent"] or "never")))
+    parts.append("</tbody></table>")
+
+    if matrix["sources"] or matrix["declared_only"]:
+        parts.append("<h2>Which source feeds which shelf</h2>")
+        parts.append("<table><thead><tr><th>Source</th>"
+                     + "".join(f"<th>{e(column)}</th>" for column in matrix["columns"])
+                     + "<th>Total</th></tr></thead><tbody>")
+        for source in matrix["sources"] + matrix["declared_only"]:
+            dead = source in matrix["declared_only"]
+            cells = matrix["cells"].get(source, {})
+            parts.append("<tr{cls}><td>{name}{mark}</td>{cells}<td>{total}</td></tr>".format(
+                cls=' class="info"' if dead else "",
+                name=e(source),
+                mark=(' <span class="pill warn">DEAD</span>' if dead else ""),
+                cells="".join(f"<td>{e(cells.get(column, 0) or '')}</td>"
+                              for column in matrix["columns"]),
+                total=e(matrix["totals"].get(source, 0))))
+        parts.append("</tbody></table>")
+
+    main = report["main"]
+    parts.append("<h2>Main (unfiltered) and everything else</h2>")
+    parts.append("<table><tbody>")
+    parts.append("<tr><td>Main</td><td>sent {sent}, skipped {skipped}, held {held}, pending "
+                 "{pending}</td><td class=\"muted\">last send {last}</td></tr>".format(
+                     sent=e(main["deliveries"]["sent"]), skipped=e(main["deliveries"]["skipped"]),
+                     held=e(main["deliveries"]["held"]), pending=e(main["pending"]),
+                     last=e(main["last_sent"] or "never")))
+    unclassified = report["unclassified_withheld"]
+    if unclassified["total"]:
+        parts.append("<tr><td>Unclassified</td><td>{total} post(s) withheld from every shelf"
+                     "</td><td class=\"muted\">{reasons}</td></tr>".format(
+                         total=e(unclassified["total"]),
+                         reasons=e(", ".join(f"{r} x{n}" for r, n in
+                                             list(unclassified["reasons"].items())[:4]))))
+    for key, value in report["foreign_category_withheld"].items():
+        parts.append("<tr><td>Unknown category</td><td>the bot withheld {total} post(s) for "
+                     "{key}</td><td class=\"muted\">not in the installed taxonomy</td></tr>"
+                     .format(total=e(value["total"]), key=e(key)))
+    for target in report["unrouted_targets"]:
+        parts.append("<tr><td>Unclaimed target</td><td>{target}</td><td class=\"muted\">no "
+                     "config claims it</td></tr>".format(target=e(target)))
+    parts.append("</tbody></table>")
+
+    whatsapp = report["whatsapp"]
+    parts.append("<footer>WhatsApp surface: {channels} category channel(s), {core} core, tags "
+                 "{tags}{state}. Read-only report: the database was opened <code>mode=ro</code>, "
+                 "nothing was queued, sent or restarted. Reproduce with "
+                 "<code>python3 ops/category_report.py --hours {hours:g}</code>.</footer>".format(
+                     channels=e(len(whatsapp["channels"])), core=e(len(whatsapp["core"])),
+                     tags=e(", ".join(whatsapp["tag_categories"]) or "none"),
+                     state="" if whatsapp["configured"] else " (not configured: not judged)",
+                     hours=report["window_hours"]))
+    parts.append("</body></html>")
+    return "\n".join(parts)
+
+
 def jsonable(report: dict) -> dict:
     """Counter objects are not JSON-serialisable; nothing else changes shape."""
     def clean(value):
@@ -1524,6 +1982,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="safety cap on ledger rows read for money/trend/drill-down; "
                              "hitting it is reported as a finding, never silently")
     parser.add_argument("--json", action="store_true", help="machine-readable report")
+    parser.add_argument("--html", default=None, metavar="PATH",
+                        help="also write a self-contained HTML report (no JavaScript, no "
+                             "external asset) to PATH, or to stdout with '-'")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any error/warn finding exists")
     parser.add_argument("--strict-errors", action="store_true",
@@ -1538,10 +1999,26 @@ def main(argv: list[str] | None = None) -> int:
                           env=load_env(args.env_file), days=args.days,
                           expand=args.expand, expand_limit=args.expand_limit,
                           max_posts=args.max_posts)
-    if args.json:
-        print(json.dumps(jsonable(report), indent=2, ensure_ascii=False))
+    if args.html == "-":
+        # stdout carries the document only, so it can be redirected or piped
+        # straight into a mail; every human summary line goes to stderr.
+        print(render_html(report))
     else:
-        print(render(report))
+        if args.json:
+            print(json.dumps(jsonable(report), indent=2, ensure_ascii=False))
+        else:
+            print(render(report))
+        if args.html:
+            document = render_html(report)
+            target = Path(args.html)
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(document, encoding="utf-8")
+            except OSError as exc:
+                print(f"CATEGORY REPORT | cannot write {target}: {exc}", file=sys.stderr)
+                return 2
+            print(f"CATEGORY REPORT | HTML written to {target} "
+                  f"({len(document)} bytes, no JavaScript, no external asset)", file=sys.stderr)
     if args.strict or args.strict_errors:
         wanted = ("error", "warn") if args.strict else ("error",)
         actionable = [f for f in report["findings"] if f["severity"] in wanted]

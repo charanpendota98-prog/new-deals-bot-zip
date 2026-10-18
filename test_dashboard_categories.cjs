@@ -27,6 +27,16 @@ function report() {
                collisions: [{jid: '120363001@newsletter', categories: ['electronics', 'grocery'],
                  why: 'two categories share one WhatsApp channel'}]},
     history_days: ['2026-10-16', '2026-10-17', '2026-10-18'],
+    quality_fleet: {posts: 6, scored: 6, unscored: 0, avg_score: 900.0, min_score: 100,
+                    max_score: 1300, zero_score: 0, price_rows: 3, price_min: 49,
+                    price_median: 749, price_max: 2499, under_99: 1, under_499: 1,
+                    sources: {deals: 5, ['loot' + EVIL]: 1}},
+    source_matrix: {columns: ['electronics', 'grocery', 'main'],
+                    sources: ['deals', 'loot' + EVIL], cells: {deals: {electronics: 4, main: 2},
+                    ['loot' + EVIL]: {electronics: 1}}, totals: {deals: 6, ['loot' + EVIL]: 1},
+                    declared: {electronics: ['deals', 'ghostsrc'], grocery: []},
+                    unrestricted: {electronics: false, grocery: true},
+                    declared_only: ['ghostsrc']},
     recent: {electronics: [
       {queue_id: 7, at: '2026-10-18 09:12 IST', target: 'electroshelf' + EVIL, status: 'sent',
        reason: '', error: '', money: 'owned', route: 'amazon',
@@ -52,6 +62,10 @@ function report() {
                            route: 'amazon', at: '2026-10-18 08:00 IST', host: 'amazon.in'}]},
        history: [{day: '2026-10-16', sent: 1, skipped: 0}, {day: '2026-10-17', sent: 2, skipped: 1},
                  {day: '2026-10-18', sent: 3, skipped: 0}],
+       quality: {posts: 6, scored: 5, unscored: 1, avg_score: 1060.0, min_score: 100,
+                 max_score: 1300, zero_score: 0, price_rows: 4, price_min: 49, price_median: 424,
+                 price_max: 2499, under_99: 2, under_499: 0,
+                 sources: {deals: 4, unknownsrc: 1, ['loot' + EVIL]: 1}},
        surfaces: {telegram: {targets: ['electroshelf' + EVIL], amazon_tag: false},
                   whatsapp: {channel: '120363001@newsletter', filtered: true,
                              policy: 'category:electronics', amazon_tag: true}}},
@@ -63,6 +77,9 @@ function report() {
                routes: {}, examples: []},
        history: [{day: '2026-10-16', sent: 0, skipped: 0}, {day: '2026-10-17', sent: 0, skipped: 0},
                  {day: '2026-10-18', sent: 0, skipped: 0}],
+       quality: {posts: 0, scored: 0, unscored: 0, avg_score: null, min_score: null, max_score: null,
+                 zero_score: 0, price_rows: 0, price_min: null, price_median: null,
+                 price_max: null, under_99: 0, under_499: 0, sources: {}},
        surfaces: {telegram: {targets: [], amazon_tag: false},
                   whatsapp: {channel: '', filtered: false, policy: '', amazon_tag: false}}}],
     findings: [
@@ -140,18 +157,36 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.match(grocery.textContent, /configured but disabled/, 'a disabled shelf is not "no channel"');
   assert.match(grocery.textContent, /\(disabled\)/, 'the inactive target is marked');
   assert.match(grocery.textContent, /\(tagless\)/, 'the Amazon-tag state is marked');
-  assert.equal(grocery.querySelectorAll('td').length, 13, 'the row keeps its shape');
+  assert.equal(grocery.querySelectorAll('td').length, 14, 'the row keeps its shape');
+  assert.match(electronics.querySelectorAll('td')[10].textContent, /avg 1060/,
+    'the deal-quality cell shows the bot own average score');
+  assert.match(electronics.querySelectorAll('td')[10].textContent, /Rs49-Rs2499, median Rs424/,
+    'and the recorded rupee spread');
+  assert.match(electronics.querySelectorAll('td')[10].textContent, /deals×4/,
+    'and which sources fed it');
+  assert.match(grocery.querySelectorAll('td')[10].textContent, /nothing delivered/,
+    'a shelf with no posts has no quality verdict');
+  const srcHead = d.getElementById('catsourcehead').textContent;
+  const srcBody = d.getElementById('catsources');
+  assert.match(srcHead, /Source/, 'the source matrix has a header');
+  assert.equal(srcBody.querySelectorAll('tr').length, 3,
+    'one matrix row per observed or declared-only source');
+  assert.match(srcBody.textContent, /ghostsrc/, 'a declared-but-silent source is still listed');
+  assert.match(srcBody.textContent, /DEAD/, 'and marked DEAD');
+  assert.ok(srcBody.textContent.includes('loot<img src=x'),
+    'a hostile source name in the matrix stays text');
+  assert.equal(srcBody.querySelectorAll('img').length, 0, 'no injected element in the matrix');
 
   // --- money, trend and surfaces ---------------------------------------------
   assert.match(electronics.textContent, /4 paid · 1 earn nothing/, 'the money verdict is shown');
   assert.match(electronics.textContent, /1 foreign tag/, 'a stranger\'s tag is called out');
   assert.match(electronics.textContent, /6 post\(s\)/, 'the money denominator is shown');
   assert.match(grocery.textContent, /nothing delivered/, 'a shelf with no posts says so');
-  const sparkCell = electronics.querySelectorAll('td')[10];
+  const sparkCell = electronics.querySelectorAll('td')[11];
   assert.match(sparkCell.textContent, /[\u2581-\u2588]{3}/, 'a sparkline character per IST day');
   assert.match(sparkCell.getAttribute('title') || '', /sends per IST day: 1\/2\/3/,
     'the exact numbers are in the title, so the picture is never the only evidence');
-  assert.match(grocery.querySelectorAll('td')[10].textContent, /\u2581\u2581\u2581/,
+  assert.match(grocery.querySelectorAll('td')[11].textContent, /\u2581\u2581\u2581/,
     'an all-zero trend is a flat floor, not a blank cell');
   assert.match(electronics.textContent, /TG @electroshelf/, 'the Telegram surface is shown');
   assert.match(electronics.textContent, /WA 120363001@newsletter/, 'the WhatsApp surface is shown');
@@ -206,7 +241,7 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   const detail = d.querySelector('#catrows tr.catdetail');
   assert.equal(detail.querySelectorAll(':scope > td').length, 1,
     'the detail is one cell of the outer table');
-  assert.equal(detail.querySelector(':scope > td').colSpan, 13, 'and it spans every column');
+  assert.equal(detail.querySelector(':scope > td').colSpan, 14, 'and it spans every column');
   assert.equal(detail.querySelectorAll('table tbody tr').length, 2,
     'one drill-down line per delivery row');
   assert.equal(detail.querySelectorAll('table thead th').length, 7,
@@ -235,7 +270,9 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   categoryPayload = {};
   await w.loadCategories();
   assert.equal(d.querySelectorAll('#catrows tr').length, 1, 'a single empty-state row');
-  assert.equal(d.querySelector('#catrows tr td').colSpan, 13, 'the empty state spans every column');
+  assert.equal(d.querySelector('#catrows tr td').colSpan, 14, 'the empty state spans every column');
+  assert.match(d.getElementById('catsources').textContent, /no source traffic/,
+    'an empty payload empties the matrix too');
   assert.match(d.getElementById('catrows').textContent, /no category rules installed/);
   assert.match(d.getElementById('catnote').textContent, /no bot log found/,
     'missing log evidence is stated, never implied');
@@ -250,6 +287,8 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   // --- a dead endpoint must not blank the rest of the dashboard --------------
   categoryPayload = report(); categoryStatus = 500;
   await w.refresh();
+  assert.match(d.getElementById('catsources').textContent, /no source traffic/,
+    'a dead endpoint clears the source matrix instead of leaving a stale picture');
   assert.match(d.getElementById('catnote').textContent, /category data unavailable/,
     'the failure is reported in the panel');
   assert.match(d.getElementById('catrows').textContent, /no category data/);

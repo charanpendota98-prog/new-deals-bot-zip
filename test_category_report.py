@@ -737,6 +737,7 @@ def make_money_db(path: Path, posts, links=(), proofs=()) -> Path:
     return path
 
 
+EVIL_LABEL = '<img src=x onerror="window.__pwned=1">'
 OUR_TAG = sorted(cr.our_amazon_tags()["bestgaa"] or {"mama086-21"})[0]
 STRANGER_TAG = "somebody-else-21"
 EMPTY_LINKS = cr.link_index(None)      # the real empty shape, keys included
@@ -1112,6 +1113,154 @@ def test_drilldown():
           and json.dumps(cr.jsonable(report))[:10])
 
 
+QUALITY_CONFIG = {"version": 1, "channels": [
+    {"name": "ElectroShelf", "sources": ["deals", "lootzone"], "categories": ["electronics"],
+     "enabled": True, "amazon_tag": True},
+    {"name": "StyleShelf", "sources": ["*"], "categories": ["fashion", "accessories"],
+     "enabled": True, "amazon_tag": True},
+    {"name": "HomeShelf", "sources": ["deals"], "categories": ["home_kitchen"],
+     "enabled": True, "amazon_tag": True},
+    {"name": "MyMainDeals", "sources": ["*"], "enabled": True, "amazon_tag": True},
+]}
+
+
+def make_quality_db(path: Path, posts, prices=()) -> Path:
+    """A ledger that also carries the bot's own deal ranking and recorded prices.
+
+    `queue.premium_score` and `posted_deals.price` are the bot's numbers; the
+    report must compare them, never recompute or re-judge them.
+    """
+    store = bot.Store(path)
+    now = time.time()
+    for index, (target, status, error, age, source, score) in enumerate(posts, start=1):
+        store.conn.execute(
+            "INSERT INTO queue(id,chat_id,msg_id,source,status,attempts,last_error,created_at,"
+            "chat_key,rendered_text,targets_json,premium_score) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (index, -100 - index, index, source, "done", 1, "", now - age,
+             str(-100 - index), f"deal {index} https://hypd.store/p/{index}",
+             json.dumps([target]), score))
+        store.conn.execute("INSERT INTO deliveries VALUES(?,?,?,?,?,?)",
+                           (index, target, status, 1, 1, error))
+    for deal_key, price, queue_id in prices:
+        store.conn.execute("INSERT INTO posted_deals VALUES(?,?,?,?)",
+                           (deal_key, price, now - 60, queue_id))
+    store.conn.commit()
+    store.conn.close()
+    return path
+
+
+def test_quality_and_sources():
+    print("\n== quality + sources: which shelf gets weak deals, and from where ==")
+    db = make_quality_db(WORK / "quality.sqlite3", posts=[
+        ("ElectroShelf", "sent", "", 3600, "deals", 1300),
+        ("ElectroShelf", "sent", "", 7200, "deals", 1300),
+        ("ElectroShelf", "sent", "", 9000, "Deals", 1300),        # same source, other case
+        ("ElectroShelf", "sent", "", 9500, "deals", 1300),
+        ("ElectroShelf", "sent", "", 10000, "unknownsrc", 100),   # not declared anywhere
+        ("StyleShelf", "sent", "", 3600, "anything", 100),        # '*' channel: unrestricted
+        ("StyleShelf", "sent", "", 4000, "anything", 100),
+        ("StyleShelf", "sent", "", 4400, "anything", 100),
+        ("HomeShelf", "sent", "", 5000, "deals", None),           # no score at all
+        ("HomeShelf", "sent", "", 5400, "deals", None),
+        ("HomeShelf", "skipped", "FloodWaitError: 9s", 5600, "deals", 900),
+        ("MyMainDeals", "sent", "", 6000, "deals", 900),
+        ("MyMainDeals", "sent", "", 6400, "deals", 900),
+    ], prices=[("d1", 99, 1), ("d2", 749, 2), ("d3", 2499, 3), ("d4", 49, 4)])
+
+    report = cr.build_report(db=db, log=None, hours=24, channels_data=QUALITY_CONFIG,
+                             rules=RULES, env={}, snapshot={})
+    by_key = {c["key"]: c for c in report["categories"]}
+    electro = by_key["electronics"]["quality"]
+    check("the bot's own premium_score is averaged per shelf, not recomputed",
+          electro["avg_score"] == 1060.0 and electro["min_score"] == 100
+          and electro["max_score"] == 1300 and electro["scored"] == 5, str(electro))
+    check("a shelf's recorded prices are read from posted_deals",
+          electro["price_rows"] == 4 and electro["price_min"] == 49
+          and electro["price_median"] == 424 and electro["price_max"] == 2499, str(electro))
+    check("the cheap-deal bands are counted (the bot's own premium thresholds)",
+          electro["under_99"] == 2 and electro["under_499"] == 0, str(electro))
+    home = by_key["home_kitchen"]["quality"]
+    check("posts with no premium_score are counted as unscored, not as zero",
+          home["scored"] == 0 and home["unscored"] == 2 and home["posts"] == 2, str(home))
+    check("a shelf whose deals cannot be scored says so instead of looking bad",
+          any(f["kind"] == "quality_blind" and f["category"] == "home_kitchen"
+              for f in report["findings"]), str([f["kind"] for f in report["findings"]]))
+    check("a shelf with no recorded prices says the spread is unknown",
+          any(f["kind"] == "price_blind" and f["category"] == "home_kitchen"
+              for f in report["findings"]), str([f["kind"] for f in report["findings"]]))
+
+    kinds = {(f["kind"], f["category"]) for f in report["findings"]}
+    check("a shelf averaging under half the fleet is called weak, with both numbers",
+          ("weak_shelf_quality", "fashion") in kinds, str(sorted(kinds)))
+    weak = next(f["detail"] for f in report["findings"]
+                if f["kind"] == "weak_shelf_quality" and f["category"] == "fashion")
+    check("the weak-shelf finding names the shelf average and the fleet average",
+          "100.0" in weak and str(report["quality_fleet"]["avg_score"]) in weak, weak)
+    check("the fleet average counts every delivered post exactly once",
+          report["quality_fleet"]["posts"] == 12
+          and report["quality_fleet"]["scored"] == 10, str(report["quality_fleet"]))
+    check("a two-post sample is not judged against the fleet",
+          ("weak_shelf_quality", "electronics") not in kinds, str(sorted(kinds)))
+
+    check("sources are counted per shelf",
+          by_key["electronics"]["quality"]["sources"].get("deals") == 4,
+          str(by_key["electronics"]["quality"]["sources"]))
+    check("a handle source is case-insensitive, like channels_config compares it",
+          cr.source_id("Deals") == cr.source_id("deals") == "deals")
+    check("an invite link's code keeps its case (different chats, not a typo)",
+          cr.source_id("https://t.me/+AbC") != cr.source_id("https://t.me/+abc"))
+    check("an empty source is reported, not dropped",
+          cr.source_id("") == "(no source)")
+
+    check("traffic from a source the shelf does not declare is a finding",
+          ("undeclared_source", "electronics") in kinds, str(sorted(kinds)))
+    undeclared = next(f["detail"] for f in report["findings"]
+                      if f["kind"] == "undeclared_source" and f["category"] == "electronics")
+    check("the finding names the undeclared source", "unknownsrc" in undeclared, undeclared)
+    check("a '*' channel is unrestricted, so any source is declared by definition",
+          ("undeclared_source", "fashion") not in kinds
+          and report["source_matrix"]["unrestricted"]["fashion"] is True, str(sorted(kinds)))
+    check("a declared source that produced nothing is listed as DEAD, not silently absent",
+          report["source_matrix"]["declared_only"] == ["lootzone"]
+          and any(f["kind"] == "dead_source" and "lootzone" in f["detail"]
+                  for f in report["findings"]),
+          str(report["source_matrix"]["declared_only"]))
+
+    matrix = report["source_matrix"]
+    check("the matrix has a column per shelf plus Main",
+          matrix["columns"][-1] == "main" and "electronics" in matrix["columns"],
+          str(matrix["columns"]))
+    check("the matrix cells add up to the shelf's own source counts",
+          matrix["cells"]["deals"]["electronics"] == 4
+          and matrix["cells"]["anything"]["fashion"] == 3, str(matrix["cells"]))
+    check("the matrix totals rank the sources",
+          list(matrix["totals"])[0] == "deals", str(matrix["totals"]))
+    text = cr.render(report)
+    check("the rendered report carries the quality and source-matrix blocks",
+          "QUALITY |" in text and "SOURCE MATRIX |" in text, text[:200])
+    check("the rendered matrix marks a dead source and names its owner",
+          "lootzone" in text and "DEAD (declared by electronics)" in text, text[-800:])
+    check("each shelf prints its observed and declared sources side by side",
+          "sources : deals x4" in text and "declared: deals, lootzone" in text, text[:1200])
+    payload = json.loads(json.dumps(cr.jsonable(report)))
+    payload_electronics = next(c for c in payload["categories"] if c["key"] == "electronics")
+    check("quality and the matrix survive JSON for the dashboard",
+          payload_electronics["quality"]["avg_score"] == 1060.0
+          and payload["source_matrix"]["declared_only"] == ["lootzone"]
+          and payload["quality_fleet"]["posts"] == 12,
+          str(payload["source_matrix"])[:200])
+
+    # A malicious source name is data: it must round-trip intact for the UI to
+    # escape, never be interpreted here.
+    evil = make_quality_db(WORK / "evil-source.sqlite3", posts=[
+        ("ElectroShelf", "sent", "", 60, EVIL_LABEL, 900)])
+    evil_report = cr.build_report(db=evil, log=None, hours=24, channels_data=QUALITY_CONFIG,
+                                  rules=RULES, env={}, snapshot={})
+    check("a hostile source name is reported verbatim as data",
+          EVIL_LABEL in evil_report["source_matrix"]["sources"]
+          and EVIL_LABEL in cr.render(evil_report), str(evil_report["source_matrix"]["sources"]))
+
+
 def watch_fixture(td: Path) -> tuple[Path, dict]:
     """A genuinely healthy shelf: mini rules, one send, tag declared, versions equal.
 
@@ -1282,10 +1431,10 @@ def test_ui_wiring_advanced():
                      "async function toggleShelf", "function renderShelfDetail",
                      "function findShelfRow"):
         check(f"the served JavaScript defines {function.split()[-1]}", function in body)
-    check("the table grew the three new columns",
-          "<th>Money</th><th>Trend</th><th>Surfaces</th>" in html, html[:200])
+    check("the table grew the money, quality, trend and surface columns",
+          "<th>Money</th><th>Deal quality</th><th>Trend</th><th>Surfaces</th>" in html, html[:200])
     check("every empty state spans the new column count",
-          'colspan="13"' in html and 'colspan="10"' not in html.split("id=\"categories\"")[1]
+          'colspan="14"' in html and 'colspan="10"' not in html.split("id=\"categories\"")[1]
           .split("</table>")[0], "a stale colspan would break the empty states")
     check("the trend window has its own picker",
           'id="catdays"' in html and "days=" in body)
@@ -1310,6 +1459,25 @@ def test_ui_wiring_advanced():
           "Math.max(0,Number(" in body and "blocks[Math.min(7," in body)
     check("the money headline is a stat, not a footnote",
           "'posts that pay us'" in body, body[:200])
+    for function in ("function qualityCell", "function renderSourceMatrix"):
+        check(f"the served JavaScript defines {function.split()[-1]}", function in body)
+    check("the panel grew a source-matrix table under the shelf table",
+          'id="catsources"' in html and 'id="catsourcehead"' in html
+          and "Which source feeds which shelf" in html, html[:200])
+    check("a declared-but-silent source is marked DEAD in the matrix",
+          '<span class="badge warn">DEAD</span>' in body)
+    qcell = body.split("function qualityCell")[1].split("\nfunction ")[0]
+    check("qualityCell escapes what it interpolates", "escapeHTML(" in qcell, qcell[:200])
+    check("qualityCell never interpolates a response field directly",
+          "${q." not in qcell, qcell[:200])
+    matrix_fn = body.split("function renderSourceMatrix")[1].split("\nfunction ")[0]
+    check("the matrix escapes source names and column keys",
+          "escapeHTML(name)" in matrix_fn and "escapeHTML(c)" in matrix_fn, matrix_fn[:300])
+    check("the matrix never interpolates a response field directly",
+          "${matrix." not in matrix_fn and "${cells[" not in matrix_fn
+          and "${name}" not in matrix_fn, matrix_fn[:300])
+    check("the empty states span the 14-column table",
+          'colspan="14"' in html and 'colspan="13"' not in html, html[:200])
     check("the WhatsApp surface summary reaches the note",
           "WhatsApp: " in body and "COLLISION" in body)
     check("a capped ledger is announced in the panel",
@@ -1324,6 +1492,7 @@ if __name__ == "__main__":
         test_trend()
         test_surfaces()
         test_drilldown()
+        test_quality_and_sources()
         test_log_signals()
         test_findings()
         test_cli()

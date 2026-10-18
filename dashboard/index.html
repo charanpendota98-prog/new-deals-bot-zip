@@ -116,8 +116,11 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <p id="catnote" class="muted" role="status" aria-live="polite">loading…</p>
 <div class="row" id="catstats"></div>
 <p id="catfindings" aria-live="polite"></p>
-<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Money</th><th>Trend</th><th>Surfaces</th><th>Last send</th></tr></thead>
+<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Money</th><th>Deal quality</th><th>Trend</th><th>Surfaces</th><th>Last send</th></tr></thead>
 <tbody id="catrows"></tbody></table></div>
+<h3>Which source feeds which shelf</h3>
+<p class="muted">Observed sends per source per shelf from the delivery ledger, against the sources each channel declares. <span class="badge warn">DEAD</span> = declared by a channel, nothing arrived in this window.</p>
+<div class="tablewrap" id="catsourceswrap"><table><thead id="catsourcehead"></thead><tbody id="catsources"></tbody></table></div>
 </div>
 <div class="card"><h2>Test a category before posting</h2>
 <p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
@@ -294,6 +297,41 @@ function surfaceCell(sf){
     : '<span class="muted">not configured</span>';
   return `TG ${targets}${tagNote}<br>WA ${channel}`;
 }
+function qualityCell(q){
+  // premium_score and posted_deals.price are the bot's own numbers; this cell
+  // only shows them, and says "unproven" when the columns are empty.
+  if(!q||!Number(q.posts)) return '<span class="muted">nothing delivered</span>';
+  if(!Number(q.scored)) return '<span class="muted">unscored posts</span>';
+  const price=Number(q.price_rows)
+    ?`<br><span class="muted">Rs${escapeHTML(q.price_min)}-Rs${escapeHTML(q.price_max)}, median Rs${escapeHTML(q.price_median)} (${escapeHTML(q.under_99)} under Rs99)</span>`
+    :'<br><span class="muted">no recorded prices</span>';
+  const sources=Object.entries(q.sources||{}).slice(0,3)
+    .map(([name,count])=>escapeHTML(name)+'×'+escapeHTML(count)).join(', ');
+  return `avg ${escapeHTML(q.avg_score)} (min ${escapeHTML(q.min_score)}, max ${escapeHTML(q.max_score)})`
+    +`<br><span class="muted">${escapeHTML(q.scored)} scored${sources?' · '+sources:''}</span>${price}`;
+}
+function renderSourceMatrix(data){
+  const matrix=data.source_matrix||{}, columns=Array.isArray(matrix.columns)?matrix.columns:[];
+  const head=document.getElementById('catsourcehead');
+  const body=document.getElementById('catsources');
+  const names=(Array.isArray(matrix.sources)?matrix.sources:[])
+    .concat(Array.isArray(matrix.declared_only)?matrix.declared_only:[]);
+  if(!columns.length||!names.length){
+    head.innerHTML=''; body.innerHTML='<tr><td class="muted">no source traffic in this window</td></tr>';
+    return;
+  }
+  head.innerHTML='<tr><th>Source</th>'+columns.map(c=>`<th>${escapeHTML(c)}</th>`).join('')
+    +'<th>Total</th></tr>';
+  const declaredOnly=new Set(matrix.declared_only||[]);
+  body.innerHTML=names.map(name=>{
+    const cells=matrix.cells&&matrix.cells[name]?matrix.cells[name]:{};
+    const dead=declaredOnly.has(name);
+    return `<tr${dead?' class="catdetail"':''}><td>${escapeHTML(name)}`
+      +(dead?' <span class="badge warn">DEAD</span>':'')+'</td>'
+      +columns.map(c=>`<td>${escapeHTML(cells[c]||'')}</td>`).join('')
+      +`<td>${escapeHTML((matrix.totals||{})[name]||0)}</td></tr>`;
+  }).join('');
+}
 function findShelfRow(key){
   return Array.from(document.querySelectorAll('#catrows tr[data-key]'))
     .find(tr=>tr.dataset.key===key)||null;
@@ -308,7 +346,7 @@ async function toggleShelf(key){
   const detail=document.createElement('tr');
   detail.className='catdetail';
   const cell=document.createElement('td');
-  cell.colSpan=13;
+  cell.colSpan=14;
   cell.className='muted';
   cell.textContent='loading the newest delivery rows for '+key+'…';
   detail.appendChild(cell);
@@ -415,7 +453,7 @@ function renderCategories(data){
       pending=escapeHTML(c.pending||0), routed=escapeHTML(c.routed||0), withheld=escapeHTML(w.total||0),
       last=escapeHTML(c.last_sent||'never'), skipNote=skips?`<br><span class="muted">${skips}</span>`:'',
       withheldNote=reasons?`<br><span class="muted">${reasons}</span>`:'',
-      money=moneyCell(c.money), surface=surfaceCell(c.surfaces),
+      money=moneyCell(c.money), surface=surfaceCell(c.surfaces), quality=qualityCell(c.quality),
       series=Array.isArray(c.history)?c.history:[],
       spark=escapeHTML(sparkline(series)),
       sparkTitle=escapeHTML('sends per IST day: '+(series.map(x=>Number(x&&x.sent)||0).join('/')||'none')),
@@ -428,10 +466,11 @@ function renderCategories(data){
       +`<td>${held}</td><td>${pending}</td><td>${routed}</td>`
       +`<td>${withheld}${withheldNote}</td>`
       +`<td>${money}</td>`
+      +`<td>${quality}</td>`
       +`<td title="${sparkTitle}">${trend}</td>`
       +`<td>${surface}</td>`
       +`<td class="muted">${last}</td></tr>`;
-  }).join('') || '<tr><td colspan="13" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
+  }).join('') || '<tr><td colspan="14" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
   // The panel refreshes every few seconds; an open drill-down is being read, so
   // the table freezes instead of snapping shut under the operator's cursor.
   if(document.querySelectorAll('#catrows tr.open').length){
@@ -439,6 +478,7 @@ function renderCategories(data){
   }else{
     document.getElementById('catrows').innerHTML = rowsHTML;
   }
+  renderSourceMatrix(data);
   const badge=document.getElementById('catwindow');
   if(badge) badge.textContent='last '+(document.getElementById('cathours').value||'24')+'h · '+actionable.length+' actionable finding(s)';
 }
@@ -452,7 +492,8 @@ async function loadCategories(){
     document.getElementById('catnote').textContent='category data unavailable: '+e.message;
     document.getElementById('catstats').innerHTML='';
     document.getElementById('catfindings').textContent='';
-    document.getElementById('catrows').innerHTML='<tr><td colspan="13" class="muted">no category data</td></tr>';
+    document.getElementById('catrows').innerHTML='<tr><td colspan="14" class="muted">no category data</td></tr>';
+    renderSourceMatrix({});
   }
 }
 function toggleSrcs(){ sourceSummary('f'); }

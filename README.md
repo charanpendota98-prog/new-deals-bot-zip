@@ -70,7 +70,7 @@ separate operator-controlled step.
 | `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
 | `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
-| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only |
 | `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
 | `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
 | `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
@@ -1487,7 +1487,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `a6215902ef5c2a0941a95475dbaaedd9146eb9071b49f63a455f9071cba96596` |
+| `ops/category_report.py` | `9759971576b3366c2552b2ce5a01cd7319e811cc373c48aedba6ba51d8c6f83b` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
@@ -1514,9 +1514,9 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `a98dbf7a3f6dfb3a41890e1bd8acef2a0abf226ea495bd9ecef220c3065f4649` |
+| `test_category_report.py` | `15b1ff4e0a60cbf8e45e1eb6281844f0149efea183c3b4661bf59109a88564a2` |
 | `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
-| `test_dashboard_categories.cjs` | `9334ea53a6d18c25e9cc5603834c2f5e07fbd5244fabf7e6f2816907655368a2` |
+| `test_dashboard_categories.cjs` | `905b880850bb69a3ad59d779c6b354ae33335c0b3f4a19fe6fa7c3815e2bdc08` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -1739,6 +1739,7 @@ python3 ops/category_report.py --json               # machine-readable (CI, scri
 python3 ops/category_report.py --rules /tmp/new_rules.json  # measure a taxonomy BEFORE installing it
 python3 ops/category_report.py --db /path/bot_state.sqlite3 --log /path/bot.log
 python3 ops/category_watch.py --quiet               # cron/systemd: NEW alerts only, exit 1
+python3 ops/category_report.py --html /tmp/shelf.html   # shareable report, no JS, no assets
 ```
 
 Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
@@ -1755,6 +1756,8 @@ Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
 | money | of the posts this shelf actually delivered: how many carry a link that **pays us**, how many pay **nobody**, how many carry **somebody else's** Amazon tag, and how many could not be matched to the link tables at all |
 | trend | sends and skips per IST day (`--days`, default 7) — block characters on a terminal, a sparkline in the dashboard, exact numbers in the tooltip |
 | surfaces | the same shelf on Telegram and on WhatsApp, with the bridge's `category:<key>` policy only where it will really be applied |
+| deal quality | the bot's own `premium_score` average/min/max over the posts it received, plus the rupee spread from `posted_deals.price` (min–max, median, how many under ₹99) — "this shelf gets weak deals" is the bot's own ranking, not a new opinion |
+| sources | which sources actually fed the shelf in the window, next to the sources its channels declare |
 | last send | the newest real send, in IST |
 
 Plus, separately from the shelves: **Main** (unfiltered targets, which take every
@@ -1791,6 +1794,11 @@ The findings are the part that saves a week of guessing:
 | `amazon_tag_surface_mismatch` | warn | the Amazon tag is declared for this shelf on Telegram or WhatsApp only, so the same deal earns on one surface and not the other |
 | `unknown_surface_channel` | warn | a `WA_CHANNEL_*` name that is not a category key — the bridge builds its category channels from `category_rules.json`, so the value is ignored |
 | `wa_values_masked` | info | WhatsApp values that are not plain JIDs are shown masked, so a shared-channel collision cannot be proved offline |
+| `weak_shelf_quality` | warn | the shelf's average `premium_score` is under half the fleet's over 3+ scored posts: the weakest deals are landing here |
+| `quality_blind` / `price_blind` | info | the posts carry no `premium_score` / no `posted_deals.price`, so quality or rupee spread is unproven rather than bad |
+| `zero_score_posts` | info | posts scored 0: no discount, no price bonus, no lowest-price claim |
+| `undeclared_source` | warn | the shelf received posts from a source its channels do not declare now — config changed after those posts, or a renamed source still feeds it |
+| `dead_source` | info | a source a channel declares produced nothing in the window (widen `--hours` before concluding it is dead) |
 | `unclassified_withheld` | info, or warn when abstention out-runs routing | posts withheld from every shelf because no category matched |
 | `tagless_shelf` | info | Amazon links stay withheld on this shelf until the tag is declared — the documented policy, stated as a fact rather than discovered as a mystery |
 
@@ -1880,6 +1888,19 @@ an invite link, for instance — is shown as `set (masked)`, and masked values a
 never used to claim a collision. `load_env` keeps only channel plumbing
 (`TG_CATEGORY_*`, `WA_CHANNEL_*`, `AMAZON_TAG*`), so a token in the same `.env`
 cannot reach the report, the JSON or the dashboard.
+
+**Quality and sources.** Two more columns answer "is this shelf getting good
+deals, and from where?" with numbers the bot already keeps: `queue.premium_score`
+(the bot's own ranking — discount ×10, a sub-₹99/₹499 bonus, a lowest-price-claim
+bonus) and `posted_deals.price` (the rupee price it published). A shelf averaging
+under half the fleet's score over 3+ scored posts is `weak_shelf_quality`; empty
+columns are reported as *unproven*, never as "cheap". The source matrix compares
+what arrived against what each channel declares (`channels.json` `sources`), with
+the same case-insensitive handle comparison `channels_config` uses — so a renamed
+source shows up as `undeclared_source` and a silent one as `dead_source`, instead
+of both looking like "a quiet week". `--html PATH` writes the whole report as one
+self-contained HTML file (no JavaScript, no external asset, every value escaped):
+it opens from a phone or an email attachment and cannot fetch or run anything.
 
 **Drill-down.** `--expand <key>` (or clicking a shelf row in the dashboard) adds
 that shelf's newest delivery rows: queue id, IST time, target, status, the
