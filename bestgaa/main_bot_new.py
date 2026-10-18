@@ -89,6 +89,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+# Price/discount/MRP reading lives in deal_facts so the card renderer, the
+# dashboard's card studio and the routing all read one caption the same way.
+try:
+    from bestgaa.deal_facts import (parse_price, parse_discount,          # noqa: F401
+                                    has_lowest_price_claim)
+except ImportError:  # running as a plain script from inside bestgaa/
+    from deal_facts import (parse_price, parse_discount,                  # noqa: F401
+                            has_lowest_price_claim)
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
@@ -2451,107 +2460,6 @@ def product_key(value: str) -> str:
     return extract_product_id(value) or "URL:" + hashlib.sha256(merchant_url(value).encode()).hexdigest()
 
 
-def parse_price(text: str) -> int | None:
-    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values.
-
-    Deep-audit fixes (2026-09-04): "MRP ₹1,999 Deal ₹899" used to return the
-    MRP (routing a ₹899 deal as if it cost ₹1,999); "INR 799", "Price: 349/-"
-    and "349/-" (the Indian price suffix) were not read at all. MRP-labelled
-    amounts are masked before the generic currency scan, so the generic match
-    can only ever see the DEAL price. Bare numbers with no currency marker are
-    still ignored on purpose - a model number is not a price."""
-    value = text or ""
-    # Mask "MRP ₹1,999" style amounts so no later pattern can mistake the MRP
-    # for the deal price. The deal-price labels below never say MRP.
-    masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
-                    " ", value)
-    # A DISCOUNT is not a price. "Save Rs.500", "Rs.99 off", "Flat 200 off" and
-    # "Rs.50 cashback" all name money the buyer does NOT pay; reading one as the
-    # price prints a figure the source never charged. Masked before the scan so
-    # no pattern below can reach them.
-    masked = re.sub(r"(?i)\b(?:save|flat|upto|up\s*to|extra|discount|off|cashback)\s*"
-                    r"(?:rs\.?|₹|inr)?\s*[\d,]+", " ", masked)
-    # Only the amount IMMEDIATELY before the word, with no space swallowed from
-    # a preceding price: "Rs.1,999 Discount: 66%" must keep the 1,999. So the
-    # currency mark is required, or the number must hug the word.
-    masked = re.sub(r"(?i)(?:rs\.?|₹|inr)\s*[\d,]+\s*(?:off|cashback)\b", " ", masked)
-    masked = re.sub(r"(?i)\b[\d,]+\s*%?\s*(?:off|cashback)\b", " ", masked)
-    patterns = [
-        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
-        r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        # \b anchors the END of the number: without it "Rs.99 off" backtracked to
-        # "9" (the lookahead only had to fail for the SHORTER match) and printed
-        # a price of 9 rupees.
-        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)\b(?!\s*(?:off|coupon|cashback))",
-        # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
-        r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
-        # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
-        # the number is still explicit money.
-        r"([\d,]{2,})\s*(?:rs\.?|inr)\b",
-        r"^\s*([\d,]{2,})\s+(?:https?://|$)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, masked, re.I | re.M)
-        if match:
-            price = int(match.group(1).replace(",", ""))
-            if 1 <= price <= 1_000_000:
-                return price
-    # "899 (MRP 2990)" - the deal price written as a BARE number, with the MRP
-    # right after it. Nothing above matches (no currency mark, no @/only/at),
-    # so the MRP fallback below used to answer 2990: the post advertised a
-    # price the buyer does not pay, and price drives routing and dedup.
-    # A bare number immediately followed by an MRP is the deal price.
-    bare_before_mrp = re.search(
-        r"(?<![\d,.])([\d,]{2,})\s*[({\[]?\s*"
-        r"(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\b",
-        value, re.I)
-    if bare_before_mrp:
-        price = int(bare_before_mrp.group(1).replace(",", ""))
-        if 1 <= price <= 1_000_000:
-            return price
-    # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
-    # money on the post, so it is the best available answer (old behaviour).
-    # The masking above only stops MRP from SHADOWING a real deal price.
-    mrp = re.search(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)", value)
-    if mrp:
-        price = int(mrp.group(1).replace(",", ""))
-        if 1 <= price <= 1_000_000:
-            return price
-    return None
-
-
-def parse_discount(text: str, price: int | None = None) -> int | None:
-    """Return the strongest explicit/derived product discount percentage."""
-    value = text or ""
-    found: list[int] = []
-    patterns = (
-        r"(?:up\s*to|upto|flat|save|get)?\s*([1-9]\d?|100)\s*%\s*(?:off|discount)",
-        # "save 25 %" / "get 40 %" with a space before the sign and no
-        # off/discount word after it — the label BEFORE the number is what
-        # makes it a discount, so plain "25 %" alone still never matches.
-        r"(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%",
-        # "Discount: 26%" is how a loot channel actually writes it - the colon after
-        # the label used to lose the whole percentage, which matters because the
-        # discount decides which price-tier channel a deal is routed to.
-        r"(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, value, re.I):
-            percent = int(match.group(1))
-            if 1 <= percent <= 100:
-                found.append(percent)
-
-    mrp_matches = re.findall(r"\bMRP\s*[:@-]?\s*(?:rs\.?|₹)?\s*([\d,]+)", value, re.I)
-    deal_price = price if price is not None else parse_price(value)
-    if mrp_matches and deal_price:
-        with contextlib.suppress(ValueError):
-            mrp = max(int(raw.replace(",", "")) for raw in mrp_matches)
-            if mrp > deal_price > 0:
-                found.append(round((mrp - deal_price) * 100 / mrp))
-    return max(found) if found else None
-
-
 def classify_priority(text: str, has_media: bool = False) -> int:
     """Priority for the Telegram delivery queue.
 
@@ -2650,14 +2558,6 @@ def eligible_for_power_loots(price: int | None, discount: int | None,
         or (discount is not None and discount >= 70)
         or card_offer
     )
-
-
-def has_lowest_price_claim(text: str) -> bool:
-    return bool(re.search(
-        r"\b(?:lowest(?:\s+ever)?\s+price|all[ -]?time\s+low|price\s+drop|"
-        r"lower\s+than\s+market|historical\s+low|best\s+price)\b",
-        text or "", re.I,
-    ))
 
 
 def append_folder_link(text: str) -> str:

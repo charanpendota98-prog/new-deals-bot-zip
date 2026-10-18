@@ -475,6 +475,20 @@ def load_category_report():
     return module
 
 
+def load_deal_card():
+    """The deal-card engine, shared with `python3 ops/deal_card.py`.
+
+    Same reason the categories endpoint loads its engine by path: the CLI an
+    operator runs on the server and this dashboard must draw the same card from
+    the same caption, so there is one implementation and two front doors.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "dash_deal_card", ROOT / "ops" / "deal_card.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def category_env(module) -> dict[str, str]:
     """Env-declared shelf targets, without ever echoing a secret value.
 
@@ -534,6 +548,57 @@ async def api_categories(request: web.Request):
         return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
     payload = module.jsonable(report)
     payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
+@require_token
+async def api_card_png(request: web.Request):
+    """The raster deal card for one caption, exactly as the CLI would draw it.
+
+    Preview only: it renders and returns bytes. Nothing is queued, nothing is
+    sent, and the send path still posts what it posts today.
+    """
+    text = request.query.get("text", "") or ""
+    if len(text) > 6000 or not text.strip():
+        return web.json_response({"error": "text is required (max 6000 chars)"}, status=400)
+    try:
+        width = max(320, min(1600, int(request.query.get("width", "1080"))))
+    except (TypeError, ValueError):
+        width = 1080
+    try:
+        module = load_deal_card()
+        png = module.card_png(module.deal_facts(text), width=width)
+    except module.CardUnavailable as exc:
+        return web.json_response({"error": str(exc)}, status=503)
+    except Exception as exc:                       # a bad photo must not 500 the UI
+        return web.json_response({"error": f"card render failed: {exc}"}, status=400)
+    return web.Response(body=png, content_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+
+@require_token
+async def api_card_studio(request: web.Request):
+    """Everything the card studio shows for one caption: the bot's own reading of
+    price/discount/coupon, the caption per surface, and which destinations would
+    receive card+caption (and which would skip it, with the reason).
+
+    Read-only: the link verdict opens the database mode=ro via ops/deal_card.py,
+    and the plan reads channels.json and the category rules the bot and bridge
+    both use. Nothing is written and nothing is sent.
+    """
+    text = request.query.get("text", "") or ""
+    link = request.query.get("link", "") or ""
+    if len(text) > 6000 or not text.strip():
+        return web.json_response({"error": "text is required (max 6000 chars)"}, status=400)
+    if len(link) > 500:
+        return web.json_response({"error": "link too long (max 500 chars)"}, status=400)
+    try:
+        module = load_deal_card()
+        payload = module.studio(text, link=link, db=str(db_path()))
+    except Exception as exc:
+        return web.json_response({"error": f"card studio failed: {exc}"}, status=503)
+    payload["db_exists"] = db_path().exists()
+    payload["preview_only"] = True
     return web.json_response(payload)
 
 
@@ -602,6 +667,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
     app.router.add_get("/api/categories", api_categories)
+    app.router.add_get("/api/card.png", api_card_png)
+    app.router.add_get("/api/card-studio", api_card_studio)
     app.router.add_get("/api/audit", api_audit)
     app.router.add_post("/api/restart", api_restart)
     return app

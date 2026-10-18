@@ -70,7 +70,7 @@ separate operator-controlled step.
 | `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
 | `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
-| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, a preview-only Card studio, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only |
 | `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
 | `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
 | `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
@@ -244,6 +244,8 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, empty/unreadable/500 states, escaped labels and targets, and the rest of the dashboard surviving a dead endpoint |
+| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, and the forward plan agrees with channels.json + the env shelves |
+| `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, and a dead endpoint that cannot blank the dashboard |
 | `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
 | `test_repo_consistency.py` | Gate coverage, shell syntax, the CI workflow, secret hygiene, and README's proof tables |
 
@@ -1465,10 +1467,11 @@ source snapshot:
 | `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
 | `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
 | `bestgaa/channels_config.py` | `0c57dbbd2a0f988ed732d7a7b9f1b2fd2fa7a70b7e76bde6cf93c4678c3fe529` |
+| `bestgaa/deal_facts.py` | `18bb3556d4a62270bff819b217b9fd632006136a92bc29e8c35c03c15bc0e8c8` |
 | `bestgaa/deploy_bestgaa.sh` | `86172c508f4385459dd3229e67eedcd124a2628945719da5a974d5a520ee736d` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `1a2b5eceb09167c0d8f67bf86c5e5d12374ea7605f1a8a7afe74d9154bf89fb4` |
+| `bestgaa/main_bot_new.py` (v19.0) | `f87a1d1e117278ad27e30825a8641ff536c132cb9b06a1411b2da415bdeb4e82` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
 | `tg-wa-bridge/bridge.js` | `a33fd901a55ec9521d7c2c3dd849ded07fbc96031eecc861e4e1a14bfc871467` |
@@ -1480,7 +1483,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `c432de08cd8047e172b887293478eb68aefcf1952b60486fd3bf977b82c857ce` |
+| `dashboard/app.py` | `cc6c00ccc6f2b4c3cb2b91256ffa689a98f2000d30194f1df5789ff3c77bc0b3` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
@@ -1492,6 +1495,7 @@ source snapshot:
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
+| `ops/deal_card.py` | `366e9df0624a6b046c7382694fe2b8d307abd50f2933d3f25a9194c8fca758bd` |
 | `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
@@ -1509,17 +1513,19 @@ source snapshot:
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `fc8827fe238bc8b291bc78acb8c6969d227678b0ba77702b52fe29a69a0badbd` |
+| `ops/test_all.sh` | `d03db8118c2fe76accf0e65811cf944c339ae99487f83bb19ead091e7a275d71` |
 | `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `15b1ff4e0a60cbf8e45e1eb6281844f0149efea183c3b4661bf59109a88564a2` |
+| `test_category_report.py` | `74406e751a94ccf401560360ef994caaaea19a823becf3838c34393f4d4af43c` |
 | `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
+| `test_dashboard_card_studio.cjs` | `3d7f4266e0a760fafa81f2981d21790bb8086872b31c92eba6bb2129dbdc9098` |
 | `test_dashboard_categories.cjs` | `905b880850bb69a3ad59d779c6b354ae33335c0b3f4a19fe6fa7c3815e2bdc08` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
+| `test_deal_card.py` | `35ec33c2a1f84ec5006f0ad9531780f56ade3a6ee9095786c8a691e8f2e99e63` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
 | `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
@@ -1944,6 +1950,65 @@ Nothing here installs itself. To have it watched, the operator adds one line:
 
 or a systemd pair (`OnCalendar=*:0/15`, `Persistent=true`, and
 `OnFailure=` on the service) so a new alert can notify whoever is on call.
+
+### The deal-card studio: what a post looks like on the phone (2026-10-18)
+
+A big channel's post is a **photo plus a caption**: product image on the left, a
+red `-35%` pill, the deal price large, the M.R.P. struck through, a coupon box
+("Coupon Discount / Save 4% now / -₹3.12") and a green "Final Price: ₹75" bar.
+Ours has been text, so the same deal looks poorer on the same phone — and when a
+deal crosses **from one channel to another**, the copy is re-filtered per
+destination, so two destinations can even disagree about the price.
+
+`ops/deal_card.py` closes that gap as a **preview**: given a caption (pasted, or
+`--text-file`), it reads the deal with the bot's own parsers — `parse_price`,
+`parse_discount`, `has_lowest_price_claim`, which now live once in
+`bestgaa/deal_facts.py` and are imported by `bestgaa/main_bot_new.py` instead of
+being a second copy that could drift — and adds the coupon/min-qty/MRP reading a
+card needs (`parse_coupon`, `parse_min_qty`, `parse_mrp`, `final_price`, where a
+coupon bigger than the price keeps the deal price because a caption typo is not a
+free product). Then it:
+
+* **draws the card** — `--png out.png`, or `/api/card.png` in the dashboard:
+  photo slot (a local file via `--photo`, else an honest gradient placeholder),
+  discount pill, big final price, struck M.R.P. only when it is genuinely above
+  the deal price, coupon box with the paise a percentage coupon saves on a
+  sub-₹1000 deal, green final bar with `Min Buy Qnty`. Pillow draws it; when the
+  installed font has no rupee glyph the card falls back to `Rs.` instead of a
+  missing-glyph box (`Fonts.rupee` compares ₹ against a private-use codepoint),
+  and emoji are stripped for the raster only — Telegram and WhatsApp render them
+  on the client, so captions keep them;
+* **writes one caption per surface** — telegram / whatsapp / premium / text —
+  plain text, no markdown, because the bot sends with `parse_mode=None`;
+* **says where it would land** — `forward_plan()` lists every configured
+  destination (channels.json shelves and Main targets, `TG_CATEGORY_<KEY>_TARGET`,
+  `WA_CHANNEL_<KEY>` and the core WhatsApp channels) with `card + caption` or
+  `not sent` and the reason, and names the function that would carry it:
+  `send_file(entity, png, caption=…)` for Telegram, `broadcastMediaItem(...)` for
+  WhatsApp. Both carriers already send a photo with a per-target caption today;
+* **refuses to print a link it cannot prove ours** — the verdict comes from
+  `link_cache` / `owned_link_proofs` through the same `url_money()` the money
+  report uses, so an untagged Amazon page or a stranger's tag is *withheld* from
+  every caption with the reason, exactly like the send path withholds it.
+
+The dashboard's **Card studio** panel is the same engine over HTTP
+(`/api/card-studio`, `/api/card.png`; the PNG is fetched with the token header and
+shown through a blob URL, so the token never appears in a URL). Everything there
+is preview-only: nothing is queued, nothing is sent, and posting stays off until
+`./ops/approve_posting.sh --i-approve-posting`. Wiring the card into the live send
+path later is a one-line change at the send site, not a new delivery path.
+
+```bash
+python3 ops/deal_card.py --text-file /tmp/deal.txt --link https://amzn.lt/xyz
+python3 ops/deal_card.py --text-file /tmp/deal.txt --png /tmp/card.png --surface whatsapp
+python3 ops/deal_card.py --text-file /tmp/deal.txt --json      # the studio payload
+```
+
+`test_deal_card.py` pins the whole contract (75 checks: shared parsers, coupon
+maths, PNG pixels, link provenance, plan agreement, CLI), and
+`test_dashboard_card_studio.cjs` drives the panel in a DOM. Rendering needs
+Pillow (`bestgaa/requirements.txt`); without it the studio still serves captions
+and says the card is unavailable.
 
 ### Easy setup: link → category → channel
 

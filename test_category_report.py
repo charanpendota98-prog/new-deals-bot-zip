@@ -1478,6 +1478,24 @@ def test_ui_wiring_advanced():
           and "${name}" not in matrix_fn, matrix_fn[:300])
     check("the empty states span the 14-column table",
           'colspan="14"' in html and 'colspan="13"' not in html, html[:200])
+    check("the navigation reaches the card studio",
+          'href="#cardstudio"' in html and 'id="cardstudio"' in html, html[:200])
+    check("the studio says it is preview-only",
+          "Preview only" in html and "approve_posting.sh" in html, html[:200])
+    studio_js = body.split("async function loadStudio")[1].split("\nfunction ")[0]
+    check("the studio puts captions in as text, never markup",
+          "getElementById('cardcaption').textContent=" in studio_js
+          and "cardcaption').innerHTML" not in studio_js, studio_js[:300])
+    check("the studio escapes every plan field it interpolates",
+          all(token in studio_js for token in
+              ("escapeHTML(row.surface)", "escapeHTML(row.destination)",
+               "escapeHTML(row.why)", "escapeHTML(row.format)")), studio_js[:400])
+    check("the studio never interpolates a response field directly",
+          "${row." not in studio_js and "${f." not in studio_js
+          and "${data." not in studio_js, studio_js[:400])
+    check("the card image is fetched through the tokened API, not a bare URL",
+          "fetch('/api/card.png?'" in studio_js and "headers()" in studio_js
+          and "URL.createObjectURL" in studio_js, studio_js[:400])
     check("the WhatsApp surface summary reaches the note",
           "WhatsApp: " in body and "COLLISION" in body)
     check("a capped ledger is announced in the panel",

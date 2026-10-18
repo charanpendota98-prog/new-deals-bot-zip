@@ -215,6 +215,7 @@ run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
 run 'link category inspector' "$PYTHON" test_link_inspector.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
+run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py
 run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
@@ -232,6 +233,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: guided setup' node test_dashboard_setup.cjs
   run 'dashboard DOM: source picker' node test_dashboard_sources.cjs
   run 'dashboard DOM: category panel' node test_dashboard_categories.cjs
+  run 'dashboard DOM: card studio' node test_dashboard_card_studio.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
   printf '  install once : npm install --prefix %s --no-package-lock jsdom\n' "$JSDOM_PREFIX"

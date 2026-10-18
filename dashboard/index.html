@@ -25,7 +25,10 @@ label{font-size:13px;color:#cbd5e1}
 #tokenbar{display:flex;gap:8px;margin:8px 0}pre{white-space:pre-wrap;font-size:12px;color:#fca5a5}
 dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:12px;max-width:560px;width:85%}
 dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
-.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}.bad{color:#fca5a5}
+.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}.studio-split{display:grid;grid-template-columns:minmax(240px,430px) 1fr;gap:20px;align-items:start}
+#cardstudio img{width:100%;border-radius:12px;border:1px solid #e2e8f0;background:#fff}
+.captionbox{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;padding:12px 14px;border-radius:10px;font-size:12.5px;line-height:1.55;margin:0}
+.bad{color:#fca5a5}
 #catrows tr[data-key]{cursor:pointer}
 #catrows tr[data-key]:hover td{background:#16233a}
 #catrows tr.open td{background:#132f2c}
@@ -45,7 +48,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -121,6 +124,30 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <h3>Which source feeds which shelf</h3>
 <p class="muted">Observed sends per source per shelf from the delivery ledger, against the sources each channel declares. <span class="badge warn">DEAD</span> = declared by a channel, nothing arrived in this window.</p>
 <div class="tablewrap" id="catsourceswrap"><table><thead id="catsourcehead"></thead><tbody id="catsources"></tbody></table></div>
+</div>
+<div class="card" id="cardstudio">
+<h2>Deal card studio</h2>
+<p class="muted">Preview only. It draws the card a channel-style post uses - product photo, red discount pill, struck-through M.R.P., coupon box, green final-price bar - writes the caption each surface would carry, and lists the destinations that would receive <b>card + caption</b> against the ones that would skip this deal, with the reason. Nothing is queued and nothing is sent; posting stays off until <code>ops/approve_posting.sh --i-approve-posting</code>.</p>
+<textarea id="cardtext" rows="6" aria-label="Deal caption" placeholder="Paste a deal caption exactly as the source channel wrote it, e.g.\nHeadphone Bluetooth Neckband Wireless (Black)\nDeal ₹78 M.R.P.: ₹120 (35% off)\nApply 4% coupon at checkout\nMin Buy Qnty = 2"></textarea>
+<div class="row">
+<input id="cardlink" aria-label="Deal link" placeholder="https://amzn.lt/… the link the card should print">
+<select id="cardsurface" aria-label="Caption surface">
+<option value="telegram">Telegram caption</option>
+<option value="whatsapp">WhatsApp caption</option>
+<option value="premium">Premium caption</option>
+<option value="text">Plain text</option>
+</select>
+<button class="primary" id="cardrender" onclick="loadStudio(true)">Render card</button>
+</div>
+<div id="cardfacts" class="muted">no caption yet</div>
+<div id="cardwarn"></div>
+<div class="studio-split">
+<div><img id="cardimg" alt="Rendered deal card preview" style="display:none"><div id="cardimgerr" class="muted"></div></div>
+<div><h3>Caption for <span id="cardsurfacename">Telegram</span></h3><pre id="cardcaption" class="captionbox">render a caption to see it</pre></div>
+</div>
+<h3>Where this deal would land</h3>
+<div class="tablewrap"><table><thead><tr><th>Surface</th><th>Destination</th><th>Format</th><th>Why</th></tr></thead>
+<tbody id="cardplan"><tr><td colspan="4" class="muted">render a caption to see the plan</td></tr></tbody></table></div>
 </div>
 <div class="card"><h2>Test a category before posting</h2>
 <p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
@@ -297,6 +324,67 @@ function surfaceCell(sf){
     : '<span class="muted">not configured</span>';
   return `TG ${targets}${tagNote}<br>WA ${channel}`;
 }
+let cardURL=null;
+async function loadStudio(draw){
+  const text=(document.getElementById('cardtext').value||'').trim();
+  const link=(document.getElementById('cardlink').value||'').trim();
+  const factsBox=document.getElementById('cardfacts');
+  const warnBox=document.getElementById('cardwarn');
+  const img=document.getElementById('cardimg');
+  const imgErr=document.getElementById('cardimgerr');
+  const planBody=document.getElementById('cardplan');
+  imgErr.textContent='';
+  if(!text){ factsBox.textContent='paste a deal caption first'; return; }
+  const params=new URLSearchParams({text});
+  if(link) params.set('link',link);
+  let data=null;
+  try{ data=await api('GET','/api/card-studio?'+params.toString()); }
+  catch(error){
+    planBody.innerHTML='<tr><td colspan="4" class="muted">card studio unavailable: '
+      +escapeHTML(String(error&&error.message||error))+'</td></tr>';
+    return;
+  }
+  const f=data.facts||{};
+  const money=v=>v==null?'not read':'Rs'+escapeHTML(v);
+  factsBox.innerHTML='price <b>'+money(f.price)+'</b>'
+    +(f.mrp?' &middot; M.R.P. <s>'+money(f.mrp)+'</s>':'')
+    +(f.discount?' &middot; <b>'+escapeHTML(f.discount)+'% off</b>':'')
+    +' &middot; final <b>'+money(f.final)+'</b>'
+    +(f.coupon&&f.coupon.percent?' &middot; coupon '+escapeHTML(f.coupon.percent)+'%':'')
+    +(f.coupon&&f.coupon.code?' &middot; code '+escapeHTML(f.coupon.code):'')
+    +(f.min_qty?' &middot; min qty '+escapeHTML(f.min_qty):'')
+    +' &middot; category <b>'+escapeHTML((data.plan||{}).category||'unclassified')+'</b>';
+  const warnings=(data.plan||{}).warnings||[];
+  warnBox.innerHTML=(data.link&&data.link.owned?'':(data.link&&data.link.url
+      ?'<p class="muted"><span class="badge warn">link</span> '+escapeHTML(data.link.why||'')+'</p>':''))
+    +warnings.map(w=>'<p class="muted"><span class="badge warn">!</span> '+escapeHTML(w)+'</p>').join('');
+  const surface=document.getElementById('cardsurface').value;
+  document.getElementById('cardsurfacename').textContent=surface;
+  document.getElementById('cardcaption').textContent=(data.captions||{})[surface]||'';
+  const rows=(data.plan||{}).rows||[];
+  planBody.innerHTML=rows.length?rows.map(row=>'<tr>'
+      +'<td>'+escapeHTML(row.surface)+'</td>'
+      +'<td>'+escapeHTML(row.destination)+(row.enabled?'':' <span class="badge bad">disabled</span>')+'</td>'
+      +'<td>'+(row.accepts?'<span class="badge ok">'+escapeHTML(row.format)+'</span>'
+                    :'<span class="muted">not sent</span>')+'</td>'
+      +'<td class="muted">'+escapeHTML(row.why)+'</td></tr>').join('')
+    :'<tr><td colspan="4" class="muted">no destinations configured for this deal</td></tr>';
+  if(cardURL){ URL.revokeObjectURL(cardURL); cardURL=null; }
+  if(draw){
+    img.style.display='none';
+    try{
+      const r=await fetch('/api/card.png?'+params.toString(),{headers:headers()});
+      if(!r.ok){ const j=await r.json().catch(()=>({})); throw new Error(j.error||r.status); }
+      const blob=await r.blob();
+      cardURL=URL.createObjectURL(blob);
+      img.src=cardURL; img.style.display='block';
+    }catch(error){ imgErr.textContent='card image unavailable: '+(error&&error.message||error); }
+  }
+}
+document.getElementById('cardsurface').addEventListener('change',()=>loadStudio(false));
+document.getElementById('cardtext').addEventListener('keydown',event=>{
+  if((event.metaKey||event.ctrlKey)&&event.key==='Enter') loadStudio(true);
+});
 function qualityCell(q){
   // premium_score and posted_deals.price are the bot's own numbers; this cell
   // only shows them, and says "unproven" when the columns are empty.
