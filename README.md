@@ -243,9 +243,9 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
-| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, empty/unreadable/500 states, escaped labels and targets, and the rest of the dashboard surviving a dead endpoint |
+| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, and the rest of the dashboard surviving a dead endpoint |
 | `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, and the forward plan agrees with channels.json + the env shelves |
-| `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with a refused non-Telegram save, and a dead endpoint that cannot blank the dashboard |
+| `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
 | `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
 | `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
 | `test_repo_consistency.py` | Gate coverage, shell syntax, the CI workflow, secret hygiene, and README's proof tables |
@@ -1474,7 +1474,7 @@ source snapshot:
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
 | `bestgaa/main_bot_new.py` (v19.0) | `b47fd0bc9461f11f24bb903100f3295fe7655bf4cde475b3eab87a71fd80de32` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
-| `bestgaa/post_buttons.py` | `c9f7b76b61bf61f11fa1a73cf7e70fcf57c3660e3824a69dd4d2263555b97086` |
+| `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
 | `tg-wa-bridge/bridge.js` | `a33fd901a55ec9521d7c2c3dd849ded07fbc96031eecc861e4e1a14bfc871467` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
@@ -1485,14 +1485,14 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `6b2a7d4f3f701931d8f5d4f4cb1b1c5ac1f549b0e598362a9639a68f70f824e6` |
+| `dashboard/app.py` | `34c443a4f9595bd89b0800cc598318fdd48f2892934aa85dcbb92cd685895253` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `9759971576b3366c2552b2ce5a01cd7319e811cc373c48aedba6ba51d8c6f83b` |
+| `ops/category_report.py` | `25a8cbd2c861b4c02c0134d08709761dc54f44e667760b5121d25b5584380a94` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
@@ -1520,10 +1520,10 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `74406e751a94ccf401560360ef994caaaea19a823becf3838c34393f4d4af43c` |
-| `test_dashboard.py` | `f6ed451181400f72ce984278097aa82dea6fc04fb3e6f2c3df3ae1b7ccc2edad` |
-| `test_dashboard_card_studio.cjs` | `5b5a86c53c6bbc79a16066eeb7c55f08366872f98ce95bcfb841af69e96c34b5` |
-| `test_dashboard_categories.cjs` | `905b880850bb69a3ad59d779c6b354ae33335c0b3f4a19fe6fa7c3815e2bdc08` |
+| `test_category_report.py` | `3a4bb91aceb48fbb21032dc6fb299c673694805eb3177022c2b4f91e48da77b0` |
+| `test_dashboard.py` | `e1711f2328092c87b241bf5acc762320d581c678d02a25c4e751669e48709c29` |
+| `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
+| `test_dashboard_categories.cjs` | `96b0137aad2fcc3dfc225e567482f955ebd6cfba04c9bb32905eac7a9151eafa` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -1536,7 +1536,7 @@ source snapshot:
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
-| `test_post_buttons.py` | `ff790ae37e4e9952e960fa00c4049d68da57f525b49f78b09ddc3d361287c8e6` |
+| `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `d604b23ce64d7a4f3913cbf35a141515e8d00f153238256ab0e9260f84f18fc3` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
@@ -1989,6 +1989,14 @@ free product). Then it:
   `not sent` and the reason, and names the function that would carry it:
   `send_file(entity, png, caption=…)` for Telegram, `broadcastMediaItem(...)` for
   WhatsApp. Both carriers already send a photo with a per-target caption today;
+* **cross-channel in one click** - "load a recent post" fills the caption and the
+  link it carried straight from the ledger (`/api/recent` now returns a snippet
+  and the first URL per job), so a deal that arrived on channel A can be previewed
+  for every destination B - shelves, Main, Telegram and WhatsApp - in seconds;
+* **one-click button presets** - the button editor offers our own enabled public
+  channels (`https://t.me/<handle>`, read from channels.json) plus the folder link
+  (read from the bot's own `OUR_FOLDER_LINK`), so adding a join button never means
+  typing a URL that could point anywhere else;
 * **carries the join-button row** a big channel ends every post with - up to two
   `https://t.me/…` buttons configured in the dashboard (`post_buttons.json`,
   edited next to the card preview and validated by `bestgaa/post_buttons.py`:
@@ -2017,7 +2025,18 @@ python3 ops/deal_card.py --text-file /tmp/deal.txt --json      # the studio payl
 
 `test_deal_card.py` pins the whole contract (75 checks: shared parsers, coupon
 maths, PNG pixels, link provenance, plan agreement, CLI), and
-`test_dashboard_card_studio.cjs` drives the panel in a DOM. Rendering needs
+`test_dashboard_card_studio.cjs` drives the panel in a DOM.
+
+**Link conversion book.** The **Conversion** card (`/api/link-conversion`) opens the
+converter's own book - `link_cache` (source URL → published affiliate URL →
+resolved destination) plus `owned_link_proofs` - and classifies every published
+link with the same `url_money()` verdicts the money report uses, so "mana links
+maruthunnaya?" gets a number: cached links, the converted share (our tag, our
+shortener or a proof row), how many would pay a stranger, how many earn nothing,
+and a per-link table with the proof mark and the IST time. Read-only, mode=ro,
+and `test_category_report.py` pins the semantics (a proved hop is owned, a blind
+hop is unattributed, a stranger's tag is foreign, limits cap the table but never
+the totals). Rendering needs
 Pillow (`bestgaa/requirements.txt`); without it the studio still serves captions
 and says the card is unavailable.
 

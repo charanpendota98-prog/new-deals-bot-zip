@@ -60,6 +60,8 @@ function studio() {
 
 let savedButtons = [{label: 'Join Shpsy Loots \u2764\ufe0f', url: 'https://t.me/shpsyloots'}];
 let putBodies = [];
+const RECENT = {jobs: [{id: 7, source: 'lootsdaily', status: 'done', sends: 2, skips: 0,
+  held: 0, error: '', snippet: CAPTION, link: 'https://amzn.lt/ours'}]};
 
 const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dangerously', beforeParse(w) {
   w.confirm = () => true; w.alert = message => { throw new Error(message); };
@@ -78,6 +80,8 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       categories: {electronics: 'Electronics'}, sources: ['deals'],
       category_rules_version: 3, bot_category_rules_version: 3, activation: {}};
     if (path === '/api/recent?limit=15') data = {jobs: []};
+    if (path === '/api/recent?limit=25') return {ok: true, status: 200,
+      json: async () => RECENT};
     if (path === '/api/audit?limit=200') data = {posts_checked: 0, link_summary: {},
       delivery_summary: {}, findings_by_kind: {}};
     if (path.startsWith('/api/categories')) data = {categories: [], findings: [], totals: {},
@@ -91,6 +95,8 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       const method = (options && options.method) || 'GET';
       if (method === 'GET') {
         return {ok: true, status: 200, json: async () => ({buttons: savedButtons,
+          presets: [{label: 'Join Main Loots \u2764\ufe0f', url: 'https://t.me/mainloots'},
+                    {label: 'Under 99rs \ud83e\udd1f', url: 'https://t.me/under99rs'}],
           max_buttons: 2, max_label: 40, allowed_hosts: ['t.me'], path: '/x/post_buttons.json'})};
       }
       const body = options && options.body ? JSON.parse(options.body) : {};
@@ -237,9 +243,40 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.ok(rowsBox.querySelectorAll('input')[0].value.includes('<img src=x'),
     'and sits in the input value as plain text');
 
+  // --- cross-channel: load a real post into the studio in one click ----------
+  await w.loadRecentForStudio();
+  const recent = d.getElementById('cardrecent');
+  assert.equal(recent.querySelectorAll('option').length, 2,
+    'recent posts are offered to the studio');
+  assert.match(recent.querySelectorAll('option')[1].textContent, /lootsdaily/,
+    'each option names its source channel');
+  recent.value = '7';
+  recent.dispatchEvent(new w.Event('change'));
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(d.getElementById('cardtext').value, CAPTION,
+    'picking a post loads its caption');
+  assert.equal(d.getElementById('cardlink').value, 'https://amzn.lt/ours',
+    'and the link it carried, so the provenance verdict is real');
+
+  // --- presets: one click adds one of OUR channels ----------------------------
+  const preset = d.getElementById('btnpreset');
+  assert.equal(preset.querySelectorAll('option').length, 3,
+    'our channels and the folder are offered as presets');
+  w.eval("buttonRows = [{label: 'x', url: 'https://t.me/x'}]; renderButtonRows();");
+  preset.value = '0';
+  preset.onchange();
+  assert.equal(w.eval("buttonRows.length"), 2, 'a preset joins the row without typing');
+  assert.match(d.getElementById('btnstate').textContent, /press Save buttons/,
+    'and the editor says it is not published yet');
+  preset.value = '1';
+  preset.onchange();
+  assert.match(d.getElementById('btnstate').textContent, /row is full/,
+    'a third button is refused before it reaches Telegram');
+
   console.log('Card studio DOM PASS: facts read from the bot own parsers, captions verbatim per '
     + 'surface, tokened PNG through a blob URL, forward plan with accept/skip reasons, hostile '
-    + 'text kept as text, a configurable two-button join row with a refused non-Telegram save, '
+    + 'text kept as text, a configurable two-button join row with one-click presets and a '
+    + 'refused non-Telegram save, a cross-channel picker that loads a real post, '
     + 'and a dead endpoint that cannot blank the dashboard.');
   w.close();
   process.exit(0);

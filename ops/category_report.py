@@ -644,6 +644,56 @@ def price_index(conn) -> dict[int, list[int]]:
     return out
 
 
+def link_conversion(conn, our_tags: frozenset, limit: int = 25) -> dict:
+    """Source link -> our link: what the converter actually did, from the ledger.
+
+    `link_cache` is the converter's own book: the source URL it received, the
+    affiliate URL it published and the resolved destination. Classifying the
+    published URL with the same url_money() the money report uses answers the
+    operator's real question - "mana links maruthunnaya?" - with evidence per
+    link instead of a vibe: owned (our tag / our shortener / a proof row),
+    foreign_tag (pays a stranger), earns_nothing, unattributed.
+    """
+    totals = {"cached": 0, "owned": 0, "foreign_tag": 0, "earns_nothing": 0,
+              "unattributed": 0, "proofs": 0, "capped": False}
+    rows_out: list[dict] = []
+    links = link_index(conn) if conn is not None else {"by_affiliate": {}, "by_source": {},
+                                                       "proofs": {}}
+    totals["proofs"] = len(links.get("proofs") or {})
+    if conn is None:
+        return {"rows": rows_out, "totals": totals, "converted_pct": None}
+    try:
+        rows = conn.execute(
+            "SELECT source_url, affiliate_url, resolved_url, created_at FROM link_cache "
+            "ORDER BY created_at DESC LIMIT 5000").fetchall()
+    except sqlite3.OperationalError:
+        return {"rows": rows_out, "totals": totals, "converted_pct": None}
+    if len(rows) >= 5000:
+        totals["capped"] = True
+    for source_url, affiliate_url, resolved_url, created_at in rows:
+        # positional on purpose: this view also runs under test connections that
+        # carry no row_factory.
+        affiliate = str(affiliate_url or "")
+        bucket, route = url_money(affiliate, links, our_tags)
+        totals["cached"] += 1
+        if bucket in totals:
+            totals[bucket] += 1
+        if len(rows_out) < limit:
+            rows_out.append({
+                "source": str(source_url or ""),
+                "affiliate": affiliate,
+                "resolved_host": host_of(str(resolved_url or "")),
+                "route": route,
+                "bucket": bucket,
+                "proof": clean_url(affiliate) in (links.get("proofs") or {}),
+                "at": ist_text(created_at) if created_at else "",
+            })
+    pct = None
+    if totals["cached"]:
+        pct = round(totals["owned"] * 100 / totals["cached"], 1)
+    return {"rows": rows_out, "totals": totals, "converted_pct": pct}
+
+
 def deal_quality(rows, index: dict, prices: dict[int, list[int]]) -> dict:
     """Per destination: how good were the deals it actually received?
 

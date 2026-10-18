@@ -437,6 +437,7 @@ async def api_recent(request: web.Request):
             try:
                 rows = conn.execute(
                     f"SELECT q.id, q.source, q.status, q.created_at, q.last_error, "
+                    f"q.rendered_text, "
                     f"{sends_expr} AS sends, {skips_expr} AS skips, "
                     "SUM(CASE WHEN d.status='held' THEN 1 ELSE 0 END) AS held FROM queue q "
                     "LEFT JOIN deliveries d ON d.queue_id=q.id "
@@ -444,9 +445,13 @@ async def api_recent(request: web.Request):
             except sqlite3.OperationalError:
                 rows = []
             for row in rows:
+                text = str(row["rendered_text"] or "")
+                match = re.search(r"https?://[^\s<>()\[\]]+", text)
                 jobs.append({
                     "id": row["id"], "source": row["source"], "status": row["status"],
                     "created_at": row["created_at"], "error": (row["last_error"] or "")[:120],
+                    "snippet": " ".join(text.split())[:240],
+                    "link": match.group(0) if match else "",
                     "sends": int(row["sends"] or 0), "skips": int(row["skips"] or 0),
                     "held": int(row["held"] or 0),
                 })
@@ -608,6 +613,7 @@ async def api_post_buttons_get(request: web.Request):
     import post_buttons
     return web.json_response({
         "buttons": post_buttons.load_buttons(),
+        "presets": post_buttons.preset_buttons(),
         "max_buttons": post_buttons.MAX_BUTTONS,
         "max_label": post_buttons.MAX_LABEL,
         "allowed_hosts": list(post_buttons.ALLOWED_HOSTS),
@@ -629,6 +635,34 @@ async def api_post_buttons_put(request: web.Request):
         return web.json_response({"errors": errors}, status=400)
     return web.json_response({"saved": True, "buttons": post_buttons.load_buttons(target),
                               "path": str(target)})
+
+
+@require_token
+async def api_link_conversion(request: web.Request):
+    """"Mana links maruthunnaya?" - answered per link, from the converter's book.
+
+    link_cache holds source URL -> published affiliate URL -> resolved
+    destination; each published URL is classified with the same url_money() the
+    money report uses, so "converted" here means exactly what it means there:
+    our tag, our shortener, or a proof row. Read-only, mode=ro.
+    """
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "25"))))
+    except (TypeError, ValueError):
+        limit = 25
+    conn = read_only_db()
+    try:
+        module = load_category_report()
+        read = module.our_amazon_tags()
+        tags = frozenset(read.get("bestgaa") or set()) | frozenset(read.get("bridge") or set())
+        payload = module.link_conversion(conn, tags, limit=limit)
+    except Exception as exc:
+        return web.json_response({"error": f"conversion view failed: {exc}"}, status=503)
+    finally:
+        if conn is not None:
+            conn.close()
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
 
 
 @web.middleware
@@ -709,6 +743,7 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
     app.router.add_get("/api/categories", api_categories)
+    app.router.add_get("/api/link-conversion", api_link_conversion)
     app.router.add_get("/api/post-buttons", api_post_buttons_get)
     app.router.add_put("/api/post-buttons", api_post_buttons_put)
     app.router.add_get("/api/card.png", api_card_png)

@@ -13,6 +13,21 @@ const EVIL = '<img src=x onerror="window.__pwned=1">';
 const calls = [];
 const rows = [{name: 'ClothingShelf', sources: ['*'], categories: ['fashion'], enabled: true}];
 let categoryStatus = 200, categoryPayload = null, holdCategories = null;
+let convStatus = 200;
+const convPayload = {
+  totals: {cached: 3, owned: 1, foreign_tag: 1, earns_nothing: 1, unattributed: 0,
+           proofs: 1, capped: false},
+  converted_pct: 33.3,
+  rows: [
+    {at: '2026-10-18 09:12 IST', source: 'https://amzn.lt/' + EVIL,
+     affiliate: 'https://www.amazon.in/dp/B1?tag=stranger' + EVIL,
+     resolved_host: 'amazon.in', route: 'amazon', bucket: 'foreign_tag', proof: false},
+    {at: '2026-10-18 08:40 IST', source: 'https://amzn.lt/ok',
+     affiliate: 'https://www.amazon.in/dp/B2?tag=ours', resolved_host: 'amazon.in',
+     route: 'amazon', bucket: 'owned', proof: true},
+  ],
+  db_exists: true,
+};
 
 function report() {
   return {
@@ -107,6 +122,11 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       sends: 2, skips: 0, held: 0, error: ''}]};
     if (path === '/api/audit?limit=200') data = {posts_checked: 3, link_summary: {}, delivery_summary: {},
       findings_by_kind: {}};
+    if (path.startsWith('/api/link-conversion')) {
+      status = convStatus;
+      data = status === 200 ? convPayload : {error: 'conversion view failed'};
+      return {ok: status === 200, status, json: async () => data};
+    }
     if (path.startsWith('/api/categories')) {
       if (holdCategories) await holdCategories;
       status = categoryStatus;
@@ -176,6 +196,26 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.ok(srcBody.textContent.includes('loot<img src=x'),
     'a hostile source name in the matrix stays text');
   assert.equal(srcBody.querySelectorAll('img').length, 0, 'no injected element in the matrix');
+
+  // --- the link-conversion book ------------------------------------------------
+  const convStats = d.getElementById('convstats');
+  assert.match(convStats.textContent, /33.3%/, 'the converted share is a headline stat');
+  assert.match(convStats.textContent, /foreign tag/, 'and the stranger count sits beside it');
+  assert.match(d.getElementById('convnote').textContent,
+    /1 of 3 cached links \(33.3%\) carry our tag/, 'the note states the verdict in words');
+  const convRows = d.querySelectorAll('#convrows tr');
+  assert.equal(convRows.length, 2, 'one row per cached link');
+  assert.match(convRows[0].textContent, /FOREIGN TAG/, 'a stranger tag is shouted, not shaded');
+  assert.match(convRows[1].textContent, /proof/, 'a proved hop shows its proof');
+  assert.ok(convRows[0].textContent.includes('?tag=stranger<img src=x'),
+    'a hostile affiliate URL stays text');
+  assert.equal(d.querySelectorAll('#convrows img').length, 0, 'nothing injected executes');
+  convStatus = 500;
+  await w.loadConversion();
+  assert.match(d.getElementById('convrows').textContent, /conversion view unavailable/,
+    'a dead conversion endpoint says so instead of showing stale rows');
+  convStatus = 200;
+  await w.loadConversion();
 
   // --- money, trend and surfaces ---------------------------------------------
   assert.match(electronics.textContent, /4 paid · 1 earn nothing/, 'the money verdict is shown');

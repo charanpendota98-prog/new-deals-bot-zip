@@ -31,6 +31,7 @@ configures it - and posting itself stays off until
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -105,6 +106,44 @@ def validate_buttons(raw) -> tuple[list[dict], list[str]]:
         seen.add(url.lower())
         cleaned.append({"label": label, "url": url})
     return cleaned, errors
+
+
+FOLDER_RE = re.compile(r"OUR_FOLDER_LINK\s*=\s*\"([^\"]+)\"")
+
+
+def preset_buttons() -> list[dict]:
+    """One-click candidates for the button row: our own channels + the folder.
+
+    Read, not typed: the public handles come from channels.json (enabled
+    channels only) and the folder link from the bot's own constant, so a preset
+    can never point at a channel we do not own. Invite-link channels are skipped
+    - a join button wants a public t.me/<handle> URL.
+    """
+    try:
+        import channels_config
+    except ImportError:  # pragma: no cover - package-style import
+        from bestgaa import channels_config
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in (channels_config.load_channels().get("channels") or []):
+        name = str(entry.get("name") or "").strip()
+        if not entry.get("enabled", True) or not channels_config.HANDLE_RE.match(name):
+            continue
+        url = f"https://t.me/{name}"
+        if url.lower() in seen:
+            continue
+        seen.add(url.lower())
+        label = f"Join {name} \u2764\ufe0f"
+        out.append({"label": label[:MAX_LABEL], "url": url})
+    folder = ""
+    with contextlib.suppress(OSError):
+        match = FOLDER_RE.search(
+            (Path(__file__).resolve().parent / "main_bot_new.py").read_text(encoding="utf-8"))
+        if match:
+            folder = match.group(1)
+    if folder and folder.lower() not in seen:
+        out.append({"label": "All Loot Channels \U0001f4c2", "url": folder})
+    return out
 
 
 def load_buttons(path: Path | None = None) -> list[dict]:

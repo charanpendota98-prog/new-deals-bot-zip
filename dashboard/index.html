@@ -51,7 +51,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -128,12 +128,21 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <p class="muted">Observed sends per source per shelf from the delivery ledger, against the sources each channel declares. <span class="badge warn">DEAD</span> = declared by a channel, nothing arrived in this window.</p>
 <div class="tablewrap" id="catsourceswrap"><table><thead id="catsourcehead"></thead><tbody id="catsources"></tbody></table></div>
 </div>
+<div class="card" id="conversion">
+<h2>Link conversion — source link → our link</h2>
+<p class="muted">The converter's own book (<code>link_cache</code> + <code>owned_link_proofs</code>), each published link classified with the same verdicts the money report uses. <b>Converted</b> = our tag, our shortener, or a proof row. Read-only.</p>
+<div class="row" id="convstats"></div>
+<div id="convnote" class="muted"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Source link</th><th>Published as</th><th>Route</th><th>Verdict</th></tr></thead>
+<tbody id="convrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+</div>
 <div class="card" id="cardstudio">
 <h2>Deal card studio</h2>
 <p class="muted">Preview only. It draws the card a channel-style post uses - product photo, red discount pill, struck-through M.R.P., coupon box, green final-price bar - writes the caption each surface would carry, and lists the destinations that would receive <b>card + caption</b> against the ones that would skip this deal, with the reason. Nothing is queued and nothing is sent; posting stays off until <code>ops/approve_posting.sh --i-approve-posting</code>.</p>
 <textarea id="cardtext" rows="6" aria-label="Deal caption" placeholder="Paste a deal caption exactly as the source channel wrote it, e.g.\nHeadphone Bluetooth Neckband Wireless (Black)\nDeal ₹78 M.R.P.: ₹120 (35% off)\nApply 4% coupon at checkout\nMin Buy Qnty = 2"></textarea>
 <div class="row">
 <input id="cardlink" aria-label="Deal link" placeholder="https://amzn.lt/… the link the card should print">
+<select id="cardrecent" aria-label="Load a recent post"><option value="">load a recent post…</option></select>
 <select id="cardsurface" aria-label="Caption surface">
 <option value="telegram">Telegram caption</option>
 <option value="whatsapp">WhatsApp caption</option>
@@ -151,7 +160,8 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <h3>Post buttons under every Telegram post</h3>
 <p class="muted">The row Telegram draws <b>below</b> the message - the "Join … ❤️" button a big channel ends every post with. Up to two <code>https://t.me/…</code> buttons; WhatsApp channels have no inline buttons, so WhatsApp stays text-only. Zero buttons = today's posts, byte for byte.</p>
 <div id="btnrows"></div>
-<div class="row"><button id="btnadd" onclick="addButtonRow()">+ add button</button>
+<div class="row"><select id="btnpreset" aria-label="Quick add one of our channels"><option value="">+ quick add our channel…</option></select>
+<button id="btnadd" onclick="addButtonRow()">+ add button</button>
 <button class="primary" id="btnsave" onclick="saveButtons()">Save buttons</button>
 <span id="btnstate" class="muted"></span></div>
 <h3>Where this deal would land</h3>
@@ -214,7 +224,7 @@ function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').rep
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
   sessionStorage.setItem('dash_token', TOKEN); document.getElementById('token').value='';
-  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); loadButtons(); }
+  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); loadButtons(); loadRecentForStudio(); }
 async function api(method, path, body, revision){
   const h = headers(); if(revision) h['If-Match'] = revision;
   const r = await fetch(path, {method, headers:h, body: body ? JSON.stringify(body) : undefined});
@@ -290,6 +300,7 @@ async function refresh(){
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
     await loadCategories();   // never throws: a dead /api/categories must not blank the rest
+    await loadConversion();   // same guarantee for the link-conversion book
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
@@ -333,6 +344,68 @@ function surfaceCell(sf){
     : '<span class="muted">not configured</span>';
   return `TG ${targets}${tagNote}<br>WA ${channel}`;
 }
+async function loadConversion(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const stats=document.getElementById('convstats');
+  const note=document.getElementById('convnote');
+  const body=document.getElementById('convrows');
+  let data=null;
+  try{ data=await api('GET','/api/link-conversion?limit=25'); }
+  catch(error){
+    body.innerHTML='<tr><td colspan="5" class="muted">conversion view unavailable: '
+      +escapeHTML(String(error&&error.message||error))+'</td></tr>';
+    return;
+  }
+  const t=data.totals||{};
+  const stat=(label,value)=>'<div class="stat"><b>'+escapeHTML(value??'—')+'</b><span>'
+    +escapeHTML(label)+'</span></div>';
+  stats.innerHTML=stat('cached links',t.cached??0)
+    +stat('converted to us',(data.converted_pct==null?'—':data.converted_pct+'%'))
+    +stat('foreign tag',t.foreign_tag??0)
+    +stat('earn nothing',t.earns_nothing??0)
+    +stat('unattributed',t.unattributed??0)
+    +stat('proof rows',t.proofs??0);
+  const owned=t.owned??0, cached=t.cached??0;
+  note.textContent=(cached
+    ? owned+' of '+cached+' cached links ('+(data.converted_pct??0)+'%) carry our tag, our '
+      +'shortener or a proof row; '+(t.foreign_tag??0)+' would pay a stranger and '
+      +(t.earns_nothing??0)+' earn nothing.'
+    : 'no cached links yet - the converter has not run in this database.')
+    +(t.capped?' (totals capped at the newest 5000 rows)':'');
+  const rows=data.rows||[];
+  const verdict={'owned':'<span class="badge ok">ours</span>',
+    'foreign_tag':'<span class="badge bad">FOREIGN TAG</span>',
+    'unattributed':'<span class="badge warn">unattributed</span>',
+    'earns_nothing':'<span class="muted">earns nothing</span>'};
+  body.innerHTML=rows.length?rows.map(r=>'<tr><td class="muted">'+escapeHTML(r.at)+'</td>'
+      +'<td class="muted">'+escapeHTML(r.source)+'</td>'
+      +'<td>'+escapeHTML(r.affiliate)+(r.proof?' <span class="badge ok">proof</span>':'')+'</td>'
+      +'<td>'+escapeHTML(r.route)+'</td>'
+      +'<td>'+(verdict[r.bucket]||escapeHTML(r.bucket))+'</td></tr>').join('')
+    :'<tr><td colspan="5" class="muted">no links cached in this database</td></tr>';
+}
+let recentJobs=[];
+async function loadRecentForStudio(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const select=document.getElementById('cardrecent');
+  try{
+    const data=await api('GET','/api/recent?limit=25');
+    recentJobs=data.jobs||[];
+  }catch(error){ recentJobs=[]; }
+  const kept=select.value;
+  select.innerHTML='<option value="">load a recent post…</option>'
+    +recentJobs.map(job=>'<option value="'+escapeHTML(job.id)+'">'
+      +escapeHTML(job.source)+' · '+escapeHTML((job.snippet||'').slice(0,64))
+      +(job.link?' · has link':' · no link')+'</option>').join('');
+  select.value=kept;
+}
+document.getElementById('cardrecent').addEventListener('change',event=>{
+  const job=recentJobs.find(j=>String(j.id)===event.target.value);
+  if(!job) return;
+  document.getElementById('cardtext').value=job.snippet||'';
+  document.getElementById('cardlink').value=job.link||'';
+  loadStudio(true);
+});
 let buttonRows=[];
 function renderButtonRows(){
   const wrap=document.getElementById('btnrows');
@@ -368,6 +441,29 @@ async function loadButtons(){
     const data=await api('GET','/api/post-buttons');
     buttonRows=(data.buttons||[]).map(b=>({label:b.label,url:b.url}));
     renderButtonRows();
+    const preset=document.getElementById('btnpreset');
+    const presets=(data.presets||[]);
+    preset.innerHTML='<option value="">+ quick add our channel…</option>'
+      +presets.map((entry,index)=>'<option value="'+escapeHTML(index)+'">'
+        +escapeHTML(entry.label)+' · '+escapeHTML(entry.url)+'</option>').join('');
+    preset.onchange=()=>{
+      const entry=presets[Number(preset.value)];
+      preset.value='';
+      if(!entry) return;
+      if(buttonRows.length>=2){
+        document.getElementById('btnstate').textContent=
+          'row is full (max 2) - remove one before adding '+entry.label;
+        return;
+      }
+      if(buttonRows.some(r=>(r.url||'').toLowerCase()===entry.url.toLowerCase())){
+        document.getElementById('btnstate').textContent=entry.label+' is already in the row';
+        return;
+      }
+      buttonRows.push({label:entry.label,url:entry.url});
+      renderButtonRows();
+      document.getElementById('btnstate').textContent=
+        'added from presets - press Save buttons to publish';
+    };
     state.textContent=buttonRows.length?'configured: '+buttonRows.length+' button(s)'
       :'no buttons configured - posts go out exactly as today';
   }catch(error){
@@ -1023,6 +1119,7 @@ document.getElementById('catrows').addEventListener('click', event=>{
 });
 if(TOKEN || DEMO_MODE) refresh();
 loadButtons();
+loadRecentForStudio();
 setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
 </script>
 </body>

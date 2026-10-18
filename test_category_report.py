@@ -26,6 +26,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -294,6 +295,77 @@ def test_ledger():
 
 
 # --------------------------------------------------------- 3. the bot's log ----
+
+def test_link_conversion():
+    """"Mana links maruthunnaya?" - per link, from the converter's own book."""
+    print("\n== link conversion: source link -> our link, with proof ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "conv.sqlite3"
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+        CREATE TABLE link_cache (
+          source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+          resolved_url TEXT NOT NULL DEFAULT '', deal_key TEXT NOT NULL DEFAULT '',
+          created_at REAL NOT NULL DEFAULT 0);
+        CREATE TABLE owned_link_proofs (
+          affiliate_url TEXT PRIMARY KEY, destination_url TEXT NOT NULL,
+          proof_type TEXT NOT NULL DEFAULT '', publisher_id TEXT NOT NULL DEFAULT '',
+          created_at REAL NOT NULL DEFAULT 0);
+        """)
+        now = time.time()
+        rows = [
+            ("https://amzn.lt/s-owned", f"https://www.amazon.in/dp/B1?tag={OUR_TAG}",
+             "https://www.amazon.in/dp/B1", now - 10),
+            ("https://amzn.lt/s-foreign", f"https://www.amazon.in/dp/B2?tag={STRANGER_TAG}",
+             "https://www.amazon.in/dp/B2", now - 20),
+            ("https://amzn.lt/s-bare", "https://www.amazon.in/dp/B3",
+             "https://www.amazon.in/dp/B3", now - 30),
+            ("https://example.shop/p/4", "https://bit.ly/hop-proof",
+             "https://bit.ly/hop-proof", now - 40),
+            ("https://example.shop/p/5", "https://bit.ly/hop-blind", "", now - 50),
+        ]
+        conn.executemany("INSERT INTO link_cache(source_url, affiliate_url, resolved_url,"
+                         " created_at) VALUES (?,?,?,?)", rows)
+        conn.execute("INSERT INTO owned_link_proofs VALUES (?,?,?,?,?)",
+                     ("https://bit.ly/hop-proof", f"https://www.amazon.in/dp/B4?tag={OUR_TAG}",
+                      "publisher", "5478322", now - 40))
+        conn.commit()
+        tags = frozenset({OUR_TAG})
+        view = cr.link_conversion(conn, tags, limit=5)
+        limited = cr.link_conversion(conn, tags, limit=3)
+        conn.close()
+        totals = view["totals"]
+        check("every cached link is classified", totals["cached"] == 5, totals)
+        check("our tagged link and the proved hop are the converted ones",
+              totals["owned"] == 2, totals)
+        check("a stranger's tag is called foreign, not 'not ours'",
+              totals["foreign_tag"] == 1, totals)
+        check("an untagged Amazon link earns nothing and says so",
+              totals["earns_nothing"] == 1, totals)
+        check("a blind shortener is unattributed, not owned",
+              totals["unattributed"] == 1, totals)
+        check("the percentage is the converted share, not a vibe",
+              view["converted_pct"] == 40.0, view["converted_pct"])
+        check("proof rows are counted", totals["proofs"] == 1, totals)
+        check("the table is newest first",
+              [r["source"] for r in view["rows"]][:2]
+              == ["https://amzn.lt/s-owned", "https://amzn.lt/s-foreign"], view["rows"])
+        check("limit caps the table, never the totals",
+              len(limited["rows"]) == 3 and limited["totals"]["cached"] == 5
+              and len(view["rows"]) == 5, len(limited["rows"]))
+        proved = [r for r in view["rows"] if r["source"] == "https://example.shop/p/4"]
+        check("the proved hop carries its proof mark", proved and proved[0]["proof"] is True
+              and proved[0]["bucket"] == "owned", proved)
+        blind = [r for r in view["rows"] if r["source"] == "https://example.shop/p/5"]
+        check("the blind hop does not borrow the proved one's verdict",
+              blind and blind[0]["bucket"] == "unattributed" and blind[0]["proof"] is False,
+              blind)
+        check("IST time rides along for the table", bool(view["rows"][0]["at"]),
+              view["rows"][0])
+        empty = cr.link_conversion(None, tags)
+        check("no database means an empty book, not a crash",
+              empty["rows"] == [] and empty["converted_pct"] is None, empty)
+
 
 def test_log_signals():
     print("\n== log: CATEGORY ROUTE / WITHHELD / COLLISION / UNRESOLVED / DISABLED ==")
@@ -1511,6 +1583,7 @@ if __name__ == "__main__":
         test_surfaces()
         test_drilldown()
         test_quality_and_sources()
+        test_link_conversion()
         test_log_signals()
         test_findings()
         test_cli()

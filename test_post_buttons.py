@@ -105,8 +105,28 @@ def main() -> int:
         check("the saved shape is versioned JSON",
               json.loads(path.read_text(encoding="utf-8"))["version"] == 1)
 
-        print("the send path is unchanged until an operator saves a row")
+        print("presets come from our own channels, never from a typed URL")
         os.environ["CHANNELS_JSON_PATH"] = str(Path(tmp) / "channels.json")
+        (Path(tmp) / "channels.json").write_text(json.dumps({"version": 1, "channels": [
+            {"name": "electroshelf", "enabled": True, "categories": ["electronics"],
+             "sources": ["deals"]},
+            {"name": "offshelf", "enabled": False, "categories": [], "sources": ["deals"]},
+            {"name": "https://t.me/+PrivateInvite", "enabled": True, "categories": [],
+             "sources": ["deals"]},
+        ]}), encoding="utf-8")
+        presets = post_buttons.preset_buttons()
+        urls = [entry["url"] for entry in presets]
+        check("enabled public channels become one-click presets",
+              "https://t.me/electroshelf" in urls, urls)
+        check("a disabled channel is not offered", "https://t.me/offshelf" not in urls, urls)
+        check("a private invite is not offered as a join button",
+              not any("+PrivateInvite" in u for u in urls), urls)
+        check("the folder link rides along from the bot's own constant",
+              any("addlist" in u for u in urls), urls)
+        check("preset labels fit Telegram's button",
+              all(len(entry["label"]) <= post_buttons.MAX_LABEL for entry in presets), presets)
+
+        print("the send path is unchanged until an operator saves a row")
         import main_bot_new as bot
         check("with the demo row the bot builds two Telethon button rows",
               len(bot.post_inline_buttons()) == 2)

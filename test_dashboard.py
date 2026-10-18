@@ -262,6 +262,20 @@ def test_http_api():
                     status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
                     check("clearing the row restores today's posts byte for byte",
                           status == 200 and bot.post_inline_buttons() == [], str(body))
+
+                    status, body = await call("GET", "/api/link-conversion?limit=10")
+                    check("the conversion book answers per link, from the ledger",
+                          status == 200 and body["totals"]["cached"] == 1
+                          and body["totals"]["owned"] == 1
+                          and body["converted_pct"] == 100.0, str(body))
+                    check("and the proved hop carries its proof mark",
+                          body["rows"][0]["proof"] is True
+                          and body["rows"][0]["bucket"] == "owned", str(body["rows"]))
+                    status, body = await call("GET", "/api/recent?limit=5")
+                    job = next(j for j in body["jobs"] if j["id"] == 1)
+                    check("recent jobs carry a snippet and their first link",
+                          status == 200 and job["snippet"].startswith("Demo deal")
+                          and job["link"] == "https://bit.ly/dash-owned-1", str(job))
                     for bad_body in ([], {}, {"text": "x" * 12001},
                                      {"text": "earbuds", "links": "not-a-list"}):
                         status, body = await call("POST", "/api/category-preview", json=bad_body)
