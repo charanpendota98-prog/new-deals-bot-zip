@@ -327,6 +327,26 @@ def main() -> int:
         check("an empty caption is refused with exit 2", run_empty.returncode == 2,
               run_empty.returncode)
 
+    print("every MRP spelling derives the same discount (prices must survive the text)")
+    check("the dotted M.R.P. spelling derives its discount like plain MRP",
+          facts.parse_discount("Deal ₹499 M.R.P.: ₹2,499", 499) == 80
+          and facts.parse_discount("Deal ₹499 MRP: ₹2,499", 499) == 80,
+          str(facts.parse_discount("Deal ₹499 M.R.P.: ₹2,499", 499)))
+    check("list price / regular price derive too",
+          facts.parse_discount("list price ₹1999 deal ₹999", 999) == 50,
+          str(facts.parse_discount("list price ₹1999 deal ₹999", 999)))
+    check("an explicit percent still wins unchanged",
+          facts.parse_discount("Deal ₹78 (35% off)", 78) == 35, "35")
+    watch = facts.deal_facts("Smart watch\nDeal ₹499 M.R.P.: ₹2,499\nhttps://amzn.lt/y")
+    watch_cap = card.captions(watch, link="https://www.amazon.in/dp/B0?tag=x")
+    check("the caption keeps its M.R.P. line for the dotted spelling",
+          watch["discount"] == 80
+          and "M.R.P. ₹2,499 · 80% off" in watch_cap["telegram"], watch_cap["telegram"])
+    check("a pure price line never becomes the product title",
+          facts.deal_title("Earbuds pro\nRs.1299/- only\nhttps://amzn.lt/z") == "Earbuds pro"
+          and facts.deal_title("@ ₹270 only\nMixer grinder 750W") == "Mixer grinder 750W",
+          facts.deal_title("Earbuds pro\nRs.1299/- only\nhttps://amzn.lt/z"))
+
     print(f"\ntest_deal_card: {PASSED} checks passed, {len(FAILURES)} failed")
     if FAILURES:
         for name in FAILURES:

@@ -244,7 +244,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
-| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, and the forward plan agrees with channels.json + the env shelves |
+| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount and a pure price line is never the title |
 | `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
 | `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
 | `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
@@ -1468,7 +1468,7 @@ source snapshot:
 | `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
 | `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
 | `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
-| `bestgaa/deal_facts.py` | `18bb3556d4a62270bff819b217b9fd632006136a92bc29e8c35c03c15bc0e8c8` |
+| `bestgaa/deal_facts.py` | `096c76c53b2c4e2b60bfa8de6c48556de6ed131ed7e597ccb369fd53a56e5d01` |
 | `bestgaa/deploy_bestgaa.sh` | `86172c508f4385459dd3229e67eedcd124a2628945719da5a974d5a520ee736d` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
@@ -1527,7 +1527,7 @@ source snapshot:
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
-| `test_deal_card.py` | `35ec33c2a1f84ec5006f0ad9531780f56ade3a6ee9095786c8a691e8f2e99e63` |
+| `test_deal_card.py` | `19562cbff4aa2353cab27a002d65f45c241704d898c7b5dcf71bbe20b2d041b3` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
 | `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
@@ -1971,7 +1971,17 @@ destination, so two destinations can even disagree about the price.
 being a second copy that could drift — and adds the coupon/min-qty/MRP reading a
 card needs (`parse_coupon`, `parse_min_qty`, `parse_mrp`, `final_price`, where a
 coupon bigger than the price keeps the deal price because a caption typo is not a
-free product). Then it:
+free product).
+
+**Prices must survive the text.** `parse_discount` derives its discount from the
+same `MRP_RE` that reads the struck-through price - a dotted `M.R.P.:`, a
+`list price` and a plain `MRP` all derive the identical percentage. A
+hand-rolled regex here used to match only the literal `MRP`, so a deal written
+`Deal ₹499 M.R.P.: ₹2,499` carried no derived discount: the caption dropped its
+M.R.P. line entirely and the price-tier routing saw a weaker deal than the same
+caption spelled `MRP`. `deal_title` also skips a pure price line
+(`Rs.1299/- only`), so a product title never reads
+"Rs.1299/- only @ ₹1,299" - the same number twice and no product. Then it:
 
 * **draws the card** — `--png out.png`, or `/api/card.png` in the dashboard:
   photo slot (a local file via `--photo`, else an honest gradient placeholder),

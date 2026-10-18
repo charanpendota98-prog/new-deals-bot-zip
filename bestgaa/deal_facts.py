@@ -112,7 +112,12 @@ def parse_discount(text: str, price: int | None = None) -> int | None:
             if 1 <= percent <= 100:
                 found.append(percent)
 
-    mrp_matches = re.findall(r"\bMRP\s*[:@-]?\s*(?:rs\.?|₹)?\s*([\d,]+)", value, re.I)
+    # Same MRP reader the struck-through price uses, on purpose: a hand-rolled
+    # "MRP" regex here missed the dotted "M.R.P.:" spelling, so a deal written
+    # as "Deal ₹499 M.R.P.: ₹2,499" carried no derived discount - the caption
+    # dropped its M.R.P. line entirely and the price-tier routing saw a weaker
+    # deal than an identical "MRP ₹2499" caption.
+    mrp_matches = MRP_RE.findall(value)
     deal_price = price if price is not None else parse_price(value)
     if mrp_matches and deal_price:
         with contextlib.suppress(ValueError):
@@ -145,6 +150,11 @@ COUPON_CODE_RE = re.compile(
 MIN_QTY_RE = re.compile(
     r"\bmin(?:imum)?\s*(?:buy|order)?\s*(?:qty|quantity|qnty|qt)\s*[:=]?\s*(\d{1,3})\b", re.I)
 URLISH_RE = re.compile(r"^\s*(?:https?://|www\.)")
+# "Rs.1299/- only" / "@ ₹270" - a price, not a product. As a title it makes the
+# caption read "Rs.1299/- only @ ₹1,299": the same number twice and no product.
+PRICE_ONLY_RE = re.compile(
+    r"^[@\s]*(?:₹|rs\.?|inr)?\s*[\d,]+(?:\.\d+)?\s*(?:/-)?\s*(?:only\b)?[\s.!]*$",
+    re.I)
 LABEL_RE = re.compile(
     r"^\s*(?:mrp|price|deal\s*price|offer|discount|coupon|save|final|buy|stock|limited|"
     r"min\s*buy|use\s*code|apply|join|link)\b", re.I)
@@ -204,6 +214,8 @@ def deal_title(text: str, limit: int = 96) -> str:
         if len(candidate) < 8:
             continue
         if URLISH_RE.match(candidate) or LABEL_RE.match(candidate):
+            continue
+        if PRICE_ONLY_RE.match(candidate):
             continue
         if candidate.count("₹") + candidate.lower().count("rs.") > 1:
             continue
