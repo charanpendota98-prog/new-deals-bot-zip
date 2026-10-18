@@ -5,6 +5,70 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 PYTHON="${PYTHON:-python3}"
+# The jsdom suites shell out to "$PYTHON" to read the served dashboard HTML, and
+# resolve jsdom through NODE_PATH. Both must be in the environment, not just in
+# this shell.
+export PYTHON
+
+# What documentation drift costs. README publishes the hashes, the bot version
+# and per-suite check counts, so drift means the docs describe a build nobody
+# has. Default is to fail on it. A live deploy sets 'warn': a production rollout
+# must be TOLD the docs are stale, never blocked by them.
+#   check (default) - drift fails the gate
+#   warn            - drift is printed loudly, gate still exits 0
+#   off             - the freshness step is skipped, and says so
+GATE_DOC_MODE="${GATE_DOC_MODE:-check}"
+case "$GATE_DOC_MODE" in
+  check|warn|off) ;;
+  *) echo "ERROR: GATE_DOC_MODE must be one of: check, warn, off (got '$GATE_DOC_MODE')" >&2; exit 2 ;;
+esac
+export GATE_DOC_MODE
+
+# --- self-logging wrapper ---------------------------------------------------
+# The gate publishes its own per-suite check counts in README, so it needs the
+# complete log of a finished run to prove them. Re-exec once under tee, then
+# verify the documentation against that log. _BESTGAA_GATE_INNER guards the
+# recursion: the inner run never wraps again.
+if [[ -z "${_BESTGAA_GATE_INNER:-}" ]]; then
+  export _BESTGAA_GATE_INNER=1
+  GATE_LOG_FILE="${GATE_LOG_FILE:-$(mktemp "${TMPDIR:-/tmp}/bestgaa-gate-log-XXXXXX")}"
+  set +e
+  bash "$ROOT/ops/test_all.sh" "$@" 2>&1 | tee "$GATE_LOG_FILE"
+  inner_rc=${PIPESTATUS[0]}
+  set -e
+  if [[ "$inner_rc" -ne 0 ]]; then
+    printf '\nGATE FAILED (exit %s); documentation freshness not evaluated.\n' "$inner_rc"
+    printf 'full log kept at: %s\n' "$GATE_LOG_FILE"
+    exit "$inner_rc"
+  fi
+  if [[ "$GATE_DOC_MODE" == "off" ]]; then
+    printf '\n===== README freshness SKIPPED (GATE_DOC_MODE=off) =====\n'
+    rm -f "$GATE_LOG_FILE"
+    printf '\nALL OFFLINE CHECKS PASSED (README freshness not evaluated)\n'
+    exit 0
+  fi
+  printf '\n===== README freshness (hashes, version label, per-suite counts) =====\n'
+  doc_rc=0
+  "$PYTHON" ops/doc_freshness.py --check --gate-log "$GATE_LOG_FILE" || doc_rc=$?
+  if [[ "$doc_rc" -ne 0 && "$GATE_DOC_MODE" == "warn" ]]; then
+    printf '\nDOCUMENTATION DRIFT (GATE_DOC_MODE=warn): reported, not fatal.\n'
+    printf 'Repair with: %s ops/doc_freshness.py --write --gate-log %s\n' "$PYTHON" "$GATE_LOG_FILE"
+    rm -f "$GATE_LOG_FILE"
+    printf '\nALL OFFLINE CHECKS PASSED (README is stale - see above)\n'
+    exit 0
+  fi
+  if [[ "$doc_rc" -ne 0 ]]; then
+    printf '\nDOCUMENTATION DRIFT: the gate passed but README no longer describes it.\n'
+    printf 'The log of the run that just finished is kept so you can repair the\n'
+    printf 'per-suite counts from real output rather than by hand:\n\n'
+    printf '  %s ops/doc_freshness.py --write --gate-log %s\n' "$PYTHON" "$GATE_LOG_FILE"
+    printf '  %s ./ops/test_all.sh        # re-run; the log is removed when it is green\n\n' "$PYTHON"
+    exit "$doc_rc"
+  fi
+  rm -f "$GATE_LOG_FILE"
+  printf '\nALL OFFLINE CHECKS PASSED (including README freshness)\n'
+  exit 0
+fi
 
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
   echo "ERROR: Python executable '$PYTHON' was not found (override with PYTHON=...)." >&2
@@ -32,6 +96,27 @@ run() {
   printf '\n===== %s =====\n' "$1"
   shift
   "$@"
+}
+
+# Every shell script here is executed on a production host, several as root's
+# neighbour during a deploy. A syntax error there is a failed deploy hours after
+# the edit, so the gate parses all of them (git-tracked when available, so
+# node_modules/.venv copies are never mistaken for ours).
+shell_syntax_check() {
+  local files f count=0
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # --others --exclude-standard: a script written five minutes ago and not yet
+    # committed must be parsed too, or the newest deploy script in the tree is
+    # the one thing the check never looks at.
+    files=$(git ls-files --cached --others --exclude-standard -- '*.sh')
+  else
+    files=$(find . -name '*.sh' -not -path '*/node_modules/*' -not -path './.venv/*' -print)
+  fi
+  for f in $files; do
+    bash -n "$f" || return 1
+    count=$((count + 1))
+  done
+  printf '  %s shell script(s) parse cleanly (bash -n)\n' "$count"
 }
 
 # Importing the bot creates logs/ and (on first write) a default DB next to the
@@ -133,14 +218,36 @@ run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
+
+# jsdom DOM workflow suites: the only checks that drive the JavaScript the
+# operator actually clicks (guided setup, source picker, category studio) in a
+# real DOM, with the API mocked. jsdom is NOT a dependency of the deployed
+# bridge, so it is resolved from an isolated prefix and the suites report a loud
+# SKIPPED when it is absent instead of passing quietly. CI installs it.
+JSDOM_PREFIX="${JSDOM_PREFIX:-/tmp/category-ui-test}"
+export NODE_PATH="${NODE_PATH:-$JSDOM_PREFIX/node_modules}"
+if node -e "require('jsdom')" >/dev/null 2>&1; then
+  run 'dashboard DOM: category studio' node test_dashboard_ui.cjs
+  run 'dashboard DOM: guided setup' node test_dashboard_setup.cjs
+  run 'dashboard DOM: source picker' node test_dashboard_sources.cjs
+else
+  printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
+  printf '  install once : npm install --prefix %s --no-package-lock jsdom\n' "$JSDOM_PREFIX"
+  printf '  then re-run  : PYTHON=%s ./ops/test_all.sh\n' "$PYTHON"
+  printf '  (or override : JSDOM_PREFIX=/path/with/node_modules ./ops/test_all.sh)\n'
+  printf '  CI installs jsdom, so this only skips on a fresh local checkout.\n'
+fi
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'
 run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
+run 'shell script syntax (bash -n)' shell_syntax_check
 run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
   run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
+
+run 'repo self-consistency (gate coverage + README proof tables)' "$PYTHON" test_repo_consistency.py
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

@@ -67,23 +67,106 @@ separate operator-controlled step.
 
 | Path | What it is |
 |---|---|
-| `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
-| `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
+| `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
+| `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status and audit; read-only on the bot database, localhost/SSH-tunnel only |
+| `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
+| `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
+| `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
+| `.github/workflows/` | Where the workflow must live for GitHub Actions to run it. Not committed by automation: GitHub rejects a workflow push from an App token without the `workflows` permission, so a human publishes it once |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
+
+### Other ops scripts and notes
+
+Every file under `ops/` is listed here — an operator facing a broken channel
+should not have to guess what a script does from its name. `test_repo_consistency.py`
+fails the gate if a new `ops/` file is added and never documented.
+
+**Scripts** (all of them parse under `bash -n` in the gate; the Python ones are
+compiled and linted there too):
+
+| Script | What it does |
+|---|---|
+| `approve_posting.sh` | The ONE command that turns posting ON (`--i-approve-posting`). Nothing posts before you run it |
+| `backup_live_state.sh` | Snapshot everything that must survive a deploy: DB, channel config, Telegram session, WhatsApp state (`--with-logs` for forensics) |
+| `bestgaa_restart_gate.sh` | The only restart command the dashboard may run; refuses every restart while `/etc/bestgaa/POSTING_APPROVED` is absent |
+| `deploy_fresh.sh` | Ship → teach → prove → report in one command (`--dry-run`, `--verify-only`, `--no-tests`, `--no-learn`) |
+| `deploy_stable.sh` | Runs `deploy_fresh.sh` inside tmux so a dropped SSH cannot kill a deploy mid-suites |
+| `deploy_and_verify.sh` | Deploy then verify; `--verify-only` proves what is live without changing it. With `--with-tests` it runs the full `ops/test_all.sh` gate (`GATE_DOC_MODE=warn`) before shipping, falling back to the core suites if the checkout cannot |
+| `deploy_r15_keep_off.sh` | PR #15 rollout in SAFE MODE: everything deployed and verified while services stay OFF |
+| `apply_dual_hotfix.sh` | One-shot server deploy of both services |
+| `apply_nightfix.sh` | Bridge-only nightfix: 24/7 WhatsApp posting, 02:00–06:00 IST off-window, night-queue trust policy |
+| `install_bestgaa.sh` | First-time bot installer |
+| `install_dashboard_secure.sh` | Idempotent token-gated dashboard install plus the approval gate (token never printed in full, never in Git) |
+| `repack_bundles.sh` | Rebuild the deploy zips from this source |
+| `set_earnkaro_key.sh` | Write/rotate the EarnKaro key into the server `.env`, pin the publisher from the token, restart, verify (token never printed) |
+| `diagnose.sh` | One-command server diagnosis: services, deployed-fix markers, queue, FloodWait, env, groups, night window, intake |
+| `telegram_check.sh` | Where posts die when sources are active but channels are silent: render/provenance/eligibility vs the actual SEND per target |
+| `test_all.sh` | The offline regression gate (self-logging; ends by verifying this README against the run it just produced). `GATE_DOC_MODE=check\|warn\|off` decides what documentation drift costs |
+| `install_ci_workflow.sh` | Publish `ops/ci/offline-gate.yml` into `.github/workflows/` (`--print` for the web-UI path, `--check` for CI parity, `--force` to repair a drifted copy). Never pushes anything itself |
+| `ci/offline-gate.yml` | The GitHub Actions workflow as shipped: the same `ops/test_all.sh`, plus the clean-checkout assertion, on push and pull request |
+| `doc_freshness.py` | Verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite counts: `--check` fails on drift, `--write` repairs, `--json` for CI |
+| `quality_audit.py` | Read-only DB audit, `--check-url` single-URL verdict, `--strict` exits non-zero on findings, `--json` |
+| `conversion_report.py` | Per-route status of what is actually converting, from the live DB + log (`--json`) |
+| `coverage_audit.py` | Source-vs-channel coverage report plus `--heal` re-queue of posts that never went out (`--json`) |
+| `earnkaro_check.py` | Prove the EarnKaro key converts; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry |
+| `identity_probe.py` | CLI: are these two posts the same product, answered by both services' own rule |
+| `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
+| `sync_identity.py` | Regenerate the auditor's copy of the product-identity rule (`--check` is a test) |
+| `bestgaa_nightfix.zip` | Prebuilt nightfix bundle (regenerable with `repack_bundles.sh`) |
+
+**Notes** (dated incident/decision records — read the date before trusting one):
+
+| File | Subject |
+|---|---|
+| `AMAZON_APPLICATION_CHECKLIST.txt` | Associates re-application after the 2026-09-06 rejection of the previous (foreign) tag — the tag string itself is deliberately never repeated in README, and `test_line_fidelity.py` fails if it comes back |
+| `AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt` | The site list to declare in Associates Central before any channel gets the tag |
+| `DEPLOY_R15_RUNBOOK.txt` | PR #15 server rollout: deploy with services OFF, post only after approval |
+| `EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` | Three new sources, EarnKaro conversion, and setting the API key (2026-09-24) |
+| `EARNKARO_FRESH_KEY_2026-10-04.txt` | The 2026-10-04 key handling and the `--plan` per-link proof. The token itself lives in gitignored `ops/.earnkaro_key`, never here |
+| `HYPD_OUR_LINKS_2026-09-24.txt` | HYPD scope: Meesho only, our store 93944; Shopsy explicitly excluded |
+| `IMMEDIACY_DEDUP_FIX_NOTES.txt` | v18.3: a source deleting its own post must not take our deal with it, plus the immediacy/dedup fixes |
+| `LATEST_ROUTING_NOTES.txt` | Source → non-tricks main target routing as of 2026-08-19 |
+| `LINK_PERFECTION_2026-10-04.txt` | Link perfection, unknown redirect domains, unattributed links, Amazon short links (v18.6) |
+| `SHOPPING_CHANNEL_AND_LIST_FIX_NOTES.txt` | 2026-09-05 "anni fix cheyu, motham" round: four complaints, four fixes |
+| `WA_RECONNECT_STORM_FIX_NOTES.txt` | 2026-09-11 WhatsApp reconnect storm (`status:408` loop) that took the channel down |
+| `WHATSAPP_MEDIA_FIX_NOTES.txt` | 2026-08-22 WhatsApp channel media/posting fix. Its trailing hash list predates this build and is stale |
 
 ## Quick checks (no credentials needed)
 
-The complete offline regression gate runs the bot behavior suites, cross-service product-identity checks, the WhatsApp bridge self-test, and Python syntax checks. GitHub Actions runs this same command on every push and pull request.
+The complete offline regression gate runs the bot behavior suites, cross-service product-identity checks, the dashboard DOM suites, the WhatsApp bridge self-test, `bash -n` on every shell script, Python syntax + lint checks, a repo self-consistency suite, and finally README's own proof tables against the bytes on disk. CI is `ops/ci/offline-gate.yml`: the same script on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), with an assertion that the gate left the checkout clean — no credentials, no network calls to Telegram/WhatsApp/affiliate APIs.
+
+GitHub only reads workflows from `.github/workflows/`, and that path cannot be pushed by a GitHub App installation token without the `workflows` permission (GitHub rejects the entire push with `refusing to allow a GitHub App to create or update workflow`). So the workflow ships as hash-verified source in `ops/ci/` and is published once, by hand:
+
+```bash
+./ops/install_ci_workflow.sh          # copy it into .github/workflows/ + print the steps
+./ops/install_ci_workflow.sh --print  # or paste this into the file via the GitHub web UI
+./ops/install_ci_workflow.sh --check  # exit 1 unless installed and byte-identical
+
+git add .github/workflows/offline-gate.yml
+git commit -m 'ci: run the offline gate on push and pull request'
+git push                              # needs a credential with the workflows permission
+```
+
+Until that push happens GitHub Actions does **not** run, and the local gate (plus `deploy_and_verify.sh --with-tests`) is the only gate — README says so rather than claiming CI that does not exist, which is exactly the claim this repo shipped before. `test_repo_consistency.py` checks the shipped workflow's contents, and fails if an installed copy drifts from it.
 
 ```bash
 # Local setup (once)
 python3 -m venv .venv
 .venv/bin/python -m pip install -r bestgaa/requirements.txt
 npm install --prefix tg-wa-bridge --no-package-lock --ignore-scripts
+# optional, but CI does it: lets the three dashboard DOM suites run instead of
+# reporting a loud SKIPPED (jsdom is deliberately not a bridge dependency)
+npm install --prefix /tmp/category-ui-test --no-package-lock jsdom
+.venv/bin/python -m pip install pyflakes   # turns on the gate's lint step
 
 # Run all offline checks (no Telegram, WhatsApp, or affiliate credentials required)
 PYTHON=.venv/bin/python ./ops/test_all.sh
+
+# Is this README describing the bytes I actually have? (exit 1 on drift)
+python3 ops/doc_freshness.py --check
+python3 ops/doc_freshness.py --write      # refresh hashes/version/counts in place
 
 # On the deployed server: prove what is live
 python3 ops/deploy_and_verify.sh --verify-only
@@ -100,13 +183,54 @@ python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --
 python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
 ```
 
-To run an individual behavior suite, use `python3 test_render_job.py`,
-`python3 test_rescan.py`, `python3 test_pipeline_fixes.py`,
-`python3 test_best_copy.py`, `python3 test_duplicate_sim.py`,
-`python3 test_earnkaro_conversion.py`, `python3 test_hypd_links.py`, or
-`python3 test_line_fidelity.py` from the repository root. The bridge contract
-can also be run directly with `cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x
-WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test`.
+Every `test_*.py` in the proof table runs standalone from the repository root
+(`python3 test_render_job.py`, `python3 test_repo_consistency.py`, …); they set
+their own dummy credentials and use private temp paths. The bridge contract runs
+directly with `cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210
+WA_CHANNEL=x@newsletter node bridge.js --self-test`. The three DOM suites need
+jsdom on `NODE_PATH` and the interpreter that serves the dashboard HTML:
+
+```bash
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=.venv/bin/python \
+  node test_dashboard_ui.cjs        # also: _setup.cjs, _sources.cjs
+```
+
+`test_repo_consistency.py` is the suite about the suite: it fails if a new test
+file is never wired into `ops/test_all.sh`, if a shell script stops parsing, if
+the CI workflow disappears, or if README's hashes, version label or check counts
+stop matching the tree.
+
+### What each offline suite proves
+
+Every suite below is wired into `ops/test_all.sh` and therefore into CI; the gate
+fails if one of them is added to the tree and left unwired.
+
+| Suite | What it proves |
+|---|---|
+| `test_render_job.py` | The Telegram pipeline renders and routes a real intake end to end, under strict-all provenance |
+| `test_pipeline_fixes.py` | "Post instantly, exactly once, nothing extra" — the immediacy/dedup regression set |
+| `test_line_fidelity.py` | Nothing the source wrote is lost, nothing of ours is added; Telegram/WhatsApp line parity |
+| `test_best_copy.py` | Best-copy selection, the numeric-fidelity gate, and the quality auditor |
+| `test_duplicate_sim.py` | One product never reaches the same channel twice, through the real worker path |
+| `test_postdeploy_repeats.py` | The post-deploy repeat bug (one queue posted up to three times) stays fixed |
+| `test_delivery_fences.py` | Lost responses, restarts, simultaneous workers and identity fences — durable delivery |
+| `test_rescan.py` | `source_rescan_loop`, the event-stream dead-man's switch, recovers a missed message idempotently |
+| `test_source_runtime.py` | Runtime source membership and replay guards against fake Telegram responses |
+| `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
+| `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
+| `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
+| `test_hypd_links.py` | HYPD creator-store links: verified Meesho only, our store, Bitly-shortened |
+| `test_category_classifier.py` | Shelf regressions plus exact Python/JS classifier decision parity |
+| `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
+| `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
+| `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
+| `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
+| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract |
+| `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
+| `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
+| `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
+| `test_repo_consistency.py` | Gate coverage, shell syntax, the CI workflow, secret hygiene, and README's proof tables |
 
 The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 `EARNKARO_API_KEY` and `AMAZON_TAG` at import time — it exits with
@@ -1323,26 +1447,118 @@ source snapshot:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py (v19.0)` | `661555e234d3f5c93aa05d63c94c534728db38298a3feaba62d61b1b3326038e` |
-| `bestgaa/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
-| `tg-wa-bridge/bridge.js` | `01d9711beddd55fb938685052f6dc59e77db54ebadbe446b48b3f1a531bb16ae` |
-| `tg-wa-bridge/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
-| `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `8ad8d347554bd794ffb305b7006bd8115a0792f48c258e0c485125666331e08f` |
-| `ops/conversion_report.py` | `ea2655376f7697b4d6fb727f922459e723d710388122e2dc285db4a40206fd85` |
-| `ops/test_all.sh` | `1a20ecae5161a130a27e1580e9dcd5ab731c411ac4a2468603090fd5db68de62` |
-| `ops/repack_bundles.sh` | `8cceff22911b52dd9168137c4d7523e8f31c474c40f0a03b9d7742da37b2045f` |
+| `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
+| `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `bestgaa/channels_config.py` | `0c57dbbd2a0f988ed732d7a7b9f1b2fd2fa7a70b7e76bde6cf93c4678c3fe529` |
+| `bestgaa/deploy_bestgaa.sh` | `86172c508f4385459dd3229e67eedcd124a2628945719da5a974d5a520ee736d` |
+| `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
+| `bestgaa/main_bot_new.py` (v19.0) | `1a2b5eceb09167c0d8f67bf86c5e5d12374ea7605f1a8a7afe74d9154bf89fb4` |
+| `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
+| `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
+| `tg-wa-bridge/bridge.js` | `a33fd901a55ec9521d7c2c3dd849ded07fbc96031eecc861e4e1a14bfc871467` |
+| `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
+| `tg-wa-bridge/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `tg-wa-bridge/install_bridge.sh` | `02114267758a5eed5e1f97e3c481fbabc63d4c1b8d78558cf8b4908709da8a41` |
+| `tg-wa-bridge/package.json` | `298fc3299b5d70761b402977e9fc1d4b1ad1230b197c99f9f618180400edb766` |
+| `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
+| `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
+| `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
+| `dashboard/app.py` | `c95c1059ca3ac91ab3da2830b2d5bebe9852b19ecf4f3b16d55058e7386ed9ac` |
+| `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
+| `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
+| `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
+| `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
+| `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
+| `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
+| `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
+| `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
+| `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
+| `ops/deploy_and_verify.sh` | `7f2ec524e83e713672ed5190eb1d48e60d5fbb813c5d310c7c7f21daf52cc599` |
+| `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
+| `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
+| `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
+| `ops/diagnose.sh` | `54612630daed7ef2562d12ebcee087a8bbf0fc2ed5013bc52f1cbd3406f1fa8f` |
+| `ops/doc_freshness.py` | `2cd359f38b031046ccfdf6e25d480b6b88df9f334ac94f7f25a7e28cad34438d` |
+| `ops/earnkaro_check.py` | `066d2a46837b8cdfe1207cad61d9d1551ddabba699b1361200f0fc0fadfc114e` |
+| `ops/hypd_links.py` | `0794d1fa91015282574be398380310ad33070ee800f5083b960ec442762a1706` |
+| `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
+| `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
+| `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
+| `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
+| `ops/quality_audit.py` | `51ab5558f80965f00d9aed6f7173f18097606ce3efb34284d2d4ac544743b081` |
+| `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
+| `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `7b784afd12fc72c36b8c8f30a49700dc9612c8e4c4bb9f8497bd10a4bf99ae7` |
-| `test_render_job.py` | `e583c796b093a786840900b02d858fb42a51e7a3d5229488b7ba56e29a5122ee` |
-| `test_line_fidelity.py` | `e648cb84378191865257250a94d239141980d1634989e09953daacaf9b2b01fa` |
-| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
-| `test_duplicate_sim.py` | `de827a979773ee933037de16c8e1fe494e69f983c2e538ddd5e9e6f6f62b06bd` |
+| `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
+| `ops/test_all.sh` | `d707ec33e637b1fa7f021103fd1cd4e8a0edd12bb5e51eb84dd0a3a45e105da0` |
 | `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
-| `test_earnkaro_conversion.py` | `771f22a147f1b9ce929ea75cdd5cf4ddb6fae1760b16665e525932f358b6eec0` |
-| `test_hypd_links.py` | `71c8f3e6f8c44871a1ac92e26146936108b938a2dfe28d84e0a05a086406a229` |
+| `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
+| `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
+| `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
+| `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
+| `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
+| `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
+| `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
+| `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
+| `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
+| `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
+| `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
+| `test_line_fidelity.py` | `1b2172546d9c6f15a4fbd4775c3cc43bb168bcf7d9c0650e547000ceccd9a391` |
+| `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
+| `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
+| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
+| `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
+| `test_render_job.py` | `d604b23ce64d7a4f3913cbf35a141515e8d00f153238256ab0e9260f84f18fc3` |
+| `test_repo_consistency.py` | `60c6b6da02f77afb8c44748a0f86500d9239934c22b64dbf623a1b967216e2d3` |
+| `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
+| `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
+| `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
+| `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
+| `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |
 
-**Offline verification on this source tree (2026-10-11):** `PYTHON=.venv/bin/python bash ops/test_all.sh` completed successfully. The gate covers category-taxonomy parity; 211 render/routing checks (including readable URL slugs, a shortened link resolved to a product slug, ambiguous/mixed items, and name-price-link fidelity); rescan/recovery, pipeline, best-copy, duplicate, EarnKaro, HYPD, and line-fidelity suites; the WhatsApp bridge self-test; plus Python compilation and JavaScript syntax validation. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
+**Offline verification on this source tree (2026-10-18):** `PYTHON=.venv/bin/python ./ops/test_all.sh` completed successfully. The gate covers category-taxonomy and HYPD-policy parity; the render/routing and pipeline-fix suites (per-suite check counts are published below, generated from the run's own log, not hand-copied); rescan/recovery, best-copy, duplicate, delivery-fence, post-deploy-repeat, link-inspector, category-preview, source-setup, source-runtime, live-channel, dashboard, EarnKaro, HYPD and line-fidelity suites; the three jsdom dashboard DOM suites (guided setup, source picker, category studio); the WhatsApp bridge self-test; `bash -n` on every shell script; Python compilation; pyflakes lint; a repo self-consistency suite; and finally README's own proof tables, checked against the bytes on disk and against the completed log. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
+
+Suite totals, generated from a real gate run and re-verified on every run (so a
+hand-edited number fails the gate):
+
+<!-- gate-suite-totals:begin -->
+<!-- generated by ops/doc_freshness.py --write from a real gate run;
+     do not edit by hand -->
+| Suite | Checks passed | Failed |
+|---|---|---|
+| pipeline fixes | 238 | 0 |
+| render and routing | 232 | 0 |
+<!-- gate-suite-totals:end -->
+
+Every hash in the source table above, the bot's version label, and those counts
+are checked by `ops/doc_freshness.py`, which the gate runs against its own
+completed log. After any source change, one command refreshes all of it:
+
+```bash
+python3 ops/doc_freshness.py --write
+```
+
+A live rollout is never blocked by documentation. `ops/deploy_and_verify.sh
+--with-tests` — and therefore `deploy_fresh.sh` / `deploy_stable.sh` /
+`deploy_r15_keep_off.sh` — runs the **same** `ops/test_all.sh` that CI runs, with
+`GATE_DOC_MODE=warn`, and falls back to the core suites individually if a
+checkout cannot run the full gate (no Node, no bridge dependencies). Before this,
+the deploy path carried a hardcoded list of 8 suites while the gate had 32
+sections, so delivery fences, post-deploy repeats, the dashboard API and DOM
+suites, category invariants, the send guard, shell syntax and repo consistency
+were all shipping unverified from exactly the path that matters most.
+
+`GATE_DOC_MODE` is `check` (default: drift fails the gate — CI and local runs),
+`warn` (drift printed loudly, exit 0 — deploys) or `off` (skipped, and says so).
+A typo exits 2 rather than silently downgrading the check.
+
+Drift is a gate failure, not a warning: a proof table that describes bytes which
+no longer exist is worse than no table, because an operator trusts it. (Found
+2026-10-18: 14 of the 18 documented hashes had drifted, one row carried a
+63-character digest that could never match any file, and the render/routing count
+read 211 against 232 actual checks.)
 
 | Suite | Current coverage |
 |---|---|
