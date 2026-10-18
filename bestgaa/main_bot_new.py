@@ -8124,24 +8124,50 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
     return True
 
 
-async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
+async def send_media_item(client, entity, media, caption: str, refs: list | None = None,
+                          buttons: list | None = None) -> None:
     """One photo with its caption, or the whole album as one grid, with real fallbacks.
 
     If the grid cannot be sent, the first photo goes out with the caption - exactly what
     the bot always did - and the remaining photos follow as their own messages, so the
-    reader still gets every image the source posted.
+    reader still gets every image the source posted. `buttons` rides only on sends that
+    carry the caption: an album's raw multi-media request keeps today's shape until its
+    markup path is covered by tests.
     """
     paths = media_list(media)
     if len(paths) <= 1:
         await client.send_file(entity, paths[0] if paths else None, caption=caption,
-                               parse_mode=None)
+                               parse_mode=None, buttons=buttons or None)
         return
     if await send_media_group(client, entity, caption, paths, list(refs or [])):
         return
-    await client.send_file(entity, paths[0], caption=caption, parse_mode=None)
+    await client.send_file(entity, paths[0], caption=caption, parse_mode=None,
+                           buttons=buttons or None)
     for extra in paths[1:]:
         with contextlib.suppress(Exception):
             await client.send_file(entity, extra, parse_mode=None)
+
+
+def post_inline_buttons():
+    """The dashboard-configured URL button row, ready for Telethon, or [].
+
+    Telegram draws inline URL buttons below the message - the "Join … ❤️" row a
+    big channel ends every post with. Empty config (the default, and every
+    deployment until an operator saves buttons) returns [], and `deliver` then
+    passes buttons=None, so nothing about today's posts changes. WhatsApp has no
+    inline buttons, so this is a Telegram-only surface.
+    """
+    try:
+        import post_buttons
+    except ImportError:  # imported as bestgaa.main_bot_new
+        from bestgaa import post_buttons
+    rows = post_buttons.load_buttons()
+    if not rows:
+        return []
+    from telethon import Button
+    # `entry`, not `row`: these are config dicts, and the pipeline suite audits
+    # every row["…"] read against the SQL table it came from.
+    return [[Button.url(entry["label"], entry["url"])] for entry in rows]
 
 
 def channel_header_line() -> str:
@@ -8204,8 +8230,13 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
         await attempt_callback(-1, plan_hash, "plan")
     if start_chunk > len(parts):
         return False, "invalid chunk checkpoint"
+    # The button row opens the post, exactly once: the first message actually sent
+    # (which is the photo when there is one). A resumed job puts it on the message
+    # that resumes, so a post never shows zero rows because of a retry.
+    button_row = post_inline_buttons() or None
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
+        chunk_buttons = button_row if index == start_chunk else None
         sent = False
         last_error = "unknown send failure"
         payload_hash = hashlib.sha256((kind + "\n" + content).encode()).hexdigest()
@@ -8216,10 +8247,12 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                     break
             try:
                 if kind == "file":
-                    await send_media_item(client, entity, media_path, content, media_refs)
+                    await send_media_item(client, entity, media_path, content, media_refs,
+                                          chunk_buttons)
                 else:
                     await client.send_message(
-                        entity, content, parse_mode=None, link_preview=link_preview
+                        entity, content, parse_mode=None, link_preview=link_preview,
+                        buttons=chunk_buttons
                     )
             except FloodWaitError as exc:
                 if attempt_callback:

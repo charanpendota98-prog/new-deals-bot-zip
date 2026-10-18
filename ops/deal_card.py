@@ -605,12 +605,22 @@ def studio(text: str, link: str = "", photo_path: str = "", rules_path: str | No
                     "bytes": len(png)}
     except CardUnavailable as exc:
         card["why"] = str(exc)
+    try:
+        import post_buttons
+        buttons = post_buttons.load_buttons()
+    except Exception:                               # config problems must not kill preview
+        buttons = []
     return {
         "facts": facts,
         "card": card,
         "link": verdict,
         "captions": caps,
         "plan": plan,
+        "buttons": buttons,
+        "button_note": ("Telegram posts carry this button row; WhatsApp channels have "
+                        "no inline buttons, so WhatsApp stays text-only."
+                        if buttons else
+                        "no buttons configured: posts go out exactly as today"),
         "surfaces": list(SURFACES),
     }
 

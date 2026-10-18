@@ -216,6 +216,7 @@ run 'link category inspector' "$PYTHON" test_link_inspector.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
 run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py
+run 'post buttons (validation, atomic config, send-path no-op)' "$PYTHON" test_post_buttons.py
 run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py

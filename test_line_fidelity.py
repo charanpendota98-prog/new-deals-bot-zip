@@ -656,8 +656,10 @@ def test_photos_arrive_as_the_source_posted_them():
             self.last = request
             return SimpleNamespace(id=1)
 
-        async def send_file(self, entity, media, caption=None, parse_mode=None):
+        async def send_file(self, entity, media, caption=None, parse_mode=None,
+                            buttons=None):
             self.calls.append("send_file")
+            self.buttons_seen = getattr(self, "buttons_seen", []) + [buttons]
             self.files_sent = getattr(self, "files_sent", []) + [(media, caption)]
 
     wanted = min(3, bot.MAX_ALBUM_PHOTOS)          # the cap is an operator knob
@@ -698,6 +700,9 @@ def test_photos_arrive_as_the_source_posted_them():
                       req is None and sent.calls == ["send_file"], str(sent.calls))
             check("the album reuses the source's photo refs - nothing is re-uploaded",
                   "upload_file" not in sent.calls, str(sent.calls))
+            check("with no buttons configured every photo send carries buttons=None",
+                  all(b is None for b in getattr(sent, "buttons_seen", [])),
+                  str(getattr(sent, "buttons_seen", [])))
 
             if wanted >= 2:
                 uploaded = RecClient(no_refs=True)

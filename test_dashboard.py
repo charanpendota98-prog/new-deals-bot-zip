@@ -213,6 +213,55 @@ def test_http_api():
                     check("preview withholds mixed posts", status == 200
                           and body.get("category") is None
                           and body.get("reason") == "mixed_or_conflicting")
+
+                    async with sess.request(
+                            "GET", base + "/api/status",
+                            headers={"X-Dashboard-Token": "test-token-123"}) as resp:
+                        hdr = resp.headers
+                    check("responses refuse framing, sniffing and referrer leaks",
+                          hdr.get("X-Frame-Options") == "DENY"
+                          and hdr.get("X-Content-Type-Options") == "nosniff"
+                          and hdr.get("Referrer-Policy") == "no-referrer", str(dict(hdr)))
+                    check("API responses are never cacheable",
+                          hdr.get("Cache-Control") == "no-store", str(hdr.get("Cache-Control")))
+
+                    status, body = await call("GET", "/api/post-buttons")
+                    check("the button row starts empty and states its limits",
+                          status == 200 and body.get("buttons") == []
+                          and body.get("max_buttons") == 2, str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "Join", "url": "https://evil.example/j"}]})
+                    check("a join button that leaves Telegram is refused",
+                          status == 400 and body.get("errors"), str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "one", "url": "http://t.me/plain"},
+                                                  {"label": "two", "url": "https://t.me/x"}]})
+                    check("plain http is refused", status == 400, str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "a", "url": "https://t.me/x"},
+                                                  {"label": "b", "url": "https://t.me/y"},
+                                                  {"label": "c", "url": "https://t.me/z"}]})
+                    check("three buttons are refused", status == 400 and body.get("errors"),
+                          str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "Join Shpsy Loots \u2764\ufe0f",
+                                                   "url": "https://t.me/shpsyloots"},
+                                                  {"label": "Under 99rs Loot Deals",
+                                                   "url": "https://t.me/under99rs"}]})
+                    check("two Telegram buttons save", status == 200
+                          and len(body.get("buttons", [])) == 2, str(body))
+                    status, body = await call("GET", "/api/post-buttons")
+                    check("and read back exactly as saved", status == 200
+                          and body["buttons"][0]["url"] == "https://t.me/shpsyloots", str(body))
+                    check("the bot's send path sees the saved row",
+                          len(bot.post_inline_buttons()) == 2)
+                    status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
+                    check("clearing the row restores today's posts byte for byte",
+                          status == 200 and bot.post_inline_buttons() == [], str(body))
                     for bad_body in ([], {}, {"text": "x" * 12001},
                                      {"text": "earbuds", "links": "not-a-list"}):
                         status, body = await call("POST", "/api/category-preview", json=bad_body)

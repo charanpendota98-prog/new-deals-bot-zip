@@ -603,6 +603,48 @@ async def api_card_studio(request: web.Request):
 
 
 @require_token
+async def api_post_buttons_get(request: web.Request):
+    """The configured Telegram button row (join buttons under every post)."""
+    import post_buttons
+    return web.json_response({
+        "buttons": post_buttons.load_buttons(),
+        "max_buttons": post_buttons.MAX_BUTTONS,
+        "max_label": post_buttons.MAX_LABEL,
+        "allowed_hosts": list(post_buttons.ALLOWED_HOSTS),
+        "path": str(post_buttons.config_path()),
+    })
+
+
+@require_token
+async def api_post_buttons_put(request: web.Request):
+    """Save the button row. Validation lives in post_buttons, so the CLI, the bot
+    and this endpoint can never disagree about what a button is."""
+    import post_buttons
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    target, errors = post_buttons.save_buttons((body or {}).get("buttons"))
+    if errors:
+        return web.json_response({"errors": errors}, status=400)
+    return web.json_response({"saved": True, "buttons": post_buttons.load_buttons(target),
+                              "path": str(target)})
+
+
+@web.middleware
+async def security_headers(request: web.Request, handler):
+    """Baseline response hardening: no framing, no MIME sniffing, no referrer
+    leaks, and nothing cacheable behind the token."""
+    response = await handler(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@require_token
 async def api_audit(request: web.Request):
     try:
         limit = max(1, min(500, int(request.query.get("limit", "200"))))
@@ -655,7 +697,7 @@ async def index(request: web.Request):
 
 
 def create_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[security_headers])
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/channels", api_channels)
@@ -667,6 +709,8 @@ def create_app() -> web.Application:
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
     app.router.add_get("/api/categories", api_categories)
+    app.router.add_get("/api/post-buttons", api_post_buttons_get)
+    app.router.add_put("/api/post-buttons", api_post_buttons_put)
     app.router.add_get("/api/card.png", api_card_png)
     app.router.add_get("/api/card-studio", api_card_studio)
     app.router.add_get("/api/audit", api_audit)

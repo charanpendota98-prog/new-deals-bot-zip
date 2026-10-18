@@ -27,6 +27,9 @@ dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:1
 dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
 .ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}.studio-split{display:grid;grid-template-columns:minmax(240px,430px) 1fr;gap:20px;align-items:start}
 #cardstudio img{width:100%;border-radius:12px;border:1px solid #e2e8f0;background:#fff}
+.btnbar{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.btnbar a{display:block;text-align:center;background:#242f3e;color:#eaf2fb;border-radius:10px;padding:9px 12px;font-weight:600;font-size:13px;text-decoration:none}
+#btnrows .row{margin-bottom:6px}
 .captionbox{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;padding:12px 14px;border-radius:10px;font-size:12.5px;line-height:1.55;margin:0}
 .bad{color:#fca5a5}
 #catrows tr[data-key]{cursor:pointer}
@@ -142,9 +145,15 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <div id="cardfacts" class="muted">no caption yet</div>
 <div id="cardwarn"></div>
 <div class="studio-split">
-<div><img id="cardimg" alt="Rendered deal card preview" style="display:none"><div id="cardimgerr" class="muted"></div></div>
+<div><img id="cardimg" alt="Rendered deal card preview" style="display:none"><div id="cardbtns" class="btnbar" style="display:none"></div><div id="cardimgerr" class="muted"></div></div>
 <div><h3>Caption for <span id="cardsurfacename">Telegram</span></h3><pre id="cardcaption" class="captionbox">render a caption to see it</pre></div>
 </div>
+<h3>Post buttons under every Telegram post</h3>
+<p class="muted">The row Telegram draws <b>below</b> the message - the "Join … ❤️" button a big channel ends every post with. Up to two <code>https://t.me/…</code> buttons; WhatsApp channels have no inline buttons, so WhatsApp stays text-only. Zero buttons = today's posts, byte for byte.</p>
+<div id="btnrows"></div>
+<div class="row"><button id="btnadd" onclick="addButtonRow()">+ add button</button>
+<button class="primary" id="btnsave" onclick="saveButtons()">Save buttons</button>
+<span id="btnstate" class="muted"></span></div>
 <h3>Where this deal would land</h3>
 <div class="tablewrap"><table><thead><tr><th>Surface</th><th>Destination</th><th>Format</th><th>Why</th></tr></thead>
 <tbody id="cardplan"><tr><td colspan="4" class="muted">render a caption to see the plan</td></tr></tbody></table></div>
@@ -205,7 +214,7 @@ function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').rep
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
   sessionStorage.setItem('dash_token', TOKEN); document.getElementById('token').value='';
-  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); }
+  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); loadButtons(); }
 async function api(method, path, body, revision){
   const h = headers(); if(revision) h['If-Match'] = revision;
   const r = await fetch(path, {method, headers:h, body: body ? JSON.stringify(body) : undefined});
@@ -324,6 +333,74 @@ function surfaceCell(sf){
     : '<span class="muted">not configured</span>';
   return `TG ${targets}${tagNote}<br>WA ${channel}`;
 }
+let buttonRows=[];
+function renderButtonRows(){
+  const wrap=document.getElementById('btnrows');
+  wrap.innerHTML='';
+  buttonRows.forEach((row,index)=>{
+    const line=document.createElement('div'); line.className='row';
+    const label=document.createElement('input');
+    label.value=row.label||''; label.maxLength=40;
+    label.placeholder='label, e.g. Join Shpsy Loots \u2764\ufe0f';
+    label.setAttribute('aria-label','button label');
+    label.addEventListener('input',()=>{ buttonRows[index].label=label.value; });
+    const url=document.createElement('input');
+    url.value=row.url||''; url.placeholder='https://t.me/yourchannel';
+    url.setAttribute('aria-label','button url');
+    url.addEventListener('input',()=>{ buttonRows[index].url=url.value; });
+    const del=document.createElement('button');
+    del.textContent='remove';
+    del.addEventListener('click',()=>{ buttonRows.splice(index,1); renderButtonRows(); });
+    line.append(label,url,del);
+    wrap.appendChild(line);
+  });
+  document.getElementById('btnadd').style.display=buttonRows.length>=2?'none':'';
+}
+function addButtonRow(){
+  if(buttonRows.length>=2) return;
+  buttonRows.push({label:'',url:''});
+  renderButtonRows();
+}
+async function loadButtons(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const state=document.getElementById('btnstate');
+  try{
+    const data=await api('GET','/api/post-buttons');
+    buttonRows=(data.buttons||[]).map(b=>({label:b.label,url:b.url}));
+    renderButtonRows();
+    state.textContent=buttonRows.length?'configured: '+buttonRows.length+' button(s)'
+      :'no buttons configured - posts go out exactly as today';
+  }catch(error){
+    state.textContent='buttons unavailable: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+async function saveButtons(){
+  const state=document.getElementById('btnstate');
+  const rows=buttonRows.filter(r=>(r.label||'').trim()||(r.url||'').trim());
+  try{
+    const saved=await api('PUT','/api/post-buttons',{buttons:rows});
+    buttonRows=(saved.buttons||[]).map(b=>({label:b.label,url:b.url}));
+    renderButtonRows();
+    renderMockButtons(buttonRows);
+    state.textContent='saved '+buttonRows.length+' button(s)';
+  }catch(error){
+    state.textContent='NOT saved: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+function renderMockButtons(buttons){
+  const bar=document.getElementById('cardbtns');
+  bar.innerHTML='';
+  if(!buttons||!buttons.length){ bar.style.display='none'; return; }
+  bar.style.display='flex';
+  for(const entry of buttons){
+    const a=document.createElement('a');
+    a.textContent=entry.label;
+    a.href=entry.url;
+    a.target='_blank';
+    a.rel='noopener noreferrer';
+    bar.appendChild(a);
+  }
+}
 let cardURL=null;
 async function loadStudio(draw){
   const text=(document.getElementById('cardtext').value||'').trim();
@@ -369,6 +446,7 @@ async function loadStudio(draw){
                     :'<span class="muted">not sent</span>')+'</td>'
       +'<td class="muted">'+escapeHTML(row.why)+'</td></tr>').join('')
     :'<tr><td colspan="4" class="muted">no destinations configured for this deal</td></tr>';
+  renderMockButtons(data.buttons||[]);
   if(cardURL){ URL.revokeObjectURL(cardURL); cardURL=null; }
   if(draw){
     img.style.display='none';
@@ -944,6 +1022,7 @@ document.getElementById('catrows').addEventListener('click', event=>{
   toggleShelf(row.dataset.key);
 });
 if(TOKEN || DEMO_MODE) refresh();
+loadButtons();
 setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
 </script>
 </body>

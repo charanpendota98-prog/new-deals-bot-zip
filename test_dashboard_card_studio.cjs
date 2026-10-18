@@ -52,9 +52,14 @@ function studio() {
       warnings: ['link not printable: ' + EVIL],
       declared_targets: {electronics: 'electroshelf'}},
     surfaces: ['telegram', 'whatsapp', 'premium', 'text'],
+    buttons: [{label: 'Join Shpsy Loots \u2764\ufe0f', url: 'https://t.me/shpsyloots'}],
+    button_note: 'Telegram posts carry this button row; WhatsApp channels have no inline buttons.',
     db_exists: true, preview_only: true,
   };
 }
+
+let savedButtons = [{label: 'Join Shpsy Loots \u2764\ufe0f', url: 'https://t.me/shpsyloots'}];
+let putBodies = [];
 
 const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dangerously', beforeParse(w) {
   w.confirm = () => true; w.alert = message => { throw new Error(message); };
@@ -81,6 +86,20 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       status = studioStatus;
       data = status === 200 ? studio() : {error: 'card studio failed'};
       return {ok: status === 200, status, json: async () => data};
+    }
+    if (path.startsWith('/api/post-buttons')) {
+      const method = (options && options.method) || 'GET';
+      if (method === 'GET') {
+        return {ok: true, status: 200, json: async () => ({buttons: savedButtons,
+          max_buttons: 2, max_label: 40, allowed_hosts: ['t.me'], path: '/x/post_buttons.json'})};
+      }
+      const body = options && options.body ? JSON.parse(options.body) : {};
+      putBodies.push(body);
+      const bad = (body.buttons || []).some(b => !(b.url || '').startsWith('https://t.me/'));
+      if (bad) return {ok: false, status: 400,
+        json: async () => ({errors: ['button 2 url host is not a Telegram host']})};
+      savedButtons = body.buttons || [];
+      return {ok: true, status: 200, json: async () => ({saved: true, buttons: savedButtons})};
     }
     if (path.startsWith('/api/card.png')) {
       status = pngStatus;
@@ -171,9 +190,57 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
     'the rest of the dashboard still rendered');
   studioStatus = 200; pngStatus = 200;
 
+  // --- the button row: editor, mock preview, and a refused save --------------
+  await w.loadButtons();
+  const rowsBox = d.getElementById('btnrows');
+  assert.equal(rowsBox.querySelectorAll('input').length, 2,
+    'the saved row loads into the editor as label+url inputs');
+  assert.equal(rowsBox.querySelectorAll('input')[0].value, 'Join Shpsy Loots \u2764\ufe0f',
+    'the label is the saved text, not markup');
+  assert.match(d.getElementById('btnstate').textContent, /configured: 1 button/,
+    'the editor says what is configured');
+  assert.equal(d.querySelectorAll('#cardbtns a').length, 1,
+    'the studio preview draws the button row under the card');
+  const mock = d.querySelector('#cardbtns a');
+  assert.equal(mock.getAttribute('href'), 'https://t.me/shpsyloots', 'the mock links where the post would');
+  assert.match(mock.getAttribute('rel') || '', /noopener/, 'and opens safely');
+  await w.loadStudio(true);
+  assert.equal(d.querySelectorAll('#cardbtns a').length, 1,
+    'a re-render keeps the configured row');
+  w.addButtonRow();
+  assert.equal(rowsBox.querySelectorAll('input').length, 4, 'a second button can be added');
+  w.addButtonRow();
+  assert.equal(rowsBox.querySelectorAll('input').length, 4, 'a third cannot');
+  assert.equal(d.getElementById('btnadd').style.display, 'none', 'and the add button hides');
+  const inputs = rowsBox.querySelectorAll('input');
+  inputs[2].value = 'Evil'; inputs[3].value = 'https://evil.example/join';
+  inputs[2].dispatchEvent(new w.Event('input')); inputs[3].dispatchEvent(new w.Event('input'));
+  await w.saveButtons();
+  assert.match(d.getElementById('btnstate').textContent, /NOT saved/,
+    'a non-Telegram button is refused with the server reason');
+  assert.equal(putBodies.length, 1, 'the refusal came from a real save attempt');
+  inputs[3].value = 'https://t.me/under99rs';
+  inputs[3].dispatchEvent(new w.Event('input'));
+  inputs[2].value = 'Under 99rs Loot Deals';
+  inputs[2].dispatchEvent(new w.Event('input'));
+  await w.saveButtons();
+  assert.match(d.getElementById('btnstate').textContent, /saved 2 button/,
+    'two Telegram buttons save');
+  assert.deepEqual(putBodies[1].buttons.map(b => b.url),
+    ['https://t.me/shpsyloots', 'https://t.me/under99rs'], 'the PUT carries exactly the two rows');
+  assert.equal(d.querySelectorAll('#cardbtns a').length, 2,
+    'and the preview under the card updates immediately');
+  savedButtons = [{label: EVIL, url: 'https://t.me/x'}];
+  await w.loadButtons();
+  assert.equal(rowsBox.querySelectorAll('img').length, 0,
+    'a hostile saved label stays input text, never markup');
+  assert.ok(rowsBox.querySelectorAll('input')[0].value.includes('<img src=x'),
+    'and sits in the input value as plain text');
+
   console.log('Card studio DOM PASS: facts read from the bot own parsers, captions verbatim per '
     + 'surface, tokened PNG through a blob URL, forward plan with accept/skip reasons, hostile '
-    + 'text kept as text, and a dead endpoint that cannot blank the dashboard.');
+    + 'text kept as text, a configurable two-button join row with a refused non-Telegram save, '
+    + 'and a dead endpoint that cannot blank the dashboard.');
   w.close();
   process.exit(0);
 })().catch(error => { console.error(error); process.exit(1); });
