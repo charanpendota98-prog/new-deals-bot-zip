@@ -25,7 +25,13 @@ label{font-size:13px;color:#cbd5e1}
 #tokenbar{display:flex;gap:8px;margin:8px 0}pre{white-space:pre-wrap;font-size:12px;color:#fca5a5}
 dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:12px;max-width:560px;width:85%}
 dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
-.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}
+.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}.bad{color:#fca5a5}
+#catrows tr[data-key]{cursor:pointer}
+#catrows tr[data-key]:hover td{background:#16233a}
+#catrows tr.open td{background:#132f2c}
+tr.catdetail td{background:#0b131f;padding:10px 12px}
+tr.catdetail table{width:100%;font-size:12px;border-collapse:collapse}
+tr.catdetail th,tr.catdetail td{text-align:left;padding:4px 8px;border-bottom:1px solid #1d2b3f;vertical-align:top}
 
 :root{color-scheme:dark}body{background:#0b1019;color:#e7edf5;line-height:1.55}main{max-width:1160px;padding:22px 28px 60px}
 a{color:inherit;text-decoration:none}button{font-weight:600;transition:background .15s;border-radius:8px;background:#80f0cf;color:#10241e;border-color:#80f0cf}button:hover{filter:brightness(1.1)}button.ghost{color:#ced8e6;border-color:#34445b}button.danger{color:#fff}
@@ -105,12 +111,12 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </div>
 <div class="card" id="categories">
 <div class="section-heading"><div><span class="eyebrow">CATEGORY-WISE · LIVE DB + BOT LOG</span><h2>What each shelf actually received</h2></div>
-<div><label class="muted" for="cathours">Window</label> <select id="cathours" onchange="loadCategories()"><option value="6">last 6h</option><option value="24" selected>last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select></div></div>
-<p class="muted">Read-only, per category: delivery-ledger sends/skips/holds, the pending backlog routed at the shelf, how many deals the classifier sent its way versus withheld from it (and why), and the last time anything landed there. Same engine as <code>python3 ops/category_report.py</code>; nothing is posted, queued or restarted from here.</p>
+<div><label class="muted" for="cathours">Window</label> <select id="cathours" onchange="loadCategories()"><option value="6">last 6h</option><option value="24" selected>last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select> <label class="muted" for="catdays">Trend</label> <select id="catdays" onchange="loadCategories()"><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option></select></div></div>
+<p class="muted">Read-only, per category: delivery-ledger sends/skips/holds, the pending backlog routed at the shelf, how many deals the classifier sent its way versus withheld from it (and why), the last time anything landed there, <b>whether the links it published actually pay us</b>, an IST-day send trend, and how the same shelf is configured on Telegram and on WhatsApp. Click any row to open its newest delivery rows. Same engine as <code>python3 ops/category_report.py</code>; nothing is posted, queued or restarted from here.</p>
 <p id="catnote" class="muted" role="status" aria-live="polite">loading…</p>
 <div class="row" id="catstats"></div>
 <p id="catfindings" aria-live="polite"></p>
-<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Last send</th></tr></thead>
+<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Money</th><th>Trend</th><th>Surfaces</th><th>Last send</th></tr></thead>
 <tbody id="catrows"></tbody></table></div>
 </div>
 <div class="card"><h2>Test a category before posting</h2>
@@ -255,6 +261,96 @@ function catStateBadge(state){
   const entry=map[state]||['',String(state||'unknown')];
   return `<span class="badge ${entry[0]}">${escapeHTML(entry[1])}</span>`;
 }
+function sparkline(series){
+  // Eight block characters, one per IST day: a trend readable in a table cell
+  // with no chart library and nothing to load.
+  const values=(Array.isArray(series)?series:[]).map(d=>Math.max(0,Number(d&&d.sent)||0));
+  if(!values.length) return '';
+  const blocks='\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588', top=Math.max(...values);
+  if(!top) return blocks[0].repeat(values.length);
+  return values.map(v=>blocks[Math.min(7,Math.round(v*7/top))]).join('');
+}
+function moneyCell(m){
+  const posts=Number(m&&m.posts)||0;
+  if(!posts) return '<span class="muted">nothing delivered</span>';
+  const owned=escapeHTML(Number(m.owned)||0), nothing=escapeHTML(Number(m.earns_nothing)||0),
+    foreign=Number(m.foreign_tag)||0, unproven=Number(m.unattributed)||0,
+    routes=Object.entries(m.routes||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+  return `${owned} paid · ${nothing} earn nothing`
+    +(foreign?` · <b class="bad">${escapeHTML(foreign)} foreign tag</b>`:'')
+    +(unproven?` · ${escapeHTML(unproven)} unproven`:'')
+    +`<br><span class="muted">${escapeHTML(posts)} post(s)${routes?' · '+routes:''}</span>`;
+}
+function surfaceCell(sf){
+  const tg=(sf&&sf.telegram)||{}, wa=(sf&&sf.whatsapp)||{};
+  const targets=(Array.isArray(tg.targets)?tg.targets:[]).map(t=>'@'+escapeHTML(t)).join(', ')
+    ||'<span class="muted">none</span>';
+  const tagNote=tg.amazon_tag?' <span class="muted">(tag)</span>':' <span class="muted">(tagless)</span>';
+  const channel=wa.channel
+    ? escapeHTML(wa.channel)+(wa.filtered
+      ? ` <span class="badge ours">${escapeHTML(wa.policy||'filtered')}</span>`
+      : ' <span class="badge warn">not filtered</span>')
+      +(wa.amazon_tag?' <span class="muted">(tag)</span>':'')
+    : '<span class="muted">not configured</span>';
+  return `TG ${targets}${tagNote}<br>WA ${channel}`;
+}
+function findShelfRow(key){
+  return Array.from(document.querySelectorAll('#catrows tr[data-key]'))
+    .find(tr=>tr.dataset.key===key)||null;
+}
+async function toggleShelf(key){
+  // Drill-down: open the rows behind one shelf's numbers. Built with DOM APIs and
+  // textContent only - a deal caption, a channel name or a logged error is never
+  // interpolated as HTML here.
+  const row=findShelfRow(key); if(!row) return;
+  const open=row.nextElementSibling;
+  if(open&&open.classList.contains('catdetail')){ open.remove(); row.classList.remove('open'); return; }
+  const detail=document.createElement('tr');
+  detail.className='catdetail';
+  const cell=document.createElement('td');
+  cell.colSpan=13;
+  cell.className='muted';
+  cell.textContent='loading the newest delivery rows for '+key+'…';
+  detail.appendChild(cell);
+  row.after(detail);
+  row.classList.add('open');
+  try{
+    const hours=(document.getElementById('cathours')||{}).value||'24';
+    const days=(document.getElementById('catdays')||{}).value||'7';
+    const data=(await api('GET','/api/categories?hours='+encodeURIComponent(hours)
+      +'&days='+encodeURIComponent(days)+'&expand='+encodeURIComponent(key)))||{};
+    renderShelfDetail(cell,((data.recent||{})[key])||[]);
+  }catch(e){
+    cell.textContent='drill-down unavailable: '+e.message;
+  }
+}
+function renderShelfDetail(cell,rows){
+  cell.textContent='';
+  cell.classList.remove('muted');
+  if(!Array.isArray(rows)||!rows.length){
+    cell.textContent='no delivery rows for this shelf in the window';
+    return;
+  }
+  const table=document.createElement('table');
+  const head=document.createElement('thead');
+  const headRow=document.createElement('tr');
+  for(const title of ['Queue','When (IST)','Target','Status','Reason','Money','Post']){
+    const th=document.createElement('th'); th.textContent=title; headRow.appendChild(th);
+  }
+  head.appendChild(headRow); table.appendChild(head);
+  const body=document.createElement('tbody');
+  for(const item of rows){
+    const tr=document.createElement('tr');
+    for(const value of ['#'+(item.queue_id??'?'), item.at||'?', '@'+(item.target||'?'),
+        item.status||'?', item.reason||item.error||'', item.money?item.money+'/'+(item.route||''):'',
+        item.snippet||'(no text)']){
+      const td=document.createElement('td'); td.textContent=String(value??''); tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  cell.appendChild(table);
+}
 function renderCategories(data){
   const cats=Array.isArray(data.categories)?data.categories:[];
   const totals=data.totals||{}, main=data.main||{}, mainDeliveries=main.deliveries||{};
@@ -269,11 +365,28 @@ function renderCategories(data){
     stat(totals.shelves_with_channel||0,'shelves reachable') + stat(totals.sent||0,'shelf sends') +
     stat(totals.skipped||0,'shelf skips') + stat(totals.routed||0,'routed by classifier') +
     stat(totals.withheld||0,'withheld from shelves') + stat(unclassified,'withheld unclassified') +
-    stat(mainDeliveries.sent||0,'Main sends');
+    stat(mainDeliveries.sent||0,'Main sends') + stat(totals.paid_posts||0,'posts that pay us');
   if(unclassified||foreign.length){
     note.textContent += ' · '+unclassified+' post(s) withheld because no category matched'
       +(foreign.length?' · the bot also withheld posts for categories this taxonomy does not define: '
         +foreign.join(', '):'');
+  }
+  const moneyTotals=data.money_totals||{}, wa=data.whatsapp||{};
+  if(moneyTotals.posts){
+    note.textContent += ' · money: '+moneyTotals.posts+' delivered post(s), '
+      +(moneyTotals.owned||0)+' carrying a link that pays us, '
+      +(moneyTotals.earns_nothing||0)+' paying nobody'
+      +((moneyTotals.foreign_tag||0)?', '+moneyTotals.foreign_tag+' carrying a FOREIGN tag':'')
+      +((moneyTotals.unattributed||0)?', '+moneyTotals.unattributed+' unproven':'');
+  }
+  if(wa.configured){
+    note.textContent += ' · WhatsApp: '+Object.keys(wa.channels||{}).length+' category channel(s), '
+      +Object.keys(wa.core||{}).length+' core'
+      +((wa.collisions||[]).length?', '+wa.collisions.length+' COLLISION (shelf not filtered)':'');
+  }
+  if(data.ledger_capped){
+    note.textContent += ' · only the newest '+(data.max_posts||'?')+' ledger rows were read: '
+      +'money and trend cover part of this window';
   }
   const findings=Array.isArray(data.findings)?data.findings:[];
   const actionable=findings.filter(f=>f&&f.severity!=='info');
@@ -288,7 +401,7 @@ function renderCategories(data){
         return `<span class="badge ${cls}">${sev}</span> <b>${kind}</b>${where}: ${detail}`;
       }).join('<br>')
     : '<span class="muted">No findings: every reachable shelf received posts, no category route was disabled, and both services classify with the same rules.</span>';
-  document.getElementById('catrows').innerHTML = cats.map(c=>{
+  const rowsHTML = cats.map(c=>{
     const d=c.deliveries||{}, w=c.withheld||{}, tagless=c.tagless_targets||[];
     const active=Array.isArray(c.active_targets)?c.active_targets:(c.targets||[]);
     const targets=(c.targets||[]).map(t=>'@'+escapeHTML(t)
@@ -301,26 +414,45 @@ function renderCategories(data){
       sent=escapeHTML(d.sent||0), skipped=escapeHTML(d.skipped||0), held=escapeHTML(d.held||0),
       pending=escapeHTML(c.pending||0), routed=escapeHTML(c.routed||0), withheld=escapeHTML(w.total||0),
       last=escapeHTML(c.last_sent||'never'), skipNote=skips?`<br><span class="muted">${skips}</span>`:'',
-      withheldNote=reasons?`<br><span class="muted">${reasons}</span>`:'';
-    return `<tr><td><b>${label}</b><br><span class="muted">${key} · ${aliases} aliases</span></td>`
+      withheldNote=reasons?`<br><span class="muted">${reasons}</span>`:'',
+      money=moneyCell(c.money), surface=surfaceCell(c.surfaces),
+      series=Array.isArray(c.history)?c.history:[],
+      spark=escapeHTML(sparkline(series)),
+      sparkTitle=escapeHTML('sends per IST day: '+(series.map(x=>Number(x&&x.sent)||0).join('/')||'none')),
+      trend=series.length?`${spark}<br><span class="muted">${escapeHTML(series.length)}d</span>`
+        :'<span class="muted">no trend</span>';
+    return `<tr data-key="${key}" title="click to open this shelf's newest delivery rows">`
+      +`<td><b>${label}</b><br><span class="muted">${key} · ${aliases} aliases</span></td>`
       +`<td>${catStateBadge(c.state)}</td><td>${targets}</td>`
       +`<td>${sent}</td><td>${skipped}${skipNote}</td>`
       +`<td>${held}</td><td>${pending}</td><td>${routed}</td>`
       +`<td>${withheld}${withheldNote}</td>`
+      +`<td>${money}</td>`
+      +`<td title="${sparkTitle}">${trend}</td>`
+      +`<td>${surface}</td>`
       +`<td class="muted">${last}</td></tr>`;
-  }).join('') || '<tr><td colspan="10" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
+  }).join('') || '<tr><td colspan="13" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
+  // The panel refreshes every few seconds; an open drill-down is being read, so
+  // the table freezes instead of snapping shut under the operator's cursor.
+  if(document.querySelectorAll('#catrows tr.open').length){
+    note.textContent += ' · table paused while a shelf row is open (click it again to close)';
+  }else{
+    document.getElementById('catrows').innerHTML = rowsHTML;
+  }
   const badge=document.getElementById('catwindow');
   if(badge) badge.textContent='last '+(document.getElementById('cathours').value||'24')+'h · '+actionable.length+' actionable finding(s)';
 }
 async function loadCategories(){
   const hours=(document.getElementById('cathours')||{}).value||'24';
+  const days=(document.getElementById('catdays')||{}).value||'7';
   try{
-    renderCategories(await api('GET','/api/categories?hours='+encodeURIComponent(hours))||{});
+    renderCategories(await api('GET','/api/categories?hours='+encodeURIComponent(hours)
+      +'&days='+encodeURIComponent(days))||{});
   }catch(e){
     document.getElementById('catnote').textContent='category data unavailable: '+e.message;
     document.getElementById('catstats').innerHTML='';
     document.getElementById('catfindings').textContent='';
-    document.getElementById('catrows').innerHTML='<tr><td colspan="10" class="muted">no category data</td></tr>';
+    document.getElementById('catrows').innerHTML='<tr><td colspan="13" class="muted">no category data</td></tr>';
   }
 }
 function toggleSrcs(){ sourceSummary('f'); }
@@ -677,6 +809,10 @@ document.getElementById('channels').addEventListener('click', event=>{
   if(button.dataset.action==='edit') editShelf(name);
   if(button.dataset.action==='toggle') toggleCh(name,button.dataset.enabled==='true');
   if(button.dataset.action==='delete') delCh(name);
+});
+document.getElementById('catrows').addEventListener('click', event=>{
+  const row=event.target.closest('tr[data-key]'); if(!row) return;
+  toggleShelf(row.dataset.key);
 });
 if(TOKEN || DEMO_MODE) refresh();
 setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);

@@ -70,7 +70,7 @@ separate operator-controlled step.
 | `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
 | `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
-| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`) and audit; read-only on the bot database, localhost/SSH-tunnel only |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only |
 | `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
 | `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
 | `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
@@ -110,7 +110,8 @@ compiled and linted there too):
 | `quality_audit.py` | Read-only DB audit, `--check-url` single-URL verdict, `--strict` exits non-zero on findings, `--json` |
 | `conversion_report.py` | Per-route status of what is actually converting, from the live DB + log (`--json`) |
 | `coverage_audit.py` | Source-vs-channel coverage report plus `--heal` re-queue of posts that never went out (`--json`) |
-| `category_report.py` | Category-wise truth per shelf: sends/skips/holds, pending backlog, routed vs withheld (with reasons), tag state, and actionable findings — the same engine the dashboard's Categories panel uses (`--json`, `--strict`, `--rules`, `--hours`) |
+| `category_report.py` | Category-wise truth per shelf: sends/skips/holds, pending backlog, routed vs withheld (with reasons), tag state, **whether the links it published pay us**, the IST-day trend, the Telegram-vs-WhatsApp surface, drill-down rows and actionable findings — the same engine the dashboard's Categories panel uses (`--json`, `--strict`, `--strict-errors`, `--rules`, `--hours`, `--days`, `--expand`) |
+| `category_watch.py` | The same findings as an alarm that speaks once: prints only NEW alerts, exits 1 for cron/systemd `OnFailure`, announces `RESOLVED` when a condition disappears, and writes nothing but its own state file (`--quiet`, `--json`, `--min-severity`, `--repeat-after`, `--resolve`, `--state`) |
 | `earnkaro_check.py` | Prove the EarnKaro key converts; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry |
 | `identity_probe.py` | CLI: are these two posts the same product, answered by both services' own rule |
 | `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
@@ -186,6 +187,13 @@ python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
 # "categories wise ga em jarigindi?" - per-shelf sends, routes, withheld + findings
 python3 ops/category_report.py --hours 24
 python3 ops/category_report.py --hours 72 --strict   # exit 1 on any actionable finding
+python3 ops/category_report.py --expand electronics  # the rows behind one shelf
+
+# "ee shelf links earn chestunnaya?" - money, trend and both surfaces per shelf
+python3 ops/category_report.py --hours 72 --days 14
+
+# say it once, when it happens: cron-able alarm over the same findings
+python3 ops/category_watch.py --quiet; echo "new alert: $?"
 ```
 
 Every `test_*.py` in the proof table runs standalone from the repository root
@@ -230,7 +238,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
-| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories` |
+| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, and the served markup for all of it |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
@@ -1472,14 +1480,15 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `9cd823bbd551ba45511ca1fdeac2006c1c592dcb107ef11eb54da3b5ae520e67` |
+| `dashboard/app.py` | `c432de08cd8047e172b887293478eb68aefcf1952b60486fd3bf977b82c857ce` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `bd4c7e37d299e13c4480b618a17ab1eb62c86dd8ad926976594316cca4f38474` |
+| `ops/category_report.py` | `79a8547a907e1235524fb4c0c607493f9acce3e84f52a41b5374e7f9064d8256` |
+| `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
@@ -1505,9 +1514,9 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `5df9fd6e0f2ca6d398217012a0d16820492c971e3d49548bd8fd711b25b0e699` |
+| `test_category_report.py` | `1674b2ba8e594067f57de8f904f95990a72f920a6221fe1c91b305a068d54edc` |
 | `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
-| `test_dashboard_categories.cjs` | `840e2244e3f89f480b107b201eab6e4d07ddf1eaf284667af8322edb71216cd0` |
+| `test_dashboard_categories.cjs` | `9334ea53a6d18c25e9cc5603834c2f5e07fbd5244fabf7e6f2816907655368a2` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -1724,9 +1733,12 @@ panel in the browser cannot disagree.
 python3 ops/category_report.py                      # last 24h, human-readable
 python3 ops/category_report.py --hours 72 --strict  # exit 1 on any error/warn finding
 python3 ops/category_report.py --strict-errors      # exit 1 on ERRORS only (deploy gate)
+python3 ops/category_report.py --days 14            # a longer IST-day trend
+python3 ops/category_report.py --expand electronics # the delivery rows behind one shelf
 python3 ops/category_report.py --json               # machine-readable (CI, scripts)
 python3 ops/category_report.py --rules /tmp/new_rules.json  # measure a taxonomy BEFORE installing it
 python3 ops/category_report.py --db /path/bot_state.sqlite3 --log /path/bot.log
+python3 ops/category_watch.py --quiet               # cron/systemd: NEW alerts only, exit 1
 ```
 
 Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
@@ -1740,6 +1752,9 @@ Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
 | pending | queue rows still waiting, attributed through their `targets_json` |
 | routed | the bot's own `CATEGORY ROUTE` log lines — how many deals the classifier actually sent this shelf's way |
 | withheld | `CATEGORY WITHHELD` lines with their reasons (`mixed_or_conflicting`, `insufficient_product_evidence`) — posts classified for the shelf that never reached it |
+| money | of the posts this shelf actually delivered: how many carry a link that **pays us**, how many pay **nobody**, how many carry **somebody else's** Amazon tag, and how many could not be matched to the link tables at all |
+| trend | sends and skips per IST day (`--days`, default 7) — block characters on a terminal, a sparkline in the dashboard, exact numbers in the tooltip |
+| surfaces | the same shelf on Telegram and on WhatsApp, with the bridge's `category:<key>` policy only where it will really be applied |
 | last send | the newest real send, in IST |
 
 Plus, separately from the shelves: **Main** (unfiltered targets, which take every
@@ -1764,6 +1779,18 @@ The findings are the part that saves a week of guessing:
 | `unknown_category_withheld` | warn | the bot withheld posts for a category this taxonomy does not define (rules drift, seen from the log side) |
 | `unknown_target` | warn | the ledger has deliveries for a target no config claims |
 | `db_unreadable` | warn | the database could not be opened read-only, so counts are zero — stated, never presented as a quiet week |
+| `ledger_unreadable` / `ledger_capped` | warn | the delivery ledger could not be read, or only its newest rows were (`--max-posts`), so money and trend cover part of the window — said out loud instead of quietly undercounting |
+| `foreign_tag_posted` | warn | a published post carries an Amazon tag that is not ours: those clicks pay a stranger. Warn, not error, because blocking a deploy cannot un-publish it |
+| `unmonetized_shelf` | warn | posts went out from this shelf with links that pay nobody (clean merchant passthrough, untagged Amazon page) |
+| `money_blind` | info | none of this shelf's posts could be matched to `link_cache`/`owned_link_proofs`, so commission here is unproven rather than absent |
+| `amazon_tag_parity` | error | the bot's `OUR_AMAZON_TAGS` and the bridge's differ, so one surface credits another Associates account for the same deal |
+| `amazon_tag_unreadable` / `amazon_tag_unknown` | warn | the tag sets could not be read from source, so no Amazon link can be proved ours |
+| `wa_category_collision` | error | two WhatsApp categories share one channel, or a category channel is also a core channel — the bridge then keeps the old policy and filters neither |
+| `wa_shelf_unfiltered` | warn | a WhatsApp channel is configured for the shelf but will get no `category:<key>` policy, so it behaves like a core channel |
+| `wa_surface_missing` / `tg_surface_missing` | warn | the shelf exists on one service only, so the same deal reaches one audience |
+| `amazon_tag_surface_mismatch` | warn | the Amazon tag is declared for this shelf on Telegram or WhatsApp only, so the same deal earns on one surface and not the other |
+| `unknown_surface_channel` | warn | a `WA_CHANNEL_*` name that is not a category key — the bridge builds its category channels from `category_rules.json`, so the value is ignored |
+| `wa_values_masked` | info | WhatsApp values that are not plain JIDs are shown masked, so a shared-channel collision cannot be proved offline |
 | `unclassified_withheld` | info, or warn when abstention out-runs routing | posts withheld from every shelf because no category matched |
 | `tagless_shelf` | info | Amazon links stay withheld on this shelf until the tag is declared — the documented policy, stated as a fact rather than discovered as a mystery |
 
@@ -1782,6 +1809,116 @@ real one, never a hand-written copy), and
 guarantee that a channel name, category label or logged reason carrying
 `<img src=x onerror=…>` is shown as text, and that a dead `/api/categories`
 cannot blank the rest of the dashboard.
+
+### Does each shelf earn? Money, trend, both surfaces, and an alarm (2026-10-18)
+
+"Shelf ki posts vellayi" is half the question. The other half is *what those
+posts are worth*, *whether one bad day is hiding in a healthy average*, and
+*whether the same shelf exists on the other service*. All three are now answered
+from data, per shelf, by the same read-only engine.
+
+**Money.** For every post a shelf actually delivered, the URLs in its published
+text are matched against `link_cache` (what the bot published, and the real
+destination behind it) and `owned_link_proofs` (the durable proof behind our own
+bit.ly/is.gd hop), then classified:
+
+| Verdict | Meaning |
+|---|---|
+| `owned` | an Amazon page carrying **our** Associates tag, an EarnKaro link, a verified `hypd.store` link, or a shortened hop whose proof row resolves to one of those |
+| `earns_nothing` | a clean merchant passthrough (`affiliate_url == resolved_url`) or an Amazon page with **no** tag — posted, published, paying nobody |
+| `foreign_tag` | an Amazon page carrying a tag that is **not ours**: those clicks pay a stranger, which is a different problem from earning nothing |
+| `unattributed` | no URL in the published text, or a shortener hop with no proof row — commission here is *unproven*, and the report says so instead of guessing |
+
+Our tag is never copied into this tool: it is **read** from `OUR_AMAZON_TAGS` in
+`bestgaa/main_bot_new.py` and `tg-wa-bridge/bridge.js`, and the two sets are
+compared — a drift is the `amazon_tag_parity` error, because it means one surface
+credits another Associates account for the same deal. The route vocabulary
+(`passthrough`, `hypd`, `earnkaro`, `amazon`, `shortened`, `affiliate`, `other`)
+is the same decision tree as `ops/conversion_report.py`, and
+`test_category_report.py` compares the two implementations link shape by link
+shape plus all four host tables, so "does this link pay us?" can never mean two
+different things in two reports.
+
+```
+  Electronics [electronics] state=ok
+    money   : owned=4 earns-nothing=1 foreign-tag=0 unattributed=0 of 5 post(s) (amazon x4, hypd x1)
+    trend   : 7d sent ▁▁▃▅█▃▂ (0/1/2/3/5/2/1) | skipped (0/0/1/0/1/0/0)
+    surface : telegram @electroshelf(tag) | whatsapp 120363001@newsletter category:electronics(tag)
+  MONEY | 9 delivered post(s): owned=6 earns-nothing=2 foreign-tag=1 unattributed=0 (amazon x6, hypd x2)
+```
+
+**Trend.** Sends and skips per IST day (`--days`, default 7; `history_days` in
+JSON). A shelf that died on Tuesday and recovered on Friday looks healthy in a
+7-day total and obvious in seven numbers. On a terminal it prints as block
+characters that survive SSH; in the dashboard it is a sparkline whose tooltip
+carries the exact per-day counts, so the picture is never the only evidence. The
+IST day is UTC+5:30 computed directly — no `tzdata`, no server-timezone
+assumption — and the boundary is tested (18:30 UTC is the next IST day).
+
+**Surfaces.** Telegram shelves come from `channels.json` and
+`TG_CATEGORY_<KEY>_TARGET`; WhatsApp shelves come from `WA_CHANNEL_<KEY>`, which
+the bridge turns into a `category:<key>` policy **only** when that channel is
+unique among the category channels and is not also `WA_CHANNEL_UNDER99`,
+`WA_CHANNEL_UNDER499` or `WA_CHANNEL_BEST_OF`. "Configured" and "filtered" are
+therefore different states, and both are reported: a shared channel is a
+`wa_category_collision` error and shows as `not filtered`, exactly as the bridge
+would behave. The Amazon-tag allowance is per surface too
+(`AMAZON_TAG_CATEGORY_TARGETS` on Telegram names *targets*,
+`WA_AMAZON_TAG_CATEGORY_TARGETS` on WhatsApp names *category keys*), so a shelf
+declared on one only earns on one only — `amazon_tag_surface_mismatch`. A
+`WA_CHANNEL_*` name that matches no category key is reported as ignored rather
+than silently dropped. Nothing here runs WhatsApp: it reads env, and a surface
+with no `WA_CHANNEL_*` at all is reported as *not judged*, never as broken.
+
+WhatsApp values are printed only when they are a plain JID
+(`…@newsletter`, `…@g.us`, `…@s.whatsapp.net`, `…@broadcast`); anything else —
+an invite link, for instance — is shown as `set (masked)`, and masked values are
+never used to claim a collision. `load_env` keeps only channel plumbing
+(`TG_CATEGORY_*`, `WA_CHANNEL_*`, `AMAZON_TAG*`), so a token in the same `.env`
+cannot reach the report, the JSON or the dashboard.
+
+**Drill-down.** `--expand <key>` (or clicking a shelf row in the dashboard) adds
+that shelf's newest delivery rows: queue id, IST time, target, status, the
+bucketed skip reason, the money verdict and a short text snippet. A number you
+can open is a number you do not have to argue with. The dashboard builds this
+table with DOM text nodes only — never `innerHTML` — because deal captions and
+channel names are operator text.
+
+**Alarm.** `ops/category_watch.py` runs the same engine and speaks once:
+
+```bash
+python3 ops/category_watch.py                    # NEW alerts, exit 1 if any
+python3 ops/category_watch.py --quiet            # exit code only (cron/systemd)
+python3 ops/category_watch.py --min-severity error   # page on breakage only
+python3 ops/category_watch.py --repeat-after 6   # re-report a still-open alert after 6h
+python3 ops/category_watch.py --json             # machine-readable
+python3 ops/category_watch.py --resolve          # forget the memory (re-arm after a fix)
+```
+
+Exit `1` means *a new alert*, `0` means nothing new (or something resolved), `2`
+means the report itself could not be built — which is also an alert. A condition
+that stays broken is remembered with a `seen` count instead of failing every run,
+because an alarm that always rings is an alarm nobody reads; when it disappears
+the watchdog prints `RESOLVED`. `unclassified_withheld` is deliberately quiet:
+the classifier abstaining on a mixed post is the documented behaviour, not an
+outage. Running with `--min-severity error` does not erase the warnings another
+watcher is remembering — tracked conditions and pageable conditions are separate
+lists. State is one small JSON file (default `<db directory>/.category_watch.json`,
+or `CATEGORY_WATCH_STATE`, or `--state`), written atomically, and an unreadable
+one starts fresh rather than crashing. **That state file is the only thing the
+watchdog writes**: the database is opened `mode=ro` through the report engine,
+`channels.json` and the rules are untouched, nothing is restarted and nothing is
+posted. `test_category_report.py` proves all of it, including the byte hashes of
+the database and `channels.json` before and after a run.
+
+Nothing here installs itself. To have it watched, the operator adds one line:
+
+```cron
+*/15 * * * * cd /home/ubuntu/bestgaa-bot/bestgaa-bot && python3 ops/category_watch.py --quiet || true
+```
+
+or a systemd pair (`OnCalendar=*:0/15`, `Persistent=true`, and
+`OnFailure=` on the service) so a new alert can notify whoever is on call.
 
 ### Easy setup: link → category → channel
 

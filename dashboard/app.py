@@ -38,6 +38,7 @@ import hmac
 import importlib.util
 import json
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -477,13 +478,17 @@ def load_category_report():
 def category_env(module) -> dict[str, str]:
     """Env-declared shelf targets, without ever echoing a secret value.
 
-    Only TG_CATEGORY_*_TARGET and AMAZON_TAG_CATEGORY_TARGETS are read; the
-    module keeps nothing else from a .env, so a token in the same file cannot
-    reach this response.
+    Only the channel-plumbing keys are read (TG_CATEGORY_*_TARGET,
+    AMAZON_TAG*, WA_CHANNEL_*, WA_AMAZON_TAG_CATEGORY_TARGETS); the module keeps
+    nothing else from a .env, so a token in the same file cannot reach this
+    response. WhatsApp values are masked by the module unless they are a plain
+    JID, so an invite link is never echoed either.
     """
     env = module.load_env()
     for key, value in os.environ.items():
-        if key.startswith("TG_CATEGORY_") or key == "AMAZON_TAG_CATEGORY_TARGETS":
+        if (key.startswith(("TG_CATEGORY_", "WA_CHANNEL_"))
+                or key in ("AMAZON_TAG_CATEGORY_TARGETS", "WA_AMAZON_TAG_CATEGORY_TARGETS",
+                           "AMAZON_TAG")):
             env.setdefault(key, str(value).strip())
     return env
 
@@ -491,6 +496,11 @@ def category_env(module) -> dict[str, str]:
 @require_token
 async def api_categories(request: web.Request):
     """Per-shelf truth: sends, skips, backlog, routed vs withheld, and findings.
+
+    Also per shelf: whether the links it published pay us (`money`), the IST-day
+    trend (`history`), and how the same shelf is configured on Telegram and on
+    WhatsApp (`surfaces`). `expand=<key>` adds the newest delivery rows for that
+    one shelf so a number can be opened instead of argued with.
 
     Read-only like every other endpoint here: the database is opened mode=ro and
     nothing is queued, restarted or sent.
@@ -500,11 +510,26 @@ async def api_categories(request: web.Request):
     except (TypeError, ValueError):
         hours = 24.0
     try:
+        days = max(1, min(30, int(request.query.get("days", "7"))))
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        expand_limit = max(1, min(50, int(request.query.get("expand_limit", "12"))))
+    except (TypeError, ValueError):
+        expand_limit = 12
+    # The drill-down key is a shelf key, "main", or the "target:Name" the report
+    # itself produced. Anything else is dropped rather than passed on, so a query
+    # string can never become anything the engine did not already name.
+    expand = request.query.get("expand", "") or ""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", expand):
+        expand = ""
+    try:
         module = load_category_report()
         report = module.build_report(
             db=db_path(), log=module.default_log(), hours=hours,
             channels_data=channels_config.load_channels(), rules=load_rules(),
-            env=category_env(module), snapshot=snapshot())
+            env=category_env(module), snapshot=snapshot(), days=days,
+            expand=expand or None, expand_limit=expand_limit)
     except sqlite3.OperationalError as exc:
         return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
     payload = module.jsonable(report)

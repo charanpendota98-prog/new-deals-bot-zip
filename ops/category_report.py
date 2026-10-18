@@ -12,6 +12,9 @@ and the bot's own snapshot, and answers per shelf:
 
     python3 ops/category_report.py                       # last 24h, human output
     python3 ops/category_report.py --hours 72 --strict    # exit 1 on any finding
+    python3 ops/category_report.py --strict-errors        # exit 1 on errors (deploy gate)
+    python3 ops/category_report.py --days 14              # a longer IST-day trend
+    python3 ops/category_report.py --expand electronics   # the rows behind one shelf
     python3 ops/category_report.py --json                 # for the dashboard/CI
     python3 ops/category_report.py --db /path/bot_state.sqlite3 --log /path/bot.log
 
@@ -21,6 +24,32 @@ backlog routed at it, how many deals the classifier actually sent its way
 (`CATEGORY ROUTE`), how many were withheld from it and why (`CATEGORY WITHHELD`
 reasons: mixed evidence, insufficient product evidence), and the last time
 anything landed there.
+
+Three questions a total can never answer, answered per shelf:
+
+  money    did the links this shelf published actually pay us? Every delivered
+           post's URLs are matched against `link_cache` and `owned_link_proofs`
+           and classified `owned` / `earns_nothing` / `foreign_tag` (an Amazon
+           tag that is not ours pays a stranger) / `unattributed`. Our tag is
+           READ from the bot's and the bridge's own `OUR_AMAZON_TAGS`, never
+           copied here, and the two sets are compared: a drift means one surface
+           credits another account. The route vocabulary is the same decision
+           tree as `ops/conversion_report.py`, and the test suite proves the two
+           agree link shape by link shape.
+  trend    sends and skips per IST day (`--days`, default 7), so "a bad Tuesday"
+           is visible instead of averaged away. The dashboard draws it as a
+           sparkline; here it prints as block characters that survive SSH.
+  surfaces the same shelf on Telegram (`TG_CATEGORY_<KEY>_TARGET`, channels.json)
+           and on WhatsApp (`WA_CHANNEL_<KEY>`), including the bridge's rule that
+           a category channel shared with another category or with a core channel
+           gets NO `category:<key>` policy - configured is not the same as
+           filtered. WhatsApp values are shown only when they are a plain JID;
+           anything else is masked, so an invite link in the same .env cannot be
+           echoed by a report.
+
+`--expand <key>` adds the newest delivery rows for one shelf (queue id, IST time,
+target, status, bucketed reason, money verdict, text snippet) so a number can be
+opened instead of argued with.
 
 Findings are the part that saves a week of guessing:
 
@@ -38,6 +67,22 @@ Findings are the part that saves a week of guessing:
   withheld_majority    most of what was classified for this shelf never reached it
   tagless_shelf        (info) Amazon links are withheld here until the tag is
                        declared - the documented policy, stated as a fact
+  foreign_tag_posted   a published post carries an Amazon tag that is not ours
+  unmonetized_shelf    posts went out with links that pay nobody
+  money_blind          (info) nothing on this shelf could be matched to the link
+                       tables, so commission is unproven rather than absent
+  amazon_tag_parity    the bot and the bridge publish with different tags
+  wa_category_collision  two WhatsApp categories share a channel (or reuse a core
+                       one), so the bridge filters neither
+  wa_surface_missing / tg_surface_missing / wa_shelf_unfiltered
+  amazon_tag_surface_mismatch  the tag is declared on one surface only
+  unknown_surface_channel    a WA_CHANNEL_* name that is not a category key
+  ledger_capped / ledger_unreadable  the money and trend read is partial, stated
+
+`ops/category_watch.py` turns these findings into an alarm that speaks once: it
+prints only what is NEW, exits 1 for a cron or systemd `OnFailure` to act on, and
+announces RESOLVED when a condition disappears. Its only write is its own small
+state file.'new>
 
 Read-only: it opens the database in `mode=ro`, never writes, never restarts
 anything, and needs no Telegram, WhatsApp or affiliate credentials.
@@ -54,6 +99,7 @@ import sys
 import time
 from collections import Counter
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 BOT_RULES = ROOT / "bestgaa" / "category_rules.json"
@@ -88,10 +134,14 @@ def fingerprint(path: Path) -> str:
 def load_env(files: list[str] | None = None) -> dict[str, str]:
     """KEY=VALUE from .env files, for the env-declared category targets.
 
-    Values are never printed. Only the two category keys this report needs are
-    kept, so a token in the same file cannot leak into output or JSON.
+    Only the keys this report needs are kept, so a token in the same file cannot
+    leak into output or JSON. What is kept is all channel plumbing, not
+    credentials: Telegram usernames, WhatsApp channel ids (masked unless they are
+    a plain JID - see `mask_wa`) and the public Amazon Associates tag that
+    already appears in every published link.
     """
-    wanted = ("TG_CATEGORY_", "AMAZON_TAG_CATEGORY_TARGETS")
+    wanted = ("TG_CATEGORY_", "AMAZON_TAG_CATEGORY_TARGETS", "AMAZON_TAG",
+              "WA_CHANNEL_", "WA_AMAZON_TAG_CATEGORY_TARGETS")
     candidates = [Path(f) for f in (files or [])]
     if not candidates:
         default = ROOT / "bestgaa" / ".env"
@@ -231,21 +281,6 @@ def bucket_reason(error: str) -> str:
     return "other: " + text[:48]
 
 
-def delivery_rows(conn: sqlite3.Connection, since: float) -> list[tuple[str, str, str, float]]:
-    cols = table_columns(conn, "deliveries")
-    if not cols:
-        return []
-    error_expr = "COALESCE(d.last_error,'')" if "last_error" in cols else "''"
-    query = (f"SELECT d.target AS target, d.status AS status, {error_expr} AS error, "
-             "q.created_at AS created_at FROM deliveries d "
-             "JOIN queue q ON q.id = d.queue_id WHERE q.created_at >= ?")
-    try:
-        return [(str(r["target"] or ""), str(r["status"] or ""), str(r["error"] or ""),
-                 float(r["created_at"] or 0.0)) for r in conn.execute(query, (since,))]
-    except sqlite3.OperationalError:
-        return []
-
-
 def pending_rows(conn: sqlite3.Connection) -> list[tuple[str, str]]:
     cols = table_columns(conn, "queue")
     if "targets_json" not in cols or "status" not in cols:
@@ -311,6 +346,412 @@ def count_pending(rows, index: dict[str, frozenset | None]) -> Counter:
                     seen.add(key)
                     pending[key] += 1
     return pending
+
+
+# ------------------------------------------- money: does a click pay anybody? --
+
+# The same monetization vocabulary ops/conversion_report.py uses. It is restated
+# here rather than imported so a deployed bundle that ships only this file still
+# answers correctly - and test_category_report.py compares the two decision trees
+# link shape by link shape, so they cannot drift apart silently.
+HYPD_HOSTS = ("hypd.store",)
+EARNKARO_HOSTS = ("ekaro.in", "ekaro.app", "earnkaro.com", "affiliaters.in",
+                  "earnkaro.in", "linkredirect.in", "clnk.in", "clnk.app")
+SHORTENER_HOSTS = ("bit.ly", "j.mp", "bitly.com", "is.gd", "t.co", "buff.ly")
+AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in")
+URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
+PAID_ROUTES = frozenset({"amazon", "earnkaro", "hypd", "affiliate"})
+MONEY_BUCKETS = ("owned", "earns_nothing", "foreign_tag", "unattributed")
+# A post is judged by its best link, but a foreign tag outranks everything: one
+# link that pays a stranger is the finding, even next to nine of ours.
+MONEY_RANK = {"unattributed": 0, "earns_nothing": 1, "owned": 2, "foreign_tag": 3}
+
+PY_TAG_RE = re.compile(r"OUR_AMAZON_TAGS\s*=\s*\{([^}]*)\}")
+JS_TAG_RE = re.compile(r"OUR_AMAZON_TAGS\s*=\s*\[([^\]]*)\]")
+QUOTED_RE = re.compile(r"[\"']([A-Za-z0-9_-]{3,})[\"']")
+
+
+def host_of(url: str) -> str:
+    try:
+        return (urlparse(url or "").hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def in_hosts(host: str, hosts) -> bool:
+    return any(host == h or host.endswith("." + h) for h in hosts)
+
+
+def clean_url(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def route_of(affiliate: str, resolved: str) -> str:
+    """Which monetization route produced a link (mirrors conversion_report)."""
+    a, r = affiliate or "", resolved or ""
+    if a and r and clean_url(a) == clean_url(r):
+        return "passthrough"                      # clean merchant link: earns nothing
+    joined = (a + " " + r).lower()
+    if "hypd.store" in joined:
+        return "hypd"
+    host = host_of(a)
+    if in_hosts(host, EARNKARO_HOSTS) or "ekaro" in a.lower() or "affiliaters" in a.lower():
+        return "earnkaro"
+    if in_hosts(host, AMAZON_HOSTS) or "amazon.in" in joined:
+        return "amazon"
+    if in_hosts(host, SHORTENER_HOSTS):
+        if "amazon." in r.lower():
+            return "amazon"
+        if "hypd.store" in r.lower():
+            return "hypd"
+        if "ekaro" in r.lower():
+            return "earnkaro"
+        return "shortened"
+    low = a.lower()
+    if "affextparam2=" in low or "affid=" in low or "tag=" in low:
+        return "affiliate"
+    return "other"
+
+
+def amazon_tag_of(url: str) -> str:
+    """The Associates tag a URL carries, or "" when it carries none."""
+    try:
+        query = urlparse(url or "").query or ""
+    except ValueError:
+        return ""
+    for pair in query.split("&"):
+        name, _, value = pair.partition("=")
+        if name.strip().lower() == "tag":
+            return value.strip().lower()
+    return ""
+
+
+def our_amazon_tags(root: Path | None = None) -> dict:
+    """Our Associates tag as each service actually defines it - read, not copied.
+
+    Both the bot and the bridge hardcode the set and refuse any other configured
+    tag, so a third copy here would be a third thing to drift. Reading the two
+    sources also makes the drift itself a finding: if Telegram publishes one tag
+    and WhatsApp another, one surface is paying somebody else.
+    """
+    base = Path(root or ROOT)
+    out = {"bestgaa": set(), "bridge": set(), "read_error": ""}
+    try:
+        text = (base / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8", errors="replace")
+        match = PY_TAG_RE.search(text)
+        if match:
+            out["bestgaa"] = {t.lower() for t in QUOTED_RE.findall(match.group(1))}
+    except OSError as exc:
+        out["read_error"] = f"bestgaa/main_bot_new.py: {exc}"
+    try:
+        text = (base / "tg-wa-bridge" / "bridge.js").read_text(encoding="utf-8", errors="replace")
+        match = JS_TAG_RE.search(text)
+        if match:
+            out["bridge"] = {t.lower() for t in QUOTED_RE.findall(match.group(1))}
+    except OSError as exc:
+        out["read_error"] = (out["read_error"] + f"; tg-wa-bridge/bridge.js: {exc}").strip("; ")
+    return out
+
+
+def link_index(conn) -> dict:
+    """What the bot published, plus the proof behind its own shortened hops.
+
+    `link_cache.affiliate_url` is the published link and `resolved_url` the real
+    destination; `owned_link_proofs` keeps the destination behind a bit.ly/is.gd
+    hop, so a short link is still attributable to us instead of looking blind.
+    """
+    out: dict = {"by_affiliate": {}, "by_source": {}, "proofs": {}, "tables": []}
+    if conn is None:
+        return out
+    if table_columns(conn, "link_cache"):
+        out["tables"].append("link_cache")
+        try:
+            for row in conn.execute(
+                    "SELECT source_url, affiliate_url, resolved_url FROM link_cache"):
+                affiliate, resolved = str(row[1] or ""), str(row[2] or "")
+                route = route_of(affiliate, resolved)
+                if affiliate:
+                    out["by_affiliate"][clean_url(affiliate)] = (route, resolved)
+                if row[0]:
+                    out["by_source"][clean_url(str(row[0]))] = (route, resolved)
+        except sqlite3.OperationalError:
+            pass
+    if table_columns(conn, "owned_link_proofs"):
+        out["tables"].append("owned_link_proofs")
+        try:
+            for row in conn.execute(
+                    "SELECT affiliate_url, destination_url FROM owned_link_proofs"):
+                affiliate, destination = clean_url(str(row[0] or "")), str(row[1] or "")
+                if not affiliate:
+                    continue
+                out["proofs"][affiliate] = destination
+                known = out["by_affiliate"].get(affiliate)
+                if known is None or known[0] in ("shortened", "other", "passthrough"):
+                    out["by_affiliate"][affiliate] = (route_of(destination, ""), destination)
+        except sqlite3.OperationalError:
+            pass
+    return out
+
+
+def url_money(url: str, links: dict, our_tags: frozenset) -> tuple[str, str]:
+    """One URL -> (bucket, route). An Amazon page is ours only with our tag."""
+    trimmed = clean_url(url.rstrip(".,;:)"))
+    known = links["by_affiliate"].get(trimmed) or links["by_source"].get(trimmed)
+    if known is not None:
+        route, resolved = known
+    else:
+        proof = links["proofs"].get(trimmed)
+        resolved = proof or ""
+        route = route_of(proof, "") if proof else route_of(url, "")
+    if route == "amazon" or in_hosts(host_of(url), AMAZON_HOSTS):
+        tag = amazon_tag_of(url) or amazon_tag_of(resolved)
+        if tag and our_tags and tag not in our_tags:
+            return ("foreign_tag", "amazon")       # pays a stranger, not nobody
+        if tag:
+            return ("owned", "amazon" if our_tags else "amazon_tag_unverified")
+        return ("earns_nothing", "amazon_untagged")
+    if route == "shortened":
+        # Our shortener, but no proof row and no cache row: we cannot show which
+        # destination it hides, so it is not counted as earning.
+        return ("unattributed", "shortened_no_proof")
+    if route in PAID_ROUTES:
+        return ("owned", route)
+    if route == "passthrough":
+        return ("earns_nothing", "passthrough")
+    return ("earns_nothing", route or "other")
+
+
+def post_money(text: str, links: dict, our_tags: frozenset) -> tuple[str, str]:
+    """One published post -> (bucket, route). Its worst problem wins the label,
+    except that a foreign tag outranks everything (see MONEY_RANK)."""
+    urls = URL_RE.findall(text or "")
+    if not urls:
+        return ("unattributed", "no_link_in_text")
+    best, best_route = "unattributed", ""
+    for url in urls:
+        bucket, route = url_money(url, links, our_tags)
+        if MONEY_RANK[bucket] > MONEY_RANK[best] or not best_route:
+            best, best_route = bucket, route
+    return (best, best_route)
+
+
+def unknown_key(target: str) -> str:
+    """A target no config claims keeps the operator's spelling (see findings)."""
+    return "target:" + str(target or "?").strip().lstrip("@")
+
+
+def keys_for(target: str, index: dict) -> list[str]:
+    cats = index.get(normalize_target(target), "unknown")
+    if cats is None:
+        return ["main"]                    # unfiltered channel: everything lands here
+    if cats == "unknown":
+        return [unknown_key(target)]
+    return sorted(cats)
+
+
+def ledger_rows(conn, since: float, max_posts: int = 20000) -> dict:
+    """The delivery ledger joined to what was actually published.
+
+    One read feeds the totals, the money view, the daily history and the
+    drill-down, so those four can never disagree about the same delivery.
+    """
+    result = {"rows": [], "capped": False, "error": ""}
+    if conn is None or not table_columns(conn, "deliveries"):
+        return result
+    delivery_cols = table_columns(conn, "deliveries")
+    queue_cols = table_columns(conn, "queue")
+    error_expr = "COALESCE(d.last_error,'')" if "last_error" in delivery_cols else "''"
+    text_expr = "q.rendered_text" if "rendered_text" in queue_cols else "NULL"
+    query = (f"SELECT d.queue_id AS queue_id, d.target AS target, d.status AS status, "
+             f"{error_expr} AS error, q.created_at AS created_at, "
+             f"COALESCE({text_expr},'') AS text "
+             "FROM deliveries d JOIN queue q ON q.id = d.queue_id "
+             "WHERE q.created_at >= ? ORDER BY q.created_at DESC LIMIT ?")
+    try:
+        fetched = conn.execute(query, (since, int(max_posts) + 1)).fetchall()
+    except sqlite3.OperationalError as exc:
+        result["error"] = str(exc)
+        return result
+    result["capped"] = len(fetched) > int(max_posts)
+    for row in fetched[:int(max_posts)]:
+        result["rows"].append({
+            "queue_id": int(row["queue_id"] or 0),
+            "target": str(row["target"] or ""),
+            "status": str(row["status"] or ""),
+            "error": str(row["error"] or ""),
+            "created_at": float(row["created_at"] or 0.0),
+            "text": str(row["text"] or ""),
+        })
+    return result
+
+
+def count_money(rows, index: dict, links: dict, our_tags: frozenset) -> dict:
+    """Per shelf: how many published posts carry a link that pays us.
+
+    Only rows the ledger marks as delivered are counted - a skipped post never
+    reached anybody, so it can neither earn nor fail to earn.
+    """
+    def empty() -> dict:
+        return dict({bucket: 0 for bucket in MONEY_BUCKETS},
+                    posts=0, routes=Counter(), examples=[])
+
+    out: dict = {"main": empty()}
+    for row in rows:
+        if row["status"] != "sent" or row["error"]:
+            continue
+        bucket, route = post_money(row["text"], links, our_tags)
+        for key in keys_for(row["target"], index):
+            shelf = out.setdefault(key, empty())
+            shelf["posts"] += 1
+            shelf[bucket] += 1
+            if route:
+                shelf["routes"][route] += 1
+            if bucket in ("earns_nothing", "foreign_tag", "unattributed") \
+                    and len(shelf["examples"]) < 3:
+                shelf["examples"].append({
+                    "queue_id": row["queue_id"], "target": row["target"],
+                    "bucket": bucket, "route": route, "at": ist_text(row["created_at"]),
+                    "host": host_of((URL_RE.findall(row["text"] or [""]) or [""])[0]),
+                })
+    return out
+
+
+# ------------------------------------------------------- history: the trend --
+
+
+def ist_day(stamp: float) -> str:
+    """The IST calendar day a timestamp falls in (UTC+5:30, no tzdata)."""
+    return time.strftime("%Y-%m-%d", time.gmtime(max(0.0, float(stamp)) + IST_OFFSET))
+
+
+def day_series(days: int, now: float | None = None) -> list[str]:
+    """The last `days` IST days, oldest first, today last."""
+    stamp = time.time() if now is None else now
+    return [ist_day(stamp - offset * 86400.0) for offset in range(int(days) - 1, -1, -1)]
+
+
+def history(rows, index: dict, days: int, now: float | None = None) -> dict:
+    """Per-shelf sends and skips per IST day, for a sparkline and a bad-day hunt.
+
+    A hold is neither: the ledger already counts it separately, and counting it
+    here would make a paused shelf look like a failing one.
+    """
+    series = day_series(max(1, int(days)), now)
+    known = set(series)
+
+    def empty() -> dict:
+        return {day: {"sent": 0, "skipped": 0} for day in series}
+
+    out: dict = {"days": series, "main": empty()}
+    for row in rows:
+        day = ist_day(row["created_at"])
+        if day not in known:
+            continue                       # older than the series (a long window)
+        for key in keys_for(row["target"], index):
+            shelf = out.setdefault(key, empty())
+            if row["status"] == "sent" and not row["error"]:
+                shelf[day]["sent"] += 1
+            elif row["status"] != "held":
+                shelf[day]["skipped"] += 1
+    return out
+
+
+def recent_for(rows, index: dict, links: dict, our_tags: frozenset,
+               key: str, limit: int = 12) -> list[dict]:
+    """The newest deliveries for one shelf (or `main`, or an unknown target)."""
+    out: list[dict] = []
+    for row in rows:                       # ledger_rows is newest-first
+        if key not in keys_for(row["target"], index):
+            continue
+        delivered = row["status"] == "sent" and not row["error"]
+        bucket, route = post_money(row["text"], links, our_tags) if delivered else ("", "")
+        out.append({
+            "queue_id": row["queue_id"], "target": row["target"], "status": row["status"],
+            "reason": "" if delivered else (bucket_reason(row["error"])
+                                            or f"status:{row['status'] or 'empty'}"),
+            "error": (row["error"] or "")[:120], "money": bucket, "route": route,
+            "at": ist_text(row["created_at"]),
+            "snippet": " ".join((row["text"] or "").split())[:140],
+        })
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+# --------------------------------------- surfaces: Telegram vs WhatsApp shelf --
+
+WA_JID_RE = re.compile(r"^[A-Za-z0-9._-]+@(newsletter|g\.us|s\.whatsapp\.net|broadcast)$")
+WA_CORE_ENV = (("WA_CHANNEL_UNDER99", "under99"), ("WA_CHANNEL_UNDER499", "under499"),
+               ("WA_CHANNEL_BEST_OF", "best_of"))
+
+
+def mask_wa(value: str) -> str:
+    """A WhatsApp channel id is public in every message; an invite link is not.
+
+    JIDs are shown verbatim (they are also what makes a collision detectable),
+    anything else is reported as merely set, so a surface check can never leak a
+    credential that happens to live in the same .env.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return text if WA_JID_RE.match(text) else "set (masked)"
+
+
+def wa_surfaces(env: dict | None, rules: dict) -> dict:
+    """What WhatsApp is configured to do with each category, from env alone.
+
+    The bridge builds `category:<key>` policies only from `WA_CHANNEL_<KEY>`, and
+    only when that JID is unique among the category channels and is not also a
+    core channel - otherwise it logs a warning and the shelf is NOT filtered.
+    Both rules are re-checked here, offline, before they cost a week of posts.
+    """
+    env = env or {}
+    keys = {str(c.get("key", "")).strip().lower()
+            for c in rules.get("categories", []) if isinstance(c, dict)}
+    channels: dict[str, str] = {}
+    unknown: list[str] = []
+    for name, value in sorted(env.items()):
+        if not name.startswith("WA_CHANNEL_"):
+            continue
+        slug = name[len("WA_CHANNEL_"):].strip().lower()
+        if slug in {core for _, core in WA_CORE_ENV}:
+            continue
+        masked = mask_wa(value)
+        if not masked:
+            continue
+        if slug in keys:
+            channels[slug] = masked
+        else:
+            unknown.append(name)
+    core = {slug: mask_wa(env.get(name, "")) for name, slug in WA_CORE_ENV}
+    core = {slug: value for slug, value in core.items() if value}
+    wa_tags = {v.strip().lower() for v in
+               (env.get("WA_AMAZON_TAG_CATEGORY_TARGETS", "") or "").split(",") if v.strip()}
+    wa_tags &= keys
+    masked_values = [v for v in list(channels.values()) + list(core.values())
+                     if v == "set (masked)"]
+    # A collision can only be proved from comparable values; two different invite
+    # links both mask to the same string, so say "cannot tell" instead of guessing.
+    comparable = not masked_values
+    collisions: list[dict] = []
+    if comparable:
+        seen: dict[str, list[str]] = {}
+        for slug, jid in channels.items():
+            seen.setdefault(jid, []).append(slug)
+        for jid, slugs in sorted(seen.items()):
+            if len(slugs) > 1:
+                collisions.append({"jid": jid, "categories": sorted(slugs),
+                                   "why": "two categories share one WhatsApp channel"})
+        for slug, jid in sorted(channels.items()):
+            if jid in core.values():
+                owner = sorted(name for name, value in core.items() if value == jid)
+                collisions.append({"jid": jid, "categories": [slug],
+                                   "why": f"the same channel is the {owner[0]} core channel"})
+    return {"channels": channels, "core": core, "tag_categories": sorted(wa_tags),
+            "unknown_env": unknown, "configured": bool(channels or core or wa_tags),
+            "collisions": collisions, "comparable": comparable,
+            "masked": len(masked_values)}
 
 
 # ---------------------------------------------------------------------- log --
@@ -462,9 +903,61 @@ def load_snapshot() -> dict:
     return {}
 
 
+def money_view(money: dict, key: str) -> dict:
+    shelf = money.get(key) or {}
+    routes = shelf.get("routes") or Counter()
+    return dict({"posts": int(shelf.get("posts", 0))},
+                **{bucket: int(shelf.get(bucket, 0)) for bucket in MONEY_BUCKETS},
+                routes=dict(routes.most_common(6)),
+                examples=list(shelf.get("examples") or []))
+
+
+def history_view(hist: dict, key: str) -> list[dict]:
+    shelf = hist.get(key) or {}
+    return [{"day": day, "sent": int((shelf.get(day) or {}).get("sent", 0)),
+             "skipped": int((shelf.get(day) or {}).get("skipped", 0))}
+            for day in hist.get("days", [])]
+
+
+def money_totals(rows, links: dict, our_tags: frozenset) -> dict:
+    """Every delivered post once, whatever shelf it landed on.
+
+    A shelf total can count one post twice (a channel serving two categories), so
+    the headline number is computed from the rows themselves.
+    """
+    out = dict({bucket: 0 for bucket in MONEY_BUCKETS}, posts=0)
+    routes: Counter = Counter()
+    for row in rows:
+        if row["status"] != "sent" or row["error"]:
+            continue
+        bucket, route = post_money(row["text"], links, our_tags)
+        out["posts"] += 1
+        out[bucket] += 1
+        if route:
+            routes[route] += 1
+    out["routes"] = dict(routes.most_common(8))
+    return out
+
+
+def wa_filtered_keys(wa: dict) -> set[str]:
+    """Which WhatsApp category channels really get a `category:<key>` policy.
+
+    The bridge drops the policy when the JID is shared with another category or
+    with a core channel, so "configured" and "filtered" are not the same thing.
+    """
+    if not wa.get("comparable"):
+        return set(wa.get("channels", {}))     # masked values: only the bridge can tell
+    blocked = set()
+    for collision in wa.get("collisions", []):
+        blocked.update(collision["categories"])
+    return set(wa.get("channels", {})) - blocked
+
+
 def build_report(db: Path | None = None, log: Path | None = None, hours: float = 24.0,
                  channels_data: dict | None = None, rules: dict | None = None,
-                 env: dict | None = None, snapshot: dict | None = None) -> dict:
+                 env: dict | None = None, snapshot: dict | None = None,
+                 days: int = 7, expand: str | None = None, expand_limit: int = 12,
+                 max_posts: int = 20000) -> dict:
     """Everything category-wise, from data only. Pure: no printing, no writes."""
     rules = load_rules() if rules is None else rules
     env = load_env() if env is None else env
@@ -484,15 +977,34 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
     tag_declared = {normalize_target(v) for v in
                     (env.get("AMAZON_TAG_CATEGORY_TARGETS", "") or "").split(",") if v.strip()}
 
+    tags = our_amazon_tags()
+    our_tags = frozenset(tags["bestgaa"] | tags["bridge"])
+    wa = wa_surfaces(env, rules)
+    filtered_wa = wa_filtered_keys(wa)
+
     conn = open_readonly(db) if db else None
     ledger: dict = {}
     pending: Counter = Counter()
+    money: dict = {}
+    links = link_index(None)
+    rows: list[dict] = []
+    capped = False
+    ledger_error = ""
+    hist = {"days": day_series(max(1, int(days))), "main": {}}
     db_ok = False
     if conn is not None:
         db_ok = True
         try:
-            ledger = count_deliveries(delivery_rows(conn, since), index)
+            # One read of the ledger feeds the totals, the money view, the daily
+            # history and the drill-down, so those four cannot disagree.
+            links = link_index(conn)
+            fetched = ledger_rows(conn, since, max_posts)
+            rows, capped, ledger_error = fetched["rows"], fetched["capped"], fetched["error"]
+            ledger = count_deliveries(
+                [(r["target"], r["status"], r["error"], r["created_at"]) for r in rows], index)
             pending = count_pending(pending_rows(conn), index)
+            money = count_money(rows, index, links, our_tags)
+            hist = history(rows, index, max(1, int(days)))
         finally:
             conn.close()
 
@@ -506,13 +1018,16 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
         if not key:
             continue
         label = str(definition.get("label", key))
-        rows = view["shelves"].get(key, [])
-        enabled = [r for r in rows if r["enabled"]]
+        # `shelf_rows`, never `rows`: the ledger rows read above feed the money
+        # view and the trend after this loop, and a shadowed name here silently
+        # turned "what did this shelf publish" into "which channels claim it".
+        shelf_rows = view["shelves"].get(key, [])
+        enabled = [r for r in shelf_rows if r["enabled"]]
         env_target = {declared[key]} if declared.get(key) else set()
         # "configured" is every target that claims this shelf, including disabled
         # ones: a shelf turned OFF must still be visible, and must not be
         # misreported as a category nobody ever configured.
-        targets = sorted({r["name"] for r in rows} | env_target)
+        targets = sorted({r["name"] for r in shelf_rows} | env_target)
         active = sorted({r["name"] for r in enabled} | env_target)
         bucket = ledger.get(key, {"sent": 0, "skipped": 0, "held": 0,
                                   "last_sent_at": 0.0, "reasons": Counter()})
@@ -542,7 +1057,8 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "tag_targets": tagged,
             "tagless_targets": sorted(set(active) - set(tagged)),
             "channels": [{"name": r["name"], "enabled": r["enabled"], "amazon_tag": r["amazon_tag"],
-                          "sources": r["sources"], "all_sources": r["all_sources"]} for r in rows],
+                          "sources": r["sources"], "all_sources": r["all_sources"]}
+                         for r in shelf_rows],
             "env_target": declared.get(key, ""),
             "deliveries": {"sent": bucket["sent"], "skipped": bucket["skipped"],
                            "held": bucket["held"]},
@@ -555,6 +1071,15 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
                          "last_at": logged["withheld_last_at"].get(key, 0.0)},
             "skip_reasons": dict(bucket["reasons"].most_common(6)),
             "unresolved_targets": unresolved_here,
+            "money": money_view(money, key),
+            "history": history_view(hist, key),
+            "surfaces": {
+                "telegram": {"targets": active, "amazon_tag": bool(tagged)},
+                "whatsapp": {"channel": wa["channels"].get(key, ""),
+                             "filtered": key in filtered_wa,
+                             "policy": f"category:{key}" if key in filtered_wa else "",
+                             "amazon_tag": key in wa["tag_categories"]},
+            },
         })
 
     known_keys = {c["key"] for c in categories}
@@ -588,7 +1113,20 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "last_sent": ist_text(main_bucket["last_sent_at"]),
             "pending": int(pending.get("main", 0)),
             "skip_reasons": dict(main_bucket["reasons"].most_common(6)),
+            "money": money_view(money, "main"),
+            "history": history_view(hist, "main"),
         },
+        "history_days": hist["days"],
+        "money_totals": money_totals(rows, links, our_tags),
+        "our_amazon_tags": {"bestgaa": sorted(tags["bestgaa"]), "bridge": sorted(tags["bridge"]),
+                            "read_error": tags["read_error"]},
+        "link_tables": links["tables"],
+        "ledger_capped": capped,
+        "ledger_error": ledger_error,
+        "max_posts": int(max_posts),
+        "whatsapp": wa,
+        "recent": ({expand: recent_for(rows, index, links, our_tags, expand, expand_limit)}
+                   if expand else {}),
         "unrouted_targets": sorted(k for k in ledger if k.startswith("target:")),
         "unclassified_withheld": {
             "total": sum(unclassified.values()),
@@ -615,6 +1153,8 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
             "routed": sum(c["routed"] for c in categories),
             "withheld": sum(c["withheld"]["total"] for c in categories),
             "main_sent": main_bucket["sent"],
+            "paid_posts": sum(1 for r in rows if r["status"] == "sent" and not r["error"]
+                              and post_money(r["text"], links, our_tags)[0] == "owned"),
         },
     }
     report["findings"] = findings(report)
@@ -648,6 +1188,65 @@ def findings(report: dict) -> list[dict]:
             "the bot disabled those category routes")
     if not report["db_readable"] and report["db"]:
         add("warn", "db_unreadable", "", f"cannot open {report['db']} read-only; counts are zero")
+    if report.get("ledger_error"):
+        add("warn", "ledger_unreadable", "",
+            f"the delivery ledger could not be read ({report['ledger_error']}); "
+            "sends, money and trend are zero")
+    if report["ledger_capped"]:
+        add("warn", "ledger_capped", "",
+            f"only the newest {report['max_posts']} deliveries were read, so money and trend "
+            "cover part of this window - narrow --hours or raise --max-posts")
+
+    tags = report["our_amazon_tags"]
+    if tags["read_error"]:
+        add("warn", "amazon_tag_unreadable", "",
+            f"OUR_AMAZON_TAGS could not be read from source ({tags['read_error']}); "
+            "no Amazon link can be proved ours")
+    elif tags["bestgaa"] and tags["bridge"] and set(tags["bestgaa"]) != set(tags["bridge"]):
+        add("error", "amazon_tag_parity", "",
+            f"the bot publishes with {tags['bestgaa']} and the bridge with {tags['bridge']}: "
+            "one surface credits a different Associates account for the same deal")
+    elif not (tags["bestgaa"] or tags["bridge"]):
+        add("warn", "amazon_tag_unknown", "",
+            "neither service exposes OUR_AMAZON_TAGS, so Amazon links are counted as ours "
+            "without proof (route amazon_tag_unverified)")
+
+    def money_findings(label: str, key: str, earned: dict) -> None:
+        """What the published posts on one destination say about the money.
+
+        Main is judged by the same rule as a shelf: it is where most posts go, so
+        a link that pays nobody there is the most expensive kind.
+        """
+        if earned["foreign_tag"]:
+            add("warn", "foreign_tag_posted", key,
+                f"{earned['foreign_tag']} post(s) on '{label}' carry an Amazon tag that is not "
+                f"ours (ours: {tags['bestgaa'] or tags['bridge'] or 'unknown'}) - those clicks "
+                "pay a stranger. Warn, not error: blocking a deploy cannot un-publish them")
+        if earned["earns_nothing"]:
+            routes = ", ".join(f"{r} x{n}" for r, n in list(earned["routes"].items())[:3])
+            add("warn", "unmonetized_shelf", key,
+                f"{earned['earns_nothing']} of {earned['posts']} post(s) published on '{label}' "
+                f"carry a link that pays nobody ({routes or 'no route'})")
+        if earned["posts"] and earned["unattributed"] == earned["posts"]:
+            add("info", "money_blind", key,
+                f"none of the {earned['posts']} post(s) on '{label}' could be matched to "
+                f"link_cache/owned_link_proofs ({', '.join(report['link_tables']) or 'no tables'}), "
+                "so commission here is unproven rather than absent")
+
+    wa = report["whatsapp"]
+    if wa["configured"]:
+        for collision in wa["collisions"]:
+            add("error", "wa_category_collision", ",".join(collision["categories"]),
+                f"{collision['jid']} is {collision['why']}, so the bridge keeps the existing "
+                "target policy and these categories are NOT filtered on WhatsApp")
+        for name in wa["unknown_env"]:
+            add("warn", "unknown_surface_channel", "",
+                f"{name} is set but no category has that key - the bridge builds its category "
+                "channels from category_rules.json, so this value is ignored")
+        if wa["masked"]:
+            add("info", "wa_values_masked", "",
+                f"{wa['masked']} WhatsApp channel value(s) are not plain JIDs and are shown "
+                "masked; a shared-channel collision cannot be proved offline")
 
     main_sent = report["main"]["deliveries"]["sent"]
     for shelf in report["categories"]:
@@ -655,6 +1254,38 @@ def findings(report: dict) -> list[dict]:
         for target in shelf["unresolved_targets"]:
             add("warn", "target_unresolved", key,
                 f"@{target} was not reachable; those deals fell back to Main instead of this shelf")
+
+        # Cross-surface coverage: a shelf that exists on one service only is a
+        # silent half-deploy, and it is checked before the no_channel `continue`
+        # so a WhatsApp-only shelf is still reported.
+        surface = shelf["surfaces"]
+        tg_on, wa_on = bool(surface["telegram"]["targets"]), bool(surface["whatsapp"]["channel"])
+        if wa["configured"] and tg_on and not wa_on:
+            add("warn", "wa_surface_missing", key,
+                f"Telegram routes '{shelf['label']}' to "
+                f"{', '.join('@' + t for t in surface['telegram']['targets'])} but "
+                f"WA_CHANNEL_{key.upper()} is unset: on WhatsApp those deals go to the core "
+                "channels unfiltered")
+        if wa["configured"] and wa_on and not tg_on:
+            add("warn", "tg_surface_missing", key,
+                f"WhatsApp has a channel for '{shelf['label']}' "
+                f"({surface['whatsapp']['channel']}) but Telegram has no target for it: "
+                "the same deal reaches one audience only")
+        if wa_on and not surface["whatsapp"]["filtered"]:
+            add("warn", "wa_shelf_unfiltered", key,
+                f"{surface['whatsapp']['channel']} is set for '{shelf['label']}' but the bridge "
+                "will not give it a category policy (see the collision finding), so it behaves "
+                "like a core channel")
+        if wa["configured"] and tg_on and wa_on \
+                and surface["telegram"]["amazon_tag"] != surface["whatsapp"]["amazon_tag"]:
+            declared = "Telegram" if surface["telegram"]["amazon_tag"] else "WhatsApp"
+            add("warn", "amazon_tag_surface_mismatch", key,
+                f"the Amazon tag is declared for '{shelf['label']}' on {declared} only: the "
+                "other surface strips the monetized link, so the same deal earns on one and "
+                "not the other")
+
+        money_findings(shelf["label"], key, shelf["money"])
+
         if not shelf["targets"]:
             add("warn", "no_channel", key,
                 f"no channel or TG_CATEGORY_{key.upper()}_TARGET is configured for "
@@ -685,6 +1316,7 @@ def findings(report: dict) -> list[dict]:
                 f"Amazon links stay withheld on {', '.join('@' + t for t in shelf['tagless_targets'])} "
                 "until the tag is declared (AMAZON_TAG_CATEGORY_TARGETS / the channel's amazon_tag) - "
                 "this is the documented policy, not a fault")
+    money_findings("Main", "", report["main"]["money"])
     unclassified_total = report["unclassified_withheld"]["total"]
     if unclassified_total:
         routed_total = report["totals"]["routed"]
@@ -710,6 +1342,19 @@ def findings(report: dict) -> list[dict]:
 
 
 # ------------------------------------------------------------------ rendering --
+
+SPARK = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+
+
+def sparkline(values) -> str:
+    """A trend in eight block characters: readable over SSH, no chart library."""
+    series = [max(0, int(v or 0)) for v in (values or [])]
+    if not series:
+        return ""
+    top = max(series)
+    if not top:
+        return SPARK[0] * len(series)
+    return "".join(SPARK[min(7, int(round(v * 7 / top)))] for v in series)
 
 
 def render(report: dict) -> str:
@@ -751,11 +1396,60 @@ def render(report: dict) -> str:
         if shelf["skip_reasons"]:
             lines.append("    skips   : " + ", ".join(
                 f"{reason} x{count}" for reason, count in list(shelf["skip_reasons"].items())[:4]))
+        earned = dict(shelf["money"])
+        if earned["posts"]:
+            route_text = ", ".join(f"{route} x{count}" for route, count in
+                                   list(earned["routes"].items())[:3])
+            earned["routes"] = f" ({route_text})" if route_text else ""
+            lines.append("    money   : owned={owned} earns-nothing={earns_nothing} "
+                         "foreign-tag={foreign_tag} unattributed={unattributed} "
+                         "of {posts} post(s){routes}".format(**earned))
+        else:
+            lines.append("    money   : nothing delivered in this window")
+        sent_series = [day["sent"] for day in shelf["history"]]
+        lines.append("    trend   : {days}d sent {spark} ({sent}) | skipped ({skipped})".format(
+            days=len(sent_series), spark=sparkline(sent_series),
+            sent="/".join(str(v) for v in sent_series) or "-",
+            skipped="/".join(str(day["skipped"]) for day in shelf["history"]) or "-"))
+        surface = shelf["surfaces"]
+        whatsapp = surface["whatsapp"]
+        lines.append("    surface : telegram {tg}{tgtag} | whatsapp {wa}{policy}{watag}".format(
+            tg=", ".join("@" + t for t in surface["telegram"]["targets"]) or "none",
+            tgtag="(tag)" if surface["telegram"]["amazon_tag"] else "(tagless)",
+            wa=whatsapp["channel"] or "not configured",
+            policy=(f" {whatsapp['policy']}" if whatsapp["policy"]
+                    else (" (NOT filtered)" if whatsapp["channel"] else "")),
+            watag="(tag)" if whatsapp["amazon_tag"] else ""))
     main = report["main"]
     lines.append("  MAIN (unfiltered) targets={count} sent={sent} skipped={skipped} held={held} "
                  "pending={pending} | last send {last}".format(
                      count=len(main["targets"]), pending=main["pending"],
                      last=main["last_sent"], **main["deliveries"]))
+    money = dict(report["money_totals"])
+    if money["posts"]:
+        route_text = ", ".join(f"{route} x{count}" for route, count in
+                               list(money["routes"].items())[:4])
+        money["routes"] = f" ({route_text})" if route_text else ""
+        lines.append("  MONEY | {posts} delivered post(s): owned={owned} "
+                     "earns-nothing={earns_nothing} foreign-tag={foreign_tag} "
+                     "unattributed={unattributed}{routes}".format(**money))
+    else:
+        lines.append("  MONEY | nothing delivered in this window, so nothing to attribute")
+    whatsapp = report["whatsapp"]
+    lines.append("  WHATSAPP | {channels} category channel(s), {core} core, tags: {tags}"
+                 "{state}".format(
+                     channels=len(whatsapp["channels"]), core=len(whatsapp["core"]),
+                     tags=", ".join(whatsapp["tag_categories"]) or "none",
+                     state="" if whatsapp["configured"] else " (no WA_CHANNEL_* set: not judged)"))
+    for key, items in report["recent"].items():
+        lines.append(f"  RECENT [{key}] newest {len(items)} delivery row(s):")
+        for item in items:
+            reason = f" reason={item['reason']}" if item["reason"] else ""
+            paid = f" money={item['money']}/{item['route']}" if item["money"] else ""
+            lines.append("    #{qid} {at} -> {target} {status}{reason}{paid} | {snippet}".format(
+                qid=item["queue_id"], at=item["at"], target=item["target"] or "?",
+                status=item["status"], reason=reason, paid=paid,
+                snippet=item["snippet"][:80] or "(no text)"))
     unclassified = report["unclassified_withheld"]
     if unclassified["total"]:
         lines.append("  UNCLASSIFIED | {total} post(s) withheld from every shelf (no category "
@@ -810,6 +1504,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--rules", type=Path, default=None,
                         help="a category_rules.json to report against (default: the installed one). "
                              "Lets you measure a taxonomy before installing it")
+    parser.add_argument("--days", type=int, default=7,
+                        help="how many IST days of per-shelf trend to include (default 7)")
+    parser.add_argument("--expand", default=None,
+                        help="also list the newest delivery rows for one shelf key "
+                             "(or 'main', or an unknown target name)")
+    parser.add_argument("--expand-limit", type=int, default=12,
+                        help="how many rows --expand lists (default 12)")
+    parser.add_argument("--max-posts", type=int, default=20000,
+                        help="safety cap on ledger rows read for money/trend/drill-down; "
+                             "hitting it is reported as a finding, never silently")
     parser.add_argument("--json", action="store_true", help="machine-readable report")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any error/warn finding exists")
@@ -822,7 +1526,9 @@ def main(argv: list[str] | None = None) -> int:
 
     report = build_report(db=args.db, log=args.log, hours=args.hours,
                           rules=load_rules(args.rules) if args.rules else None,
-                          env=load_env(args.env_file))
+                          env=load_env(args.env_file), days=args.days,
+                          expand=args.expand, expand_limit=args.expand_limit,
+                          max_posts=args.max_posts)
     if args.json:
         print(json.dumps(jsonable(report), indent=2, ensure_ascii=False))
     else:
