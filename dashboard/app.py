@@ -325,7 +325,20 @@ async def api_channels(request: web.Request):
     dashboard_names = {c["name"].lower() for c in data["channels"]}
     dashboard_names.update(str(n).lower() for n in snap.get("dashboard_added", []))
     targets = [str(t) for t in snap.get("targets", [])]
-    return web.json_response({
+    try:
+        wa_module = load_category_report()
+        wa = wa_module.wa_surfaces(category_env(wa_module), load_rules(),
+                                   channels_config.load_channels())
+        whatsapp = {"live_channels": wa["channels"], "live_core": wa["core"],
+                    "file": wa["file"], "file_rows": wa["file_rows"],
+                    "pending": wa["pending"],
+                    "env_lines": wa["env_lines"], "collisions": wa["collisions"],
+                    "masked": wa["masked"]}
+    except Exception as exc:                       # the panel degrades, never lies
+        whatsapp = {"error": str(exc), "live_channels": {}, "live_core": {},
+                    "file": {}, "file_rows": [], "pending": [], "env_lines": []}
+    payload_extra = {"whatsapp": whatsapp}
+    return web.json_response({**payload_extra,
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
         "revision": config_revision(),
@@ -608,6 +621,32 @@ async def api_card_studio(request: web.Request):
 
 
 @require_token
+async def api_put_whatsapp(request: web.Request):
+    """Save the WhatsApp channels the dashboard declares (channels.json
+    `whatsapp`), with the exact env lines the bridge needs to activate them.
+
+    The bridge builds its WhatsApp policy from `WA_CHANNEL_<KEY>` env at startup
+    and this dashboard never restarts it, so saving here records intent and
+    generates the lines; `/api/categories` then shows the row as pending until
+    the env catches up. Collisions (one channel for two keys) are refused at
+    save time because the bridge would silently stop filtering one shelf.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    cleaned, errors = channels_config.validate_whatsapp_list(
+        (body or {}).get("whatsapp"), set(category_catalog()))
+    if errors:
+        return web.json_response({"errors": errors}, status=400)
+    data = channels_config.load_channels()
+    data["whatsapp"] = cleaned
+    channels_config.save_channels(data)
+    return web.json_response({"saved": True, "whatsapp": cleaned,
+                              "env_lines": channels_config.wa_env_lines(cleaned)})
+
+
+@require_token
 async def api_post_buttons_get(request: web.Request):
     """The configured Telegram button row (join buttons under every post)."""
     import post_buttons
@@ -740,6 +779,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/inspect-link", api_inspect_link)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
+    app.router.add_put("/api/channels/whatsapp", api_put_whatsapp)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
     app.router.add_get("/api/categories", api_categories)

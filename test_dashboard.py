@@ -94,7 +94,11 @@ def test_config_manager():
         path = Path(td) / "channels.json"
         data = {"version": 1, "channels": [cleaned]}
         channels_config.save_channels(data, path)
-        check("save/load round-trips", channels_config.load_channels(path) == data)
+        loaded = channels_config.load_channels(path)
+        check("save/load round-trips (channels and the new whatsapp section)",
+              loaded["channels"] == data["channels"]
+              and loaded["version"] == data["version"]
+              and loaded["whatsapp"] == [], repr(loaded))
         (Path(td) / "bad.json").write_text("{nope", encoding="utf-8")
         check("a corrupt file loads as empty",
               channels_config.load_channels(Path(td) / "bad.json") == {"version": 1, "channels": []})
@@ -262,6 +266,32 @@ def test_http_api():
                     status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
                     check("clearing the row restores today's posts byte for byte",
                           status == 200 and bot.post_inline_buttons() == [], str(body))
+
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": [
+                                                  {"key": "electronics",
+                                                   "value": "120363001@newsletter"},
+                                                  {"key": "grocery",
+                                                   "value": "120363001@newsletter"}]})
+                    check("one WhatsApp channel for two shelves is refused at save time",
+                          status == 400 and body.get("errors"), str(body))
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": [
+                                                  {"key": "electronics",
+                                                   "value": "120363001@newsletter"}]})
+                    check("a WhatsApp channel saves with its env line generated",
+                          status == 200 and body.get("saved")
+                          and body["env_lines"] == ["WA_CHANNEL_ELECTRONICS="
+                                                    "120363001@newsletter"], str(body))
+                    status, body = await call("GET", "/api/channels")
+                    check("the channel list shows declared WA intent as pending",
+                          status == 200 and body["whatsapp"]["pending"] == ["electronics"]
+                          and body["whatsapp"]["file_rows"][0]["value"]
+                          == "120363001@newsletter", str(body.get("whatsapp")))
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": []})
+                    check("clearing the WA intent is a save too",
+                          status == 200 and body["env_lines"] == [], str(body))
 
                     status, body = await call("GET", "/api/link-conversion?limit=10")
                     check("the conversion book answers per link, from the ledger",

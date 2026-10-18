@@ -39,8 +39,13 @@ function report() {
     whatsapp: {configured: true, channels: {electronics: '120363001@newsletter'},
                core: {under99: '120363009@newsletter'}, tag_categories: ['electronics'],
                unknown_env: ['WA_CHANNEL_GHOSTS'], comparable: true, masked: 0,
+               file: {grocery: '120363002@newsletter'},
+               file_rows: [{key: 'grocery', value: '120363002@newsletter', enabled: true}],
+               pending: ['grocery'],
+               env_lines: ['WA_CHANNEL_GROCERY=120363002@newsletter'],
                collisions: [{jid: '120363001@newsletter', categories: ['electronics', 'grocery'],
                  why: 'two categories share one WhatsApp channel'}]},
+    channel_conversion: {ClothingShelf: {deals: {sent: 4, owned: 3, foreign: 1, nothing: 0}}},
     history_days: ['2026-10-16', '2026-10-17', '2026-10-18'],
     quality_fleet: {posts: 6, scored: 6, unscored: 0, avg_score: 900.0, min_score: 100,
                     max_score: 1300, zero_score: 0, price_rows: 3, price_min: 49,
@@ -126,6 +131,21 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       status = convStatus;
       data = status === 200 ? convPayload : {error: 'conversion view failed'};
       return {ok: status === 200, status, json: async () => data};
+    }
+    if (path === '/api/channels/whatsapp') {
+      const rows = (body && body.whatsapp) || [];
+      const seen = {};
+      for (const row of rows) {
+        if (seen[row.value]) {
+          status = 400;
+          data = {errors: ['one WhatsApp channel cannot serve both ' + seen[row.value] + ' and ' + row.key]};
+          return {ok: false, status, json: async () => data};
+        }
+        seen[row.value] = row.key;
+      }
+      data = {saved: true, whatsapp: rows,
+        env_lines: rows.filter(r => r.enabled).map(r => 'WA_CHANNEL_' + String(r.key).toUpperCase() + '=' + r.value)};
+      return {ok: true, status: 200, json: async () => data};
     }
     if (path.startsWith('/api/categories')) {
       if (holdCategories) await holdCategories;
@@ -217,6 +237,41 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   convStatus = 200;
   await w.loadConversion();
 
+  // --- WhatsApp manager + per-channel conversion cells ------------------------
+  await w.loadCategories?.();
+  await w.refresh?.();
+  const chanRow = [...d.querySelectorAll("#channel-list tbody tr")]
+    .find(tr => tr.textContent.includes("ClothingShelf"));
+  assert.ok(chanRow && chanRow.textContent.includes("converts: deals 3/4 ours"),
+    "a channel row shows per-source conversion from the ledger");
+  assert.ok(chanRow.textContent.includes("FOREIGN"),
+    "and the foreign-tag count rides the same row");
+
+  assert.ok(d.getElementById("walive").textContent.includes("electronics → 120363001@newsletter"),
+    "the WA panel shows what is live in the bridge env");
+  assert.ok(d.getElementById("wastate").textContent.includes("pending activation: grocery"),
+    "a saved-but-not-live WA row is announced as pending");
+  assert.ok(d.getElementById("waenv").textContent.includes("WA_CHANNEL_GROCERY=120363002@newsletter"),
+    "the exact env line to paste is generated");
+  assert.strictEqual(d.getElementById("warows").querySelectorAll("input").length, 2,
+    "the file row renders as an editable value + enabled pair");
+  assert.strictEqual(d.getElementById("warows").querySelector("select").value, "grocery",
+    "the shelf key select carries the saved key");
+
+  w.eval(`waRows = [{key:"a",value:"120363001@newsletter",enabled:true},
+                    {key:"b",value:"120363001@newsletter",enabled:true}];`);
+  await w.saveWa();
+  assert.ok(d.getElementById("wastate").textContent.includes("NOT saved"),
+    "a colliding save is refused and the panel says so");
+  w.eval(`waRows = [{key:"electronics",value:"120363001@newsletter",enabled:true}];`);
+  await w.saveWa();
+  assert.ok(d.getElementById("wastate").textContent.includes("saved"),
+    "a clean save reports success");
+  assert.ok(d.getElementById("waenv").textContent.includes("WA_CHANNEL_ELECTRONICS=120363001@newsletter"),
+    "and regenerates the env line");
+  assert.ok(!d.getElementById("warows").innerHTML.includes("<img"),
+    "WA editor escapes hostile keys");
+
   // --- money, trend and surfaces ---------------------------------------------
   assert.match(electronics.textContent, /4 paid · 1 earn nothing/, 'the money verdict is shown');
   assert.match(electronics.textContent, /1 foreign tag/, 'a stranger\'s tag is called out');
@@ -262,13 +317,15 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
     'the label is escaped in the markup itself');
 
   // --- the window and trend pickers refetch ----------------------------------
+  const beforePicker = calls.length;
   d.getElementById('cathours').value = '72';
   d.getElementById('catdays').value = '14';
   await w.loadCategories();
-  const windows = calls.filter(c => c.path.startsWith('/api/categories')).map(c => c.path);
+  const windows = calls.slice(beforePicker)
+    .filter(c => c.path.startsWith('/api/categories')).map(c => c.path);
   assert.match(windows[windows.length - 1], /hours=72/, 'the window picker drives the query');
   assert.match(windows[windows.length - 1], /days=14/, 'the trend picker drives the query');
-  assert.equal(windows.length, 2, 'one extra fetch, not a storm');
+  assert.equal(windows.length, 1, 'the picker refetches once, not a storm');
 
   // --- drill-down: a row opens into the delivery rows behind its numbers ------
   const row = d.querySelectorAll('#catrows tr[data-key]')[0];

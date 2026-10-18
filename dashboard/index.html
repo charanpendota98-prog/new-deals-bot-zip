@@ -51,7 +51,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -114,6 +114,17 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
 <table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
+</div>
+<div class="card" id="wachannels">
+<h2>WhatsApp channels</h2>
+<p class="muted">The bridge builds its WhatsApp policy from <code>WA_CHANNEL_&lt;KEY&gt;</code> env at startup. Save the intent here - the exact env lines are generated for you to paste into the bridge env, and until then the row shows <span class="badge warn">pending</span>. This dashboard never restarts the bridge for you. One channel per key: sharing a channel makes the bridge stop filtering that shelf.</p>
+<div id="walive" class="muted"></div>
+<div id="warows"></div>
+<div class="row"><button id="waadd" onclick="addWaRow()">+ add WhatsApp channel</button>
+<button class="primary" onclick="saveWa()">Save WhatsApp channels</button>
+<span id="wastate" class="muted"></span></div>
+<pre id="waenv" class="captionbox" style="display:none"></pre>
+<button id="wacopy" style="display:none" onclick="copyWaEnv()">copy env lines</button>
 </div>
 <div class="card" id="categories">
 <div class="section-heading"><div><span class="eyebrow">CATEGORY-WISE · LIVE DB + BOT LOG</span><h2>What each shelf actually received</h2></div>
@@ -272,7 +283,8 @@ async function refresh(){
     let rows = '';
     (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="6" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
-      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.length+' selected · '+t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
+      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.length+' selected · '+t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}`
+      + convLine(t.name) + `</td>`
       + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
@@ -496,6 +508,106 @@ function renderMockButtons(buttons){
     a.rel='noopener noreferrer';
     bar.appendChild(a);
   }
+}
+let lastCat=null;
+function convLine(name){
+  const conv=(lastCat&&lastCat.channel_conversion)||{};
+  const per=conv[name];
+  if(!per||!Object.keys(per).length) return '<div class="muted">no delivered posts in this window</div>';
+  return '<div>converts: '+Object.entries(per).map(([src,c])=>escapeHTML(src)+' '
+    +escapeHTML(c.owned)+'/'+escapeHTML(c.sent)+' ours'
+    +(c.foreign?' · <span class="badge bad">'+escapeHTML(c.foreign)+' FOREIGN</span>':'')
+    +(c.nothing?' · '+escapeHTML(c.nothing)+' earn nothing':'')).join(' · ')+'</div>';
+}
+let waRows=[];
+function waKeyOptions(selected){
+  const cats=(lastCat&&lastCat.categories)||[];
+  // /api/categories carries shelves as a list of {key,...}; be robust to a map too
+  const keys=Array.isArray(cats)
+    ? cats.map(shelf=>shelf&&shelf.key).filter(Boolean)
+    : Object.keys(cats);
+  const core=['under99','under499','best_of'];
+  const all=keys.concat(core.filter(k=>!keys.includes(k)));
+  return all.map(k=>'<option value="'+escapeHTML(k)+'"'+(k===selected?' selected':'')+'>'
+    +escapeHTML(k)+'</option>').join('');
+}
+function renderWaRows(){
+  const wrap=document.getElementById('warows');
+  wrap.innerHTML='';
+  waRows.forEach((row,index)=>{
+    const line=document.createElement('div'); line.className='row';
+    const key=document.createElement('select');
+    key.innerHTML=waKeyOptions(row.key);
+    key.setAttribute('aria-label','WhatsApp shelf key');
+    key.addEventListener('change',()=>{ waRows[index].key=key.value; });
+    const value=document.createElement('input');
+    value.value=row.value||''; value.placeholder='120363…@newsletter or …@g.us';
+    value.setAttribute('aria-label','WhatsApp channel id');
+    value.addEventListener('input',()=>{ waRows[index].value=value.value; });
+    const enabled=document.createElement('input');
+    enabled.type='checkbox'; enabled.checked=row.enabled!==false;
+    enabled.setAttribute('aria-label','enabled');
+    enabled.addEventListener('change',()=>{ waRows[index].enabled=enabled.checked; });
+    const lab=document.createElement('span'); lab.className='muted'; lab.textContent='on';
+    const del=document.createElement('button'); del.textContent='remove';
+    del.addEventListener('click',()=>{ waRows.splice(index,1); renderWaRows(); });
+    line.append(key,value,enabled,lab,del);
+    wrap.appendChild(line);
+  });
+}
+function addWaRow(){ waRows.push({key:'',value:'',enabled:true}); renderWaRows(); }
+function renderWhatsApp(wa){
+  const live=document.getElementById('walive');
+  const pending=new Set(wa.pending||[]);
+  const liveChannels=wa.live_channels||wa.channels||{};
+  const liveCore=wa.live_core||wa.core||{};
+  const liveKeys=Object.entries(liveChannels).map(([k,v])=>k+' → '+v)
+    .concat(Object.entries(liveCore).map(([k,v])=>k+' (core) → '+v));
+  live.innerHTML='<b>live in bridge env:</b> '
+    +(liveKeys.length?liveKeys.map(escapeHTML).join(' · '):'nothing configured yet')
+    +((wa.collisions||[]).length?' <span class="badge bad">'
+      +escapeHTML(wa.collisions.length)+' COLLISION</span>':'');
+  waRows=((wa.file||{})&&Object.entries(wa.file||{}).length
+    ? Object.entries(wa.file).map(([k,v])=>({key:k,value:'',enabled:true,masked:v}))
+    : waRows);
+  const fileRows=(wa.file_rows)||null;
+  if(fileRows) waRows=fileRows.map(r=>({key:r.key,value:r.value,enabled:r.enabled}));
+  renderWaRows();
+  const envBox=document.getElementById('waenv');
+  const copy=document.getElementById('wacopy');
+  const lines=wa.env_lines||[];
+  if(lines.length){
+    envBox.style.display='block'; copy.style.display='';
+    envBox.textContent='# paste into the bridge env, then restart the bridge:\n'
+      +lines.join('\n');
+  } else { envBox.style.display='none'; copy.style.display='none'; }
+  const state=document.getElementById('wastate');
+  state.textContent=pending.size
+    ? 'pending activation: '+[...pending].join(', ')+' - paste the env lines above'
+    : (lines.length?'saved - env lines above are all the bridge needs':'no WhatsApp rows saved yet');
+}
+async function saveWa(){
+  const state=document.getElementById('wastate');
+  const rows=waRows.filter(r=>(r.key||'').trim()||(r.value||'').trim())
+    .map(r=>({key:(r.key||'').trim(),value:(r.value||'').trim(),enabled:r.enabled!==false}));
+  try{
+    const saved=await api('PUT','/api/channels/whatsapp',{whatsapp:rows});
+    waRows=(saved.whatsapp||[]).map(r=>({key:r.key,value:r.value,enabled:r.enabled}));
+    renderWaRows();
+    const envBox=document.getElementById('waenv');
+    const copy=document.getElementById('wacopy');
+    envBox.style.display='block'; copy.style.display='';
+    envBox.textContent='# paste into the bridge env, then restart the bridge:\n'
+      +(saved.env_lines||[]).join('\n');
+    state.textContent='saved - paste the env lines into the bridge env to activate';
+  }catch(error){
+    state.textContent='NOT saved: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+function copyWaEnv(){
+  const text=document.getElementById('waenv').textContent;
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text); }
+  document.getElementById('wastate').textContent='env lines copied';
 }
 let cardURL=null;
 async function loadStudio(draw){
@@ -744,12 +856,15 @@ function renderCategories(data){
   const badge=document.getElementById('catwindow');
   if(badge) badge.textContent='last '+(document.getElementById('cathours').value||'24')+'h · '+actionable.length+' actionable finding(s)';
 }
+function rememberCategories(payload){ lastCat=payload; renderWhatsApp(payload.whatsapp||{}); }
 async function loadCategories(){
   const hours=(document.getElementById('cathours')||{}).value||'24';
   const days=(document.getElementById('catdays')||{}).value||'7';
   try{
-    renderCategories(await api('GET','/api/categories?hours='+encodeURIComponent(hours)
-      +'&days='+encodeURIComponent(days))||{});
+    const payload=await api('GET','/api/categories?hours='+encodeURIComponent(hours)
+      +'&days='+encodeURIComponent(days))||{};
+    rememberCategories(payload);
+    renderCategories(payload);
   }catch(e){
     document.getElementById('catnote').textContent='category data unavailable: '+e.message;
     document.getElementById('catstats').innerHTML='';

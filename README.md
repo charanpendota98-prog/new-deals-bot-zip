@@ -238,12 +238,12 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
-| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, and the served markup for all of it |
-| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract |
+| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated) and the `whatsapp` section round-trip |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
-| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, and the rest of the dashboard surviving a dead endpoint |
+| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, and the rest of the dashboard surviving a dead endpoint |
 | `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, and the forward plan agrees with channels.json + the env shelves |
 | `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
 | `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
@@ -1467,7 +1467,7 @@ source snapshot:
 |---|---|
 | `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
 | `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
-| `bestgaa/channels_config.py` | `0c57dbbd2a0f988ed732d7a7b9f1b2fd2fa7a70b7e76bde6cf93c4678c3fe529` |
+| `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
 | `bestgaa/deal_facts.py` | `18bb3556d4a62270bff819b217b9fd632006136a92bc29e8c35c03c15bc0e8c8` |
 | `bestgaa/deploy_bestgaa.sh` | `86172c508f4385459dd3229e67eedcd124a2628945719da5a974d5a520ee736d` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
@@ -1485,14 +1485,14 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `34c443a4f9595bd89b0800cc598318fdd48f2892934aa85dcbb92cd685895253` |
+| `dashboard/app.py` | `cc4bc33ff4f9bb00b23dc6a7a8dd6a7fc1193bfcb6f2d304c077490eb4912cd7` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `25a8cbd2c861b4c02c0134d08709761dc54f44e667760b5121d25b5584380a94` |
+| `ops/category_report.py` | `4ccd84a73b516c84d25bc430b8253766f67ee431ec6538c00e21ab7f084b8b84` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
@@ -1520,10 +1520,10 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `3a4bb91aceb48fbb21032dc6fb299c673694805eb3177022c2b4f91e48da77b0` |
-| `test_dashboard.py` | `e1711f2328092c87b241bf5acc762320d581c678d02a25c4e751669e48709c29` |
+| `test_category_report.py` | `15c398ed0ca8cd66dd900ddfa0c0f27b546000756fe1c99ca75b49803b0631ef` |
+| `test_dashboard.py` | `9409e9946ec2d9a65a5ba4317bf8241658330ad101cbaa611ec5a927b7ac6424` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
-| `test_dashboard_categories.cjs` | `96b0137aad2fcc3dfc225e567482f955ebd6cfba04c9bb32905eac7a9151eafa` |
+| `test_dashboard_categories.cjs` | `0eb12150ff111b44fcb723a3d2ed40efb1bf94adebb21f7779bf0e8bcfdc89cd` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -1803,6 +1803,7 @@ The findings are the part that saves a week of guessing:
 | `amazon_tag_surface_mismatch` | warn | the Amazon tag is declared for this shelf on Telegram or WhatsApp only, so the same deal earns on one surface and not the other |
 | `unknown_surface_channel` | warn | a `WA_CHANNEL_*` name that is not a category key — the bridge builds its category channels from `category_rules.json`, so the value is ignored |
 | `wa_values_masked` | info | WhatsApp values that are not plain JIDs are shown masked, so a shared-channel collision cannot be proved offline |
+| `wa_pending_activation` | warn | a WhatsApp channel saved from the dashboard has no `WA_CHANNEL_<KEY>` in the bridge env yet — paste the generated env line and restart the bridge, or that shelf stays unfiltered |
 | `weak_shelf_quality` | warn | the shelf's average `premium_score` is under half the fleet's over 3+ scored posts: the weakest deals are landing here |
 | `quality_blind` / `price_blind` | info | the posts carry no `premium_score` / no `posted_deals.price`, so quality or rupee spread is unproven rather than bad |
 | `zero_score_posts` | info | posts scored 0: no discount, no price bonus, no lowest-price claim |
@@ -2036,7 +2037,24 @@ shortener or a proof row), how many would pay a stranger, how many earn nothing,
 and a per-link table with the proof mark and the IST time. Read-only, mode=ro,
 and `test_category_report.py` pins the semantics (a proved hop is owned, a blind
 hop is unattributed, a stranger's tag is foreign, limits cap the table but never
-the totals). Rendering needs
+the totals).
+
+**WhatsApp channels from the dashboard.** The bridge builds its WhatsApp policy
+from `WA_CHANNEL_<KEY>` env at startup, so the **WhatsApp channels** card does
+not pretend to hot-wire a running process: it saves the declared intent
+(`channels.json` gains a `whatsapp` section, validated by
+`channels_config.validate_whatsapp_list`), generates the exact env lines to
+paste, and until the env catches up `/api/categories` reports the row as
+`pending` with a `wa_pending_activation` finding. One channel shared by two keys
+is refused at save time - the bridge would silently stop filtering one shelf -
+and an invite link is not a channel.
+
+**Per-channel conversion cells.** The same ledger folds into
+`channel_conversion` - per target channel, per source: sends, the ones that rode
+OUR link, the ones riding a FOREIGN tag, the ones that earn nothing - and the
+channel list renders it on every dashboard row (`converts: deals 3/4 ours ·
+1 FOREIGN`), so "ee source nunchi ee channel ki convert ayi post avuthunda" is
+visible per pipe instead of one fleet-wide percentage. Rendering needs
 Pillow (`bestgaa/requirements.txt`); without it the studio still serves captions
 and says the card is unavailable.
 

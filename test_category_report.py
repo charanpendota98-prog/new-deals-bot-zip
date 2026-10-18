@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -295,6 +296,58 @@ def test_ledger():
 
 
 # --------------------------------------------------------- 3. the bot's log ----
+
+def test_channel_conversion_and_wa_intent():
+    """Per pipe: source -> channel, converted? And declared WA vs live WA."""
+    print("\n== channel conversion + declared WhatsApp intent ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = make_money_db(Path(tmp) / "money.sqlite3", posts=[
+            ("ElectroShelf", "sent", "", 60,
+             f"Earbuds https://www.amazon.in/dp/B0OWN?tag={OUR_TAG}"),
+            ("ElectroShelf", "sent", "", 120,
+             f"Phone https://www.amazon.in/dp/B0THEIF?tag={STRANGER_TAG}"),
+            ("StyleShelf", "sent", "", 90, "Kurta https://www.flipkart.com/kurta/p/itm123"),
+        ])
+        config = json.loads(json.dumps(SHELF_CONFIG))
+        config["whatsapp"] = [{"key": "electronics", "value": "120363001@newsletter",
+                               "enabled": True}]
+        report = cr.build_report(db=db, log=None, hours=24, channels_data=config,
+                                 rules=RULES, env={}, snapshot={}, days=3)
+        conv = report.get("channel_conversion") or {}
+        check("the ledger folds into per-channel, per-source pipes",
+              set(conv) == {"electroshelf", "styleshelf"}, conv)
+        check("one pipe shows owned and foreign sends side by side",
+              conv.get("electroshelf", {}).get("deals")
+              == {"sent": 2, "owned": 1, "foreign": 1, "nothing": 0},
+              conv.get("electroshelf"))
+        check("a pipe whose link earns nothing says so per source",
+              conv.get("styleshelf", {}).get("deals", {}).get("nothing") == 1,
+              conv.get("styleshelf"))
+        wa = report["whatsapp"]
+        check("the saved WhatsApp row is visible as declared intent",
+              wa["file"].get("electronics") == "120363001@newsletter", wa["file"])
+        check("and as an editable row with its real value",
+              wa["file_rows"] == [{"key": "electronics",
+                                   "value": "120363001@newsletter", "enabled": True}],
+              wa["file_rows"])
+        check("not in the bridge env yet, so it is pending activation",
+              wa["pending"] == ["electronics"], wa["pending"])
+        check("the exact env line is generated for the operator",
+              wa["env_lines"] == ["WA_CHANNEL_ELECTRONICS=120363001@newsletter"],
+              wa["env_lines"])
+        kinds = [f["kind"] for f in cr.findings(report)]
+        check("pending activation is a finding, not a silent gap",
+              "wa_pending_activation" in kinds, kinds)
+        live = cr.build_report(db=db, log=None, hours=24, channels_data=config,
+                               rules=RULES, env={"WA_CHANNEL_ELECTRONICS":
+                                                "120363001@newsletter"},
+                               snapshot={}, days=3)
+        check("once the env carries it, nothing is pending",
+              live["whatsapp"]["pending"] == [], live["whatsapp"]["pending"])
+        check("and no pending finding remains",
+              "wa_pending_activation" not in
+              [f["kind"] for f in cr.findings(live)], [f["kind"] for f in cr.findings(live)])
+
 
 def test_link_conversion():
     """"Mana links maruthunnaya?" - per link, from the converter's own book."""
@@ -810,6 +863,26 @@ def make_money_db(path: Path, posts, links=(), proofs=()) -> Path:
 
 
 EVIL_LABEL = '<img src=x onerror="window.__pwned=1">'
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
+
+def ist_noon(days_ago: int) -> float:
+    """Noon IST on the given IST day - an anchor that cannot cross midnight.
+
+    Hour offsets look safe until the suite runs at 00:02 IST: then "25 hours ago"
+    is TWO IST days ago and a day-precision assertion fails for a reason that
+    has nothing to do with the code. Anchoring to IST noon makes the trend
+    fixtures independent of the wall clock.
+    """
+    day = datetime.now(IST_TZ).date() - timedelta(days=days_ago)
+    return datetime.combine(day, datetime.min.time().replace(hour=12),
+                            tzinfo=IST_TZ).timestamp()
+
+
+def ago_days(days_ago: int) -> float:
+    return max(30.0, time.time() - ist_noon(days_ago))
+
+
 OUR_TAG = sorted(cr.our_amazon_tags()["bestgaa"] or {"mama086-21"})[0]
 STRANGER_TAG = "somebody-else-21"
 EMPTY_LINKS = cr.link_index(None)      # the real empty shape, keys included
@@ -970,9 +1043,9 @@ def test_trend():
     now = time.time()
     db = make_money_db(WORK / "trend.sqlite3", posts=[
         ("ElectroShelf", "sent", "", 60, "today https://hypd.store/a"),
-        ("ElectroShelf", "sent", "", 25 * 3600, "yesterday https://hypd.store/b"),
-        ("ElectroShelf", "sent", "", 49 * 3600, "two days ago https://hypd.store/c"),
-        ("ElectroShelf", "skipped", "FloodWaitError: 30s", 25 * 3600, "skipped yesterday"),
+        ("ElectroShelf", "sent", "", ago_days(1), "yesterday https://hypd.store/b"),
+        ("ElectroShelf", "sent", "", ago_days(2), "two days ago https://hypd.store/c"),
+        ("ElectroShelf", "skipped", "FloodWaitError: 30s", ago_days(1), "skipped yesterday"),
         ("ElectroShelf", "held", "manual review", 60, "held today"),
         ("MyMainDeals", "sent", "", 60, "main today https://hypd.store/m"),
     ])
@@ -1583,6 +1656,7 @@ if __name__ == "__main__":
         test_surfaces()
         test_drilldown()
         test_quality_and_sources()
+        test_channel_conversion_and_wa_intent()
         test_link_conversion()
         test_log_signals()
         test_findings()

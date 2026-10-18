@@ -907,13 +907,18 @@ def mask_wa(value: str) -> str:
     return text if WA_JID_RE.match(text) else "set (masked)"
 
 
-def wa_surfaces(env: dict | None, rules: dict) -> dict:
+def wa_surfaces(env: dict | None, rules: dict, channels_data: dict | None = None) -> dict:
     """What WhatsApp is configured to do with each category, from env alone.
 
     The bridge builds `category:<key>` policies only from `WA_CHANNEL_<KEY>`, and
     only when that JID is unique among the category channels and is not also a
     core channel - otherwise it logs a warning and the shelf is NOT filtered.
     Both rules are re-checked here, offline, before they cost a week of posts.
+
+    With `channels_data`, the dashboard's DECLARED intent (channels.json
+    `whatsapp`) is compared against the live env: a saved row the bridge has not
+    picked up yet is `pending` activation, and `env_lines` are the exact lines to
+    paste - the dashboard saves intent, it never restarts the bridge.
     """
     env = env or {}
     keys = {str(c.get("key", "")).strip().lower()
@@ -957,10 +962,27 @@ def wa_surfaces(env: dict | None, rules: dict) -> dict:
                 owner = sorted(name for name, value in core.items() if value == jid)
                 collisions.append({"jid": jid, "categories": [slug],
                                    "why": f"the same channel is the {owner[0]} core channel"})
+    file_rows: list[dict] = []
+    for entry in (channels_data or {}).get("whatsapp") or []:
+        if isinstance(entry, dict) and entry.get("key") and entry.get("value"):
+            file_rows.append(entry)
+    file_map = {str(r["key"]).lower(): mask_wa(str(r["value"])) for r in file_rows}
+    live_keys = set(channels) | set(core)
+    pending = sorted({str(r["key"]).lower() for r in file_rows
+                      if r.get("enabled", True)} - live_keys)
+    try:
+        import channels_config
+        env_lines = channels_config.wa_env_lines(file_rows)
+    except ImportError:                            # pragma: no cover - path layout
+        env_lines = [f"WA_CHANNEL_{str(r['key']).upper()}={r['value']}"
+                     for r in file_rows if r.get("enabled", True)]
     return {"channels": channels, "core": core, "tag_categories": sorted(wa_tags),
             "unknown_env": unknown, "configured": bool(channels or core or wa_tags),
             "collisions": collisions, "comparable": comparable,
-            "masked": len(masked_values)}
+            "masked": len(masked_values),
+            "file": file_map, "pending": pending, "env_lines": env_lines,
+            "file_rows": [{"key": str(r["key"]).lower(), "value": str(r["value"]),
+                           "enabled": bool(r.get("enabled", True))} for r in file_rows]}
 
 
 # ---------------------------------------------------------------------- log --
@@ -1148,6 +1170,36 @@ def money_totals(rows, links: dict, our_tags: frozenset) -> dict:
     return out
 
 
+def channel_conversion(rows, links: dict, our_tags: frozenset) -> dict:
+    """target -> source -> sent/owned/foreign/nothing for the posts that landed.
+
+    The operator's question is per pipe, not per fleet: "source nunchi aa
+    channel ki convert chesi post chesthunda?" - so the ledger is folded by
+    (destination, source) with the same post_money() verdict the money report
+    uses. A channel fed by three sources shows three conversion rates, and a
+    source whose links never carry our tag is visible at the pipe level.
+    """
+    out: dict[str, dict[str, dict]] = {}
+    for row in rows or []:
+        if row.get("status") != "sent" or row.get("error"):
+            continue
+        target = normalize_target(row.get("target")) or str(row.get("target") or "")
+        if not target:
+            continue
+        source = source_id(row.get("source"))
+        bucket, _route = post_money(row.get("text") or "", links, our_tags)
+        cell = out.setdefault(target, {}).setdefault(
+            source, {"sent": 0, "owned": 0, "foreign": 0, "nothing": 0})
+        cell["sent"] += 1
+        if bucket == "owned":
+            cell["owned"] += 1
+        elif bucket == "foreign_tag":
+            cell["foreign"] += 1
+        else:
+            cell["nothing"] += 1
+    return out
+
+
 def wa_filtered_keys(wa: dict) -> set[str]:
     """Which WhatsApp category channels really get a `category:<key>` policy.
 
@@ -1188,7 +1240,7 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
 
     tags = our_amazon_tags()
     our_tags = frozenset(tags["bestgaa"] | tags["bridge"])
-    wa = wa_surfaces(env, rules)
+    wa = wa_surfaces(env, rules, channels_data)
     filtered_wa = wa_filtered_keys(wa)
 
     conn = open_readonly(db) if db else None
@@ -1334,6 +1386,7 @@ def build_report(db: Path | None = None, log: Path | None = None, hours: float =
         },
         "history_days": hist["days"],
         "money_totals": money_totals(rows, links, our_tags),
+        "channel_conversion": channel_conversion(rows, links, our_tags),
         "quality_fleet": quality_view(quality.get("_fleet") or {}),
         "source_matrix": source_matrix(quality, view, rules),
         "price_rows": sum(len(v) for v in prices.values()),
@@ -1504,6 +1557,12 @@ def findings(report: dict) -> list[dict]:
             add("info", "wa_values_masked", "",
                 f"{wa['masked']} WhatsApp channel value(s) are not plain JIDs and are shown "
                 "masked; a shared-channel collision cannot be proved offline")
+    for pending_key in report.get("whatsapp", {}).get("pending", []):
+        add("warn", "wa_pending_activation", pending_key,
+            f"WhatsApp channel for {pending_key} is saved in the dashboard but the "
+            f"bridge env has no WA_CHANNEL_{pending_key.upper()} - paste the env line "
+            f"the dashboard shows and restart the bridge, or that shelf stays "
+            f"unfiltered on WhatsApp")
 
     main_sent = report["main"]["deliveries"]["sent"]
     for shelf in report["categories"]:
