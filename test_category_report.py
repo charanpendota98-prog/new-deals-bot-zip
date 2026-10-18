@@ -171,8 +171,30 @@ def test_config_math():
     env = cr.load_env([str(write_log(WORK / "sample.env", [
         "# a comment", "TELEGRAM_API_ID=1", "EARNKARO_API_KEY=super-secret-token",
         "TG_CATEGORY_BEAUTY_TARGET=@BeautyDeals", "AMAZON_TAG_CATEGORY_TARGETS=beautydeals"]))])
-    check("load_env keeps only the category keys",
-          set(env) == {"TG_CATEGORY_BEAUTY_TARGET", "AMAZON_TAG_CATEGORY_TARGETS"}, str(env))
+    check("load_env keeps the file's category keys",
+          {"TG_CATEGORY_BEAUTY_TARGET", "AMAZON_TAG_CATEGORY_TARGETS"} <= set(env), str(env))
+    check("load_env keeps nothing else from the file",
+          set(env) - {"TG_CATEGORY_BEAUTY_TARGET", "AMAZON_TAG_CATEGORY_TARGETS"} <= set(os.environ),
+          str(sorted(env)))
+
+    # The CLI and the dashboard must see the same shelves: one reads .env files,
+    # the other also had the process environment, so the engine reads both.
+    env_file = write_log(WORK / "merge.env", ["TG_CATEGORY_FOOTWEAR_TARGET=@FromFile"])
+    os.environ["TG_CATEGORY_FOOTWEAR_TARGET"] = "@FromProcessEnv"
+    os.environ["WA_CHANNEL_FOOTWEAR"] = "120363777@newsletter"
+    try:
+        merged = cr.load_env([str(env_file)])
+        check("a .env file wins over the process environment (the deployed truth is the file)",
+              merged.get("TG_CATEGORY_FOOTWEAR_TARGET") == "@FromFile", str(merged))
+        process_only = cr.load_env([])
+        check("a shelf declared only in the process environment is still seen by the CLI",
+              process_only.get("WA_CHANNEL_FOOTWEAR") == "120363777@newsletter",
+              str(sorted(process_only)))
+        check("the merged view still keeps no credential",
+              not any("secret" in str(v).lower() for v in merged.values()), str(merged))
+    finally:
+        os.environ.pop("TG_CATEGORY_FOOTWEAR_TARGET", None)
+        os.environ.pop("WA_CHANNEL_FOOTWEAR", None)
     check("load_env never keeps a credential from the same file",
           "super-secret-token" not in json.dumps(env), str(env))
 

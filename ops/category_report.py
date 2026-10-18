@@ -147,6 +147,14 @@ def load_env(files: list[str] | None = None) -> dict[str, str]:
         default = ROOT / "bestgaa" / ".env"
         candidates = [default] if default.exists() else []
     env: dict[str, str] = {}
+    # The process environment first, then the files over it: a deployed bot's
+    # truth is its .env / unit file, but an operator (and the dashboard) also
+    # passes shelf targets in the environment. Reading both is what keeps
+    # `python3 ops/category_report.py` and /api/categories from disagreeing about
+    # which shelves exist.
+    for key, value in os.environ.items():
+        if key.startswith(wanted) and str(value).strip():
+            env[key] = str(value).strip()
     for path in candidates:
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -1237,8 +1245,9 @@ def findings(report: dict) -> list[dict]:
     if wa["configured"]:
         for collision in wa["collisions"]:
             add("error", "wa_category_collision", ",".join(collision["categories"]),
-                f"{collision['jid']} is {collision['why']}, so the bridge keeps the existing "
-                "target policy and these categories are NOT filtered on WhatsApp")
+                f"{collision['jid']}: {collision['why']}, so the bridge keeps the existing "
+                "target policy and these categories are NOT filtered on WhatsApp "
+                "(give each category its own channel)")
         for name in wa["unknown_env"]:
             add("warn", "unknown_surface_channel", "",
                 f"{name} is set but no category has that key - the bridge builds its category "

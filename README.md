@@ -1487,7 +1487,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `79a8547a907e1235524fb4c0c607493f9acce3e84f52a41b5374e7f9064d8256` |
+| `ops/category_report.py` | `a6215902ef5c2a0941a95475dbaaedd9146eb9071b49f63a455f9071cba96596` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
@@ -1514,7 +1514,7 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `1674b2ba8e594067f57de8f904f95990a72f920a6221fe1c91b305a068d54edc` |
+| `test_category_report.py` | `a98dbf7a3f6dfb3a41890e1bd8acef2a0abf226ea495bd9ecef220c3065f4649` |
 | `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
 | `test_dashboard_categories.cjs` | `9334ea53a6d18c25e9cc5603834c2f5e07fbd5244fabf7e6f2816907655368a2` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
@@ -1868,7 +1868,11 @@ would behave. The Amazon-tag allowance is per surface too
 declared on one only earns on one only — `amazon_tag_surface_mismatch`. A
 `WA_CHANNEL_*` name that matches no category key is reported as ignored rather
 than silently dropped. Nothing here runs WhatsApp: it reads env, and a surface
-with no `WA_CHANNEL_*` at all is reported as *not judged*, never as broken.
+with no `WA_CHANNEL_*` at all is reported as *not judged*, never as broken. Env
+means both sources — the `.env`/unit files (`--env-file`, repeatable) and the
+process environment, with the file winning — because a shelf declared only in one
+of them must not produce two different reports from the CLI and from
+`/api/categories`.
 
 WhatsApp values are printed only when they are a plain JID
 (`…@newsletter`, `…@g.us`, `…@s.whatsapp.net`, `…@broadcast`); anything else —
