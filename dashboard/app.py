@@ -19,6 +19,13 @@ What it does
   * Status: queue depth, today's real sends vs skips per the ledger, last
     posted deal, bot uptime.
   * Recent: latest jobs with per-job send/skip counts.
+  * Categories: per-shelf truth from the live database, the bot log, the saved
+    config and the installed rules - sends/skips/holds, pending backlog, how many
+    deals the classifier routed to the shelf versus withheld from it (and why),
+    the last time anything landed there, and actionable findings (rules parity,
+    a stale bot rules version, an unresolved or colliding shelf target, a shelf
+    that stayed silent while Main posted). Same engine as
+    `python3 ops/category_report.py`.
   * Audit: the same SENDS vs SKIPS + findings summary ops/quality_audit.py
     produces, over the live database (read-only).
 
@@ -454,6 +461,57 @@ def load_quality_audit():
     return module
 
 
+def load_category_report():
+    """The category-wise report engine, shared with `python3 ops/category_report.py`.
+
+    One implementation, two front doors: the CLI an operator runs on the server
+    and this dashboard read the same code, so the numbers cannot disagree.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "dash_category_report", ROOT / "ops" / "category_report.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def category_env(module) -> dict[str, str]:
+    """Env-declared shelf targets, without ever echoing a secret value.
+
+    Only TG_CATEGORY_*_TARGET and AMAZON_TAG_CATEGORY_TARGETS are read; the
+    module keeps nothing else from a .env, so a token in the same file cannot
+    reach this response.
+    """
+    env = module.load_env()
+    for key, value in os.environ.items():
+        if key.startswith("TG_CATEGORY_") or key == "AMAZON_TAG_CATEGORY_TARGETS":
+            env.setdefault(key, str(value).strip())
+    return env
+
+
+@require_token
+async def api_categories(request: web.Request):
+    """Per-shelf truth: sends, skips, backlog, routed vs withheld, and findings.
+
+    Read-only like every other endpoint here: the database is opened mode=ro and
+    nothing is queued, restarted or sent.
+    """
+    try:
+        hours = max(1.0, min(168.0, float(request.query.get("hours", "24"))))
+    except (TypeError, ValueError):
+        hours = 24.0
+    try:
+        module = load_category_report()
+        report = module.build_report(
+            db=db_path(), log=module.default_log(), hours=hours,
+            channels_data=channels_config.load_channels(), rules=load_rules(),
+            env=category_env(module), snapshot=snapshot())
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    payload = module.jsonable(report)
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
 @require_token
 async def api_audit(request: web.Request):
     try:
@@ -518,6 +576,7 @@ def create_app() -> web.Application:
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
+    app.router.add_get("/api/categories", api_categories)
     app.router.add_get("/api/audit", api_audit)
     app.router.add_post("/api/restart", api_restart)
     return app

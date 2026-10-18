@@ -470,6 +470,14 @@ assert "DOCUMENTATION DRIFT" in deploy, \
     "the deploy must surface README drift to the operator instead of burying it in a log"
 ok("the deploy surfaces README drift rather than burying it in /tmp")
 
+# A deploy that only checks aggregate sends cannot see one dead shelf: Main posts
+# all day while a category channel sits empty. The per-shelf report is part of the
+# post-deploy proof, gated on errors only so an unused shelf never blocks a rollout.
+assert "category_report.py" in deploy, "the deploy stopped proving category-wise health"
+assert "--strict-errors" in deploy, \
+    "the deploy must gate on category ERRORS only, not warn on shelves nobody configured"
+ok("a deploy proves per-shelf health, gated on errors so an unused shelf cannot block it")
+
 modes = gate_text()
 for mode in ("GATE_DOC_MODE", "check|warn|off"):
     assert mode in modes, f"the gate lost its documentation-drift policy ({mode})"

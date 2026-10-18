@@ -289,6 +289,34 @@ else
 fi
 
 echo ""
+echo "==== 6. CATEGORY-WISE HEALTH (per shelf, from the live DB + log) ===="
+# Aggregate numbers hide a dead shelf: Main can post all day while the
+# electronics channel sits empty because its target is unresolved or the running
+# bot classifies with older rules. This is the same engine the dashboard's
+# Categories panel uses, so the deploy report and the panel cannot disagree.
+# --strict-errors gates only on breakage (rules parity/version, routing disabled,
+# target collision): an operator running three shelves must not fail a rollout
+# because the other four have no channel. Warnings are printed, not fatal.
+CATEGORY_REPORT="$HERE/category_report.py"
+[[ -f "$CATEGORY_REPORT" ]] || CATEGORY_REPORT="$BESTGAA_DIR/category_report.py"
+if [[ -f "$CATEGORY_REPORT" && -f "$DB" ]]; then
+  if python3 "$CATEGORY_REPORT" --db "$DB" --log "$BOT_LOG" --hours 6 \
+      --strict-errors >/tmp/category_report.log 2>&1; then
+    ok "no category ERROR finding (rules parity, bot rules version, routing on, no collision)"
+    while IFS= read -r line; do info "${line#  }"; done \
+      < <(grep -E '^  (WARN|INFO)' /tmp/category_report.log | head -8)
+    grep -E '^  [A-Za-z].*state=' /tmp/category_report.log | head -8 \
+      | while IFS= read -r line; do info "${line#  }"; done
+  else
+    warn "category report has ERROR finding(s) - see /tmp/category_report.log"
+    while IFS= read -r line; do warn "${line#  }"; done \
+      < <(grep -E '^  ERROR' /tmp/category_report.log | head -5)
+  fi
+else
+  info "skipped (report=$CATEGORY_REPORT db=$DB) - run it once this bundle is deployed"
+fi
+
+echo ""
 if ((${#FAILED[@]})); then
   echo "DEPLOY VERIFY: ${#FAILED[@]} problem(s):"
   for f in "${FAILED[@]}"; do echo "  - $f"; done

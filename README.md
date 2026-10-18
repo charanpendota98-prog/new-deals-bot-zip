@@ -70,7 +70,7 @@ separate operator-controlled step.
 | `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
 | `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
-| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status and audit; read-only on the bot database, localhost/SSH-tunnel only |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`) and audit; read-only on the bot database, localhost/SSH-tunnel only |
 | `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
 | `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
 | `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
@@ -93,7 +93,7 @@ compiled and linted there too):
 | `bestgaa_restart_gate.sh` | The only restart command the dashboard may run; refuses every restart while `/etc/bestgaa/POSTING_APPROVED` is absent |
 | `deploy_fresh.sh` | Ship → teach → prove → report in one command (`--dry-run`, `--verify-only`, `--no-tests`, `--no-learn`) |
 | `deploy_stable.sh` | Runs `deploy_fresh.sh` inside tmux so a dropped SSH cannot kill a deploy mid-suites |
-| `deploy_and_verify.sh` | Deploy then verify; `--verify-only` proves what is live without changing it. With `--with-tests` it runs the full `ops/test_all.sh` gate (`GATE_DOC_MODE=warn`) before shipping, falling back to the core suites if the checkout cannot |
+| `deploy_and_verify.sh` | Deploy then verify; `--verify-only` proves what is live without changing it. Section 6 prints per-shelf category health from the live DB + log (`category_report.py --strict-errors`). With `--with-tests` it runs the full `ops/test_all.sh` gate (`GATE_DOC_MODE=warn`) before shipping, falling back to the core suites if the checkout cannot |
 | `deploy_r15_keep_off.sh` | PR #15 rollout in SAFE MODE: everything deployed and verified while services stay OFF |
 | `apply_dual_hotfix.sh` | One-shot server deploy of both services |
 | `apply_nightfix.sh` | Bridge-only nightfix: 24/7 WhatsApp posting, 02:00–06:00 IST off-window, night-queue trust policy |
@@ -110,6 +110,7 @@ compiled and linted there too):
 | `quality_audit.py` | Read-only DB audit, `--check-url` single-URL verdict, `--strict` exits non-zero on findings, `--json` |
 | `conversion_report.py` | Per-route status of what is actually converting, from the live DB + log (`--json`) |
 | `coverage_audit.py` | Source-vs-channel coverage report plus `--heal` re-queue of posts that never went out (`--json`) |
+| `category_report.py` | Category-wise truth per shelf: sends/skips/holds, pending backlog, routed vs withheld (with reasons), tag state, and actionable findings — the same engine the dashboard's Categories panel uses (`--json`, `--strict`, `--rules`, `--hours`) |
 | `earnkaro_check.py` | Prove the EarnKaro key converts; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry |
 | `identity_probe.py` | CLI: are these two posts the same product, answered by both services' own rule |
 | `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
@@ -181,6 +182,10 @@ python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --
 
 # "idi manadenaa link?" - one URL in, one verdict out (no database needed)
 python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
+
+# "categories wise ga em jarigindi?" - per-shelf sends, routes, withheld + findings
+python3 ops/category_report.py --hours 24
+python3 ops/category_report.py --hours 72 --strict   # exit 1 on any actionable finding
 ```
 
 Every `test_*.py` in the proof table runs standalone from the repository root
@@ -225,10 +230,12 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
+| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories` |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, empty/unreadable/500 states, escaped labels and targets, and the rest of the dashboard surviving a dead endpoint |
 | `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
 | `test_repo_consistency.py` | Gate coverage, shell syntax, the CI workflow, secret hygiene, and README's proof tables |
 
@@ -1465,17 +1472,18 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `c95c1059ca3ac91ab3da2830b2d5bebe9852b19ecf4f3b16d55058e7386ed9ac` |
+| `dashboard/app.py` | `9cd823bbd551ba45511ca1fdeac2006c1c592dcb107ef11eb54da3b5ae520e67` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
+| `ops/category_report.py` | `bd4c7e37d299e13c4480b618a17ab1eb62c86dd8ad926976594316cca4f38474` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
-| `ops/deploy_and_verify.sh` | `7f2ec524e83e713672ed5190eb1d48e60d5fbb813c5d310c7c7f21daf52cc599` |
+| `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
@@ -1492,12 +1500,14 @@ source snapshot:
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `d707ec33e637b1fa7f021103fd1cd4e8a0edd12bb5e51eb84dd0a3a45e105da0` |
+| `ops/test_all.sh` | `fc8827fe238bc8b291bc78acb8c6969d227678b0ba77702b52fe29a69a0badbd` |
 | `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
+| `test_category_report.py` | `5df9fd6e0f2ca6d398217012a0d16820492c971e3d49548bd8fd711b25b0e699` |
 | `test_dashboard.py` | `db406d81b4f433d4a4d7814e9c5ddbb6dd859f0574136199d836feb99466ea47` |
+| `test_dashboard_categories.cjs` | `840e2244e3f89f480b107b201eab6e4d07ddf1eaf284667af8322edb71216cd0` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -1511,7 +1521,7 @@ source snapshot:
 | `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `d604b23ce64d7a4f3913cbf35a141515e8d00f153238256ab0e9260f84f18fc3` |
-| `test_repo_consistency.py` | `60c6b6da02f77afb8c44748a0f86500d9239934c22b64dbf623a1b967216e2d3` |
+| `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
 | `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
 | `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
 | `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
@@ -1701,6 +1711,77 @@ Run the dashboard from the repository (`python -m dashboard.app`); bot/bridge de
 bundles do not package the dashboard UI or its Python helpers. No production restart
 or deployment is performed by these tests.
 
+
+### Category-wise truth: what each shelf actually received (2026-10-18)
+
+"Categories wise ga em jarigindi?" is now answerable from data instead of from
+scrolling a channel. The dashboard's **Categories** panel and
+`ops/category_report.py` are the *same engine* reading the same live database,
+bot log, `channels.json` and installed rules, so the CLI on the server and the
+panel in the browser cannot disagree.
+
+```bash
+python3 ops/category_report.py                      # last 24h, human-readable
+python3 ops/category_report.py --hours 72 --strict  # exit 1 on any error/warn finding
+python3 ops/category_report.py --strict-errors      # exit 1 on ERRORS only (deploy gate)
+python3 ops/category_report.py --json               # machine-readable (CI, scripts)
+python3 ops/category_report.py --rules /tmp/new_rules.json  # measure a taxonomy BEFORE installing it
+python3 ops/category_report.py --db /path/bot_state.sqlite3 --log /path/bot.log
+```
+
+Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
+`grocery`, `accessories`) it reports:
+
+| Column | Where it comes from |
+|---|---|
+| `state` | `ok` · `silent` · `skipping` · `disabled` · `no_channel` — "configured but switched off" is a different problem from "never configured", and they are never merged |
+| targets | every channel that claims the shelf, marking `(disabled)` and `(tagless)` ones; env-declared `TG_CATEGORY_<KEY>_TARGET` counts too |
+| sent / skipped / held | the delivery ledger, joined to the queue for the window. A `sent` row carrying an error is a skip, never a send |
+| pending | queue rows still waiting, attributed through their `targets_json` |
+| routed | the bot's own `CATEGORY ROUTE` log lines — how many deals the classifier actually sent this shelf's way |
+| withheld | `CATEGORY WITHHELD` lines with their reasons (`mixed_or_conflicting`, `insufficient_product_evidence`) — posts classified for the shelf that never reached it |
+| last send | the newest real send, in IST |
+
+Plus, separately from the shelves: **Main** (unfiltered targets, which take every
+category), **unclassified** posts withheld from every shelf because nothing
+matched, and deliveries to targets **no config claims** — reported under their
+own name rather than silently dropped.
+
+The findings are the part that saves a week of guessing:
+
+| Finding | Severity | What it means |
+|---|---|---|
+| `rules_parity` | error | the bot's and the bridge's `category_rules.json` differ, so Telegram and WhatsApp classify the same product differently |
+| `rules_version_drift` | error | the running bot classified with a different rules version than this checkout — a deploy or approved restart is pending |
+| `routing_disabled` | error | the bot logged `CATEGORY ROUTING DISABLED` (rules unreadable) |
+| `target_collision` | error | one Telegram target was given to two categories, so the bot disabled those routes |
+| `target_unresolved` | warn | a shelf's target is not reachable; those deals fell back to Main |
+| `no_channel` | warn | nothing is configured for this category at all |
+| `disabled_shelf` | warn | configured, but every channel serving it is switched off |
+| `silent_shelf` | warn | Main posted in this window, this shelf got zero sends and zero routes |
+| `skipping_shelf` | warn | this shelf skips more than it sends, with the top reasons |
+| `withheld_majority` | warn | most of what was classified for this shelf never reached it |
+| `unknown_category_withheld` | warn | the bot withheld posts for a category this taxonomy does not define (rules drift, seen from the log side) |
+| `unknown_target` | warn | the ledger has deliveries for a target no config claims |
+| `db_unreadable` | warn | the database could not be opened read-only, so counts are zero — stated, never presented as a quiet week |
+| `unclassified_withheld` | info, or warn when abstention out-runs routing | posts withheld from every shelf because no category matched |
+| `tagless_shelf` | info | Amazon links stay withheld on this shelf until the tag is declared — the documented policy, stated as a fact rather than discovered as a mystery |
+
+`--strict` exits 1 on any `error`/`warn` finding, so a silent shelf can gate a
+deploy the same way a failed suite does. `--strict-errors` fails only on `error`
+findings, and that is what `ops/deploy_and_verify.sh` uses in its
+`==== 6. CATEGORY-WISE HEALTH ====` step: an operator who runs three shelves must
+not have a rollout blocked because the other four have no channel, but a bot
+classifying with different rules than the checkout must stop one. Warnings are
+printed there, not fatal. Read-only by contract: the database is
+opened `mode=ro`, nothing is queued, sent or restarted, and no Telegram,
+WhatsApp or affiliate credentials are needed. `test_category_report.py`
+proves the engine against a database built by the bot's own `Store` (so the schema is the
+real one, never a hand-written copy), and
+`test_dashboard_categories.cjs` drives the panel in a DOM — including the
+guarantee that a channel name, category label or logged reason carrying
+`<img src=x onerror=…>` is shown as text, and that a dead `/api/categories`
+cannot blank the rest of the dashboard.
 
 ### Easy setup: link → category → channel
 

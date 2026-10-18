@@ -39,7 +39,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#categories">Categories</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -102,6 +102,16 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
 <table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
+</div>
+<div class="card" id="categories">
+<div class="section-heading"><div><span class="eyebrow">CATEGORY-WISE · LIVE DB + BOT LOG</span><h2>What each shelf actually received</h2></div>
+<div><label class="muted" for="cathours">Window</label> <select id="cathours" onchange="loadCategories()"><option value="6">last 6h</option><option value="24" selected>last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select></div></div>
+<p class="muted">Read-only, per category: delivery-ledger sends/skips/holds, the pending backlog routed at the shelf, how many deals the classifier sent its way versus withheld from it (and why), and the last time anything landed there. Same engine as <code>python3 ops/category_report.py</code>; nothing is posted, queued or restarted from here.</p>
+<p id="catnote" class="muted" role="status" aria-live="polite">loading…</p>
+<div class="row" id="catstats"></div>
+<p id="catfindings" aria-live="polite"></p>
+<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Last send</th></tr></thead>
+<tbody id="catrows"></tbody></table></div>
 </div>
 <div class="card"><h2>Test a category before posting</h2>
 <p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
@@ -234,10 +244,85 @@ async function refresh(){
       `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · held for review: <b>${d.held||0}</b> · ` +
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
+    await loadCategories();   // never throws: a dead /api/categories must not blank the rest
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
+function catStateBadge(state){
+  const map={ok:['ours','receiving'],silent:['warn','silent'],skipping:['warn','skipping more than sending'],
+    no_channel:['warn','no channel can receive it'],disabled:['warn','configured but disabled']};
+  const entry=map[state]||['',String(state||'unknown')];
+  return `<span class="badge ${entry[0]}">${escapeHTML(entry[1])}</span>`;
+}
+function renderCategories(data){
+  const cats=Array.isArray(data.categories)?data.categories:[];
+  const totals=data.totals||{}, main=data.main||{}, mainDeliveries=main.deliveries||{};
+  const note=document.getElementById('catnote');
+  const versionNote='installed rules v'+(data.rules_version??'?')+' · bot reported v'+(data.bot_rules_version??'unknown');
+  note.textContent=(data.db_readable===false?'database not readable yet - counts are zero. ':'')
+    +(data.log_lines_read?'log lines scanned: '+data.log_lines_read+'. ':'no bot log found - routed/withheld counts come from the log only. ')
+    +versionNote+(data.rules_load_error?' · RULES ERROR: '+data.rules_load_error:'');
+  const unclassified=(data.unclassified_withheld||{}).total||0;
+  const foreign=Object.keys(data.foreign_category_withheld||{});
+  document.getElementById('catstats').innerHTML =
+    stat(totals.shelves_with_channel||0,'shelves reachable') + stat(totals.sent||0,'shelf sends') +
+    stat(totals.skipped||0,'shelf skips') + stat(totals.routed||0,'routed by classifier') +
+    stat(totals.withheld||0,'withheld from shelves') + stat(unclassified,'withheld unclassified') +
+    stat(mainDeliveries.sent||0,'Main sends');
+  if(unclassified||foreign.length){
+    note.textContent += ' · '+unclassified+' post(s) withheld because no category matched'
+      +(foreign.length?' · the bot also withheld posts for categories this taxonomy does not define: '
+        +foreign.join(', '):'');
+  }
+  const findings=Array.isArray(data.findings)?data.findings:[];
+  const actionable=findings.filter(f=>f&&f.severity!=='info');
+  // Escaped into named locals first, then interpolated: nothing dynamic reaches
+  // innerHTML straight from the response (labels, targets, log reasons and
+  // finding text all originate in channel config or bot log lines).
+  document.getElementById('catfindings').innerHTML = findings.length
+    ? findings.map(f=>{
+        const cls=f.severity==='info'?'':'warn', sev=escapeHTML(f.severity||'?'),
+          kind=escapeHTML(f.kind||'?'), detail=escapeHTML(f.detail||''),
+          where=f.category?' · '+escapeHTML(f.category):'';
+        return `<span class="badge ${cls}">${sev}</span> <b>${kind}</b>${where}: ${detail}`;
+      }).join('<br>')
+    : '<span class="muted">No findings: every reachable shelf received posts, no category route was disabled, and both services classify with the same rules.</span>';
+  document.getElementById('catrows').innerHTML = cats.map(c=>{
+    const d=c.deliveries||{}, w=c.withheld||{}, tagless=c.tagless_targets||[];
+    const active=Array.isArray(c.active_targets)?c.active_targets:(c.targets||[]);
+    const targets=(c.targets||[]).map(t=>'@'+escapeHTML(t)
+      +(active.includes(t)?'':' <span class="muted">(disabled)</span>')
+      +(tagless.includes(t)?' <span class="muted">(tagless)</span>':'')).join(', ')
+      ||'<span class="muted">none configured</span>';
+    const reasons=Object.entries(w.reasons||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+    const skips=Object.entries(c.skip_reasons||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+    const label=escapeHTML(c.label||''), key=escapeHTML(c.key||''), aliases=escapeHTML(c.aliases||0),
+      sent=escapeHTML(d.sent||0), skipped=escapeHTML(d.skipped||0), held=escapeHTML(d.held||0),
+      pending=escapeHTML(c.pending||0), routed=escapeHTML(c.routed||0), withheld=escapeHTML(w.total||0),
+      last=escapeHTML(c.last_sent||'never'), skipNote=skips?`<br><span class="muted">${skips}</span>`:'',
+      withheldNote=reasons?`<br><span class="muted">${reasons}</span>`:'';
+    return `<tr><td><b>${label}</b><br><span class="muted">${key} · ${aliases} aliases</span></td>`
+      +`<td>${catStateBadge(c.state)}</td><td>${targets}</td>`
+      +`<td>${sent}</td><td>${skipped}${skipNote}</td>`
+      +`<td>${held}</td><td>${pending}</td><td>${routed}</td>`
+      +`<td>${withheld}${withheldNote}</td>`
+      +`<td class="muted">${last}</td></tr>`;
+  }).join('') || '<tr><td colspan="10" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
+  const badge=document.getElementById('catwindow');
+  if(badge) badge.textContent='last '+(document.getElementById('cathours').value||'24')+'h · '+actionable.length+' actionable finding(s)';
+}
+async function loadCategories(){
+  const hours=(document.getElementById('cathours')||{}).value||'24';
+  try{
+    renderCategories(await api('GET','/api/categories?hours='+encodeURIComponent(hours))||{});
+  }catch(e){
+    document.getElementById('catnote').textContent='category data unavailable: '+e.message;
+    document.getElementById('catstats').innerHTML='';
+    document.getElementById('catfindings').textContent='';
+    document.getElementById('catrows').innerHTML='<tr><td colspan="10" class="muted">no category data</td></tr>';
+  }
+}
 function toggleSrcs(){ sourceSummary('f'); }
 async function previewCategory(){
   const out = document.getElementById('cresult'); out.textContent = 'checking…';
