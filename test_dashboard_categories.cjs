@@ -14,6 +14,7 @@ const calls = [];
 const rows = [{name: 'ClothingShelf', sources: ['*'], categories: ['fashion'], enabled: true}];
 let categoryStatus = 200, categoryPayload = null, holdCategories = null;
 let convStatus = 200;
+let pipeStatus = 200;
 const convPayload = {
   totals: {cached: 3, owned: 1, foreign_tag: 1, earns_nothing: 1, unattributed: 0,
            proofs: 1, capped: false},
@@ -25,6 +26,15 @@ const convPayload = {
     {at: '2026-10-18 08:40 IST', source: 'https://amzn.lt/ok',
      affiliate: 'https://www.amazon.in/dp/B2?tag=ours', resolved_host: 'amazon.in',
      route: 'amazon', bucket: 'owned', proof: true},
+  ],
+  trend: [
+    {day: '2026-10-13', cached: 0, owned: 0, foreign_tag: 0, earns_nothing: 0, pct: null},
+    {day: '2026-10-14', cached: 0, owned: 0, foreign_tag: 0, earns_nothing: 0, pct: null},
+    {day: '2026-10-15', cached: 0, owned: 0, foreign_tag: 0, earns_nothing: 0, pct: null},
+    {day: '2026-10-16', cached: 0, owned: 0, foreign_tag: 0, earns_nothing: 0, pct: null},
+    {day: '2026-10-17', cached: 2, owned: 2, foreign_tag: 0, earns_nothing: 0, pct: 100.0},
+    {day: '2026-10-18', cached: 3, owned: 1, foreign_tag: 1, earns_nothing: 1, pct: 33.3},
+    {day: '2026-10-19', cached: 0, owned: 0, foreign_tag: 0, earns_nothing: 0, pct: null},
   ],
   db_exists: true,
 };
@@ -132,6 +142,21 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
       data = status === 200 ? convPayload : {error: 'conversion view failed'};
       return {ok: status === 200, status, json: async () => data};
     }
+    if (path.startsWith('/api/channel-pipe')) {
+      status = pipeStatus;
+      data = status === 200 ? {
+        target: 'clothingshelf', source: 'deals',
+        counts: {sent: 2, owned: 1, foreign: 1, nothing: 0},
+        rows: [
+          {at: '2026-10-18 09:12 IST', bucket: 'foreign_tag', route: 'amazon',
+           snippet: 'Phone ' + EVIL, urls: ['https://www.amazon.in/dp/B1?tag=stranger' + EVIL]},
+          {at: '2026-10-18 08:40 IST', bucket: 'owned', route: 'amazon',
+           snippet: 'Earbuds 65 pct off', urls: ['https://www.amazon.in/dp/B2?tag=ours']},
+        ],
+        capped: false, db_exists: true, ledger_error: '', hours: 168,
+      } : {error: 'pipe view failed'};
+      return {ok: status === 200, status, json: async () => data};
+    }
     if (path === '/api/channels/whatsapp') {
       const rows = (body && body.whatsapp) || [];
       const seen = {};
@@ -236,6 +261,45 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
     'a dead conversion endpoint says so instead of showing stale rows');
   convStatus = 200;
   await w.loadConversion();
+
+  // --- per-day conversion trend -----------------------------------------------
+  assert.ok(d.getElementById('convtrend').textContent.includes('converted per IST day'),
+    'the conversion card grows a per-day line');
+  assert.equal(d.querySelectorAll('#convtrend .sparkday').length, 7,
+    'one bar per IST day, zero days included');
+  assert.ok([...d.querySelectorAll('#convtrend .sparkday')]
+    .some(el => (el.getAttribute('title') || '').includes('1 FOREIGN')),
+    'a foreign day announces itself in the bar title');
+  assert.equal(d.querySelectorAll('#convtrend img').length, 0,
+    'trend titles stay text');
+
+  // --- pipe drill: click a converts chip, see the posts ------------------------
+  await w.loadCategories?.();
+  await w.refresh?.();
+  const convRow = [...d.querySelectorAll("#channel-list tbody tr")]
+    .find(tr => tr.textContent.includes("ClothingShelf"));
+  const chip = convRow.querySelector('button[onclick^="openPipe"]');
+  assert.ok(chip, 'a conversion chip is a button');
+  chip.click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(d.getElementById('pipecard').style.display, 'block',
+    'the pipe card opens');
+  assert.ok(d.getElementById('pipename').textContent.includes('ClothingShelf ← deals'),
+    'the pipe names both ends');
+  const pipeRows = d.querySelectorAll('#piperows tr');
+  assert.equal(pipeRows.length, 2, 'one row per sent post');
+  assert.match(pipeRows[0].textContent, /FOREIGN TAG/, 'the stranger post is shouted');
+  assert.match(pipeRows[1].textContent, /ours/, 'our own post is badged');
+  assert.ok(d.getElementById('pipecounts').textContent.includes('FOREIGN'),
+    'the pipe headline counts match the rows');
+  assert.equal(d.querySelectorAll('#piperows img, #pipename img').length, 0,
+    'hostile snippets and URLs stay text');
+  pipeStatus = 500;
+  chip.click();
+  await new Promise(r => setTimeout(r, 20));
+  assert.match(d.getElementById('pipenote').textContent, /pipe view unavailable/,
+    'a dead pipe endpoint says so instead of showing stale posts');
+  pipeStatus = 200;
 
   // --- WhatsApp manager + per-channel conversion cells ------------------------
   await w.loadCategories?.();

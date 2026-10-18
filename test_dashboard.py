@@ -301,6 +301,21 @@ def test_http_api():
                     check("and the proved hop carries its proof mark",
                           body["rows"][0]["proof"] is True
                           and body["rows"][0]["bucket"] == "owned", str(body["rows"]))
+                    check("the conversion endpoint carries a per-day trend",
+                          status == 200 and isinstance(body.get("trend"), list)
+                          and body["trend"][-1]["cached"] == 1
+                          and body["trend"][-1]["pct"] == 100.0, str(body.get("trend")))
+                    status, body = await call("GET", "/api/channel-pipe")
+                    check("a pipe needs both ends named", status == 400, str(body))
+                    status, body = await call("GET", "/api/channel-pipe?target=ElectroShelf"
+                                              "&source=deals&limit=5")
+                    check("one pipe opens with per-post verdicts",
+                          status == 200
+                          and set(body["counts"]) == {"sent", "owned", "foreign", "nothing"}
+                          and isinstance(body["rows"], list)
+                          and all(r["bucket"] in {"owned", "foreign_tag", "unattributed",
+                                                  "earns_nothing"} for r in body["rows"]),
+                          str(body))
                     status, body = await call("GET", "/api/recent?limit=5")
                     job = next(j for j in body["jobs"] if j["id"] == 1)
                     check("recent jobs carry a snippet and their first link",

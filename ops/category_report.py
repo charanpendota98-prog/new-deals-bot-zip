@@ -694,6 +694,90 @@ def link_conversion(conn, our_tags: frozenset, limit: int = 25) -> dict:
     return {"rows": rows_out, "totals": totals, "converted_pct": pct}
 
 
+def conversion_trend(conn, our_tags: frozenset, days: int = 7) -> list[dict]:
+    """Day by day, "converted ayyinda?" - from the converter's own book.
+
+    A single converted-share number can hide a converter that stopped carrying
+    our tag yesterday, because the average still looks fine. Bucketing the same
+    url_money() verdicts by the IST day of link_cache.created_at turns that into
+    a falling line the operator can see. Days with no cached links are real zero
+    days, not gaps.
+    """
+    days = max(1, min(60, 7 if days is None else int(days)))
+    links = link_index(conn) if conn is not None else {"by_affiliate": {}, "by_source": {},
+                                                       "proofs": {}}
+    now = time.time()
+    day_list = [ist_day(now - k * 86400) for k in range(days)][::-1]
+    buckets = {d: {"day": d, "cached": 0, "owned": 0, "foreign_tag": 0,
+                   "earns_nothing": 0, "pct": None} for d in day_list}
+    rows: list = []
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "SELECT affiliate_url, created_at FROM link_cache "
+                "ORDER BY created_at DESC LIMIT 20000").fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+    for affiliate_url, created_at in rows:
+        cell = buckets.get(ist_day(created_at) if created_at else "")
+        if cell is None:
+            continue
+        cell["cached"] += 1
+        bucket, _route = url_money(str(affiliate_url or ""), links, our_tags)
+        if bucket in ("owned", "foreign_tag", "earns_nothing"):
+            cell[bucket] += 1
+    out = []
+    for day in day_list:
+        cell = buckets[day]
+        if cell["cached"]:
+            cell["pct"] = round(cell["owned"] * 100 / cell["cached"], 1)
+        out.append(cell)
+    return out
+
+
+def pipe_rows(rows, links: dict, our_tags: frozenset, target: str, source: str,
+              limit: int = 15) -> dict:
+    """Open ONE source -> channel pipe: the posts it actually sent, each with
+    its money verdict.
+
+    channel_conversion() counts the pipes; this shows the evidence inside one,
+    newest first, so "deals nunchi ElectroShelf ki vellina post lo mana tag
+    unda?" is answered per post - verdict, route, snippet, IST time - instead of
+    per fleet.
+    """
+    limit = max(1, min(100, int(limit or 15)))
+    want_target = normalize_target(target) or str(target or "")
+    want_source = source_id(source)
+    counts = {"sent": 0, "owned": 0, "foreign": 0, "nothing": 0}
+    out: list[dict] = []
+    for row in rows or []:
+        if row.get("status") != "sent" or row.get("error"):
+            continue
+        row_target = normalize_target(row.get("target")) or str(row.get("target") or "")
+        if row_target != want_target or source_id(row.get("source")) != want_source:
+            continue
+        text = row.get("text") or ""
+        bucket, route = post_money(text, links, our_tags)
+        counts["sent"] += 1
+        if bucket == "owned":
+            counts["owned"] += 1
+        elif bucket == "foreign_tag":
+            counts["foreign"] += 1
+        else:
+            counts["nothing"] += 1
+        if len(out) < limit:
+            created_at = float(row.get("created_at") or 0.0)
+            out.append({
+                "at": ist_text(created_at) if created_at else "",
+                "bucket": bucket,
+                "route": route,
+                "snippet": text.strip().split("\n", 1)[0][:90],
+                "urls": URL_RE.findall(text)[:3],
+            })
+    return {"target": want_target, "source": want_source, "rows": out,
+            "counts": counts, "capped": counts["sent"] > len(out)}
+
+
 def deal_quality(rows, index: dict, prices: dict[int, list[int]]) -> dict:
     """Per destination: how good were the deals it actually received?
 

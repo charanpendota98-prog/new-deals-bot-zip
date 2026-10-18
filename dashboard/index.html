@@ -144,8 +144,17 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <p class="muted">The converter's own book (<code>link_cache</code> + <code>owned_link_proofs</code>), each published link classified with the same verdicts the money report uses. <b>Converted</b> = our tag, our shortener, or a proof row. Read-only.</p>
 <div class="row" id="convstats"></div>
 <div id="convnote" class="muted"></div>
+<div id="convtrend" class="muted"></div>
 <div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Source link</th><th>Published as</th><th>Route</th><th>Verdict</th></tr></thead>
 <tbody id="convrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+</div>
+<div class="card" id="pipecard" style="display:none">
+<h2>Pipe <span id="pipename"></span></h2>
+<p class="muted">The posts this source actually sent to this channel, newest first, each with the same money verdict the report uses. Click any <b>converts:</b> chip on a channel row to open its pipe. Read-only.</p>
+<div id="pipecounts" class="row"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Post</th><th>Links</th><th>Route</th><th>Verdict</th></tr></thead>
+<tbody id="piperows"></tbody></table></div>
+<div id="pipenote" class="muted"></div>
 </div>
 <div class="card" id="cardstudio">
 <h2>Deal card studio</h2>
@@ -384,6 +393,13 @@ async function loadConversion(){
       +(t.earns_nothing??0)+' earn nothing.'
     : 'no cached links yet - the converter has not run in this database.')
     +(t.capped?' (totals capped at the newest 5000 rows)':'');
+  const trendBox=document.getElementById('convtrend');
+  const trend=data.trend||[];
+  if(trendBox){
+    trendBox.innerHTML=trend.length
+      ? '<b>converted per IST day:</b> '+trend.map(dayCell).join('')
+      : '';
+  }
   const rows=data.rows||[];
   const verdict={'owned':'<span class="badge ok">ours</span>',
     'foreign_tag':'<span class="badge bad">FOREIGN TAG</span>',
@@ -510,14 +526,63 @@ function renderMockButtons(buttons){
   }
 }
 let lastCat=null;
+function dayCell(day){
+  const pct=day.pct==null?0:day.pct;
+  const height=Math.max(2,Math.round(pct/5));
+  const title=day.day+': '+(day.cached||0)+' cached · '+(day.owned||0)+' ours'
+    +((day.foreign_tag||0)?' · '+day.foreign_tag+' FOREIGN':'');
+  return '<span class="sparkday" title="'+escapeHTML(title)+'" '
+    +'style="display:inline-block;text-align:center;margin-right:6px">'
+    +'<i style="display:block;width:10px;height:'+height+'px;margin:0 auto;'
+    +'background:'+((day.foreign_tag||0)?'#c62828':'#2e7d32')+';border-radius:2px"></i>'
+    +'<small>'+escapeHTML(String(day.day).slice(5))+'</small></span>';
+}
 function convLine(name){
   const conv=(lastCat&&lastCat.channel_conversion)||{};
   const per=conv[name];
   if(!per||!Object.keys(per).length) return '<div class="muted">no delivered posts in this window</div>';
-  return '<div>converts: '+Object.entries(per).map(([src,c])=>escapeHTML(src)+' '
-    +escapeHTML(c.owned)+'/'+escapeHTML(c.sent)+' ours'
+  return '<div>converts: '+Object.entries(per).map(([src,c])=>
+    '<button class="ghost" onclick="openPipe(\''+escapeHTML(name)+'\',\''+escapeHTML(src)+'\')">'
+    +escapeHTML(src)+' '+escapeHTML(c.owned)+'/'+escapeHTML(c.sent)+' ours'
     +(c.foreign?' · <span class="badge bad">'+escapeHTML(c.foreign)+' FOREIGN</span>':'')
-    +(c.nothing?' · '+escapeHTML(c.nothing)+' earn nothing':'')).join(' · ')+'</div>';
+    +(c.nothing?' · '+escapeHTML(c.nothing)+' earn nothing':'')+'</button>').join(' ')+'</div>';
+}
+async function openPipe(target,source){
+  const card=document.getElementById('pipecard');
+  card.style.display='block';
+  document.getElementById('pipename').textContent=target+' ← '+source;
+  const rows=document.getElementById('piperows');
+  const note=document.getElementById('pipenote');
+  const counts=document.getElementById('pipecounts');
+  rows.innerHTML='<tr><td colspan="5" class="muted">loading…</td></tr>';
+  note.textContent=''; counts.innerHTML='';
+  const hours=(document.getElementById('cathours')||{}).value||'168';
+  let data=null;
+  try{ data=await api('GET','/api/channel-pipe?limit=15&hours='+encodeURIComponent(hours)
+    +'&target='+encodeURIComponent(target)+'&source='+encodeURIComponent(source)); }
+  catch(error){
+    note.textContent='pipe view unavailable: '+String(error&&error.message||error);
+    return;
+  }
+  const c=data.counts||{};
+  const stat=(label,value)=>'<div class="stat"><b>'+escapeHTML(value??'—')+'</b><span>'
+    +escapeHTML(label)+'</span></div>';
+  counts.innerHTML=stat('sent',c.sent??0)+stat('ours',c.owned??0)
+    +stat('FOREIGN',c.foreign??0)+stat('earn nothing',c.nothing??0);
+  const verdict={'owned':'<span class="badge ok">ours</span>',
+    'foreign_tag':'<span class="badge bad">FOREIGN TAG</span>',
+    'unattributed':'<span class="badge warn">unattributed</span>',
+    'earns_nothing':'<span class="muted">earns nothing</span>'};
+  const list=data.rows||[];
+  rows.innerHTML=list.length?list.map(r=>'<tr><td class="muted">'+escapeHTML(r.at)+'</td>'
+    +'<td>'+escapeHTML(r.snippet||'(no text)')+'</td>'
+    +'<td class="muted">'+(r.urls||[]).map(escapeHTML).join('<br>')+'</td>'
+    +'<td class="muted">'+escapeHTML(r.route||'')+'</td>'
+    +'<td>'+(verdict[r.bucket]||escapeHTML(r.bucket))+'</td></tr>').join('')
+    :'<tr><td colspan="5" class="muted">no sent posts in this pipe inside the window</td></tr>';
+  note.textContent=(data.capped?'showing the newest '+list.length+' of '+c.sent+' sends. ':'')
+    +(data.db_exists?'':'(no database yet) ')+(data.ledger_error?('ledger: '+data.ledger_error):'');
+  if(card.scrollIntoView){ card.scrollIntoView({behavior:'smooth',block:'nearest'}); }
 }
 let waRows=[];
 function waKeyOptions(selected){

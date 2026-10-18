@@ -238,12 +238,12 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
-| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
-| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated) and the `whatsapp` section round-trip |
+| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
-| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, and the rest of the dashboard surviving a dead endpoint |
+| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
 | `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, and the forward plan agrees with channels.json + the env shelves |
 | `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
 | `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
@@ -1485,14 +1485,14 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `cc4bc33ff4f9bb00b23dc6a7a8dd6a7fc1193bfcb6f2d304c077490eb4912cd7` |
+| `dashboard/app.py` | `dcd10ddb0e17c7904242b4ce128b653a0ec813d7052219bcf081053bc0d1ac26` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `4ccd84a73b516c84d25bc430b8253766f67ee431ec6538c00e21ab7f084b8b84` |
+| `ops/category_report.py` | `b0d462a743c774c03950d2862f519e14c3947fc06ba836eb67bd9f0ec4860ee6` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
@@ -1520,10 +1520,10 @@ source snapshot:
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
-| `test_category_report.py` | `15c398ed0ca8cd66dd900ddfa0c0f27b546000756fe1c99ca75b49803b0631ef` |
-| `test_dashboard.py` | `9409e9946ec2d9a65a5ba4317bf8241658330ad101cbaa611ec5a927b7ac6424` |
+| `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
+| `test_dashboard.py` | `2297b790e1fb931ad72a843c4ec217d39373403e6f8dc1657d384e5992834e66` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
-| `test_dashboard_categories.cjs` | `0eb12150ff111b44fcb723a3d2ed40efb1bf94adebb21f7779bf0e8bcfdc89cd` |
+| `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
@@ -2054,7 +2054,17 @@ and an invite link is not a channel.
 OUR link, the ones riding a FOREIGN tag, the ones that earn nothing - and the
 channel list renders it on every dashboard row (`converts: deals 3/4 ours ·
 1 FOREIGN`), so "ee source nunchi ee channel ki convert ayi post avuthunda" is
-visible per pipe instead of one fleet-wide percentage. Rendering needs
+visible per pipe instead of one fleet-wide percentage.
+
+**Pipe drill + per-day conversion trend.** Every `converts:` chip on a channel
+row is a button: clicking it opens the **Pipe** card (`/api/channel-pipe`),
+which lists the posts that one source actually sent to that one channel -
+newest first, each with its own money verdict, route, snippet and IST stamp -
+so a pipe is never just a number. The Conversion card also grows a per-IST-day
+trend (`conversion_trend` over `link_cache`): one bar per day, zero days
+included, a foreign-tag day turning the bar red, because a single converted
+share can hide a converter that stopped carrying our tag yesterday. Rendering
+needs
 Pillow (`bestgaa/requirements.txt`); without it the studio still serves captions
 and says the card is unavailable.
 

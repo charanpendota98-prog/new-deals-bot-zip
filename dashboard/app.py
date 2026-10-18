@@ -695,8 +695,52 @@ async def api_link_conversion(request: web.Request):
         read = module.our_amazon_tags()
         tags = frozenset(read.get("bestgaa") or set()) | frozenset(read.get("bridge") or set())
         payload = module.link_conversion(conn, tags, limit=limit)
+        try:
+            days = max(1, min(30, int(request.query.get("days", "7"))))
+        except (TypeError, ValueError):
+            days = 7
+        payload["trend"] = module.conversion_trend(conn, tags, days=days)
     except Exception as exc:
         return web.json_response({"error": f"conversion view failed: {exc}"}, status=503)
+    finally:
+        if conn is not None:
+            conn.close()
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
+@require_token
+async def api_channel_pipe(request: web.Request):
+    """Open one source -> channel pipe: the posts it sent, each with its money
+    verdict. The channel list shows the pipe counts; this is the evidence
+    inside a single pipe, newest first. Read-only, mode=ro.
+    """
+    target = (request.query.get("target") or "").strip()
+    source = (request.query.get("source") or "").strip()
+    if not target or not source:
+        return web.json_response({"error": "target and source are required"}, status=400)
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "15"))))
+    except (TypeError, ValueError):
+        limit = 15
+    try:
+        hours = max(1, min(24 * 60, int(request.query.get("hours", "168"))))
+    except (TypeError, ValueError):
+        hours = 168
+    conn = read_only_db()
+    try:
+        module = load_category_report()
+        read = module.our_amazon_tags()
+        tags = frozenset(read.get("bestgaa") or set()) | frozenset(read.get("bridge") or set())
+        ledger = module.ledger_rows(conn, time.time() - hours * 3600)
+        links = module.link_index(conn) if conn is not None else {
+            "by_affiliate": {}, "by_source": {}, "proofs": {}}
+        payload = module.pipe_rows(ledger.get("rows") or [], links, tags,
+                                   target, source, limit=limit)
+        payload["hours"] = hours
+        payload["ledger_error"] = ledger.get("error") or ""
+    except Exception as exc:
+        return web.json_response({"error": f"pipe view failed: {exc}"}, status=503)
     finally:
         if conn is not None:
             conn.close()
@@ -784,6 +828,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/recent", api_recent)
     app.router.add_get("/api/categories", api_categories)
     app.router.add_get("/api/link-conversion", api_link_conversion)
+    app.router.add_get("/api/channel-pipe", api_channel_pipe)
     app.router.add_get("/api/post-buttons", api_post_buttons_get)
     app.router.add_put("/api/post-buttons", api_post_buttons_put)
     app.router.add_get("/api/card.png", api_card_png)

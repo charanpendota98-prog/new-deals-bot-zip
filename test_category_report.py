@@ -349,6 +349,73 @@ def test_channel_conversion_and_wa_intent():
               [f["kind"] for f in cr.findings(live)], [f["kind"] for f in cr.findings(live)])
 
 
+def test_pipe_drill_and_conversion_trend():
+    """One pipe opens to its posts; the converter's share gets a per-day line."""
+    print("\n== pipe drill + conversion trend ==")
+    with tempfile.TemporaryDirectory() as tmp:
+        db = make_money_db(Path(tmp) / "pipe.sqlite3", posts=[
+            ("ElectroShelf", "sent", "", 60,
+             f"Earbuds https://www.amazon.in/dp/B0OWN?tag={OUR_TAG}"),
+            ("ElectroShelf", "sent", "", 120,
+             f"Phone https://www.amazon.in/dp/B0THEIF?tag={STRANGER_TAG}"),
+            ("ElectroShelf", "skipped", "FloodWaitError", 200,
+             f"Never delivered https://www.amazon.in/dp/B0SKIP?tag={OUR_TAG}"),
+            ("StyleShelf", "sent", "", 90, "Kurta https://www.flipkart.com/kurta/p/itm123"),
+        ], links=[("https://amzn.lt/src", "https://www.amazon.in/dp/B0OWN?tag=" + OUR_TAG,
+                   "https://www.amazon.in/dp/B0OWN")])
+        import sqlite3 as sql
+        conn = sql.connect(db)
+        conn.row_factory = sql.Row
+        # age one cached link by two days so the trend has more than today
+        conn.execute("UPDATE link_cache SET created_at = created_at - 2 * 86400 "
+                     "WHERE source_url = 'https://amzn.lt/src'")
+        conn.commit()
+        tags = frozenset([OUR_TAG])          # OUR_TAG is a scalar; a bare
+        links = cr.link_index(conn)          # frozenset() would shred it to chars
+
+        trend = cr.conversion_trend(conn, tags, days=7)
+        check("the trend is one IST day per requested day, oldest first",
+              len(trend) == 7 and trend[-1]["day"] == cr.ist_day(time.time())
+              and trend[0]["day"] < trend[-1]["day"], [d["day"] for d in trend])
+        check("the aged cached link lands two days back, still counted as ours",
+              trend[-3]["cached"] == 1 and trend[-3]["owned"] == 1
+              and trend[-3]["pct"] == 100.0, trend[-3])
+        check("a day with nothing cached is a real zero day, not a gap",
+              trend[-2]["cached"] == 0 and trend[-2]["pct"] is None, trend[-2])
+        check("the trend never lies about days outside its window",
+              sum(d["cached"] for d in trend) == 1, trend)
+        check("the trend caps its window sanely",
+              len(cr.conversion_trend(conn, tags, days=0)) == 1
+              and len(cr.conversion_trend(conn, tags, days=999)) == 60, "clamped")
+
+        ledger = cr.ledger_rows(conn, time.time() - 24 * 3600)
+        pipe = cr.pipe_rows(ledger["rows"], links, tags, "ElectroShelf", "deals")
+        check("the pipe counts only what it actually sent",
+              pipe["counts"] == {"sent": 2, "owned": 1, "foreign": 1, "nothing": 0},
+              pipe["counts"])
+        check("skipped posts never open the pipe",
+              all("Never delivered" not in r["snippet"] for r in pipe["rows"]),
+              pipe["rows"])
+        check("each sent post carries its own verdict and route",
+              sorted(r["bucket"] for r in pipe["rows"]) == ["foreign_tag", "owned"]
+              and all(r["route"] for r in pipe["rows"]), pipe["rows"])
+        check("the post rows keep the snippet, the IST stamp and the URLs",
+              all(r["at"].endswith("IST") and r["snippet"] and r["urls"]
+                  for r in pipe["rows"]), pipe["rows"])
+        check("limit caps the rows but never the counts",
+              cr.pipe_rows(ledger["rows"], links, tags, "ElectroShelf", "deals",
+                           limit=1)["capped"] is True
+              and len(cr.pipe_rows(ledger["rows"], links, tags, "ElectroShelf",
+                                   "deals", limit=1)["rows"]) == 1, "capped")
+        check("a pipe that never ran says so instead of inventing posts",
+              cr.pipe_rows(ledger["rows"], links, tags, "ElectroShelf",
+                           "ghostsource")["counts"]["sent"] == 0, "empty")
+        check("target matching is case- and @-insensitive like the ledger",
+              cr.pipe_rows(ledger["rows"], links, tags, "@electroshelf",
+                           "deals")["counts"]["sent"] == 2, "normalized")
+        conn.close()
+
+
 def test_link_conversion():
     """"Mana links maruthunnaya?" - per link, from the converter's own book."""
     print("\n== link conversion: source link -> our link, with proof ==")
@@ -1657,6 +1724,7 @@ if __name__ == "__main__":
         test_drilldown()
         test_quality_and_sources()
         test_channel_conversion_and_wa_intent()
+        test_pipe_drill_and_conversion_trend()
         test_link_conversion()
         test_log_signals()
         test_findings()
