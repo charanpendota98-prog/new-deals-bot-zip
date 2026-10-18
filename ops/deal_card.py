@@ -305,18 +305,27 @@ def card_png(facts: dict, photo: bytes | None = None, width: int = CARD_WIDTH) -
     if price is not None:
         price_text = fonts.money(price)
         px = right_x + (pill_w + 22 if pill_w else 0)
+        # a lakhs-range price must never hang off the card either: shrink the
+        # big number until it fits the column (floor at 40pt, still huge)
+        while price_font.size > 40 and px + int(
+                draw.textlength(price_text, font=price_font)) > width - pad:
+            price_font = fonts.get("bold", price_font.size - 4)
         # the big number sits on the same line as the pill, baseline-aligned
         draw.text((px, y - 16), price_text, font=price_font, fill=INK)
         price_w = int(draw.textlength(price_text, font=price_font))
         mrp = facts.get("mrp")
         if mrp:
             mrp_text = f"M.R.P.: {fonts.money(mrp)}"
-            mx = px + price_w + 24
-            my = y - 16 + price_font.size - mrp_font.size - 6
+            mrp_w = int(draw.textlength(mrp_text, font=mrp_font))
+            mx, my, wrapped = price_mrp_layout(px, price_w, mrp_w, y,
+                                               price_font.size, mrp_font.size,
+                                               right_x, width, pad)
             draw.text((mx, my), mrp_text, font=mrp_font, fill=MUTED)
             box = draw.textbbox((mx, my), mrp_text, font=mrp_font)
             strike = (box[1] + box[3]) // 2
             draw.line([(box[0], strike), (box[2], strike)], fill=MUTED, width=2)
+            if wrapped:
+                y += int(mrp_font.size * 1.6)
     y += price_h + 12
 
     if coupon:
@@ -359,6 +368,24 @@ def load_photo(path_or_url: str) -> bytes | None:
     with contextlib.suppress(OSError):
         return candidate.read_bytes()
     return None
+
+
+def price_mrp_layout(px: int, price_w: int, mrp_w: int, y: int,
+                     price_size: int, mrp_size: int,
+                     right_x: int, width: int, pad: int) -> tuple[int, int, bool]:
+    """Where the struck MRP sits relative to the big price, and whether it wrapped.
+
+    A lakhs-range price makes the big number wide enough that an inline MRP
+    crosses the card's right margin - the buyer then sees "M.R.P" with no
+    number after it, or half a number, which reads exactly like "the price got
+    cut". When the inline fit would overflow, the MRP drops to its own line
+    under the big price; both numbers stay whole on the card.
+    """
+    mx = px + price_w + 24
+    my = y - 16 + price_size - mrp_size - 6
+    if mx + mrp_w <= width - pad:
+        return mx, my, False
+    return right_x, y + int(price_size * 0.72), True
 
 
 def money_text(amount, paise: bool = False) -> str:

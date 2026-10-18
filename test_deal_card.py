@@ -347,6 +347,14 @@ def main() -> int:
           and facts.deal_title("@ ₹270 only\nMixer grinder 750W") == "Mixer grinder 750W",
           facts.deal_title("Earbuds pro\nRs.1299/- only\nhttps://amzn.lt/z"))
 
+    print("the card keeps both numbers whole, even at lakhs-range prices")
+    mx, my, wrapped = card.price_mrp_layout(620, 330, 200, 200, 74, 27, 490, 1070, 32)
+    check("an MRP that would cross the right margin wraps to its own line",
+          wrapped is True and mx + 200 <= 1070 - 32 and my > 200, (mx, my, wrapped))
+    mx2, my2, wrapped2 = card.price_mrp_layout(500, 120, 160, 200, 74, 27, 490, 1070, 32)
+    check("a small price keeps the struck MRP inline on the same line",
+          wrapped2 is False and mx2 == 500 + 120 + 24, (mx2, my2, wrapped2))
+
     print(f"\ntest_deal_card: {PASSED} checks passed, {len(FAILURES)} failed")
     if FAILURES:
         for name in FAILURES:

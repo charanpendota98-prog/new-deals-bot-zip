@@ -244,7 +244,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
-| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount and a pure price line is never the title |
+| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount, a pure price line is never the title, and the card keeps both numbers whole at lakhs-range prices |
 | `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
 | `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
 | `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
@@ -1497,7 +1497,7 @@ source snapshot:
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
-| `ops/deal_card.py` | `9056562d86463b0df34bc4419b6b3628108fd76f273c3ae4c4fb079cfb787267` |
+| `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
 | `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
@@ -1527,7 +1527,7 @@ source snapshot:
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
-| `test_deal_card.py` | `19562cbff4aa2353cab27a002d65f45c241704d898c7b5dcf71bbe20b2d041b3` |
+| `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
 | `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
@@ -1991,7 +1991,10 @@ caption spelled `MRP`. `deal_title` also skips a pure price line
   installed font has no rupee glyph the card falls back to `Rs.` instead of a
   missing-glyph box (`Fonts.rupee` compares ₹ against a private-use codepoint),
   and emoji are stripped for the raster only — Telegram and WhatsApp render them
-  on the client, so captions keep them;
+  on the client, so captions keep them. A lakhs-range price shrinks until it fits
+  its column, and when the struck M.R.P. would run off the right edge it wraps to
+  its own line (`price_mrp_layout`) — a clipped "M.R.P" with half a number after
+  it reads exactly like "the price got cut", so neither number is ever clipped;
 * **writes one caption per surface** — telegram / whatsapp / premium / text —
   plain text, no markdown, because the bot sends with `parse_mode=None`;
 * **says where it would land** — `forward_plan()` lists every configured
