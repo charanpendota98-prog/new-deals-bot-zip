@@ -243,6 +243,8 @@ else
   printf '  CI installs jsdom, so this only skips on a fresh local checkout.\n'
 fi
 run 'EarnKaro conversion contract' "$PYTHON" test_earnkaro_conversion.py
+# The end-to-end guarantee: what a channel RECEIVES is provably our link.
+run 'post-link guarantee (real worker, audited output)' "$PYTHON" test_post_link_guarantee.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'

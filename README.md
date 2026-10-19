@@ -233,6 +233,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
 | `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
 | `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
+| `test_post_link_guarantee.py` | The end-to-end guarantee: the bytes a channel receives are audited, and every published link is provably ours (a stranger's link, a bare page and "our number on it" are all refused) |
 | `test_hypd_links.py` | HYPD creator-store links: verified Meesho only, our store, Bitly-shortened |
 | `test_category_classifier.py` | Shelf regressions plus exact Python/JS classifier decision parity |
 | `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
@@ -1524,7 +1525,7 @@ source snapshot:
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `329dbd3e1b68eeacd1ab8c08127fb166e5f947a331de7e87b6e662b38d86f8dc` |
+| `ops/test_all.sh` | `2d4f98562c26c0400c09e6507fc9580a35e18fa9ac764001ac98a7cdd5b8274f` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1546,6 +1547,7 @@ source snapshot:
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
 | `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
+| `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
@@ -1603,6 +1605,7 @@ read 211 against 232 actual checks.)
 | `test_earnkaro_conversion.py` | Converter response validation, identity-bound durable proof, native tag rotation, and the report/auditor's matching ownership rules. |
 | `test_best_copy.py` | Durable proof and strict link-audit regressions, alongside product-copy and fidelity checks. |
 | `test_duplicate_sim.py` | Real worker-path duplicate/recovery scenarios; fake converter output is persisted so the final provenance gate is still exercised. |
+| `test_post_link_guarantee.py` | The published output itself: the real worker runs in strict-all, the sent messages are recorded, and an independent audit proves every URL in them is our conversion (or our family/Amazon-tag/proven hop) — while a foreign tag, a bare page and our-number-only all fail. |
 | `node tg-wa-bridge/bridge.js --self-test` | Bridge provenance and routing contract, including link-derived category routing and ambiguous-link refusal. |
 
 `python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether
