@@ -36,12 +36,30 @@ What this file pins, and why each check exists:
     (before the API call and after it). Amazon /s? searches never touch the
     link cache - every search shares one canonical key, so caching would hand
     one search's link back for all the others.
+8.  AN OUTAGE IS A RETRY, NOT A REJECT (2026-10-19). A 5xx carrying the load
+    balancer's own words ("No server is available to handle this request") is
+    the one 5xx that is NOT datacenter-IP doubt: the converter hop or the
+    merchant page it points at has nothing behind it. It is re-probed, the
+    conversion is retried, a dead HOP is expanded back to the verified URL we
+    minted it from, and a post is held for its next attempt rather than
+    publishing a 503.
+9.  A LINK THAT ALREADY PAYS US IS NEVER DROPPED (2026-10-19, "chala miss
+    chesthunnav") - but only a REAL conversion counts: the URL must carry the
+    converter's affExtParam1 conversion id next to our affExtParam2 (shopsy.in
+    included). "Our number on somebody's long link" is not a commission (the
+    user's own warning), so a stamped-only page is refused, not published.
+10. TEN CHECKS BEFORE POSTING (2026-10-19). Every link in the final text is
+    verified for posting - provably ours, and open right now - up to
+    POST_VERIFY_ATTEMPTS (10) times. The happy path is one pass; the retries
+    only run while a link answers an outage/dead page, and a link that is not
+    ours is refused on the first pass (waiting cannot change whose link it is).
 """
 import asyncio
 import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="earnkaro-test-")
@@ -333,8 +351,11 @@ def test_echoed_destination_is_not_mistaken_for_a_conversion():
 
     # A direct Flipkart result can be genuine when the token's publisher is
     # explicitly present. Compaction must retain that attribution.
+    # The converter's full shape (2026-10-19): affid + affExtParam1 are what the
+    # commission is attributed on; affExtParam2 only names us inside it.
     direct = ("https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itm1234567890"
               "?lid=SESSIONNOISE123&marketplace=FLIPKART&pid=PRODUCTPID12345"
+              "&affid=deals101&cmpid=AFF_deals101&affExtParam1=ENKR20261019TEST"
               "&affExtParam2=5478322")
     source2 = "https://www.flipkart.com/boat-airdopes-141-tws-earbuds/p/itm1234567890?pid=PRODUCTPID12345"
     session2 = FakeSession([json.dumps({"success": 1, "data": direct})])
@@ -611,6 +632,358 @@ def test_datacenter_404_never_vetoes_conversion():
     check('status="fail" is refused like status=error', got is None, f"got={got!r}")
 
     bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+def test_service_outage_is_retried_never_published():
+    """USER REPORT 2026-10-19: "idlga vasthundi 503 Service Unavailable".
+
+    A posted link opened Shopsy's load balancer page:
+
+        503 Service Unavailable
+        No server is available to handle this request.
+
+    The probe treated EVERY 5xx as inconclusive ("our IP may be blocked") and
+    posted anyway, so the one 5xx that says the site has no backend was waved
+    through - the reader got a dead link. Three things must hold now:
+
+      1. the page is recognised, and only as a 5xx (a healthy 200 that merely
+         mentions "503" in its JavaScript is not an outage);
+      2. a bare 502 with none of those words is still inconclusive, so a
+         datacenter-IP block never costs a live deal;
+      3. the verdict is a RETRY: the deal is not dropped, and the hop/timeout
+         budget does not turn it back into "alive" through a 15-minute cache.
+    """
+    print("\n== a 503 with no server behind it is retried, never published ==")
+    page = ("<html><head><title>503 Service Unavailable</title></head><body>"
+            "<h1>503 Service Unavailable</h1>"
+            "<p>No server is available to handle this request.</p></body></html>")
+    check("the exact page the user clicked is recognised",
+          bot.looks_like_service_outage(503, page) is True, page[:60])
+    check("Apache's wording is recognised too",
+          bot.looks_like_service_outage(
+              503, "The server is temporarily unable to service your request") is True)
+    check("status decides: the same words on a 200 are not an outage",
+          bot.looks_like_service_outage(200, page) is False,
+          "a merchant bundle mentioning 503 must not veto its own page")
+    check("a bare 502 with no outage wording stays inconclusive",
+          bot.looks_like_service_outage(502, "<html>Bad Gateway</html>") is False)
+    check("a 403 bot block is not an outage",
+          bot.looks_like_service_outage(403, "forbidden") is False)
+    check("dead-page wording is unchanged (it is still a dead page, not an outage)",
+          bot.looks_broken_page(200, "Just a quick repair needed") is True
+          and bot.looks_like_service_outage(200, "Just a quick repair needed") is False)
+
+    old_sleep = bot.LINK_CHECK_RETRY_SLEEP_SECONDS
+    bot.LINK_CHECK_RETRY_SLEEP_SECONDS = 0
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+    try:
+        shop = "https://www.shopsy.in/flipzon-lipstick/p/itm5722ca2c8fa09"
+        # (a) The merchant page answers the outage: conversion RETRIES (raises a
+        # transient error) instead of dropping the deal or minting a dead link.
+        session = FakeSession([json.dumps({"success": 1, "data": "https://bitli.in/gv6qjCD"})],
+                              gets=[probe_page(bot.merchant_url(shop), 503, page)] * 2)
+        aff = LiveProbeAff(session)
+        raised = None
+        try:
+            asyncio.run(aff.convert(shop, False))
+        except Exception as exc:  # noqa: BLE001 - the retry contract is the point
+            raised = exc
+        check("a 503 merchant page makes the job RETRY, not vanish",
+              raised is not None and "service outage" in str(raised), repr(raised))
+        check("and no dead link is minted for it", len(session.posts) == 0,
+              f"posts={len(session.posts)}")
+        check("the outage verdict is remembered for that URL",
+              aff.link_outage(bot.merchant_url(shop)) is True, "outage flag missing")
+        check("an outage verdict is NOT cached for the usual 15 minutes",
+              aff._health.get(bot.merchant_url(shop)) is None, str(aff._health))
+
+        # (b) The hop the converter returned answers the outage: same contract -
+        # the attempt loop re-mints, so no 503 link is ever published and the
+        # conversion is not thrown away either.
+        session2 = FakeSession(
+            [json.dumps({"success": 1, "data": "https://bitli.in/gv6qjCD"})] * 3,
+            gets=[probe_page(bot.merchant_url(shop), 200, "a live product page")] +
+                 # one outage page per probe attempt, for every conversion attempt
+                 [probe_page("https://bitli.in/gv6qjCD", 503, page)] * 12)
+        aff2 = LiveProbeAff(session2)
+        raised2 = None
+        try:
+            asyncio.run(aff2.convert(shop, False))
+        except Exception as exc:  # noqa: BLE001
+            raised2 = exc
+        check("a 503 short hop retries the conversion instead of returning None",
+              raised2 is not None and "outage" in str(raised2).lower(), repr(raised2))
+        check("the outage retry really asked the API again",
+              len(session2.posts) >= 2, f"posts={len(session2.posts)}")
+
+        # (c) A minted hop is expanded back to the verified long URL, so the
+        # delivery-time repair can publish the destination instead of the hop.
+        class HopAff:
+            _short_to_long = {"https://bitli.in/gv6qjCD":
+                              "https://www.shopsy.in/x/p/itm1?pid=1&affExtParam2=5478322"}
+        check("a hop we minted expands to the URL behind it",
+              bot.short_url_destination(HopAff(), "https://bitli.in/gv6qjCD")
+              == "https://www.shopsy.in/x/p/itm1?pid=1&affExtParam2=5478322",
+              bot.short_url_destination(HopAff(), "https://bitli.in/gv6qjCD"))
+        check("a stranger's short link is never expanded (nothing to verify)",
+              bot.short_url_destination(HopAff(), "https://bitli.in/someoneelse") == "",
+              bot.short_url_destination(HopAff(), "https://bitli.in/someoneelse"))
+        check("a non-URL 'long' value is refused rather than published",
+              bot.short_url_destination({"https://bitli.in/x": "javascript:alert(1)"},
+                                        "https://bitli.in/x") == "",
+              bot.short_url_destination({"https://bitli.in/x": "javascript:alert(1)"},
+                                        "https://bitli.in/x"))
+
+        # (d) The pre-send gate re-probes only a STALE verdict: a seconds-old
+        # "alive" is reused (immediacy), while a job that sat in the queue - or
+        # a merchant that went down after render - cannot ride it onto the wire.
+        class CountingAff(LiveProbeAff):
+            def __init__(self, session):
+                super().__init__(session)
+                self.probes = 0
+
+            async def _probe_link(self, url):
+                self.probes += 1
+                return await super()._probe_link(url)
+
+        old_fresh = bot.PRESEND_FRESH_SECONDS
+        try:
+            bot.PRESEND_FRESH_SECONDS = 30
+            session3 = FakeSession([], gets=[probe_page("https://bitli.in/gv6qjCD", 200, "ok")])
+            aff3 = CountingAff(session3)
+            aff3._health["https://bitli.in/gv6qjCD"] = (time.time() - 60, False)
+            check("a verdict older than the window is re-probed before sending",
+                  asyncio.run(aff3.rendered_links_not_broken("https://bitli.in/gv6qjCD")) is True
+                  and aff3.probes == 1, f"probes={aff3.probes}")
+
+            session4 = FakeSession([])
+            aff4 = CountingAff(session4)
+            aff4._health["https://bitli.in/gv6qjCD"] = (time.time() - 2, True)
+            check("a seconds-old verdict is reused, so the common path pays no extra hop",
+                  asyncio.run(aff4.rendered_links_not_broken("https://bitli.in/gv6qjCD")) is True
+                  and aff4.probes == 0, f"probes={aff4.probes}")
+        finally:
+            bot.PRESEND_FRESH_SECONDS = old_fresh
+    finally:
+        bot.LINK_CHECK_RETRY_SLEEP_SECONDS = old_sleep
+        bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+# The user's own link, 2026-10-19 - a Shopsy page the converter minted for us.
+OUR_SHOPPY = (
+    "https://www.shopsy.in/flipzon-waterproof-liquid-matte-lipstick-combo-pack-4-red"
+    "/p/itm5722ca2c8fa09?lid=LSTXLPHE4UTJHX8PQAFYCTGJL&marketplace=FLIPKART"
+    "&pid=XLPHE4UTJHX8PQAF&src=ot&affid=deals101&cmpid=AFF_deals101"
+    "&affExtParam1=ENKR20261019A2241424426&affExtParam2=5478322")
+
+
+def test_a_link_that_already_pays_us_is_never_dropped():
+    """USER REPORT 2026-10-19: "chala miss chesthunnav" - these were the misses.
+
+    A source channel can carry a link that ALREADY has our publisher id on it
+    (the user pasted exactly one). When the converter has nothing to add - the
+    usual "Url not found in post!" - the old pipeline returned None, and a deal
+    whose link was already a paid link of ours disappeared from every channel.
+    Worse, shopsy.in was missing from EK_ATTRIBUTION_HOSTS, so the bot could not
+    even SEE that the id was ours.
+
+    The rule now: proven attribution on the URL wins. The deal posts with that
+    link. A stranger's id never qualifies.
+    """
+    print("\n== a link that already carries our publisher id is published, not dropped ==")
+    print("\n== (shopsy.in is part of the attributable Flipkart family) ==")
+    check("our publisher id is read from the token", bot.OUR_EK_ID == "5478322", bot.OUR_EK_ID)
+    check("the user's own Shopsy link is recognised as OURS",
+          bot.Store.has_native_owned_attribution(OUR_SHOPPY) is True, OUR_SHOPPY[:80])
+    check("the same page minted for a stranger is NOT ours",
+          bot.Store.has_native_owned_attribution(
+              OUR_SHOPPY.replace("affExtParam2=5478322", "affExtParam2=999999")) is False)
+    bare_shopsy = ("https://www.shopsy.in/flipzon-combo/p/itm5722ca2c8fa09"
+                   "?pid=XLPHE4UTJHX8PQAF")
+    check("a bare Shopsy page can be rebuilt with our publisher id",
+          "affExtParam2=5478322" in bot.attribute_with_our_publisher(bare_shopsy),
+          bot.attribute_with_our_publisher(bare_shopsy))
+    check("...and a foreign id on it is replaced, never carried",
+          "affExtParam2=999999" not in bot.attribute_with_our_publisher(
+              bare_shopsy + "&affExtParam2=999999"),
+          bot.attribute_with_our_publisher(bare_shopsy + "&affExtParam2=999999"))
+
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+    # (a) The converter answers "no campaign" - the commonest miss.
+    session = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                          gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live product")])
+    aff = LiveProbeAff(session)
+    result = asyncio.run(aff.convert(OUR_SHOPPY, False))
+    check("the converter really was asked (this is not a shortcut around it)",
+          len(session.posts) == 1, f"posts={len(session.posts)}")
+    check("a no-campaign answer keeps the deal, publishing OUR link",
+          bool(result) and result.affiliate == bot.clean_url(OUR_SHOPPY), repr(result))
+    check("and it is not published as an unmonetized page",
+          bool(result) and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("the product identity survives (no duplicate risk)",
+          bool(result) and result.deal_key == "PID:XLPHE4UTJHX8PQAF", repr(result))
+
+    # (b) The API is DOWN. A transient failure must not cost a deal whose link
+    # already pays us.
+    class DownAff(LiveProbeAff):
+        async def _earnkaro_link(self, *args, **kwargs):
+            raise RuntimeError("EarnKaro HTTP 503")
+
+    session2 = FakeSession([], gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live")])
+    result2 = asyncio.run(DownAff(session2).convert(OUR_SHOPPY, False))
+    check("an API outage still publishes the link that is already ours",
+          bool(result2) and result2.affiliate == bot.clean_url(OUR_SHOPPY), repr(result2))
+
+    # (c) Somebody else's page: never published as ours.
+    theirs = OUR_SHOPPY.replace("affExtParam2=5478322", "affExtParam2=999999")
+    # The link cache is keyed on the product id, so the row (a) wrote for OUR
+    # copy of this very product would answer for theirs. Clear it: the question
+    # here is what a FOREIGN page does on its own.
+    bot.store.conn.execute("DELETE FROM link_cache")
+    bot.store.conn.commit()
+    session3 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(theirs), 200, "live product")])
+    result3 = asyncio.run(LiveProbeAff(session3).convert(theirs, False))
+    check("a page carrying a FOREIGN publisher id is refused",
+          result3 is None, repr(result3))
+
+    # (c2) And with OUR row cached, the reader still never receives their id:
+    # one product, one cached conversion - ours.
+    session4 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live product")])
+    asyncio.run(LiveProbeAff(session4).convert(OUR_SHOPPY, False))
+    session5 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(theirs), 200, "live product")])
+    result5 = asyncio.run(LiveProbeAff(session5).convert(theirs, False))
+    check("a foreign copy of a product we already monetize resolves to OUR link",
+          bool(result5) and "affExtParam2=5478322" in result5.affiliate
+          and "affExtParam2=999999" not in result5.affiliate, repr(result5))
+
+    # (d) The audit and the bot agree on the same URL (one verdict, two tools).
+    sys.path.insert(0, str(Path(__file__).parent / "ops"))
+    import quality_audit as qa  # noqa: E402
+    check("the audit calls the user's link OUR-PUBLISHER",
+          qa.classify_link(OUR_SHOPPY, "", "5478322") == "our-publisher",
+          qa.classify_link(OUR_SHOPPY, "", "5478322"))
+    check("the audit calls the stranger's copy FOREIGN",
+          qa.classify_link(theirs, "", "5478322") == "foreign",
+          qa.classify_link(theirs, "", "5478322"))
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+def test_our_number_is_not_a_conversion_and_links_are_checked_before_posting():
+    """USER RULE 2026-10-19: "10 time check perefctga convert then post".
+
+    Two halves, both from the same sentence ("valla long link lo mana number
+    pedthe manaku vasthadi anukoku"):
+
+    A. OUR NUMBER IS NOT A CONVERSION. On the Flipkart family the commission is
+       attributed on affid+affExtParam1 (the click/conversion id); affExtParam2
+       only names us inside it. A page where somebody appended just
+       affExtParam2=<our id> records nothing, so it must never be treated - or
+       posted - as a link of ours.
+
+    B. TEN CHECKS BEFORE POSTING. Every link in the final text is verified for
+       posting (ours? open right now?) up to POST_VERIFY_ATTEMPTS times. The
+       happy path costs one pass; the passes only repeat while a link is still
+       answering an outage/dead page, and a link that is not ours is refused at
+       once (no amount of waiting changes whose link it is).
+    """
+    print("\n== our number alone is not a conversion, and links are checked 10x ==")
+    converted = ("https://www.flipkart.com/x/p/itm1?pid=1&affid=deals101"
+                 "&cmpid=AFF_deals101&affExtParam1=ENKR20261019TEST&affExtParam2=5478322")
+    stamped = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=5478322"
+    check("a converted Flipkart link (affid+affExtParam1+our id) is ours",
+          bot.Store.has_native_owned_attribution(converted) is True, converted)
+    check("the same page with ONLY our number appended is NOT ours",
+          bot.Store.has_native_owned_attribution(stamped) is False,
+          "our number alone must not count as a conversion")
+    check("and the reason names the missing conversion id",
+          "NO conversion id" in bot.conversion_signature_missing(stamped),
+          bot.conversion_signature_missing(stamped))
+    check("a converted link has nothing missing",
+          bot.conversion_signature_missing(converted) == "",
+          bot.conversion_signature_missing(converted))
+    check("Myntra is exempt (its converter shape carries no conversion id)",
+          bot.conversion_signature_missing(
+              "https://www.myntra.com/x/1/detail?affExtParam2=5478322") == "",
+          bot.conversion_signature_missing(
+              "https://www.myntra.com/x/1/detail?affExtParam2=5478322"))
+    bare = bot.merchant_url(converted)
+    stamped_by_us = bot.attribute_with_our_publisher(bare)
+    check("attribute_with_our_publisher still stamps the number",
+          "affExtParam2=5478322" in stamped_by_us, stamped_by_us)
+    check("...but stamping it is NOT ownership proof",
+          bot.Store.has_native_owned_attribution(stamped_by_us) is False,
+          "stamping our number must not create ownership")
+
+    # A stamped-only SOURCE link is not kept as "already ours" any more: it has
+    # to be converted (the converter is still asked first).
+    session = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                          gets=[probe_page(bot.merchant_url(stamped), 200, "live product")])
+    result = asyncio.run(LiveProbeAff(session).convert(stamped, False))
+    check("a stamped-only page is NOT kept as our link", result is None, repr(result))
+
+    # -------- B. the pre-post verification ---------------------------------
+    class VerifiedAff(LiveProbeAff):
+        """Ownership answered locally; only the health halves hit the session."""
+
+        def __init__(self, session, owned=True):
+            super().__init__(session)
+            self.owned = owned
+
+        async def link_is_proven_ours(self, url):
+            return (True, "test") if self.owned else (False, "no stored proof")
+
+    old_attempts, old_sleep = bot.POST_VERIFY_ATTEMPTS, bot.POST_VERIFY_SLEEP_SECONDS
+    bot.POST_VERIFY_ATTEMPTS, bot.POST_VERIFY_SLEEP_SECONDS = 10, 0
+    try:
+        url = "https://bitli.in/gv6qjCD"
+        # (1) healthy on the first look: exactly ONE pass, no waiting.
+        aff = VerifiedAff(FakeSession([], gets=[probe_page(url, 200, "ok")]))
+        urls, bad, passes = asyncio.run(aff.preflight_links(url))
+        check("a healthy link is verified once and posted",
+              urls == [url] and bad == {} and passes == 1, f"{bad} after {passes} pass(es)")
+
+        # (2) a 503 that clears: the post waits and then goes out verified.
+        # one outage page per internal probe attempt (LINK_CHECK_ATTEMPTS=2),
+        # then the host comes back for the next pre-post pass
+        aff2 = VerifiedAff(FakeSession([], gets=[
+            probe_page(url, 503, "503 Service Unavailable No server is available "
+                                 "to handle this request"),
+            probe_page(url, 503, "503 Service Unavailable No server is available "
+                                 "to handle this request"),
+            probe_page(url, 200, "ok")]))
+        urls2, bad2, passes2 = asyncio.run(aff2.preflight_links(url))
+        check("an outage is re-checked until the link answers, then the post goes",
+              urls2 == [url] and bad2 == {} and passes2 == 2,
+              f"{bad2} after {passes2} pass(es)")
+
+        # (3) never recovers: ten passes, then the caller is told.
+        class AlwaysDown(LiveProbeAff):
+            async def link_is_proven_ours(self, u):
+                return True, "test"
+
+            async def link_not_broken(self, u):
+                self._remember_outage(u)
+                return False
+
+            def link_outage(self, u):
+                return True
+
+        aff3 = AlwaysDown(FakeSession([]))
+        urls3, bad3, passes3 = asyncio.run(aff3.preflight_links(url))
+        check("a link that stays in outage is checked the full number of times",
+              passes3 == 10 and bad3.get(url) == "outage", f"{bad3} after {passes3} pass(es)")
+
+        # (4) not ours: refused immediately, no pointless waiting.
+        aff4 = VerifiedAff(FakeSession([], gets=[probe_page(url, 200, "ok")]), owned=False)
+        urls4, bad4, passes4 = asyncio.run(aff4.preflight_links(url))
+        check("a link that is not ours is refused on the first pass",
+              bad4.get(url) == "unowned" and passes4 == 1,
+              f"{bad4} after {passes4} pass(es)")
+    finally:
+        bot.POST_VERIFY_ATTEMPTS, bot.POST_VERIFY_SLEEP_SECONDS = old_attempts, old_sleep
 
 
 def test_search_links_never_touch_the_cache():
@@ -1646,6 +2019,9 @@ def main():
     test_unknown_affiliate_domain_is_verified_or_refused()
     test_native_search_link_shortened_like_product()
     test_datacenter_404_never_vetoes_conversion()
+    test_service_outage_is_retried_never_published()
+    test_a_link_that_already_pays_us_is_never_dropped()
+    test_our_number_is_not_a_conversion_and_links_are_checked_before_posting()
     test_search_links_never_touch_the_cache()
     test_owned_link_proofs_are_bound_to_active_identity()
     test_token_claims()

@@ -176,6 +176,75 @@ class HalfDeadAffiliate(FakeAffiliate):
         return "DEAD" not in (text or "")
 
 
+SHORT_HOP = "https://bitli.in/gv6qjCD"
+
+
+class OutageHopAffiliate(FakeAffiliate):
+    """The short hop WE minted answers 503; the product page behind it is fine.
+
+    USER REPORT 2026-10-19 ("idlga vasthundi 503 Service Unavailable"): the
+    published link opened Shopsy's load balancer page - no server behind it.
+    A dead HOP is not a dead product: the verified long URL must be published
+    in its place, and the deal must still arrive on every channel.
+    """
+
+    def __init__(self):
+        super().__init__(link=SHORT_HOP, deal_key="ASIN:B0SIMPRODUCT")
+        self._short_to_long = {SHORT_HOP: OUR_LINK}
+
+    async def link_not_broken(self, url):
+        return bot.clean_url(url) != SHORT_HOP
+
+    async def rendered_links_not_broken(self, text):
+        return SHORT_HOP not in (text or "")
+
+    def link_outage(self, url):
+        return bot.clean_url(url) == SHORT_HOP
+
+
+class OutageOnlyAffiliate(FakeAffiliate):
+    """Every destination answers the outage page, and there is nothing to fall back to."""
+
+    async def link_not_broken(self, url):
+        return False
+
+    async def rendered_links_not_broken(self, text):
+        return False
+
+    def link_outage(self, url):
+        return True
+
+
+class PreflightAffiliate(FakeAffiliate):
+    """A post with two links: one proven ours, one the preflight refuses.
+
+    USER RULE 2026-10-19 ("10 time check ... then post"): the last thing the
+    worker does is verify every link - is it OURS, does it open - before the
+    post leaves. A link that fails ownership is dropped from the copy; a post
+    whose every link fails is skipped instead of being published with a link
+    nobody can prove pays us.
+    """
+
+    OURS = "https://www.amazon.in/dp/B0PREFLIGHT01?tag=mama086-21"
+    BAD = "https://www.amazon.in/dp/B0PREFLIGHT02?tag=mama086-21"
+
+    def __init__(self, all_bad: bool = False):
+        super().__init__(link=self.OURS, deal_key="ASIN:B0PREFLIGHT01")
+        self.all_bad = all_bad
+
+    async def convert(self, source, multi_link, resolved=None):
+        link = self.BAD if self.all_bad or "BADLINK" in (source or "") else self.OURS
+        key = "ASIN:B0PREFLIGHT02" if link == self.BAD else "ASIN:B0PREFLIGHT01"
+        result = bot.LinkResult(source, link.split("?")[0], link, key)
+        await self.cache_link(result.source, result.affiliate, result.resolved, result.deal_key)
+        return result
+
+    async def preflight_links(self, text, require_ours=True):
+        urls = list(dict.fromkeys(bot.URL_RE.findall(text or "")))
+        bad = {url: "unowned" for url in urls if self.all_bad or "B0PREFLIGHT02" in url}
+        return urls, bad, 1
+
+
 class UnresolvableAffiliate:
     """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
     sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
@@ -597,6 +666,43 @@ def test_scenarios():
         finally:
             bot.DROP_DEAD_LINKS = old_drop
 
+        # ---- S9c: a 503 hop is not a dead product (2026-10-19) ----------------
+        print("\n== S9c: the short hop answers 503, the product page does not ==")
+        try:
+            bot.DROP_DEAD_LINKS = False
+            store, client, sends, _ = await scenario(
+                "s9c", {(-1009032, 1603): FakeMsg(lizol, 1603)},
+                [(-1009032, 1603, lizol)], 1, affiliate=OutageHopAffiliate())
+            joined = "\n".join(text for texts in sends.values() for text in texts)
+            check("[S9c] every routed channel still got the post",
+                  bool(sends) and all(texts for texts in sends.values()),
+                  str({name: len(v) for name, v in sends.items()}))
+            check("[S9c] the hop that answers 503 is NOT published",
+                  "bitli.in/gv6qjCD" not in joined, joined[:200])
+            check("[S9c] the verified destination behind it is published instead",
+                  OUR_LINK in joined, joined[:200])
+        finally:
+            bot.DROP_DEAD_LINKS = old_drop
+
+        # ---- S9d: nothing behind the hop -> retry, never publish the 503 ------
+        print("\n== S9d: every destination answers 503 -> the job waits, nothing dead goes out ==")
+        try:
+            bot.DROP_DEAD_LINKS = False
+            store, client, sends_out, _ = await scenario(
+                "s9d", {(-1009033, 1604): FakeMsg(lizol, 1604)},
+                [(-1009033, 1604, lizol)], 1, affiliate=OutageOnlyAffiliate())
+            check("[S9d] no channel receives a link that is answering 503",
+                  not sends_out, str({name: len(v) for name, v in sends_out.items()}))
+            status, attempts, last_error = store.conn.execute(
+                "SELECT status, attempts, last_error FROM queue").fetchone()
+            check("[S9d] the job is REQUEUED for its next attempt, not dropped",
+                  status == "pending" and attempts == 1,
+                  f"status={status!r} attempts={attempts!r}")
+            check("[S9d] the stored error names the outage so the log explains it",
+                  "service-outage" in (last_error or ""), str(last_error)[:160])
+        finally:
+            bot.DROP_DEAD_LINKS = old_drop
+
         # ---- S10: our own channel link, once, on top - and nothing else of ours ----
         print("\n== S10: the top family link ==")
         text_a = deal("899", "55")
@@ -757,6 +863,33 @@ def test_scenarios():
                   body_b.strip() == stored_copy.strip(), body_b[:120])
         st13b = store.conn.execute("select status, last_error from queue").fetchone()
         check("[S13b] no JOB FAIL, the row is 'done'", st13b[0] == "done", str(tuple(st13b)))
+        # ---- S15: the 10x preflight drops a link that is not ours --------------
+        print("\n== S15: a link that is not provably ours is never published ==")
+        mixed = ("Two deals in one post\n"
+                 "1) Steel Bottle  \u20b9299 https://amzn.to/BADLINK02\n"
+                 "2) Cotton Towel  \u20b9199 https://amzn.to/GOODLINK02")
+        store, client, sends, _ = await scenario(
+            "s15a", {(-1009050, 1801): FakeMsg(mixed, 1801)}, [(-1009050, 1801, mixed)], 1,
+            affiliate=PreflightAffiliate())
+        bodies = [text for texts in sends.values() for text in texts]
+        check("[S15a] the post still goes out (one refused link does not kill the deal)",
+              bool(bodies), str({k: len(v) for k, v in sends.items()}))
+        joined = "\n".join(bodies)
+        check("[S15a] the unverified link is not in what the channel received",
+              "B0PREFLIGHT02" not in joined, joined[:220])
+        check("[S15a] the verified link is", "B0PREFLIGHT01" in joined, joined[:220])
+        st15 = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
+        check("[S15a] the job finished clean", st15[0] == "done", str(tuple(st15)))
+
+        store, client, sends_all, _ = await scenario(
+            "s15b", {(-1009051, 1802): FakeMsg(mixed, 1802)}, [(-1009051, 1802, mixed)], 1,
+            affiliate=PreflightAffiliate(all_bad=True))
+        check("[S15b] a post whose every link is unverified does not go out",
+              not sends_all, str({k: len(v) for k, v in sends_all.items()}))
+        st15b = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
+        check("[S15b] it is closed as a skip and the reason names ownership",
+              st15b[0] == "done" and "ownership" in (st15b[1] or ""), str(tuple(st15b)))
+
         # ---- S14: a caption/photo post whose source message is gone stays honest -----
         # No link and no media left to show means it is not a deal post any more, and the
         # pinned rule is that a photo post needs BOTH media and deal terms. Nothing is

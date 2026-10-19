@@ -23,7 +23,9 @@ account-bound durable proof is treated as evidence that a link earns for us.
                EK HTTP/NETWORK/FALLBACK, HYPD LINK, HYPD MISSING, Bitly, plus the
                link-health markers that answer "will this click pay us?" -
                LINK ATTRIBUTED, AMAZON LINK SHORTENED, AMAZON SHORT RESOLVED/CUT,
-               DEGRADED POST, and the bridge's provenance rescue/cut lines.
+               DEGRADED POST, LINK OUTAGE / SHORT LINK REPAIRED / OUR LINK KEPT
+               (2026-10-19: a 503 stops a post, it is not published), and the
+               bridge's provenance rescue/cut lines.
   VERDICT      one line per route: WORKING / NEEDS ATTENTION / IDLE, plus the
                exact command for anything that needs attention.
 
@@ -126,6 +128,16 @@ LOG_MARKERS = (
     ("AMAZON SHORT REFUSED", "an Amazon short link was refused as a destination"),
     ("DEGRADED POST", "the API never answered: trusted merchant links were posted "
                       "(each one attributed)"),
+    # 2026-10-19. An outage is a retry, and a link that already pays us is kept -
+    # both are answers to "why did this deal not use a freshly minted link?".
+    ("LINK OUTAGE", "the merchant/hop answered an explicit service outage (503 with "
+                    "the load balancer's own words): the post is RETRIED, never "
+                    "published with a dead link"),
+    ("SHORT LINK REPAIRED", "the short hop we minted answered dead/503, so the "
+                            "verified destination behind it was published instead"),
+    ("OUR LINK KEPT", "the source link already carried OUR publisher id and the "
+                      "converter had nothing to add: the deal posted with it "
+                      "instead of being dropped"),
     ("LINK DROPPED", "a link that never monetizes was cut; the deal still posted"),
     # WhatsApp bridge (lower case on purpose - the bridge logs them that way).
     ("provenance rescue", "the bridge resolved a stranger's wrapper to the merchant "
@@ -664,6 +676,9 @@ def main() -> int:
                                   ("AMAZON LINK SHORTENED", "Amazon link(s) shortened"),
                                   ("AMAZON SHORT RESOLVED", "Amazon short code(s) resolved"),
                                   ("AMAZON SHORT CUT", "Amazon short code(s) cut"),
+                                  ("SHORT LINK REPAIRED", "hop(s) repaired to the "
+                                                          "verified destination"),
+                                  ("OUR LINK KEPT", "deal(s) kept on our own link"),
                                   ("DEGRADED POST", "degraded post(s) attributed")):
                 count = (lg_rep.get("markers") or {}).get(marker, {}).get("count")
                 if count:

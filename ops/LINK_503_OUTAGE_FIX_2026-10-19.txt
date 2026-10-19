@@ -1,0 +1,201 @@
+LINK 503 / SERVICE-OUTAGE FIX  -  2026-10-19
+============================================
+
+WHAT THE USER SAID
+------------------
+    "<shopsy product url> idi manadenaa"          (is this link ours?)
+    "idlga vasthudni 503 Service Unavailable
+     No server is available to handle this request."
+    "perefctga change cheyatleduaa enti"          (why is this still not fixed?)
+
+Two questions, answered in order.
+
+
+1. "IDI MANADENAA?"  -  YES, THAT LINK IS OURS
+-----------------------------------------------
+    https://www.shopsy.in/flipzon-.../p/itm5722ca2c8fa09
+        ?lid=...&marketplace=FLIPKART&pid=XLPHE4UTJHX8PQAF
+        &affid=deals101&cmpid=AFF_deals101
+        &affExtParam1=ENKR20261019A2241424426&affExtParam2=5478322
+
+`affExtParam2=5478322` is OUR EarnKaro publisher id - the field Flipkart pays
+on. `affid=deals101` / `cmpid=AFF_deals101` are the AFFILIATE ACCOUNT's own
+routing, and `affExtParam1=ENKR...` is this conversion's id. None of them may
+ever be stripped: they are the route the money travels (see the note in
+LINK_PERFECTION_2026-10-04.txt, section 9).
+
+One command, no database, no token:
+
+    python3 ops/quality_audit.py --publisher 5478322 --tag "" \
+        --check-url "<the url>"
+
+    OUR-PUBLISHER  https://www.shopsy.in/...
+                   reason: ours - our id/tag/short link is on it
+
+A short link answered by the same command as FOREIGN is the honest answer
+("an affiliate/network-looking hostname is not proof of ownership") - the
+ownership of a bitli.in code lives in the link cache / owned_link_proofs, not
+in the string itself.
+
+
+2. WHY 503 KEPT GETTING THROUGH  -  THE REAL BUG
+------------------------------------------------
+Shopsy/Flipkart behind their load balancer answer, under load:
+
+    503 Service Unavailable
+    No server is available to handle this request.
+
+The health probe (`_probe_link`) only had two outcomes: "dead" (the page's own
+dead words: repair page, "no longer available") and "inconclusive", and the
+second one meant POST ANYWAY. Every 5xx was deliberately inconclusive, because
+Amazon/Flipkart also serve 404/repair pages to a DATACENTER IP for products that
+are perfectly alive for customers - a rule added on 2026-10-11 after "mana links
+ravatledu". The side effect was that the one 5xx that says the site has no
+backend at all ("No server is available...") was treated as doubt and published.
+The user clicked our post and got exactly that page.
+
+Nothing about that page is doubt: it is the hop or the host saying nothing is
+listening right now.
+
+
+WHAT CHANGED
+------------
+a) `looks_like_service_outage(status, body)` - new, and it decides on the STATUS
+   as well as the words: a 5xx carrying the load balancer's own sentence
+   ("No server is available to handle this request", "503 Service Unavailable",
+   "The server is temporarily unable to service your request"). A 200 page that
+   merely mentions "503" in its JavaScript is never an outage, and a bare
+   500/502/504 with none of those words stays inconclusive exactly as before, so
+   the datacenter-IP protection is untouched.
+
+b) The verdict is a RETRY, not a rejection. `link_not_broken` still returns a
+   bool, and `link_outage(url)` says which kind of "no" it was:
+     * conversion-time merchant 503 -> the job is requeued (RuntimeError),
+       no link is minted for a page nobody can open, and the deal is not thrown
+       away either;
+     * the converter's own short hop 503s -> the SAME attempt loop re-mints the
+       link (a fresh code usually lands on a healthy node) and, if the outage
+       outlasts the attempts, the job goes back to its retry schedule;
+     * pre-send 503 on the only link -> the post waits for its next attempt
+       instead of publishing a dead link. On the last attempt the destination is
+       dropped and the deal still goes out (`LINK OUTAGE` in the log).
+
+c) A dead HOP is not a dead product. Every short link this build mints is
+   remembered with the long URL behind it (`_short_to_long`), and the pre-send
+   pass now expands a hop that answers dead/503 back to that verified URL:
+
+       SHORT LINK REPAIRED | queue=1 https://bitli.in/xxxx answers as a
+       dead/service-outage hop; publishing the verified destination instead
+
+   A SOURCE's own short link is deliberately never expanded - we never verified
+   where it goes.
+
+d) The outage verdict is not cached for the usual 15 minutes
+   (`LINK_OUTAGE_CACHE_SECONDS=45`), so the retry that follows really probes
+   again instead of re-reading a stale "down".
+
+e) The pre-send pass re-probes a verdict older than `PRESEND_FRESH_SECONDS`
+   (30s) instead of trusting the render-time "alive"; a seconds-old verdict is
+   still reused, so the normal path pays no extra round trip and posting stays
+   immediate.
+
+
+3. BONUS: THE MISSES THAT WERE NOT 503 AT ALL
+------------------------------------------------
+While proving the link above the second complaint ("chala miss chesthunnav")
+turned out to have its own cause, found in the same audit:
+
+   * `shopsy.in` was missing from EK_ATTRIBUTION_HOSTS (bot) and from the same
+     tuple in ops/quality_audit.py. Consequence: a Shopsy page that ALREADY
+     carried our affExtParam2 was not recognised as ours at all - the final
+     provenance gate would refuse it - and a bare Shopsy page could never be
+     rebuilt with our id. Shopsy is Flipkart's own marketplace and the converter
+     mints the identical shape on it (the user's link is the proof), so the host
+     is now listed. The id check itself is unchanged: a foreign affExtParam2 is
+     still refused everywhere.
+
+   * A link that ALREADY pays us was still dropped when the converter had
+     nothing to add ("Url not found in post!" is its commonest answer) or when
+     the API was down. convert() now keeps it:
+
+         OUR LINK KEPT | www.shopsy.in already carries our publisher id - the
+         converter had nothing to add, so the verified link is published as-is
+         instead of losing the deal
+
+     It is the same product, the commission is still ours, and the product id
+     (PID:...) is preserved, so dedup is unaffected. This is a FALLBACK: the
+     converter is still asked first.
+
+4. "OUR NUMBER ON THEIR LONG LINK" IS NOT A COMMISSION (same day, same rule)
+-----------------------------------------------------------------------------
+    USER: "valla long link lo mana number pedthe manaku vasthadi anukoku correctga
+           mana link ah kada 10 time scheck perefctga convert then post"
+
+Correct, and the code now says so out loud. On the Flipkart family the click is
+attributed on the pair the network mints:
+
+    affid=<account> & affExtParam1=<click/conversion id>   <- the money
+    affExtParam2=<publisher>                               <- our sub-id inside it
+
+`affExtParam2=<our id>` alone is only a NUMBER: no conversion is recorded, so
+the page earns nothing. That is why attribute_with_our_publisher() (which can
+only append the number) is no longer ownership proof anywhere:
+
+  * Store.has_native_owned_attribution() - and the same rule in
+    ops/quality_audit.py - now require the conversion id on flipkart.com and
+    shopsy.in. A stamped-only page is reported as UNATTRIBUTED ("carries our
+    publisher id but NO conversion id"), never as our-publisher.
+  * "OUR LINK KEPT" (section 3) therefore only keeps links that are REAL
+    conversions. A stamped-only source link is converted like any other.
+  * ops/earnkaro_check.py prints the same warning on the link it inspects.
+
+5. TEN CHECKS BEFORE POSTING ("10 time scheck ... then post")
+-------------------------------------------------------------
+Right before delivery, every link in the final text is verified for POSTING:
+
+    is it provably OURS?   native tag / conversion id + our publisher /
+                           a converted hop with a stored proof / our HYPD link
+    does it open NOW?      a fresh probe (the render-time verdict is not reused)
+
+    POST_VERIFY_ATTEMPTS=10     passes (the happy path stops at the first clean
+                                one, so a healthy post costs a single check)
+    POST_VERIFY_SLEEP_SECONDS=2 pause between passes
+
+Outcomes, in the log:
+
+    POST VERIFY | pass 3/10: 1 link(s) not ready (outage); re-checking ...
+    LINK NOT OURS | refusing to publish 1 unverified link(s): <url>
+        -> that link is dropped from the copy, the rest of the deal still posts
+    SKIP | every link is unverified ownership (not our conversion)
+        -> nothing is published under somebody else's guess
+
+HOW TO CHECK IT
+---------------
+    python3 test_earnkaro_conversion.py     # outage detection + retry contract
+    python3 test_duplicate_sim.py           # delivery: hop repaired / post held
+
+Both are in `ops/test_all.sh` (249 and 400+ checks). Live operators get these
+log lines now:
+
+    LINK OUTAGE | status=503 attempt 1/2 | the host has no server behind it
+                  right now (retried, never published): https://...
+    LINK NOT OURS | refusing to publish N unverified link(s): https://...
+    POST VERIFY | pass 3/10: N link(s) not ready (outage); re-checking ...
+    SHORT LINK REPAIRED | queue=.. <hop> -> <verified destination>
+    OUR LINK KEPT | <host> already carries our publisher id ...
+    LINK OUTAGE | queue=.. last attempt: dropped N destination(s) answering 503
+    JOB FAIL .. delivery retry required: N destination(s) answered a service-
+                  outage page (503)
+
+What a reader gets from this machine, right now (a 503 is usually seconds long,
+so this is a snapshot, not a resurrection):
+
+    curl -s -o /dev/null -w '%{http_code}\n' -A 'Mozilla/5.0' -L '<url>'
+
+    200  the hop and the product page are fine
+    503  the outage the bot now refuses to publish (it retries the job instead)
+
+Knobs (all optional, defaults shown):
+    LINK_CHECK_ATTEMPTS=2            LINK_CHECK_RETRY_SLEEP_SECONDS=0.4
+    LINK_OUTAGE_CACHE_SECONDS=45     PRESEND_FRESH_SECONDS=30
+    PRESEND_CHECK_BUDGET_SECONDS=6   DROP_DEAD_LINKS=false

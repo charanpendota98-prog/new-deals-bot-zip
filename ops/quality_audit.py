@@ -102,7 +102,29 @@ def link_host(url: str) -> str:
 # published WITHOUT it is not "a clean merchant page kept on purpose": it is a
 # link that opens the product and pays nobody, and it can be fixed. Kept in one
 # place so the count and the bot's own stamping rule stay in step.
-EK_ATTRIBUTION_HOSTS = ("flipkart.com", "myntra.com")
+# shopsy.in joined on 2026-10-19: the converter mints the same Flipkart shape
+# on it (?affid=..&affExtParam1=ENKR..&affExtParam2=<publisher>), so the
+# audit must draw the same line the bot does - see main_bot_new.py.
+EK_ATTRIBUTION_HOSTS = ("flipkart.com", "shopsy.in", "myntra.com")
+# USER RULE 2026-10-19 ("valla long link lo mana number pedthe manaku vasthadi
+# anukoku"): on the Flipkart family the money is attributed on affid+affExtParam1
+# (the click/conversion id); affExtParam2 is only the sub-id. A page carrying our
+# affExtParam2 with NO conversion id is therefore NOT earning - it is the same
+# "product opens, nobody is paid" finding as a bare page, just harder to see.
+# myntra.com is exempt: the converter's Myntra shape has only been seen with
+# affExtParam2, so demanding a conversion id there would flag real links.
+EK_CONVERSION_SIGNATURE_HOSTS = ("flipkart.com", "shopsy.in")
+
+
+def _conversion_signature_missing(url: str) -> str:
+    """'' when a Flipkart-family URL carries a conversion id, else the reason."""
+    host = link_host(url)
+    if not any(host == h or host.endswith("." + h) for h in EK_CONVERSION_SIGNATURE_HOSTS):
+        return ""
+    if any(value.strip() for value in _query_pairs(url).get("affextparam1", [])):
+        return ""
+    return ("carries our publisher id but NO conversion id (affExtParam1) - Flipkart pays on "
+            "the affid+affExtParam1 pair, so this page earns NOTHING")
 SERVICE_OFFER_DOMAINS = (
     "zomato.com", "zomato.in", "zom.to", "swiggy.com", "swiggy.in",
     "zepto.com", "dominos.in", "pizzahut.co.in", "pizzahut.com",
@@ -145,7 +167,10 @@ def why_unattributed(url: str, our_publisher: str = "",
     pairs = _query_pairs(url)
     values = [v for v in pairs.get("affextparam2", []) if v]
     if our_publisher in values:
-        return None  # already ours
+        # Our NUMBER alone is not a conversion (2026-10-19): without the
+        # conversion id the click records nothing, so the page is still a finding.
+        missing = _conversion_signature_missing(url)
+        return missing or None
     foreign = [(key, v) for key in FOREIGN_ATTRIBUTION_PARAMS
                for v in pairs.get(key, []) if v and v != our_publisher]
     if not foreign:
@@ -173,7 +198,9 @@ def _has_native_owned_attribution(url: str, our_tag: str = "",
                              for domain in EK_ATTRIBUTION_HOSTS):
         publisher_ids = [value.strip() for value in pairs.get("affextparam2", [])
                          if value.strip()]
-        return bool(publisher_ids) and all(value == our_publisher for value in publisher_ids)
+        if not (publisher_ids and all(value == our_publisher for value in publisher_ids)):
+            return False
+        return not _conversion_signature_missing(url)
     return False
 
 
@@ -210,7 +237,8 @@ def why_not_our_link(url: str, our_tag: str = "", our_publisher: str = "",
     publisher_ids = [value.strip() for value in pairs.get("affextparam2", []) if value.strip()]
     if publisher_ids:
         if our_publisher and all(value == our_publisher for value in publisher_ids):
-            return None
+            # ...but only if the conversion id is there too (2026-10-19).
+            return _conversion_signature_missing(url) or None
         return "the page carries a foreign or unconfigured EarnKaro publisher id"
     if tags:
         return "tagged to somebody else or an unverified affiliate account (%s)" % \

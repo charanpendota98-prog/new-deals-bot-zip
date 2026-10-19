@@ -131,6 +131,7 @@ compiled and linted there too):
 | `IMMEDIACY_DEDUP_FIX_NOTES.txt` | v18.3: a source deleting its own post must not take our deal with it, plus the immediacy/dedup fixes |
 | `LATEST_ROUTING_NOTES.txt` | Source → non-tricks main target routing as of 2026-08-19 |
 | `LINK_PERFECTION_2026-10-04.txt` | Link perfection, unknown redirect domains, unattributed links, Amazon short links (v18.6) |
+| `LINK_503_OUTAGE_FIX_2026-10-19.txt` | 2026-10-19 "idi manadenaa" + "503 Service Unavailable": whose link it is, and why an explicit upstream outage is now retried instead of published |
 | `SHOPPING_CHANNEL_AND_LIST_FIX_NOTES.txt` | 2026-09-05 "anni fix cheyu, motham" round: four complaints, four fixes |
 | `WA_RECONNECT_STORM_FIX_NOTES.txt` | 2026-09-11 WhatsApp reconnect storm (`status:408` loop) that took the channel down |
 | `WHATSAPP_MEDIA_FIX_NOTES.txt` | 2026-08-22 WhatsApp channel media/posting fix. Its trailing hash list predates this build and is stale |
@@ -232,6 +233,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
 | `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
 | `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
+| `test_post_link_guarantee.py` | The end-to-end guarantee: the bytes a channel receives are audited, and every published link is provably ours (a stranger's link, a bare page and "our number on it" are all refused) |
 | `test_hypd_links.py` | HYPD creator-store links: verified Meesho only, our store, Bitly-shortened |
 | `test_category_classifier.py` | Shelf regressions plus exact Python/JS classifier decision parity |
 | `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
@@ -1480,7 +1482,7 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `bf9ba8fc331b801b68676c543729dea5745fa44f4bb68b4053e7aa5f6ede6600` |
+| `bestgaa/main_bot_new.py` (v19.0) | `c84fdb97d4ebfe96a851cf325cf927975ccf3522841e016773112c986d18adf8` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1503,7 +1505,7 @@ source snapshot:
 | `ops/category_report.py` | `b0d462a743c774c03950d2862f519e14c3947fc06ba836eb67bd9f0ec4860ee6` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
-| `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
+| `ops/conversion_report.py` | `23f813366f4129104762717a2c956eae0669a906ce0ff391bad1e129d6f9308d` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
 | `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
@@ -1512,19 +1514,19 @@ source snapshot:
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
 | `ops/diagnose.sh` | `54612630daed7ef2562d12ebcee087a8bbf0fc2ed5013bc52f1cbd3406f1fa8f` |
 | `ops/doc_freshness.py` | `2cd359f38b031046ccfdf6e25d480b6b88df9f334ac94f7f25a7e28cad34438d` |
-| `ops/earnkaro_check.py` | `066d2a46837b8cdfe1207cad61d9d1551ddabba699b1361200f0fc0fadfc114e` |
+| `ops/earnkaro_check.py` | `8e44f1c5b63db98c6abc6546fc23997a7ddd4eaa7090f320748a3916e048cb40` |
 | `ops/hypd_links.py` | `0794d1fa91015282574be398380310ad33070ee800f5083b960ec442762a1706` |
 | `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
-| `ops/quality_audit.py` | `51ab5558f80965f00d9aed6f7173f18097606ce3efb34284d2d4ac544743b081` |
+| `ops/quality_audit.py` | `0cbcf8d8e582a04e6cdf563fc1e3e5fb4db9d94402efd34c347a44ae7f3de62d` |
 | `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `329dbd3e1b68eeacd1ab8c08127fb166e5f947a331de7e87b6e662b38d86f8dc` |
-| `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
+| `ops/test_all.sh` | `2d4f98562c26c0400c09e6507fc9580a35e18fa9ac764001ac98a7cdd5b8274f` |
+| `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
@@ -1537,14 +1539,15 @@ source snapshot:
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
-| `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
-| `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
+| `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
+| `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
 | `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
 | `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
+| `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
@@ -1602,6 +1605,7 @@ read 211 against 232 actual checks.)
 | `test_earnkaro_conversion.py` | Converter response validation, identity-bound durable proof, native tag rotation, and the report/auditor's matching ownership rules. |
 | `test_best_copy.py` | Durable proof and strict link-audit regressions, alongside product-copy and fidelity checks. |
 | `test_duplicate_sim.py` | Real worker-path duplicate/recovery scenarios; fake converter output is persisted so the final provenance gate is still exercised. |
+| `test_post_link_guarantee.py` | The published output itself: the real worker runs in strict-all, the sent messages are recorded, and an independent audit proves every URL in them is our conversion (or our family/Amazon-tag/proven hop) — while a foreign tag, a bare page and our-number-only all fail. |
 | `node tg-wa-bridge/bridge.js --self-test` | Bridge provenance and routing contract, including link-derived category routing and ambiguous-link refusal. |
 
 `python3 ops/identity_probe.py "<post A>" "<post B>"` answers, from the CLI, whether

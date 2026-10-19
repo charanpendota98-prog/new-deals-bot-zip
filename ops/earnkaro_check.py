@@ -361,8 +361,18 @@ def whose_link(url: str, publisher: str, our_tag: str, timeout: float) -> tuple[
     seen = att.get("affextparam2")
     tag = att.get("tag")
     if seen:
+        # USER RULE 2026-10-19: on the Flipkart family the money is attributed on
+        # affid+affExtParam1; affExtParam2 alone is only the sub-id. Say so here,
+        # because "our number is on it" is exactly the assumption that loses wages.
+        from urllib.parse import urlparse as _urlparse
+        host = _urlparse(published).hostname or ""
+        no_conversion = (any(host == h or host.endswith("." + h)
+                             for h in ("flipkart.com", "shopsy.in"))
+                         and not att.get("affextparam1"))
+        note = (" (NO affExtParam1 conversion id - our number alone is NOT a conversion, "
+                "so this link earns NOTHING)" if no_conversion else "")
         return ("ours" if seen == publisher else "foreign",
-                f"affExtParam2={seen}{detail}")
+                f"affExtParam2={seen}{note}{detail}")
     if tag:
         return ("ours" if (our_tag and tag == our_tag) else "foreign",
                 f"tag={tag}{detail}")

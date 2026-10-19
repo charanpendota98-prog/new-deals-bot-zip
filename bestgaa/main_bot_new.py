@@ -431,7 +431,26 @@ HTTP_TOTAL_TIMEOUT_SECONDS = _num("HTTP_TOTAL_TIMEOUT_SECONDS", 12, 3, 45)
 LINK_CHECK_ATTEMPTS = max(1, int(os.getenv("LINK_CHECK_ATTEMPTS", "2")))
 LINK_CHECK_RETRY_SLEEP_SECONDS = _num("LINK_CHECK_RETRY_SLEEP_SECONDS", 0.4, 0, 10)
 LINK_HEALTH_CACHE_SECONDS = _num("LINK_HEALTH_CACHE_SECONDS", 900, 0, 86400)
+# A service-outage verdict is NOT cached for the usual 15 minutes: the whole
+# point of it is that the host was momentarily without a backend, and the retry
+# a few seconds later must probe again instead of re-reading a stale "down".
+LINK_OUTAGE_CACHE_SECONDS = _num("LINK_OUTAGE_CACHE_SECONDS", 45, 0, 3600)
 PRESEND_CHECK_BUDGET_SECONDS = _num("PRESEND_CHECK_BUDGET_SECONDS", 6, 0, 240)
+# The pre-send pass is the LAST chance to notice that a link died between render
+# and delivery. A verdict seconds old is reused (immediacy: no second round trip
+# for every post), but one older than this is re-probed, so a job that sat in the
+# queue - or a merchant that went down after render - cannot ride a stale "alive"
+# onto the channel. It stays concurrent and inside PRESEND_CHECK_BUDGET_SECONDS,
+# and an exhausted budget still keeps the already-verified links (a slow probe is
+# not a dead deal).
+PRESEND_FRESH_SECONDS = _num("PRESEND_FRESH_SECONDS", 30, 0, 86400)
+# USER RULE (2026-10-19): "10 time check perefctga convert then post". Every link
+# in the final text is verified for POSTING - is it OURS, and does it open right
+# now - up to this many times before the post is allowed out. The happy path
+# costs exactly ONE pass (it stops at the first clean result); the retries only
+# run while a link is still answering an outage or a dead page.
+POST_VERIFY_ATTEMPTS = max(1, int(os.getenv("POST_VERIFY_ATTEMPTS", "10")))
+POST_VERIFY_SLEEP_SECONDS = _num("POST_VERIFY_SLEEP_SECONDS", 2.0, 0, 60)
 # Hard cap for ONE merchant page probe. Without it a slow site held the whole post
 # for 2 x 12s (the single-link fast path had no budget at all) - which the user
 # sees as "the bot posts late". A site that does not answer in time is
@@ -970,6 +989,53 @@ def cut_amazon_short_links(text: str, affiliate=None) -> tuple[str, list[str]]:
     return out, cut
 
 
+def link_is_outage(affiliate, url: str) -> bool:
+    """Did this URL's last health verdict say "no server behind the host"?
+
+    Tolerant on purpose: `affiliate` is an AffiliateClient in production, but a
+    test double (or a legacy caller) may only implement `link_not_broken`.
+    Anything that cannot answer is treated as "not an outage", which falls back
+    to the old behaviour instead of turning a doubt into a lost post.
+    """
+    probe = getattr(affiliate, "link_outage", None)
+    if not callable(probe):
+        return False
+    try:
+        return bool(probe(url))
+    except Exception:  # noqa: BLE001 - a health hint must never break delivery
+        return False
+
+
+def short_url_destination(affiliate, short_url: str) -> str:
+    """The verified long URL behind a short link WE minted ("" when unknown).
+
+    The delivery-time health check needs this: when a hop answers 503, the link a
+    reader would get is dead even though the product page behind it is fine, so
+    the long URL is published instead of the hop. `_short_to_long` holds exactly
+    the pairs this build minted (Amazon's are durable across restarts, everything
+    else lives as long as the process), which is the only safe source: a SOURCE's
+    own short link is deliberately absent, because expanding somebody else's
+    wrapper here would publish a URL we never verified.
+    """
+    if not short_url:
+        return ""
+    mapping = getattr(affiliate, "_short_to_long", {}) or {}
+    # clean_url() normalises a bare code to "/code/", while the minted pair is
+    # stored exactly as the shortener returned it - compare without the trailing
+    # slash so both spellings find the same destination.
+    key = clean_url(short_url).rstrip("/")
+    candidate = mapping.get(short_url) or mapping.get(short_url.rstrip("/")) or ""
+    if not candidate:
+        for short, long_url in mapping.items():
+            if long_url and clean_url(short).rstrip("/") == key:
+                candidate = long_url
+                break
+    if not candidate:
+        return ""
+    candidate = clean_url(candidate)
+    return candidate if URL_RE.fullmatch(candidate) else ""
+
+
 def strip_amazon_tag_for_undeclared(text: str, target: str, affiliate=None) -> str:
     """Remove OUR Associates tag from Amazon links bound for an undeclared channel.
 
@@ -1394,8 +1460,19 @@ TRACKING_QUERY_KEYS = {
 # uses the Associates tag, Meesho uses a verified HYPD mapping, and no other store
 # may be promoted as ours merely because its product page opens.
 # ---------------------------------------------------------------------------
+# SHopsy belongs here (2026-10-19). It is Flipkart's own low-price marketplace
+# and the converter mints exactly the Flipkart shape on it - the user's own link
+# proof:
+#   https://www.shopsy.in/<slug>/p/itm5722ca2c8fa09?pid=...&marketplace=FLIPKART
+#       &affid=deals101&cmpid=AFF_deals101
+#       &affExtParam1=ENKR20261019A2241424426&affExtParam2=5478322
+# Leaving it out had two costs: a Shopsy page that ALREADY carried our publisher
+# id was not recognised as ours (so the deal was dropped when the converter had
+# nothing to add, even though the link paid us), and a bare Shopsy page could
+# never be rebuilt with our id. Both are fixed by listing the host; the id check
+# itself is unchanged, so a foreign affExtParam2 is still refused.
 EK_ATTRIBUTION_HOSTS = {h.strip().lower() for h in os.getenv(
-    "EK_ATTRIBUTION_HOSTS", "flipkart.com,myntra.com").split(",") if h.strip()}
+    "EK_ATTRIBUTION_HOSTS", "flipkart.com,shopsy.in,myntra.com").split(",") if h.strip()}
 ATTRIBUTE_PASSTHROUGH_LINKS = os.getenv(
     "ATTRIBUTE_PASSTHROUGH_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
 # Attribution parameters that belong to whoever else's link we are rebuilding -
@@ -1417,6 +1494,42 @@ FOREIGN_ATTRIBUTION_KEYS = {
 # (see ops/quality_audit.py, which now agrees with whose_link()).
 
 
+# ---------------------------------------------------------------------------
+# USER RULE (2026-10-19): "valla long link lo mana number pedthe manaku vasthadi
+# anukoku" - DO NOT assume our number on somebody's long link earns anything.
+#
+# A Flipkart-family conversion is credited on the pair the network mints:
+#   affid=<account> & affExtParam1=<click/conversion id>  (money is attributed)
+#   affExtParam2=<publisher>                              (the sub-id inside it)
+# A page carrying nothing but affExtParam2=<our id> has no conversion behind it,
+# so it is NOT proof that we are paid - it has to be CONVERTED, not assumed.
+# `attribute_with_our_publisher()` below can only add that number, so it is a
+# convenience for legacy mode and never ownership proof.
+EK_CONVERSION_SIGNATURE_HOSTS = ("flipkart.com", "shopsy.in")
+
+
+def conversion_signature_missing(url: str) -> str:
+    """'' when a Flipkart-family URL carries a real conversion id, else why not.
+
+    myntra.com (and any other host in EK_ATTRIBUTION_HOSTS) is deliberately not
+    covered: the converter's Myntra shape has only been observed with
+    affExtParam2, so demanding a conversion id there would refuse real links.
+    """
+    try:
+        parsed = urlparse(clean_url(url))
+        host = (parsed.hostname or "").lower()
+        if not in_domains(host, EK_CONVERSION_SIGNATURE_HOSTS):
+            return ""
+        query = {str(key).lower(): values for key, values in parse_qs(parsed.query).items()}
+        if any(str(value).strip() for value in query.get("affextparam1", [])):
+            return ""
+        return ("carries our publisher id but NO conversion id (affExtParam1) - Flipkart pays "
+                "on the affid+affExtParam1 pair, so this page earns NOTHING until it is really "
+                "converted")
+    except Exception:
+        return "not a parseable URL"
+
+
 def attribute_with_our_publisher(url: str, publisher: str = "") -> str:
     """OUR EarnKaro publisher id on a Flipkart-family product URL.
 
@@ -1425,6 +1538,10 @@ def attribute_with_our_publisher(url: str, publisher: str = "") -> str:
     removed first, so the rebuilt link can only ever pay us. `publisher` lets a
     caller state whose id to stamp (the audit uses its own resolution); the
     default is this install's EarnKaro account.
+
+    NOT PROOF (2026-10-19): this only appends the number. A URL it rebuilt has no
+    conversion id, so Store.has_native_owned_attribution() refuses it and the
+    posting gate will not treat it as ours - the deal has to be converted.
     """
     publisher = (publisher or OUR_EK_ID).strip()
     if not (publisher and ATTRIBUTE_PASSTHROUGH_LINKS):
@@ -1541,6 +1658,31 @@ BROKEN_PAGE_MARKERS = (
     "product is no longer available",
 )
 
+# SERVICE OUTAGE, not "doubt". These exact sentences are the ones a load
+# balancer writes when it has no backend behind it at all:
+#
+#   Shopsy/Flipkart behind HAProxy:  "503 Service Unavailable
+#                                     No server is available to handle this request."
+#   nginx / Apache default:          "503 Service Temporarily Unavailable"
+#                                    "The server is temporarily unable to service
+#                                     your request"
+#
+# USER REPORT (2026-10-19): a posted bitli.in link opened this page, i.e. the bot
+# published a link that had no working server behind it. The probe below treated
+# every 5xx as inconclusive ("our IP might be blocked") and posted anyway, so the
+# one 5xx that DOES say the site is down was waved through. These markers are
+# deliberately narrow: a bare 500/502/504 with none of these words stays
+# inconclusive exactly as before (that is what protects a live deal from a
+# datacenter-IP block), and an outage verdict is a different verdict from a dead
+# product page - it is retried, never published.
+SERVICE_OUTAGE_MARKERS = (
+    "no server is available to handle this request",
+    "503 service unavailable",
+    "503 service temporarily unavailable",
+    "service temporarily unavailable",
+    "the server is temporarily unable to service your request",
+)
+
 
 def looks_broken_page(status: int, body: str) -> bool:
     """True ONLY when the page's own words say it is gone.
@@ -1558,6 +1700,29 @@ def looks_broken_page(status: int, body: str) -> bool:
     """
     text = (body or "").lower()
     return any(marker in text for marker in BROKEN_PAGE_MARKERS)
+
+
+def looks_like_service_outage(status: int, body: str) -> bool:
+    """True ONLY for an explicit upstream-outage page (5xx + its own words).
+
+    `status` DOES decide here, unlike `looks_broken_page`: the wording alone can
+    legitimately appear inside a healthy page's JavaScript bundle, so a 200 that
+    merely mentions "503 Service Unavailable" must never be called an outage. A
+    5xx that carries the load balancer's own sentence, though, is not ambiguous -
+    nothing is listening behind the host right now.
+
+    Flipkart-family hosts (Shopsy included) answer under load with exactly:
+
+        503 Service Unavailable
+        No server is available to handle this request.
+
+    and that is the page the reader got when they clicked our link. The bot must
+    retry it (the condition is usually seconds long) instead of publishing it.
+    """
+    if status < 500:
+        return False
+    text = (body or "").lower()
+    return any(marker in text for marker in SERVICE_OUTAGE_MARKERS)
 
 
 def host_matches(host: str, domain: str) -> bool:
@@ -5823,7 +5988,10 @@ class Store:
                 return False
             ids = [value for key, values in parse_qs(parsed.query).items()
                    if key.lower() == "affextparam2" for value in values]
-            return bool(ids) and all(str(value).strip() == OUR_EK_ID for value in ids)
+            if not (ids and all(str(value).strip() == OUR_EK_ID for value in ids)):
+                return False
+            # Our number alone is not a conversion (USER RULE 2026-10-19).
+            return not conversion_signature_missing(url)
         except Exception:
             return False
 
@@ -6658,6 +6826,10 @@ class AffiliateClient:
         # without a cache each repeat cost another 18-36s of network waiting,
         # which is what made posts land minutes after the source.
         self._health: dict[str, tuple[float, bool]] = {}
+        # URL -> when its last probe saw an explicit service outage (503 with
+        # the load balancer's own words). "not alive" is not the same answer as
+        # "gone": an outage is retried, a dead product page is dropped.
+        self._outage: dict[str, float] = {}
         # long_url -> short link, so a retry never re-calls the shortener.
         self._short_cache: dict[str, str] = {}
         # USER RULE (2026-09-06): "review channelo shorten ga marchatam bitly use
@@ -6738,14 +6910,50 @@ class AffiliateClient:
             log.info("LINK CHECK inconclusive | %.1fs budget for %s - posting anyway "
                      "(a slow page is not a dead deal)", LINK_PROBE_BUDGET_SECONDS, key[:90])
             verdict = True
-        if LINK_HEALTH_CACHE_SECONDS > 0:
+        # An outage verdict is deliberately NOT cached for the full window: the
+        # retry that follows is meant to look again, and caching "no server
+        # behind it" for 15 minutes would turn a two-second blip into a link
+        # that stays suppressed long after the site came back.
+        cacheable = verdict or not self.link_outage(key)
+        if LINK_HEALTH_CACHE_SECONDS > 0 and cacheable:
             if len(self._health) > 3000:
                 self._health.clear()
             self._health[key] = (time.time(), verdict)
         return verdict
 
+    def link_outage(self, url: str) -> bool:
+        """True when the LAST verdict for this URL was an explicit service outage.
+
+        Kept separate from `link_not_broken` so a caller can tell "the product is
+        gone" (drop it) from "the host has no backend right now" (retry it, never
+        publish it). Read-only and offline: it answers from the probe's own
+        bookkeeping, so no extra HTTP request is ever made for it.
+        """
+        stamp = getattr(self, "_outage", {}).get(clean_url(url))
+        return bool(stamp and time.time() - stamp < LINK_OUTAGE_CACHE_SECONDS)
+
+    def _remember_outage(self, url: str) -> None:
+        if not hasattr(self, "_outage"):
+            self._outage = {}
+        self._outage[clean_url(url)] = time.time()
+
+    def _forget_outage(self, url: str) -> None:
+        getattr(self, "_outage", {}).pop(clean_url(url), None)
+
     async def _probe_link(self, url: str) -> bool:
-        """Follow the URL and reject explicit merchant repair/dead-page responses."""
+        """Follow the URL and reject explicit merchant repair/dead-page responses.
+
+        Three verdicts, not two, even though the return type stays a bool:
+
+          * dead words in the page  -> False, at once (the product is gone);
+          * an explicit 5xx outage  -> one more attempt (these last seconds),
+            then False, and `link_outage()` says WHICH kind of False it was so
+            the caller retries the deal instead of throwing it away;
+          * a bare 404/5xx, a bot block, or a timeout -> "inconclusive", which
+            stays True: our datacenter IP is not the reader's browser, and a
+            doubt must never cost a live deal.
+        """
+        outage = False
         for attempt in range(LINK_CHECK_ATTEMPTS):
             try:
                 async with self.session.get(
@@ -6755,20 +6963,111 @@ class AffiliateClient:
                 ) as response:
                     raw = await response.content.read(400_000)
                     body = raw.decode(response.charset or "utf-8", errors="ignore")
-                    if looks_broken_page(response.status, body):
+                    if looks_like_service_outage(response.status, body):
+                        outage = True
+                        log.warning("LINK OUTAGE | status=%s attempt %s/%s | the host has no "
+                                    "server behind it right now (retried, never published): %s",
+                                    response.status, attempt + 1, LINK_CHECK_ATTEMPTS, url[:100])
+                    elif looks_broken_page(response.status, body):
+                        self._forget_outage(url)
                         log.warning("BROKEN LINK blocked | status=%s | %s", response.status, url[:100])
                         return False
+                    elif response.status < 500:
+                        self._forget_outage(url)
+                        return True
                     # 401/403/429 can be merchant bot/rate protection rather than
                     # a dead customer-facing page, so they remain inconclusive.
-                    if response.status < 500:
-                        return True
             except Exception as exc:
                 log.warning("LINK CHECK attempt %s inconclusive %s: %s", attempt + 1, url[:70], exc)
             if attempt + 1 < LINK_CHECK_ATTEMPTS:
-                await asyncio.sleep(LINK_CHECK_RETRY_SLEEP_SECONDS)
+                # An outage is retried a little later than an unknown failure:
+                # "no server available" is what a rolling deploy looks like.
+                await asyncio.sleep(LINK_CHECK_RETRY_SLEEP_SECONDS * (3 if outage else 1))
+        if outage:
+            self._remember_outage(url)
+            return False
         # Do not discard a valid deal solely because Oracle was bot-blocked or
         # temporarily offline; explicit repair/dead-page signatures are blocked.
         return True
+
+    async def link_is_proven_ours(self, url: str) -> tuple[bool, str]:
+        """Is this EXACT link provably a paid link of ours? (True, why) / (False, why not).
+
+        Four kinds of proof, nothing else:
+          * native attribution - our Amazon tag, or a Flipkart-family page carrying
+            our publisher id AND a real conversion id (affExtParam1);
+          * a converted hop we recorded (owned_link_proofs: the converter minted it
+            for this account, bound to our publisher id);
+          * our own HYPD share link with a verified Meesho mapping;
+          * an exact row in the link cache whose pair is proven ours.
+        A page where somebody merely appended our NUMBER fails all four - and that
+        is the point of the rule (USER RULE 2026-10-19).
+        """
+        url = clean_url(url)
+        if not url:
+            return False, "empty link"
+        if Store.has_native_owned_attribution(url):
+            return True, "native attribution"
+        missing = conversion_signature_missing(url)
+        try:
+            if await store.cached_link_is_owned(url, ""):
+                return True, "converted hop with stored proof"
+        except Exception:  # noqa: BLE001 - a DB hiccup is a refusal, not a crash
+            pass
+        if is_our_hypd_link(url):
+            return True, "our HYPD share link"
+        return False, missing or "no stored proof that this link pays our account"
+
+    async def preflight_links(self, text: str, require_ours: bool = True
+                              ) -> tuple[list[str], dict[str, str], int]:
+        """Verify every link for POSTING, up to POST_VERIFY_ATTEMPTS times.
+
+        Returns (urls, {bad_url: kind}, passes_used) where kind is:
+          "unowned" - not provably ours (never retried: retrying cannot help);
+          "outage"  - an explicit 503 "no server behind it" (retry);
+          "dead"    - the page's own dead words (retry, then the caller decides).
+        An empty dict means every link was verified OUR and alive.
+        """
+        urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+        if not urls:
+            return [], {}, 0
+        sem = asyncio.Semaphore(max(1, EK_MAX_CONCURRENCY))
+
+        async def one(url: str) -> tuple[str, str]:
+            async with sem:
+                if require_ours:
+                    owned, _why = await self.link_is_proven_ours(url)
+                    if not owned:
+                        return url, "unowned"
+                # Fresh look every pass: a cached "alive" from render time must
+                # not answer a check that exists to catch a link dying in between.
+                health = getattr(self, "_health", None)
+                if isinstance(health, dict):
+                    health.pop(url, None)
+                if await self.link_not_broken(url):
+                    return url, ""
+                return url, "outage" if self.link_outage(url) else "dead"
+
+        bad: dict[str, str] = {}
+        passes = 0
+        for attempt in range(POST_VERIFY_ATTEMPTS):
+            passes = attempt + 1
+            bad = {url: kind for url, kind in await asyncio.gather(*(one(u) for u in urls)) if kind}
+            if not bad:
+                return urls, {}, passes
+            if set(bad.values()) == {"unowned"}:
+                # Ownership is a fact about the link, not about timing: a second
+                # look cannot turn somebody else's page into ours.
+                return urls, bad, passes
+            if attempt + 1 < POST_VERIFY_ATTEMPTS:
+                log.warning("POST VERIFY | pass %s/%s: %s link(s) not ready (%s); "
+                            "re-checking in %.1fs before this post is allowed out",
+                            attempt + 1, POST_VERIFY_ATTEMPTS, len(bad),
+                            ", ".join(sorted(set(bad.values()))), POST_VERIFY_SLEEP_SECONDS)
+                await asyncio.sleep(POST_VERIFY_SLEEP_SECONDS)
+        log.warning("POST VERIFY | %s link(s) still unverified after %s pass(es): %s",
+                    len(bad), passes, ", ".join(sorted(set(bad.values()))))
+        return urls, bad, passes
 
     async def rendered_links_not_broken(self, text: str) -> bool:
         """Belt-and-braces pre-send check, run CONCURRENTLY and time-boxed.
@@ -6788,6 +7087,18 @@ class AffiliateClient:
         urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
         if not urls:
             return False
+        if PRESEND_FRESH_SECONDS > 0:
+            # Render may have been minutes ago (a held job, a retry, a queue
+            # backlog) and the render-time verdict is a cached "alive". Only a
+            # verdict older than the window is dropped; a seconds-old one is
+            # deliberately reused so the common path pays no second round trip.
+            health = getattr(self, "_health", None)
+            if isinstance(health, dict):
+                now = time.time()
+                for url in urls:
+                    cached = health.get(url)
+                    if cached and now - cached[0] >= PRESEND_FRESH_SECONDS:
+                        health.pop(url, None)
         if len(urls) == 1:
             return await self.link_not_broken(urls[0])
         sem = asyncio.Semaphore(max(1, EK_MAX_CONCURRENCY))
@@ -7115,6 +7426,14 @@ class AffiliateClient:
         # Do not monetize/post an expired campaign destination. This catches
         # Flipkart's HTTP-200 "Just a quick repair needed" page shown to users.
         if not await self.link_not_broken(clean):
+            if self.link_outage(clean):
+                # The store is momentarily without a backend (503 "no server is
+                # available"). That is a RETRY, not a rejection: converting now
+                # would mint a link to a page nobody can open, and dropping the
+                # deal would lose a product that is usually back in seconds.
+                raise RuntimeError(
+                    f"merchant page answered a service outage (503): "
+                    f"{(urlparse(clean).hostname or clean)[:60]}")
             return None
         # AMAZON. Three policies, two switches:
         #   AMAZON_DIRECT_ASSOCIATES=true (default since the 2026-10-04
@@ -7144,6 +7463,22 @@ class AffiliateClient:
                 return None
         # The native tagged link is still a fallback when it has not been tried yet.
         native_fallback_possible = native_amazon_possible and not native_direct_first
+        # ALREADY OURS (USER REPORT 2026-10-19: "chala miss chesthunnav"). A
+        # source channel can post a link that ALREADY carries our EarnKaro
+        # publisher id (affExtParam2=<our id>, the shape the converter mints) or
+        # our Associates tag. When the converter then answers "no campaign"
+        # - or the API is down - the deal used to be dropped even though the
+        # link in hand was a paid link of ours. Proven by the URL itself, it is
+        # published as it stands: the reader lands on the same product, the
+        # commission is still ours, and a doubt can no longer cost the post.
+        # A FOREIGN id never qualifies: has_native_owned_attribution() requires
+        # every value to be exactly ours.
+        already_ours = ""
+        if not is_amazon:
+            for candidate in (resolved, source_url):
+                if candidate and Store.has_native_owned_attribution(candidate):
+                    already_ours = clean_url(candidate)
+                    break
         earned: "LinkResult | None" = None
         # The Amazon switch must not touch other stores: with
         # AMAZON_VIA_EARNKARO=false an Amazon link never goes to the network,
@@ -7162,7 +7497,7 @@ class AffiliateClient:
                     != non_meesho_hypd_destination
                 )
                 if STRICT_OUR_LINKS:
-                    if not (native_fallback_possible or publisher_fallback):
+                    if not (native_fallback_possible or publisher_fallback or already_ours):
                         raise
                 elif not (native_fallback_possible or non_meesho_hypd_destination):
                     raise
@@ -7172,6 +7507,20 @@ class AffiliateClient:
                                 (urlparse(clean).hostname or clean)[:60])
         if earned is not None:
             return earned
+        if already_ours:
+            # No conversion was needed: the link we were given already pays us.
+            key = product_key(already_ours) if not is_amazon_search_or_browse_link(
+                source_url) else product_key(resolved)
+            await store.cache_link(source_url, already_ours, resolved, key)
+            # No proof row is written on purpose: the link IS the proof (its own
+            # affExtParam2/tag), and _strict_cache_pair_is_owned() plus
+            # verify_generated_text() both accept native attribution directly.
+            # Recording it under a converter proof type would claim a
+            # conversion that never happened.
+            log.warning("OUR LINK KEPT | %s already carries our publisher id - the converter "
+                        "had nothing to add, so the verified link is published as-is instead "
+                        "of losing the deal", (urlparse(already_ours).hostname or "")[:45])
+            return LinkResult(source_url, resolved, already_ours, key)
         if native_fallback_possible:
             # The network could not monetize this Amazon link. Dropping it would
             # lose the deal and posting it untagged would earn nothing, so publish
@@ -7446,6 +7795,18 @@ class AffiliateClient:
                         # actually break the commission.
                         result = apply_amazon_tag(result)
                         if not await self.link_not_broken(result):
+                            if self.link_outage(result):
+                                # The converter's own short domain (bitli.in) or
+                                # the page behind it is in an outage. Raising
+                                # makes the attempt loop below re-mint the link
+                                # (a different short code often lands on a
+                                # healthy node) and, if the outage outlasts the
+                                # attempts, hands the job back to its retry
+                                # schedule - the proven conversion is never
+                                # published as a 503 and never thrown away.
+                                raise RuntimeError(
+                                    "converted link answered a service outage: "
+                                    + (urlparse(result).hostname or result)[:60])
                             return None
                         affiliate = result
                         # Single non-Amazon deal: preserve EarnKaro's own short link.
@@ -9099,6 +9460,31 @@ async def settle_unrecorded_target(queue_id: int, target: str, premium: bool,
         SETTLED_BUT_UNRECORDED.pop((queue_id, target), None)
 
 
+async def preflight_links(affiliate, text: str, require_ours: bool = True
+                          ) -> tuple[list[str], dict[str, str], int]:
+    """Verify the text's links for posting; tolerant of test doubles.
+
+    The real client implements preflight_links() (ownership + health, repeated).
+    A double that only implements the older rendered_links_not_broken() contract
+    keeps the old semantics instead of crashing the worker.
+    """
+    urls = list(dict.fromkeys(clean_url(x) for x in URL_RE.findall(text or "")))
+    probe = getattr(affiliate, "preflight_links", None)
+    if callable(probe):
+        return await probe(text, require_ours=require_ours)
+    if not urls:
+        return [], {}, 0
+    if await affiliate.rendered_links_not_broken(text):
+        return urls, {}, 1
+    # The double only answers "something is dead": ask it per link, exactly as
+    # the delivery path used to, so only the dead ones are repaired/cut.
+    verdicts = await asyncio.gather(
+        *(affiliate.link_not_broken(url) for url in urls), return_exceptions=True)
+    bad = {url: ("outage" if link_is_outage(affiliate, url) else "dead")
+           for url, ok in zip(urls, verdicts) if ok is False}
+    return urls, bad, 1
+
+
 async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlite3.Row):
     stored_copy = (row["source_text"] if "source_text" in row.keys() else "") or ""
     # a list of files (with their Telegram refs) when the source posted an album
@@ -9223,16 +9609,59 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         for share_url in URL_RE.findall(merchant_health_text):
             if is_share_intent(share_url):
                 merchant_health_text = merchant_health_text.replace(share_url, " ")
-        if URL_RE.search(merchant_health_text) and not await affiliate.rendered_links_not_broken(merchant_health_text):
-            # One dead probe used to throw the ENTIRE post away, i.e. another
-            # silent missing post. Now only the broken destination is dropped;
-            # the rest of the deal still goes out, and a post whose every link
-            # is dead retries before it is finally refused.
-            all_urls = list(dict.fromkeys(URL_RE.findall(merchant_health_text)))
-            verdicts = await asyncio.gather(
-                *(affiliate.link_not_broken(u) for u in all_urls), return_exceptions=True
-            )
-            dead = [u for u, ok in zip(all_urls, verdicts) if ok is False]
+        # USER RULE (2026-10-19): "10 time check perefctga convert then post".
+        # Every link is re-verified for POSTING - provably OURS, and open right
+        # now - up to POST_VERIFY_ATTEMPTS times, immediately before delivery.
+        # The ownership half only runs in strict mode: legacy mode is explicitly
+        # allowed to pass clean merchant pages through.
+        all_urls, bad_links, verify_passes = await preflight_links(
+            affiliate, merchant_health_text, require_ours=STRICT_OUR_LINKS)
+        if bad_links and verify_passes > 1:
+            log.info("POST VERIFY | queue=%s verified %s time(s) before giving up on %s link(s)",
+                     row["id"], verify_passes, len(bad_links))
+        unowned = [u for u, kind in bad_links.items() if kind == "unowned"]
+        if unowned:
+            # A link that is not provably ours is NEVER published, whatever else
+            # the post carries: that is exactly the "our number on their long
+            # link" mistake this rule exists to stop.
+            log.warning("LINK NOT OURS | queue=%s refusing to publish %s unverified link(s): %s",
+                        row["id"], len(unowned), ", ".join(u[:60] for u in unowned[:2]))
+            keep = [u for u in all_urls if u not in set(unowned)]
+            if not keep:
+                raise PermanentSkip("every link is unverified ownership (not our conversion)")
+            for url in unowned:
+                rendered = rendered.replace(url, " ")
+            rendered = sanitize_outbound_text(tidy_post(clean_source_text(rendered)))
+            with contextlib.suppress(Exception):
+                await store.update_rendered(row["id"], rendered)
+            rendered = keep_source_spacing(
+                rendered, row["source_text"] if "source_text" in row.keys() else "")
+            all_urls = keep
+        if bad_links and not unowned and URL_RE.search(merchant_health_text):
+            dead = [u for u, kind in bad_links.items() if kind in {"dead", "outage"}]
+            # A DEAD HOP IS NOT A DEAD PRODUCT (USER REPORT 2026-10-19: "idlga
+            # vasthundi 503 Service Unavailable"). Every short link we mint is
+            # remembered with the long URL behind it. When the HOP is what
+            # answered 503, publishing the hop is the dead link the reader gets,
+            # and dropping it loses the deal's only link - so the verified long
+            # URL takes its place. A source's own short link is not in the map
+            # (we never verified where it goes) and is handled exactly as before.
+            repaired: list[str] = []
+            still_dead: list[str] = []
+            for url in dead:
+                long_url = short_url_destination(affiliate, url)
+                if long_url and await affiliate.link_not_broken(long_url):
+                    rendered = rendered.replace(url, long_url)
+                    repaired.append(url)
+                    log.warning("SHORT LINK REPAIRED | queue=%s %s answers as a dead/"
+                                "service-outage hop; publishing the verified destination "
+                                "behind it instead: %s", row["id"], url[:60], long_url[:80])
+                else:
+                    still_dead.append(url)
+            if repaired:
+                with contextlib.suppress(Exception):
+                    await store.update_rendered(row["id"], rendered)
+            dead = still_dead
             survivors = [u for u in all_urls if u not in set(dead)]
             if dead and survivors:
                 for url in dead:
@@ -9252,11 +9681,35 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # channel just published is far more likely alive than our probe is
                 # right. A deal our readers can still use beats a suppressed one, so
                 # the post goes out and the log says which link was unverified.
-                if DROP_DEAD_LINKS:
+                outages = [u for u in dead if link_is_outage(affiliate, u)]
+                if outages:
+                    # BUT an explicit "no server is available to handle this
+                    # request" is not datacenter-IP doubt: it is the host saying
+                    # nothing is behind it right now. Posting it publishes the
+                    # exact 503 page the reader complained about, so the post
+                    # waits for its next attempt instead. Only a job with no
+                    # attempts left gives up the link (never the deal, and never
+                    # a link that is answering 503 at send time).
+                    if row["attempts"] + 1 < JOB_MAX_ATTEMPTS:
+                        raise RuntimeError(
+                            "delivery retry required: %s destination(s) answered a service-outage "
+                            "page (503) - the host has no server behind it right now" % len(outages))
+                    for url in dead:
+                        rendered = rendered.replace(url, " ")
+                    rendered = sanitize_outbound_text(tidy_post(clean_source_text(rendered)))
+                    with contextlib.suppress(Exception):
+                        await store.update_rendered(row["id"], rendered)
+                    rendered = keep_source_spacing(
+                        rendered, row["source_text"] if "source_text" in row.keys() else "")
+                    log.warning("LINK OUTAGE | queue=%s last attempt: dropped %s destination(s) "
+                                "answering 503 rather than publishing a dead link; the deal "
+                                "itself still goes out", row["id"], len(dead))
+                elif DROP_DEAD_LINKS:
                     raise PermanentSkip("every destination is a confirmed dead merchant page")
-                log.warning("LINK UNVERIFIED | queue=%s %s destination(s) answered as a dead "
-                            "page (our IP may simply be blocked); posting anyway",
-                            row["id"], len(dead))
+                else:
+                    log.warning("LINK UNVERIFIED | queue=%s %s destination(s) answered as a dead "
+                                "page (our IP may simply be blocked); posting anyway",
+                                row["id"], len(dead))
         premium_defer_until = None
         first_target_sent = False
         for target in await store.pending_targets(row["id"]):
