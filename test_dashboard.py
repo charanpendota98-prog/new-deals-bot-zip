@@ -94,7 +94,11 @@ def test_config_manager():
         path = Path(td) / "channels.json"
         data = {"version": 1, "channels": [cleaned]}
         channels_config.save_channels(data, path)
-        check("save/load round-trips", channels_config.load_channels(path) == data)
+        loaded = channels_config.load_channels(path)
+        check("save/load round-trips (channels and the new whatsapp section)",
+              loaded["channels"] == data["channels"]
+              and loaded["version"] == data["version"]
+              and loaded["whatsapp"] == [], repr(loaded))
         (Path(td) / "bad.json").write_text("{nope", encoding="utf-8")
         check("a corrupt file loads as empty",
               channels_config.load_channels(Path(td) / "bad.json") == {"version": 1, "channels": []})
@@ -213,6 +217,137 @@ def test_http_api():
                     check("preview withholds mixed posts", status == 200
                           and body.get("category") is None
                           and body.get("reason") == "mixed_or_conflicting")
+
+                    async with sess.request(
+                            "GET", base + "/api/status",
+                            headers={"X-Dashboard-Token": "test-token-123"}) as resp:
+                        hdr = resp.headers
+                    check("responses refuse framing, sniffing and referrer leaks",
+                          hdr.get("X-Frame-Options") == "DENY"
+                          and hdr.get("X-Content-Type-Options") == "nosniff"
+                          and hdr.get("Referrer-Policy") == "no-referrer", str(dict(hdr)))
+                    check("API responses are never cacheable",
+                          hdr.get("Cache-Control") == "no-store", str(hdr.get("Cache-Control")))
+
+                    status, body = await call("GET", "/api/post-buttons")
+                    check("the button row starts empty and states its limits",
+                          status == 200 and body.get("buttons") == []
+                          and body.get("max_buttons") == 2, str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "Join", "url": "https://evil.example/j"}]})
+                    check("a join button that leaves Telegram is refused",
+                          status == 400 and body.get("errors"), str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "one", "url": "http://t.me/plain"},
+                                                  {"label": "two", "url": "https://t.me/x"}]})
+                    check("plain http is refused", status == 400, str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "a", "url": "https://t.me/x"},
+                                                  {"label": "b", "url": "https://t.me/y"},
+                                                  {"label": "c", "url": "https://t.me/z"}]})
+                    check("three buttons are refused", status == 400 and body.get("errors"),
+                          str(body))
+                    status, body = await call("PUT", "/api/post-buttons",
+                                              json={"buttons": [
+                                                  {"label": "Join Shpsy Loots \u2764\ufe0f",
+                                                   "url": "https://t.me/shpsyloots"},
+                                                  {"label": "Under 99rs Loot Deals",
+                                                   "url": "https://t.me/under99rs"}]})
+                    check("two Telegram buttons save", status == 200
+                          and len(body.get("buttons", [])) == 2, str(body))
+                    status, body = await call("GET", "/api/post-buttons")
+                    check("and read back exactly as saved", status == 200
+                          and body["buttons"][0]["url"] == "https://t.me/shpsyloots", str(body))
+                    check("the bot's send path sees the saved row",
+                          len(bot.post_inline_buttons()) == 2)
+                    status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
+                    check("clearing the row restores today's posts byte for byte",
+                          status == 200 and bot.post_inline_buttons() == [], str(body))
+
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": [
+                                                  {"key": "electronics",
+                                                   "value": "120363001@newsletter"},
+                                                  {"key": "grocery",
+                                                   "value": "120363001@newsletter"}]})
+                    check("one WhatsApp channel for two shelves is refused at save time",
+                          status == 400 and body.get("errors"), str(body))
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": [
+                                                  {"key": "electronics",
+                                                   "value": "120363001@newsletter"}]})
+                    check("a WhatsApp channel saves with its env line generated",
+                          status == 200 and body.get("saved")
+                          and body["env_lines"] == ["WA_CHANNEL_ELECTRONICS="
+                                                    "120363001@newsletter"], str(body))
+                    status, body = await call("GET", "/api/channels")
+                    check("the channel list shows declared WA intent as pending",
+                          status == 200 and body["whatsapp"]["pending"] == ["electronics"]
+                          and body["whatsapp"]["file_rows"][0]["value"]
+                          == "120363001@newsletter", str(body.get("whatsapp")))
+                    status, body = await call("PUT", "/api/channels/whatsapp",
+                                              json={"whatsapp": []})
+                    check("clearing the WA intent is a save too",
+                          status == 200 and body["env_lines"] == [], str(body))
+
+                    status, body = await call("GET", "/api/link-conversion?limit=10")
+                    check("the conversion book answers per link, from the ledger",
+                          status == 200 and body["totals"]["cached"] == 1
+                          and body["totals"]["owned"] == 1
+                          and body["converted_pct"] == 100.0, str(body))
+                    check("and the proved hop carries its proof mark",
+                          body["rows"][0]["proof"] is True
+                          and body["rows"][0]["bucket"] == "owned", str(body["rows"]))
+                    check("the conversion endpoint carries a per-day trend",
+                          status == 200 and isinstance(body.get("trend"), list)
+                          and body["trend"][-1]["cached"] == 1
+                          and body["trend"][-1]["pct"] == 100.0, str(body.get("trend")))
+                    status, body = await call("GET", "/api/channel-pipe")
+                    check("a pipe needs both ends named", status == 400, str(body))
+                    status, body = await call("GET", "/api/channel-pipe?target=ElectroShelf"
+                                              "&source=deals&limit=5")
+                    check("one pipe opens with per-post verdicts",
+                          status == 200
+                          and set(body["counts"]) == {"sent", "owned", "foreign", "nothing"}
+                          and isinstance(body["rows"], list)
+                          and all(r["bucket"] in {"owned", "foreign_tag", "unattributed",
+                                                  "earns_nothing"} for r in body["rows"]),
+                          str(body))
+                    os.environ["DASHBOARD_RATE_LIMIT"] = "3:0.5"
+                    burst = []
+                    for _ in range(6):
+                        st, _bd = await call("PUT", "/api/channels/whatsapp",
+                                             json={"whatsapp": []})
+                        burst.append(st)
+                    check("a write burst hits the token bucket",
+                          burst[:3] == [200, 200, 200] and 429 in burst[3:], str(burst))
+                    async with sess.request(
+                            "PUT", base + "/api/channels/whatsapp",
+                            headers={"X-Dashboard-Token": "test-token-123"},
+                            json={"whatsapp": []}) as resp:
+                        check("the 429 tells the client when to come back",
+                              resp.status != 429
+                              or resp.headers.get("Retry-After", "").isdigit(),
+                              str(resp.status) + str(dict(resp.headers)))
+                    os.environ["DASHBOARD_RATE_LIMIT"] = "1000:100"
+                    dash._RATE_BUCKETS.clear()   # fresh bucket for the rest of the suite
+                    async with sess.request("GET", base + "/api/status",
+                                            headers={}) as resp:
+                        csp = resp.headers.get("Content-Security-Policy", "")
+                    check("a CSP ships on every response",
+                          "object-src 'none'" in csp
+                          and "frame-ancestors 'none'" in csp
+                          and "connect-src 'self'" in csp
+                          and "img-src 'self' data: blob:" in csp, csp)
+
+                    status, body = await call("GET", "/api/recent?limit=5")
+                    job = next(j for j in body["jobs"] if j["id"] == 1)
+                    check("recent jobs carry a snippet and their first link",
+                          status == 200 and job["snippet"].startswith("Demo deal")
+                          and job["link"] == "https://bit.ly/dash-owned-1", str(job))
                     for bad_body in ([], {}, {"text": "x" * 12001},
                                      {"text": "earbuds", "links": "not-a-list"}):
                         status, body = await call("POST", "/api/category-preview", json=bad_body)

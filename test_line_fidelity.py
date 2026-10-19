@@ -656,8 +656,10 @@ def test_photos_arrive_as_the_source_posted_them():
             self.last = request
             return SimpleNamespace(id=1)
 
-        async def send_file(self, entity, media, caption=None, parse_mode=None):
+        async def send_file(self, entity, media, caption=None, parse_mode=None,
+                            buttons=None):
             self.calls.append("send_file")
+            self.buttons_seen = getattr(self, "buttons_seen", []) + [buttons]
             self.files_sent = getattr(self, "files_sent", []) + [(media, caption)]
 
     wanted = min(3, bot.MAX_ALBUM_PHOTOS)          # the cap is an operator knob
@@ -698,6 +700,9 @@ def test_photos_arrive_as_the_source_posted_them():
                       req is None and sent.calls == ["send_file"], str(sent.calls))
             check("the album reuses the source's photo refs - nothing is re-uploaded",
                   "upload_file" not in sent.calls, str(sent.calls))
+            check("with no buttons configured every photo send carries buttons=None",
+                  all(b is None for b in getattr(sent, "buttons_seen", [])),
+                  str(getattr(sent, "buttons_seen", [])))
 
             if wanted >= 2:
                 uploaded = RecClient(no_refs=True)
@@ -2149,6 +2154,23 @@ def test_all_conditions_live_on_the_review_channel_only():
     check("a product spec with digits is not touched",
           bot.strip_amazon_ratings("Cello Bottle 1024 ml 4 pieces")
           == "Cello Bottle 1024 ml 4 pieces")
+
+    # USER REPORT 2026-10-18: "Price: ₹18,999/-" posted as "₹18,999/" - five
+    # separate trailing-sweeps each ate the "-" of the Indian "/-" suffix.
+    # The money the source wrote must reach the channel byte-identical.
+    slash_dash = "Price: ₹18,999/-"
+    for name in ("clean_source_text", "strip_inline_cta", "strip_promo_lines",
+                 "strict_orphan_token_cleanup", "strip_link_fragment_tokens",
+                 "strip_amazon_ratings", "tidy_post"):
+        fn = getattr(bot, name)
+        check(f"the /- price suffix survives {name}",
+              slash_dash in fn(slash_dash), fn(slash_dash))
+    check("a dangling dash still gets swept",
+          bot.strip_inline_cta("Deal ₹999 -") == "Deal ₹999",
+          bot.strip_inline_cta("Deal ₹999 -"))
+    check("and a glued CTA still comes off a price line",
+          bot.strip_inline_cta("Deal ₹999 buy now") == "Deal ₹999",
+          bot.strip_inline_cta("Deal ₹999 buy now"))
 
     src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
     deliver = src[src.index("async def process_job"):]

@@ -25,7 +25,19 @@ label{font-size:13px;color:#cbd5e1}
 #tokenbar{display:flex;gap:8px;margin:8px 0}pre{white-space:pre-wrap;font-size:12px;color:#fca5a5}
 dialog{background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:12px;max-width:560px;width:85%}
 dialog::backdrop{background:#0009}.tablewrap{overflow-x:auto}#batchresults td{vertical-align:top;min-width:110px}
-.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}
+.ok{color:#86efac}.muted{color:#94a3b8;font-size:12px}.studio-split{display:grid;grid-template-columns:minmax(240px,430px) 1fr;gap:20px;align-items:start}
+#cardstudio img{width:100%;border-radius:12px;border:1px solid #e2e8f0;background:#fff}
+.btnbar{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.btnbar a{display:block;text-align:center;background:#242f3e;color:#eaf2fb;border-radius:10px;padding:9px 12px;font-weight:600;font-size:13px;text-decoration:none}
+#btnrows .row{margin-bottom:6px}
+.captionbox{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;padding:12px 14px;border-radius:10px;font-size:12.5px;line-height:1.55;margin:0}
+.bad{color:#fca5a5}
+#catrows tr[data-key]{cursor:pointer}
+#catrows tr[data-key]:hover td{background:#16233a}
+#catrows tr.open td{background:#132f2c}
+tr.catdetail td{background:#0b131f;padding:10px 12px}
+tr.catdetail table{width:100%;font-size:12px;border-collapse:collapse}
+tr.catdetail th,tr.catdetail td{text-align:left;padding:4px 8px;border-bottom:1px solid #1d2b3f;vertical-align:top}
 
 :root{color-scheme:dark}body{background:#0b1019;color:#e7edf5;line-height:1.55}main{max-width:1160px;padding:22px 28px 60px}
 a{color:inherit;text-decoration:none}button{font-weight:600;transition:background .15s;border-radius:8px;background:#80f0cf;color:#10241e;border-color:#80f0cf}button:hover{filter:brightness(1.1)}button.ghost{color:#ced8e6;border-color:#34445b}button.danger{color:#fff}
@@ -39,7 +51,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -103,6 +115,79 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
 </div>
+<div class="card" id="wachannels">
+<h2>WhatsApp channels</h2>
+<p class="muted">The bridge builds its WhatsApp policy from <code>WA_CHANNEL_&lt;KEY&gt;</code> env at startup. Save the intent here - the exact env lines are generated for you to paste into the bridge env, and until then the row shows <span class="badge warn">pending</span>. This dashboard never restarts the bridge for you. One channel per key: sharing a channel makes the bridge stop filtering that shelf.</p>
+<div id="walive" class="muted"></div>
+<div id="warows"></div>
+<div class="row"><button id="waadd" onclick="addWaRow()">+ add WhatsApp channel</button>
+<button class="primary" onclick="saveWa()">Save WhatsApp channels</button>
+<span id="wastate" class="muted"></span></div>
+<pre id="waenv" class="captionbox" style="display:none"></pre>
+<button id="wacopy" style="display:none" onclick="copyWaEnv()">copy env lines</button>
+</div>
+<div class="card" id="categories">
+<div class="section-heading"><div><span class="eyebrow">CATEGORY-WISE · LIVE DB + BOT LOG</span><h2>What each shelf actually received</h2></div>
+<div><label class="muted" for="cathours">Window</label> <select id="cathours" onchange="loadCategories()"><option value="6">last 6h</option><option value="24" selected>last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select> <label class="muted" for="catdays">Trend</label> <select id="catdays" onchange="loadCategories()"><option value="3">3 days</option><option value="7" selected>7 days</option><option value="14">14 days</option></select></div></div>
+<p class="muted">Read-only, per category: delivery-ledger sends/skips/holds, the pending backlog routed at the shelf, how many deals the classifier sent its way versus withheld from it (and why), the last time anything landed there, <b>whether the links it published actually pay us</b>, an IST-day send trend, and how the same shelf is configured on Telegram and on WhatsApp. Click any row to open its newest delivery rows. Same engine as <code>python3 ops/category_report.py</code>; nothing is posted, queued or restarted from here.</p>
+<p id="catnote" class="muted" role="status" aria-live="polite">loading…</p>
+<div class="row" id="catstats"></div>
+<p id="catfindings" aria-live="polite"></p>
+<div class="tablewrap"><table><thead><tr><th>Shelf</th><th>State</th><th>Targets</th><th>Sent</th><th>Skipped</th><th>Held</th><th>Pending</th><th>Routed</th><th>Withheld</th><th>Money</th><th>Deal quality</th><th>Trend</th><th>Surfaces</th><th>Last send</th></tr></thead>
+<tbody id="catrows"></tbody></table></div>
+<h3>Which source feeds which shelf</h3>
+<p class="muted">Observed sends per source per shelf from the delivery ledger, against the sources each channel declares. <span class="badge warn">DEAD</span> = declared by a channel, nothing arrived in this window.</p>
+<div class="tablewrap" id="catsourceswrap"><table><thead id="catsourcehead"></thead><tbody id="catsources"></tbody></table></div>
+</div>
+<div class="card" id="conversion">
+<h2>Link conversion — source link → our link</h2>
+<p class="muted">The converter's own book (<code>link_cache</code> + <code>owned_link_proofs</code>), each published link classified with the same verdicts the money report uses. <b>Converted</b> = our tag, our shortener, or a proof row. Read-only.</p>
+<div class="row" id="convstats"></div>
+<div id="convnote" class="muted"></div>
+<div id="convtrend" class="muted"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Source link</th><th>Published as</th><th>Route</th><th>Verdict</th></tr></thead>
+<tbody id="convrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+</div>
+<div class="card" id="pipecard" style="display:none">
+<h2>Pipe <span id="pipename"></span></h2>
+<p class="muted">The posts this source actually sent to this channel, newest first, each with the same money verdict the report uses. Click any <b>converts:</b> chip on a channel row to open its pipe. Read-only.</p>
+<div id="pipecounts" class="row"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Post</th><th>Links</th><th>Route</th><th>Verdict</th></tr></thead>
+<tbody id="piperows"></tbody></table></div>
+<div id="pipenote" class="muted"></div>
+</div>
+<div class="card" id="cardstudio">
+<h2>Deal card studio</h2>
+<p class="muted">Preview only. It draws the card a channel-style post uses - product photo, red discount pill, struck-through M.R.P., coupon box, green final-price bar - writes the caption each surface would carry, and lists the destinations that would receive <b>card + caption</b> against the ones that would skip this deal, with the reason. Nothing is queued and nothing is sent; posting stays off until <code>ops/approve_posting.sh --i-approve-posting</code>.</p>
+<textarea id="cardtext" rows="6" aria-label="Deal caption" placeholder="Paste a deal caption exactly as the source channel wrote it, e.g.\nHeadphone Bluetooth Neckband Wireless (Black)\nDeal ₹78 M.R.P.: ₹120 (35% off)\nApply 4% coupon at checkout\nMin Buy Qnty = 2"></textarea>
+<div class="row">
+<input id="cardlink" aria-label="Deal link" placeholder="https://amzn.lt/… the link the card should print">
+<select id="cardrecent" aria-label="Load a recent post"><option value="">load a recent post…</option></select>
+<select id="cardsurface" aria-label="Caption surface">
+<option value="telegram">Telegram caption</option>
+<option value="whatsapp">WhatsApp caption</option>
+<option value="premium">Premium caption</option>
+<option value="text">Plain text</option>
+</select>
+<button class="primary" id="cardrender" onclick="loadStudio(true)">Render card</button>
+</div>
+<div id="cardfacts" class="muted">no caption yet</div>
+<div id="cardwarn"></div>
+<div class="studio-split">
+<div><img id="cardimg" alt="Rendered deal card preview" style="display:none"><div id="cardbtns" class="btnbar" style="display:none"></div><div id="cardimgerr" class="muted"></div></div>
+<div><h3>Caption for <span id="cardsurfacename">Telegram</span></h3><pre id="cardcaption" class="captionbox">render a caption to see it</pre></div>
+</div>
+<h3>Post buttons under every Telegram post</h3>
+<p class="muted">The row Telegram draws <b>below</b> the message - the "Join … ❤️" button a big channel ends every post with. Up to two <code>https://t.me/…</code> buttons; WhatsApp channels have no inline buttons, so WhatsApp stays text-only. Zero buttons = today's posts, byte for byte.</p>
+<div id="btnrows"></div>
+<div class="row"><select id="btnpreset" aria-label="Quick add one of our channels"><option value="">+ quick add our channel…</option></select>
+<button id="btnadd" onclick="addButtonRow()">+ add button</button>
+<button class="primary" id="btnsave" onclick="saveButtons()">Save buttons</button>
+<span id="btnstate" class="muted"></span></div>
+<h3>Where this deal would land</h3>
+<div class="tablewrap"><table><thead><tr><th>Surface</th><th>Destination</th><th>Format</th><th>Why</th></tr></thead>
+<tbody id="cardplan"><tr><td colspan="4" class="muted">render a caption to see the plan</td></tr></tbody></table></div>
+</div>
 <div class="card"><h2>Test a category before posting</h2>
 <p class="muted">Paste the product caption and, optionally, resolved product URLs. Offline check only — this never sends a post or opens a link.</p>
 <label for="psource">Source (for channel dry-run)</label><input id="psource" list="knownsources" placeholder="Select or type the exact source name">
@@ -159,7 +244,7 @@ function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').rep
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
   sessionStorage.setItem('dash_token', TOKEN); document.getElementById('token').value='';
-  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); }
+  document.getElementById('authstate').textContent = TOKEN ? 'token set' : ''; refresh(); loadButtons(); loadRecentForStudio(); }
 async function api(method, path, body, revision){
   const h = headers(); if(revision) h['If-Match'] = revision;
   const r = await fetch(path, {method, headers:h, body: body ? JSON.stringify(body) : undefined});
@@ -207,7 +292,8 @@ async function refresh(){
     let rows = '';
     (c.builtin||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t)}</td><td><span class="badge ours">built-in</span></td><td colspan="6" class="muted">code-managed</td></tr>`; });
     (c.dashboard||[]).forEach(t=>{ rows += `<tr><td>@${escapeHTML(t.name)}</td><td><span class="badge new">dashboard</span></td>`
-      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.length+' selected · '+t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}</td>`
+      + `<td class="muted">${t.sources.length===1&&t.sources[0]==='*'?'every main source':escapeHTML(t.sources.length+' selected · '+t.sources.slice(0,3).join(', '))+(t.sources.length>3?'…':'')}`
+      + convLine(t.name) + `</td>`
       + `<td>${(t.categories||[]).length?t.categories.map(k=>`<span class="badge ours">${escapeHTML(categoryLabels[k] || k)}</span>`).join(' '):'<span class="muted">every category</span>'}</td>`
       + `<td>${t.amazon_tag?'<span class="badge ours">tag</span>':'<span class="muted">no tag</span>'}</td>`
       + `<td><button class="ghost" data-action="toggle" data-name="${escapeHTML(t.name)}" data-enabled="${!t.enabled}">${t.enabled?'ON':'OFF'}</button></td>`
@@ -234,10 +320,624 @@ async function refresh(){
       `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · held for review: <b>${d.held||0}</b> · ` +
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
+    await loadCategories();   // never throws: a dead /api/categories must not blank the rest
+    await loadConversion();   // same guarantee for the link-conversion book
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
+function catStateBadge(state){
+  const map={ok:['ours','receiving'],silent:['warn','silent'],skipping:['warn','skipping more than sending'],
+    no_channel:['warn','no channel can receive it'],disabled:['warn','configured but disabled']};
+  const entry=map[state]||['',String(state||'unknown')];
+  return `<span class="badge ${entry[0]}">${escapeHTML(entry[1])}</span>`;
+}
+function sparkline(series){
+  // Eight block characters, one per IST day: a trend readable in a table cell
+  // with no chart library and nothing to load.
+  const values=(Array.isArray(series)?series:[]).map(d=>Math.max(0,Number(d&&d.sent)||0));
+  if(!values.length) return '';
+  const blocks='\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588', top=Math.max(...values);
+  if(!top) return blocks[0].repeat(values.length);
+  return values.map(v=>blocks[Math.min(7,Math.round(v*7/top))]).join('');
+}
+function moneyCell(m){
+  const posts=Number(m&&m.posts)||0;
+  if(!posts) return '<span class="muted">nothing delivered</span>';
+  const owned=escapeHTML(Number(m.owned)||0), nothing=escapeHTML(Number(m.earns_nothing)||0),
+    foreign=Number(m.foreign_tag)||0, unproven=Number(m.unattributed)||0,
+    routes=Object.entries(m.routes||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+  return `${owned} paid · ${nothing} earn nothing`
+    +(foreign?` · <b class="bad">${escapeHTML(foreign)} foreign tag</b>`:'')
+    +(unproven?` · ${escapeHTML(unproven)} unproven`:'')
+    +`<br><span class="muted">${escapeHTML(posts)} post(s)${routes?' · '+routes:''}</span>`;
+}
+function surfaceCell(sf){
+  const tg=(sf&&sf.telegram)||{}, wa=(sf&&sf.whatsapp)||{};
+  const targets=(Array.isArray(tg.targets)?tg.targets:[]).map(t=>'@'+escapeHTML(t)).join(', ')
+    ||'<span class="muted">none</span>';
+  const tagNote=tg.amazon_tag?' <span class="muted">(tag)</span>':' <span class="muted">(tagless)</span>';
+  const channel=wa.channel
+    ? escapeHTML(wa.channel)+(wa.filtered
+      ? ` <span class="badge ours">${escapeHTML(wa.policy||'filtered')}</span>`
+      : ' <span class="badge warn">not filtered</span>')
+      +(wa.amazon_tag?' <span class="muted">(tag)</span>':'')
+    : '<span class="muted">not configured</span>';
+  return `TG ${targets}${tagNote}<br>WA ${channel}`;
+}
+async function loadConversion(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const stats=document.getElementById('convstats');
+  const note=document.getElementById('convnote');
+  const body=document.getElementById('convrows');
+  let data=null;
+  try{ data=await api('GET','/api/link-conversion?limit=25'); }
+  catch(error){
+    body.innerHTML='<tr><td colspan="5" class="muted">conversion view unavailable: '
+      +escapeHTML(String(error&&error.message||error))+'</td></tr>';
+    return;
+  }
+  const t=data.totals||{};
+  const stat=(label,value)=>'<div class="stat"><b>'+escapeHTML(value??'—')+'</b><span>'
+    +escapeHTML(label)+'</span></div>';
+  stats.innerHTML=stat('cached links',t.cached??0)
+    +stat('converted to us',(data.converted_pct==null?'—':data.converted_pct+'%'))
+    +stat('foreign tag',t.foreign_tag??0)
+    +stat('earn nothing',t.earns_nothing??0)
+    +stat('unattributed',t.unattributed??0)
+    +stat('proof rows',t.proofs??0);
+  const owned=t.owned??0, cached=t.cached??0;
+  note.textContent=(cached
+    ? owned+' of '+cached+' cached links ('+(data.converted_pct??0)+'%) carry our tag, our '
+      +'shortener or a proof row; '+(t.foreign_tag??0)+' would pay a stranger and '
+      +(t.earns_nothing??0)+' earn nothing.'
+    : 'no cached links yet - the converter has not run in this database.')
+    +(t.capped?' (totals capped at the newest 5000 rows)':'');
+  const trendBox=document.getElementById('convtrend');
+  const trend=data.trend||[];
+  if(trendBox){
+    trendBox.innerHTML=trend.length
+      ? '<b>converted per IST day:</b> '+trend.map(dayCell).join('')
+      : '';
+  }
+  const rows=data.rows||[];
+  const verdict={'owned':'<span class="badge ok">ours</span>',
+    'foreign_tag':'<span class="badge bad">FOREIGN TAG</span>',
+    'unattributed':'<span class="badge warn">unattributed</span>',
+    'earns_nothing':'<span class="muted">earns nothing</span>'};
+  body.innerHTML=rows.length?rows.map(r=>'<tr><td class="muted">'+escapeHTML(r.at)+'</td>'
+      +'<td class="muted">'+escapeHTML(r.source)+'</td>'
+      +'<td>'+escapeHTML(r.affiliate)+(r.proof?' <span class="badge ok">proof</span>':'')+'</td>'
+      +'<td>'+escapeHTML(r.route)+'</td>'
+      +'<td>'+(verdict[r.bucket]||escapeHTML(r.bucket))+'</td></tr>').join('')
+    :'<tr><td colspan="5" class="muted">no links cached in this database</td></tr>';
+}
+let recentJobs=[];
+async function loadRecentForStudio(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const select=document.getElementById('cardrecent');
+  try{
+    const data=await api('GET','/api/recent?limit=25');
+    recentJobs=data.jobs||[];
+  }catch(error){ recentJobs=[]; }
+  const kept=select.value;
+  select.innerHTML='<option value="">load a recent post…</option>'
+    +recentJobs.map(job=>'<option value="'+escapeHTML(job.id)+'">'
+      +escapeHTML(job.source)+' · '+escapeHTML((job.snippet||'').slice(0,64))
+      +(job.link?' · has link':' · no link')+'</option>').join('');
+  select.value=kept;
+}
+document.getElementById('cardrecent').addEventListener('change',event=>{
+  const job=recentJobs.find(j=>String(j.id)===event.target.value);
+  if(!job) return;
+  document.getElementById('cardtext').value=job.snippet||'';
+  document.getElementById('cardlink').value=job.link||'';
+  loadStudio(true);
+});
+let buttonRows=[];
+function renderButtonRows(){
+  const wrap=document.getElementById('btnrows');
+  wrap.innerHTML='';
+  buttonRows.forEach((row,index)=>{
+    const line=document.createElement('div'); line.className='row';
+    const label=document.createElement('input');
+    label.value=row.label||''; label.maxLength=40;
+    label.placeholder='label, e.g. Join Shpsy Loots \u2764\ufe0f';
+    label.setAttribute('aria-label','button label');
+    label.addEventListener('input',()=>{ buttonRows[index].label=label.value; });
+    const url=document.createElement('input');
+    url.value=row.url||''; url.placeholder='https://t.me/yourchannel';
+    url.setAttribute('aria-label','button url');
+    url.addEventListener('input',()=>{ buttonRows[index].url=url.value; });
+    const del=document.createElement('button');
+    del.textContent='remove';
+    del.addEventListener('click',()=>{ buttonRows.splice(index,1); renderButtonRows(); });
+    line.append(label,url,del);
+    wrap.appendChild(line);
+  });
+  document.getElementById('btnadd').style.display=buttonRows.length>=2?'none':'';
+}
+function addButtonRow(){
+  if(buttonRows.length>=2) return;
+  buttonRows.push({label:'',url:''});
+  renderButtonRows();
+}
+async function loadButtons(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const state=document.getElementById('btnstate');
+  try{
+    const data=await api('GET','/api/post-buttons');
+    buttonRows=(data.buttons||[]).map(b=>({label:b.label,url:b.url}));
+    renderButtonRows();
+    const preset=document.getElementById('btnpreset');
+    const presets=(data.presets||[]);
+    preset.innerHTML='<option value="">+ quick add our channel…</option>'
+      +presets.map((entry,index)=>'<option value="'+escapeHTML(index)+'">'
+        +escapeHTML(entry.label)+' · '+escapeHTML(entry.url)+'</option>').join('');
+    preset.onchange=()=>{
+      const entry=presets[Number(preset.value)];
+      preset.value='';
+      if(!entry) return;
+      if(buttonRows.length>=2){
+        document.getElementById('btnstate').textContent=
+          'row is full (max 2) - remove one before adding '+entry.label;
+        return;
+      }
+      if(buttonRows.some(r=>(r.url||'').toLowerCase()===entry.url.toLowerCase())){
+        document.getElementById('btnstate').textContent=entry.label+' is already in the row';
+        return;
+      }
+      buttonRows.push({label:entry.label,url:entry.url});
+      renderButtonRows();
+      document.getElementById('btnstate').textContent=
+        'added from presets - press Save buttons to publish';
+    };
+    state.textContent=buttonRows.length?'configured: '+buttonRows.length+' button(s)'
+      :'no buttons configured - posts go out exactly as today';
+  }catch(error){
+    state.textContent='buttons unavailable: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+async function saveButtons(){
+  const state=document.getElementById('btnstate');
+  const rows=buttonRows.filter(r=>(r.label||'').trim()||(r.url||'').trim());
+  try{
+    const saved=await api('PUT','/api/post-buttons',{buttons:rows});
+    buttonRows=(saved.buttons||[]).map(b=>({label:b.label,url:b.url}));
+    renderButtonRows();
+    renderMockButtons(buttonRows);
+    state.textContent='saved '+buttonRows.length+' button(s)';
+  }catch(error){
+    state.textContent='NOT saved: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+function renderMockButtons(buttons){
+  const bar=document.getElementById('cardbtns');
+  bar.innerHTML='';
+  if(!buttons||!buttons.length){ bar.style.display='none'; return; }
+  bar.style.display='flex';
+  for(const entry of buttons){
+    const a=document.createElement('a');
+    a.textContent=entry.label;
+    a.href=entry.url;
+    a.target='_blank';
+    a.rel='noopener noreferrer';
+    bar.appendChild(a);
+  }
+}
+let lastCat=null;
+function dayCell(day){
+  const pct=day.pct==null?0:day.pct;
+  const height=Math.max(2,Math.round(pct/5));
+  const title=day.day+': '+(day.cached||0)+' cached · '+(day.owned||0)+' ours'
+    +((day.foreign_tag||0)?' · '+day.foreign_tag+' FOREIGN':'');
+  return '<span class="sparkday" title="'+escapeHTML(title)+'" '
+    +'style="display:inline-block;text-align:center;margin-right:6px">'
+    +'<i style="display:block;width:10px;height:'+height+'px;margin:0 auto;'
+    +'background:'+((day.foreign_tag||0)?'#c62828':'#2e7d32')+';border-radius:2px"></i>'
+    +'<small>'+escapeHTML(String(day.day).slice(5))+'</small></span>';
+}
+function convLine(name){
+  const conv=(lastCat&&lastCat.channel_conversion)||{};
+  const per=conv[name];
+  if(!per||!Object.keys(per).length) return '<div class="muted">no delivered posts in this window</div>';
+  return '<div>converts: '+Object.entries(per).map(([src,c])=>
+    '<button class="ghost" onclick="openPipe(\''+escapeHTML(name)+'\',\''+escapeHTML(src)+'\')">'
+    +escapeHTML(src)+' '+escapeHTML(c.owned)+'/'+escapeHTML(c.sent)+' ours'
+    +(c.foreign?' · <span class="badge bad">'+escapeHTML(c.foreign)+' FOREIGN</span>':'')
+    +(c.nothing?' · '+escapeHTML(c.nothing)+' earn nothing':'')+'</button>').join(' ')+'</div>';
+}
+async function openPipe(target,source){
+  const card=document.getElementById('pipecard');
+  card.style.display='block';
+  document.getElementById('pipename').textContent=target+' ← '+source;
+  const rows=document.getElementById('piperows');
+  const note=document.getElementById('pipenote');
+  const counts=document.getElementById('pipecounts');
+  rows.innerHTML='<tr><td colspan="5" class="muted">loading…</td></tr>';
+  note.textContent=''; counts.innerHTML='';
+  const hours=(document.getElementById('cathours')||{}).value||'168';
+  let data=null;
+  try{ data=await api('GET','/api/channel-pipe?limit=15&hours='+encodeURIComponent(hours)
+    +'&target='+encodeURIComponent(target)+'&source='+encodeURIComponent(source)); }
+  catch(error){
+    note.textContent='pipe view unavailable: '+String(error&&error.message||error);
+    return;
+  }
+  const c=data.counts||{};
+  const stat=(label,value)=>'<div class="stat"><b>'+escapeHTML(value??'—')+'</b><span>'
+    +escapeHTML(label)+'</span></div>';
+  counts.innerHTML=stat('sent',c.sent??0)+stat('ours',c.owned??0)
+    +stat('FOREIGN',c.foreign??0)+stat('earn nothing',c.nothing??0);
+  const verdict={'owned':'<span class="badge ok">ours</span>',
+    'foreign_tag':'<span class="badge bad">FOREIGN TAG</span>',
+    'unattributed':'<span class="badge warn">unattributed</span>',
+    'earns_nothing':'<span class="muted">earns nothing</span>'};
+  const list=data.rows||[];
+  rows.innerHTML=list.length?list.map(r=>'<tr><td class="muted">'+escapeHTML(r.at)+'</td>'
+    +'<td>'+escapeHTML(r.snippet||'(no text)')+'</td>'
+    +'<td class="muted">'+(r.urls||[]).map(escapeHTML).join('<br>')+'</td>'
+    +'<td class="muted">'+escapeHTML(r.route||'')+'</td>'
+    +'<td>'+(verdict[r.bucket]||escapeHTML(r.bucket))+'</td></tr>').join('')
+    :'<tr><td colspan="5" class="muted">no sent posts in this pipe inside the window</td></tr>';
+  note.textContent=(data.capped?'showing the newest '+list.length+' of '+c.sent+' sends. ':'')
+    +(data.db_exists?'':'(no database yet) ')+(data.ledger_error?('ledger: '+data.ledger_error):'');
+  if(card.scrollIntoView){ card.scrollIntoView({behavior:'smooth',block:'nearest'}); }
+}
+let waRows=[];
+function waKeyOptions(selected){
+  const cats=(lastCat&&lastCat.categories)||[];
+  // /api/categories carries shelves as a list of {key,...}; be robust to a map too
+  const keys=Array.isArray(cats)
+    ? cats.map(shelf=>shelf&&shelf.key).filter(Boolean)
+    : Object.keys(cats);
+  const core=['under99','under499','best_of'];
+  const all=keys.concat(core.filter(k=>!keys.includes(k)));
+  return all.map(k=>'<option value="'+escapeHTML(k)+'"'+(k===selected?' selected':'')+'>'
+    +escapeHTML(k)+'</option>').join('');
+}
+function renderWaRows(){
+  const wrap=document.getElementById('warows');
+  wrap.innerHTML='';
+  waRows.forEach((row,index)=>{
+    const line=document.createElement('div'); line.className='row';
+    const key=document.createElement('select');
+    key.innerHTML=waKeyOptions(row.key);
+    key.setAttribute('aria-label','WhatsApp shelf key');
+    key.addEventListener('change',()=>{ waRows[index].key=key.value; });
+    const value=document.createElement('input');
+    value.value=row.value||''; value.placeholder='120363…@newsletter or …@g.us';
+    value.setAttribute('aria-label','WhatsApp channel id');
+    value.addEventListener('input',()=>{ waRows[index].value=value.value; });
+    const enabled=document.createElement('input');
+    enabled.type='checkbox'; enabled.checked=row.enabled!==false;
+    enabled.setAttribute('aria-label','enabled');
+    enabled.addEventListener('change',()=>{ waRows[index].enabled=enabled.checked; });
+    const lab=document.createElement('span'); lab.className='muted'; lab.textContent='on';
+    const del=document.createElement('button'); del.textContent='remove';
+    del.addEventListener('click',()=>{ waRows.splice(index,1); renderWaRows(); });
+    line.append(key,value,enabled,lab,del);
+    wrap.appendChild(line);
+  });
+}
+function addWaRow(){ waRows.push({key:'',value:'',enabled:true}); renderWaRows(); }
+function renderWhatsApp(wa){
+  const live=document.getElementById('walive');
+  const pending=new Set(wa.pending||[]);
+  const liveChannels=wa.live_channels||wa.channels||{};
+  const liveCore=wa.live_core||wa.core||{};
+  const liveKeys=Object.entries(liveChannels).map(([k,v])=>k+' → '+v)
+    .concat(Object.entries(liveCore).map(([k,v])=>k+' (core) → '+v));
+  live.innerHTML='<b>live in bridge env:</b> '
+    +(liveKeys.length?liveKeys.map(escapeHTML).join(' · '):'nothing configured yet')
+    +((wa.collisions||[]).length?' <span class="badge bad">'
+      +escapeHTML(wa.collisions.length)+' COLLISION</span>':'');
+  waRows=((wa.file||{})&&Object.entries(wa.file||{}).length
+    ? Object.entries(wa.file).map(([k,v])=>({key:k,value:'',enabled:true,masked:v}))
+    : waRows);
+  const fileRows=(wa.file_rows)||null;
+  if(fileRows) waRows=fileRows.map(r=>({key:r.key,value:r.value,enabled:r.enabled}));
+  renderWaRows();
+  const envBox=document.getElementById('waenv');
+  const copy=document.getElementById('wacopy');
+  const lines=wa.env_lines||[];
+  if(lines.length){
+    envBox.style.display='block'; copy.style.display='';
+    envBox.textContent='# paste into the bridge env, then restart the bridge:\n'
+      +lines.join('\n');
+  } else { envBox.style.display='none'; copy.style.display='none'; }
+  const state=document.getElementById('wastate');
+  state.textContent=pending.size
+    ? 'pending activation: '+[...pending].join(', ')+' - paste the env lines above'
+    : (lines.length?'saved - env lines above are all the bridge needs':'no WhatsApp rows saved yet');
+}
+async function saveWa(){
+  const state=document.getElementById('wastate');
+  const rows=waRows.filter(r=>(r.key||'').trim()||(r.value||'').trim())
+    .map(r=>({key:(r.key||'').trim(),value:(r.value||'').trim(),enabled:r.enabled!==false}));
+  try{
+    const saved=await api('PUT','/api/channels/whatsapp',{whatsapp:rows});
+    waRows=(saved.whatsapp||[]).map(r=>({key:r.key,value:r.value,enabled:r.enabled}));
+    renderWaRows();
+    const envBox=document.getElementById('waenv');
+    const copy=document.getElementById('wacopy');
+    envBox.style.display='block'; copy.style.display='';
+    envBox.textContent='# paste into the bridge env, then restart the bridge:\n'
+      +(saved.env_lines||[]).join('\n');
+    state.textContent='saved - paste the env lines into the bridge env to activate';
+  }catch(error){
+    state.textContent='NOT saved: '+escapeHTML(String(error&&error.message||error));
+  }
+}
+function copyWaEnv(){
+  const text=document.getElementById('waenv').textContent;
+  if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(text); }
+  document.getElementById('wastate').textContent='env lines copied';
+}
+let cardURL=null;
+async function loadStudio(draw){
+  const text=(document.getElementById('cardtext').value||'').trim();
+  const link=(document.getElementById('cardlink').value||'').trim();
+  const factsBox=document.getElementById('cardfacts');
+  const warnBox=document.getElementById('cardwarn');
+  const img=document.getElementById('cardimg');
+  const imgErr=document.getElementById('cardimgerr');
+  const planBody=document.getElementById('cardplan');
+  imgErr.textContent='';
+  if(!text){ factsBox.textContent='paste a deal caption first'; return; }
+  const params=new URLSearchParams({text});
+  if(link) params.set('link',link);
+  let data=null;
+  try{ data=await api('GET','/api/card-studio?'+params.toString()); }
+  catch(error){
+    planBody.innerHTML='<tr><td colspan="4" class="muted">card studio unavailable: '
+      +escapeHTML(String(error&&error.message||error))+'</td></tr>';
+    return;
+  }
+  const f=data.facts||{};
+  const money=v=>v==null?'not read':'Rs'+escapeHTML(v);
+  factsBox.innerHTML='price <b>'+money(f.price)+'</b>'
+    +(f.mrp?' &middot; M.R.P. <s>'+money(f.mrp)+'</s>':'')
+    +(f.discount?' &middot; <b>'+escapeHTML(f.discount)+'% off</b>':'')
+    +' &middot; final <b>'+money(f.final)+'</b>'
+    +(f.coupon&&f.coupon.percent?' &middot; coupon '+escapeHTML(f.coupon.percent)+'%':'')
+    +(f.coupon&&f.coupon.code?' &middot; code '+escapeHTML(f.coupon.code):'')
+    +(f.min_qty?' &middot; min qty '+escapeHTML(f.min_qty):'')
+    +' &middot; category <b>'+escapeHTML((data.plan||{}).category||'unclassified')+'</b>';
+  const warnings=(data.plan||{}).warnings||[];
+  warnBox.innerHTML=(data.link&&data.link.owned?'':(data.link&&data.link.url
+      ?'<p class="muted"><span class="badge warn">link</span> '+escapeHTML(data.link.why||'')+'</p>':''))
+    +warnings.map(w=>'<p class="muted"><span class="badge warn">!</span> '+escapeHTML(w)+'</p>').join('');
+  const surface=document.getElementById('cardsurface').value;
+  document.getElementById('cardsurfacename').textContent=surface;
+  document.getElementById('cardcaption').textContent=(data.captions||{})[surface]||'';
+  const rows=(data.plan||{}).rows||[];
+  planBody.innerHTML=rows.length?rows.map(row=>'<tr>'
+      +'<td>'+escapeHTML(row.surface)+'</td>'
+      +'<td>'+escapeHTML(row.destination)+(row.enabled?'':' <span class="badge bad">disabled</span>')+'</td>'
+      +'<td>'+(row.accepts?'<span class="badge ok">'+escapeHTML(row.format)+'</span>'
+                    :'<span class="muted">not sent</span>')+'</td>'
+      +'<td class="muted">'+escapeHTML(row.why)+'</td></tr>').join('')
+    :'<tr><td colspan="4" class="muted">no destinations configured for this deal</td></tr>';
+  renderMockButtons(data.buttons||[]);
+  if(cardURL){ URL.revokeObjectURL(cardURL); cardURL=null; }
+  if(draw){
+    img.style.display='none';
+    try{
+      const r=await fetch('/api/card.png?'+params.toString(),{headers:headers()});
+      if(!r.ok){ const j=await r.json().catch(()=>({})); throw new Error(j.error||r.status); }
+      const blob=await r.blob();
+      cardURL=URL.createObjectURL(blob);
+      img.src=cardURL; img.style.display='block';
+    }catch(error){ imgErr.textContent='card image unavailable: '+(error&&error.message||error); }
+  }
+}
+document.getElementById('cardsurface').addEventListener('change',()=>loadStudio(false));
+document.getElementById('cardtext').addEventListener('keydown',event=>{
+  if((event.metaKey||event.ctrlKey)&&event.key==='Enter') loadStudio(true);
+});
+function qualityCell(q){
+  // premium_score and posted_deals.price are the bot's own numbers; this cell
+  // only shows them, and says "unproven" when the columns are empty.
+  if(!q||!Number(q.posts)) return '<span class="muted">nothing delivered</span>';
+  if(!Number(q.scored)) return '<span class="muted">unscored posts</span>';
+  const price=Number(q.price_rows)
+    ?`<br><span class="muted">Rs${escapeHTML(q.price_min)}-Rs${escapeHTML(q.price_max)}, median Rs${escapeHTML(q.price_median)} (${escapeHTML(q.under_99)} under Rs99)</span>`
+    :'<br><span class="muted">no recorded prices</span>';
+  const sources=Object.entries(q.sources||{}).slice(0,3)
+    .map(([name,count])=>escapeHTML(name)+'×'+escapeHTML(count)).join(', ');
+  return `avg ${escapeHTML(q.avg_score)} (min ${escapeHTML(q.min_score)}, max ${escapeHTML(q.max_score)})`
+    +`<br><span class="muted">${escapeHTML(q.scored)} scored${sources?' · '+sources:''}</span>${price}`;
+}
+function renderSourceMatrix(data){
+  const matrix=data.source_matrix||{}, columns=Array.isArray(matrix.columns)?matrix.columns:[];
+  const head=document.getElementById('catsourcehead');
+  const body=document.getElementById('catsources');
+  const names=(Array.isArray(matrix.sources)?matrix.sources:[])
+    .concat(Array.isArray(matrix.declared_only)?matrix.declared_only:[]);
+  if(!columns.length||!names.length){
+    head.innerHTML=''; body.innerHTML='<tr><td class="muted">no source traffic in this window</td></tr>';
+    return;
+  }
+  head.innerHTML='<tr><th>Source</th>'+columns.map(c=>`<th>${escapeHTML(c)}</th>`).join('')
+    +'<th>Total</th></tr>';
+  const declaredOnly=new Set(matrix.declared_only||[]);
+  body.innerHTML=names.map(name=>{
+    const cells=matrix.cells&&matrix.cells[name]?matrix.cells[name]:{};
+    const dead=declaredOnly.has(name);
+    return `<tr${dead?' class="catdetail"':''}><td>${escapeHTML(name)}`
+      +(dead?' <span class="badge warn">DEAD</span>':'')+'</td>'
+      +columns.map(c=>`<td>${escapeHTML(cells[c]||'')}</td>`).join('')
+      +`<td>${escapeHTML((matrix.totals||{})[name]||0)}</td></tr>`;
+  }).join('');
+}
+function findShelfRow(key){
+  return Array.from(document.querySelectorAll('#catrows tr[data-key]'))
+    .find(tr=>tr.dataset.key===key)||null;
+}
+async function toggleShelf(key){
+  // Drill-down: open the rows behind one shelf's numbers. Built with DOM APIs and
+  // textContent only - a deal caption, a channel name or a logged error is never
+  // interpolated as HTML here.
+  const row=findShelfRow(key); if(!row) return;
+  const open=row.nextElementSibling;
+  if(open&&open.classList.contains('catdetail')){ open.remove(); row.classList.remove('open'); return; }
+  const detail=document.createElement('tr');
+  detail.className='catdetail';
+  const cell=document.createElement('td');
+  cell.colSpan=14;
+  cell.className='muted';
+  cell.textContent='loading the newest delivery rows for '+key+'…';
+  detail.appendChild(cell);
+  row.after(detail);
+  row.classList.add('open');
+  try{
+    const hours=(document.getElementById('cathours')||{}).value||'24';
+    const days=(document.getElementById('catdays')||{}).value||'7';
+    const data=(await api('GET','/api/categories?hours='+encodeURIComponent(hours)
+      +'&days='+encodeURIComponent(days)+'&expand='+encodeURIComponent(key)))||{};
+    renderShelfDetail(cell,((data.recent||{})[key])||[]);
+  }catch(e){
+    cell.textContent='drill-down unavailable: '+e.message;
+  }
+}
+function renderShelfDetail(cell,rows){
+  cell.textContent='';
+  cell.classList.remove('muted');
+  if(!Array.isArray(rows)||!rows.length){
+    cell.textContent='no delivery rows for this shelf in the window';
+    return;
+  }
+  const table=document.createElement('table');
+  const head=document.createElement('thead');
+  const headRow=document.createElement('tr');
+  for(const title of ['Queue','When (IST)','Target','Status','Reason','Money','Post']){
+    const th=document.createElement('th'); th.textContent=title; headRow.appendChild(th);
+  }
+  head.appendChild(headRow); table.appendChild(head);
+  const body=document.createElement('tbody');
+  for(const item of rows){
+    const tr=document.createElement('tr');
+    for(const value of ['#'+(item.queue_id??'?'), item.at||'?', '@'+(item.target||'?'),
+        item.status||'?', item.reason||item.error||'', item.money?item.money+'/'+(item.route||''):'',
+        item.snippet||'(no text)']){
+      const td=document.createElement('td'); td.textContent=String(value??''); tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  cell.appendChild(table);
+}
+function renderCategories(data){
+  const cats=Array.isArray(data.categories)?data.categories:[];
+  const totals=data.totals||{}, main=data.main||{}, mainDeliveries=main.deliveries||{};
+  const note=document.getElementById('catnote');
+  const versionNote='installed rules v'+(data.rules_version??'?')+' · bot reported v'+(data.bot_rules_version??'unknown');
+  note.textContent=(data.db_readable===false?'database not readable yet - counts are zero. ':'')
+    +(data.log_lines_read?'log lines scanned: '+data.log_lines_read+'. ':'no bot log found - routed/withheld counts come from the log only. ')
+    +versionNote+(data.rules_load_error?' · RULES ERROR: '+data.rules_load_error:'');
+  const unclassified=(data.unclassified_withheld||{}).total||0;
+  const foreign=Object.keys(data.foreign_category_withheld||{});
+  document.getElementById('catstats').innerHTML =
+    stat(totals.shelves_with_channel||0,'shelves reachable') + stat(totals.sent||0,'shelf sends') +
+    stat(totals.skipped||0,'shelf skips') + stat(totals.routed||0,'routed by classifier') +
+    stat(totals.withheld||0,'withheld from shelves') + stat(unclassified,'withheld unclassified') +
+    stat(mainDeliveries.sent||0,'Main sends') + stat(totals.paid_posts||0,'posts that pay us');
+  if(unclassified||foreign.length){
+    note.textContent += ' · '+unclassified+' post(s) withheld because no category matched'
+      +(foreign.length?' · the bot also withheld posts for categories this taxonomy does not define: '
+        +foreign.join(', '):'');
+  }
+  const moneyTotals=data.money_totals||{}, wa=data.whatsapp||{};
+  if(moneyTotals.posts){
+    note.textContent += ' · money: '+moneyTotals.posts+' delivered post(s), '
+      +(moneyTotals.owned||0)+' carrying a link that pays us, '
+      +(moneyTotals.earns_nothing||0)+' paying nobody'
+      +((moneyTotals.foreign_tag||0)?', '+moneyTotals.foreign_tag+' carrying a FOREIGN tag':'')
+      +((moneyTotals.unattributed||0)?', '+moneyTotals.unattributed+' unproven':'');
+  }
+  if(wa.configured){
+    note.textContent += ' · WhatsApp: '+Object.keys(wa.channels||{}).length+' category channel(s), '
+      +Object.keys(wa.core||{}).length+' core'
+      +((wa.collisions||[]).length?', '+wa.collisions.length+' COLLISION (shelf not filtered)':'');
+  }
+  if(data.ledger_capped){
+    note.textContent += ' · only the newest '+(data.max_posts||'?')+' ledger rows were read: '
+      +'money and trend cover part of this window';
+  }
+  const findings=Array.isArray(data.findings)?data.findings:[];
+  const actionable=findings.filter(f=>f&&f.severity!=='info');
+  // Escaped into named locals first, then interpolated: nothing dynamic reaches
+  // innerHTML straight from the response (labels, targets, log reasons and
+  // finding text all originate in channel config or bot log lines).
+  document.getElementById('catfindings').innerHTML = findings.length
+    ? findings.map(f=>{
+        const cls=f.severity==='info'?'':'warn', sev=escapeHTML(f.severity||'?'),
+          kind=escapeHTML(f.kind||'?'), detail=escapeHTML(f.detail||''),
+          where=f.category?' · '+escapeHTML(f.category):'';
+        return `<span class="badge ${cls}">${sev}</span> <b>${kind}</b>${where}: ${detail}`;
+      }).join('<br>')
+    : '<span class="muted">No findings: every reachable shelf received posts, no category route was disabled, and both services classify with the same rules.</span>';
+  const rowsHTML = cats.map(c=>{
+    const d=c.deliveries||{}, w=c.withheld||{}, tagless=c.tagless_targets||[];
+    const active=Array.isArray(c.active_targets)?c.active_targets:(c.targets||[]);
+    const targets=(c.targets||[]).map(t=>'@'+escapeHTML(t)
+      +(active.includes(t)?'':' <span class="muted">(disabled)</span>')
+      +(tagless.includes(t)?' <span class="muted">(tagless)</span>':'')).join(', ')
+      ||'<span class="muted">none configured</span>';
+    const reasons=Object.entries(w.reasons||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+    const skips=Object.entries(c.skip_reasons||{}).map(([r,n])=>escapeHTML(r)+'×'+escapeHTML(n)).join(', ');
+    const label=escapeHTML(c.label||''), key=escapeHTML(c.key||''), aliases=escapeHTML(c.aliases||0),
+      sent=escapeHTML(d.sent||0), skipped=escapeHTML(d.skipped||0), held=escapeHTML(d.held||0),
+      pending=escapeHTML(c.pending||0), routed=escapeHTML(c.routed||0), withheld=escapeHTML(w.total||0),
+      last=escapeHTML(c.last_sent||'never'), skipNote=skips?`<br><span class="muted">${skips}</span>`:'',
+      withheldNote=reasons?`<br><span class="muted">${reasons}</span>`:'',
+      money=moneyCell(c.money), surface=surfaceCell(c.surfaces), quality=qualityCell(c.quality),
+      series=Array.isArray(c.history)?c.history:[],
+      spark=escapeHTML(sparkline(series)),
+      sparkTitle=escapeHTML('sends per IST day: '+(series.map(x=>Number(x&&x.sent)||0).join('/')||'none')),
+      trend=series.length?`${spark}<br><span class="muted">${escapeHTML(series.length)}d</span>`
+        :'<span class="muted">no trend</span>';
+    return `<tr data-key="${key}" title="click to open this shelf's newest delivery rows">`
+      +`<td><b>${label}</b><br><span class="muted">${key} · ${aliases} aliases</span></td>`
+      +`<td>${catStateBadge(c.state)}</td><td>${targets}</td>`
+      +`<td>${sent}</td><td>${skipped}${skipNote}</td>`
+      +`<td>${held}</td><td>${pending}</td><td>${routed}</td>`
+      +`<td>${withheld}${withheldNote}</td>`
+      +`<td>${money}</td>`
+      +`<td>${quality}</td>`
+      +`<td title="${sparkTitle}">${trend}</td>`
+      +`<td>${surface}</td>`
+      +`<td class="muted">${last}</td></tr>`;
+  }).join('') || '<tr><td colspan="14" class="muted">no category rules installed - nothing can be routed to a shelf</td></tr>';
+  // The panel refreshes every few seconds; an open drill-down is being read, so
+  // the table freezes instead of snapping shut under the operator's cursor.
+  if(document.querySelectorAll('#catrows tr.open').length){
+    note.textContent += ' · table paused while a shelf row is open (click it again to close)';
+  }else{
+    document.getElementById('catrows').innerHTML = rowsHTML;
+  }
+  renderSourceMatrix(data);
+  const badge=document.getElementById('catwindow');
+  if(badge) badge.textContent='last '+(document.getElementById('cathours').value||'24')+'h · '+actionable.length+' actionable finding(s)';
+}
+function rememberCategories(payload){ lastCat=payload; renderWhatsApp(payload.whatsapp||{}); }
+async function loadCategories(){
+  const hours=(document.getElementById('cathours')||{}).value||'24';
+  const days=(document.getElementById('catdays')||{}).value||'7';
+  try{
+    const payload=await api('GET','/api/categories?hours='+encodeURIComponent(hours)
+      +'&days='+encodeURIComponent(days))||{};
+    rememberCategories(payload);
+    renderCategories(payload);
+  }catch(e){
+    document.getElementById('catnote').textContent='category data unavailable: '+e.message;
+    document.getElementById('catstats').innerHTML='';
+    document.getElementById('catfindings').textContent='';
+    document.getElementById('catrows').innerHTML='<tr><td colspan="14" class="muted">no category data</td></tr>';
+    renderSourceMatrix({});
+  }
+}
 function toggleSrcs(){ sourceSummary('f'); }
 async function previewCategory(){
   const out = document.getElementById('cresult'); out.textContent = 'checking…';
@@ -593,7 +1293,13 @@ document.getElementById('channels').addEventListener('click', event=>{
   if(button.dataset.action==='toggle') toggleCh(name,button.dataset.enabled==='true');
   if(button.dataset.action==='delete') delCh(name);
 });
+document.getElementById('catrows').addEventListener('click', event=>{
+  const row=event.target.closest('tr[data-key]'); if(!row) return;
+  toggleShelf(row.dataset.key);
+});
 if(TOKEN || DEMO_MODE) refresh();
+loadButtons();
+loadRecentForStudio();
 setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
 </script>
 </body>

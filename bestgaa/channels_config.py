@@ -142,6 +142,86 @@ def category_keys(raw) -> list[str]:
     return list(dict.fromkeys(key.strip().lower() for key in raw))
 
 
+WA_CORE_KEYS = ("under99", "under499", "best_of")
+WA_VALUE_RE = re.compile(r"^\d{1,20}(-\d{1,20})?@(g\.us|newsletter|s\.whatsapp\.net)$")
+
+
+def validate_whatsapp(entry: dict, known_categories: set[str],
+                      seen_values: set[str]) -> tuple[dict, list[str]]:
+    """One dashboard-managed WhatsApp channel: which shelf/core slot it carries.
+
+    The bridge builds WhatsApp policy from `WA_CHANNEL_<KEY>` env at startup, so a
+    row saved here is the operator's DECLARED intent plus the exact env line to
+    paste; the dashboard never restarts the bridge and never pretends otherwise.
+    A value shared by two keys is refused outright - the bridge logs that as a
+    collision and silently stops filtering, so catching it at save time is
+    cheaper than a week of unfiltered posts.
+    """
+    errors: list[str] = []
+    if not isinstance(entry, dict):
+        return {}, ["whatsapp entry must be an object"]
+    key = str(entry.get("key", "") or "").strip().lower()
+    if not key:
+        errors.append("whatsapp entry needs a key (a category or under99/under499/best_of)")
+    elif key not in known_categories and key not in WA_CORE_KEYS:
+        errors.append(f"whatsapp key {key!r} is not a category key or one of "
+                      f"{', '.join(WA_CORE_KEYS)}")
+    value = str(entry.get("value", "") or "").strip()
+    if not value:
+        errors.append("whatsapp entry needs a channel id (…@newsletter or …@g.us)")
+    elif len(value) > 64 or re.search(r"[\x00-\x1f\x7f]", value):
+        errors.append("whatsapp channel id looks malformed")
+    elif not WA_VALUE_RE.match(value):
+        errors.append("whatsapp channel id must look like 120363…@newsletter or …@g.us "
+                      "(invite links cannot be WhatsApp channels)")
+    elif value.lower() in seen_values:
+        errors.append(f"whatsapp channel {value} is already assigned to another key - "
+                      f"the bridge would stop filtering one of them")
+    cleaned = {
+        "key": key,
+        "value": value,
+        "enabled": bool(entry.get("enabled", True)),
+        "note": str(entry.get("note", ""))[:200],
+    }
+    return cleaned, errors
+
+
+def validate_whatsapp_list(raw, known_categories: set[str]) -> tuple[list[dict], list[str]]:
+    errors: list[str] = []
+    if raw is None:
+        return [], []
+    if not isinstance(raw, list):
+        return [], ["whatsapp must be a list"]
+    seen: set[str] = set()
+    seen_keys: set[str] = set()
+    cleaned: list[dict] = []
+    for index, entry in enumerate(raw, start=1):
+        row, row_errors = validate_whatsapp(entry, known_categories, seen)
+        for err in row_errors:
+            errors.append(f"whatsapp {index}: {err}")
+        if row.get("key"):
+            if row["key"] in seen_keys:
+                errors.append(f"whatsapp {index}: key {row['key']} appears twice")
+                continue
+            seen_keys.add(row["key"])
+        if row.get("value") and not any(e.startswith(f"whatsapp {index}") and "already" in e
+                                        for e in row_errors):
+            seen.add(row["value"].lower())
+        if not row_errors:
+            cleaned.append(row)
+    return cleaned, errors
+
+
+def wa_env_lines(rows: list[dict]) -> list[str]:
+    """The exact env lines the bridge needs, generated from the saved intent."""
+    out: list[str] = []
+    for row in rows or []:
+        if not row.get("enabled", True) or not row.get("value"):
+            continue
+        out.append(f"WA_CHANNEL_{str(row.get('key', '')).upper()}={row['value']}")
+    return out
+
+
 def load_channels(path: Path | None = None) -> dict:
     """Read channels.json, tolerantly: missing/corrupt/legacy means empty."""
     target = Path(path) if path else channels_json_path()
@@ -174,7 +254,19 @@ def load_channels(path: Path | None = None) -> dict:
                 "enabled": bool(entry.get("enabled", True)),
                 "note": str(entry.get("note", ""))[:200],
             })
-    return {"version": SCHEMA_VERSION, "channels": channels}
+    whatsapp: list[dict] = []
+    for entry in data.get("whatsapp") or []:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("key", "") or "").strip().lower()
+        value = str(entry.get("value", "") or "").strip()
+        if key and value:
+            whatsapp.append({
+                "key": key, "value": value,
+                "enabled": bool(entry.get("enabled", True)),
+                "note": str(entry.get("note", ""))[:200],
+            })
+    return {"version": SCHEMA_VERSION, "channels": channels, "whatsapp": whatsapp}
 
 
 def save_channels(data: dict, path: Path | None = None) -> Path:
@@ -182,7 +274,8 @@ def save_channels(data: dict, path: Path | None = None) -> Path:
     target = Path(path) if path else channels_json_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"version": SCHEMA_VERSION,
-                          "channels": (data or {}).get("channels", [])},
+                          "channels": (data or {}).get("channels", []),
+                          "whatsapp": (data or {}).get("whatsapp", [])},
                          ensure_ascii=False, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=".channels-", suffix=".tmp", dir=str(target.parent))
     try:

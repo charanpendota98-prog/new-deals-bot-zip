@@ -67,23 +67,108 @@ separate operator-controlled step.
 
 | Path | What it is |
 |---|---|
-| `bestgaa/` | Telegram affiliate bot v15 (`main_bot_new.py`), deploy script, legacy-`.env` migrator, systemd unit |
-| `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge (`bridge.js`), installer, number-switch script, systemd unit |
-| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate, also used by GitHub Actions), routing + media-fix notes |
+| `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
+| `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
+| `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, a preview-only Card studio with the configurable two-button join row, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only. Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Content-Security-Policy` (`object-src 'none'`, `frame-ancestors 'none'`, `base-uri`/`form-action`/`connect-src` locked to `'self'`; script/style keep `'unsafe-inline'` because the panel is one file, images allow `data:`/`blob:` for the card studio), and `/api/*` adds `Cache-Control: no-store`. Mutating `/api` calls (`POST/PATCH/PUT/DELETE`) pass a per-peer token bucket (`DASHBOARD_RATE_LIMIT="capacity:refill_per_second"`, default `60:2`) that answers `429` with `Retry-After` — the token is shared, so one slipped token must not mean unlimited writes |
+| `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
+| `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
+| `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
+| `.github/workflows/` | Where the workflow must live for GitHub Actions to run it. Not committed by automation: GitHub rejects a workflow push from an App token without the `workflows` permission, so a human publishes it once |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
+
+### Other ops scripts and notes
+
+Every file under `ops/` is listed here — an operator facing a broken channel
+should not have to guess what a script does from its name. `test_repo_consistency.py`
+fails the gate if a new `ops/` file is added and never documented.
+
+**Scripts** (all of them parse under `bash -n` in the gate; the Python ones are
+compiled and linted there too):
+
+| Script | What it does |
+|---|---|
+| `approve_posting.sh` | The ONE command that turns posting ON (`--i-approve-posting`). Nothing posts before you run it |
+| `backup_live_state.sh` | Snapshot everything that must survive a deploy: DB, channel config, Telegram session, WhatsApp state (`--with-logs` for forensics) |
+| `bestgaa_restart_gate.sh` | The only restart command the dashboard may run; refuses every restart while `/etc/bestgaa/POSTING_APPROVED` is absent |
+| `deploy_fresh.sh` | Ship → teach → prove → report in one command (`--dry-run`, `--verify-only`, `--no-tests`, `--no-learn`) |
+| `deploy_stable.sh` | Runs `deploy_fresh.sh` inside tmux so a dropped SSH cannot kill a deploy mid-suites |
+| `deploy_and_verify.sh` | Deploy then verify; `--verify-only` proves what is live without changing it. Section 6 prints per-shelf category health from the live DB + log (`category_report.py --strict-errors`). With `--with-tests` it runs the full `ops/test_all.sh` gate (`GATE_DOC_MODE=warn`) before shipping, falling back to the core suites if the checkout cannot |
+| `deploy_r15_keep_off.sh` | PR #15 rollout in SAFE MODE: everything deployed and verified while services stay OFF |
+| `apply_dual_hotfix.sh` | One-shot server deploy of both services |
+| `apply_nightfix.sh` | Bridge-only nightfix: 24/7 WhatsApp posting, 02:00–06:00 IST off-window, night-queue trust policy |
+| `install_bestgaa.sh` | First-time bot installer |
+| `install_dashboard_secure.sh` | Idempotent token-gated dashboard install plus the approval gate (token never printed in full, never in Git) |
+| `repack_bundles.sh` | Rebuild the deploy zips from this source |
+| `set_earnkaro_key.sh` | Write/rotate the EarnKaro key into the server `.env`, pin the publisher from the token, restart, verify (token never printed) |
+| `diagnose.sh` | One-command server diagnosis: services, deployed-fix markers, queue, FloodWait, env, groups, night window, intake |
+| `telegram_check.sh` | Where posts die when sources are active but channels are silent: render/provenance/eligibility vs the actual SEND per target |
+| `test_all.sh` | The offline regression gate (self-logging; ends by verifying this README against the run it just produced). `GATE_DOC_MODE=check\|warn\|off` decides what documentation drift costs |
+| `install_ci_workflow.sh` | Publish `ops/ci/offline-gate.yml` into `.github/workflows/` (`--print` for the web-UI path, `--check` for CI parity, `--force` to repair a drifted copy). Never pushes anything itself |
+| `ci/offline-gate.yml` | The GitHub Actions workflow as shipped: the same `ops/test_all.sh`, plus the clean-checkout assertion, on push and pull request |
+| `doc_freshness.py` | Verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite counts: `--check` fails on drift, `--write` repairs, `--json` for CI |
+| `quality_audit.py` | Read-only DB audit, `--check-url` single-URL verdict, `--strict` exits non-zero on findings, `--json` |
+| `conversion_report.py` | Per-route status of what is actually converting, from the live DB + log (`--json`) |
+| `coverage_audit.py` | Source-vs-channel coverage report plus `--heal` re-queue of posts that never went out (`--json`) |
+| `category_report.py` | Category-wise truth per shelf: sends/skips/holds, pending backlog, routed vs withheld (with reasons), tag state, **whether the links it published pay us**, the IST-day trend, the Telegram-vs-WhatsApp surface, drill-down rows and actionable findings — the same engine the dashboard's Categories panel uses (`--json`, `--strict`, `--strict-errors`, `--rules`, `--hours`, `--days`, `--expand`) |
+| `category_watch.py` | The same findings as an alarm that speaks once: prints only NEW alerts, exits 1 for cron/systemd `OnFailure`, announces `RESOLVED` when a condition disappears, and writes nothing but its own state file (`--quiet`, `--json`, `--min-severity`, `--repeat-after`, `--resolve`, `--state`) |
+| `earnkaro_check.py` | Prove the EarnKaro key converts; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry |
+| `identity_probe.py` | CLI: are these two posts the same product, answered by both services' own rule |
+| `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
+| `sync_identity.py` | Regenerate the auditor's copy of the product-identity rule (`--check` is a test) |
+| `bestgaa_nightfix.zip` | Prebuilt nightfix bundle (regenerable with `repack_bundles.sh`) |
+
+**Notes** (dated incident/decision records — read the date before trusting one):
+
+| File | Subject |
+|---|---|
+| `AMAZON_APPLICATION_CHECKLIST.txt` | Associates re-application after the 2026-09-06 rejection of the previous (foreign) tag — the tag string itself is deliberately never repeated in README, and `test_line_fidelity.py` fails if it comes back |
+| `AMAZON_SITELIST_BEFORE_TAG_EVERYWHERE.txt` | The site list to declare in Associates Central before any channel gets the tag |
+| `DEPLOY_R15_RUNBOOK.txt` | PR #15 server rollout: deploy with services OFF, post only after approval |
+| `EARNKARO_KEY_AND_SOURCES_2026-09-24.txt` | Three new sources, EarnKaro conversion, and setting the API key (2026-09-24) |
+| `EARNKARO_FRESH_KEY_2026-10-04.txt` | The 2026-10-04 key handling and the `--plan` per-link proof. The token itself lives in gitignored `ops/.earnkaro_key`, never here |
+| `HYPD_OUR_LINKS_2026-09-24.txt` | HYPD scope: Meesho only, our store 93944; Shopsy explicitly excluded |
+| `IMMEDIACY_DEDUP_FIX_NOTES.txt` | v18.3: a source deleting its own post must not take our deal with it, plus the immediacy/dedup fixes |
+| `LATEST_ROUTING_NOTES.txt` | Source → non-tricks main target routing as of 2026-08-19 |
+| `LINK_PERFECTION_2026-10-04.txt` | Link perfection, unknown redirect domains, unattributed links, Amazon short links (v18.6) |
+| `SHOPPING_CHANNEL_AND_LIST_FIX_NOTES.txt` | 2026-09-05 "anni fix cheyu, motham" round: four complaints, four fixes |
+| `WA_RECONNECT_STORM_FIX_NOTES.txt` | 2026-09-11 WhatsApp reconnect storm (`status:408` loop) that took the channel down |
+| `WHATSAPP_MEDIA_FIX_NOTES.txt` | 2026-08-22 WhatsApp channel media/posting fix. Its trailing hash list predates this build and is stale |
 
 ## Quick checks (no credentials needed)
 
-The complete offline regression gate runs the bot behavior suites, cross-service product-identity checks, the WhatsApp bridge self-test, and Python syntax checks. GitHub Actions runs this same command on every push and pull request.
+The complete offline regression gate runs the bot behavior suites, cross-service product-identity checks, the dashboard DOM suites, the WhatsApp bridge self-test, `bash -n` on every shell script, Python syntax + lint checks, a repo self-consistency suite, and finally README's own proof tables against the bytes on disk. CI is `ops/ci/offline-gate.yml`: the same script on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), with an assertion that the gate left the checkout clean — no credentials, no network calls to Telegram/WhatsApp/affiliate APIs.
+
+GitHub only reads workflows from `.github/workflows/`, and that path cannot be pushed by a GitHub App installation token without the `workflows` permission (GitHub rejects the entire push with `refusing to allow a GitHub App to create or update workflow`). So the workflow ships as hash-verified source in `ops/ci/` and is published once, by hand:
+
+```bash
+./ops/install_ci_workflow.sh          # copy it into .github/workflows/ + print the steps
+./ops/install_ci_workflow.sh --print  # or paste this into the file via the GitHub web UI
+./ops/install_ci_workflow.sh --check  # exit 1 unless installed and byte-identical
+
+git add .github/workflows/offline-gate.yml
+git commit -m 'ci: run the offline gate on push and pull request'
+git push                              # needs a credential with the workflows permission
+```
+
+Until that push happens GitHub Actions does **not** run, and the local gate (plus `deploy_and_verify.sh --with-tests`) is the only gate — README says so rather than claiming CI that does not exist, which is exactly the claim this repo shipped before. `test_repo_consistency.py` checks the shipped workflow's contents, and fails if an installed copy drifts from it.
 
 ```bash
 # Local setup (once)
 python3 -m venv .venv
 .venv/bin/python -m pip install -r bestgaa/requirements.txt
 npm install --prefix tg-wa-bridge --no-package-lock --ignore-scripts
+# optional, but CI does it: lets the three dashboard DOM suites run instead of
+# reporting a loud SKIPPED (jsdom is deliberately not a bridge dependency)
+npm install --prefix /tmp/category-ui-test --no-package-lock jsdom
+.venv/bin/python -m pip install pyflakes   # turns on the gate's lint step
 
 # Run all offline checks (no Telegram, WhatsApp, or affiliate credentials required)
 PYTHON=.venv/bin/python ./ops/test_all.sh
+
+# Is this README describing the bytes I actually have? (exit 1 on drift)
+python3 ops/doc_freshness.py --check
+python3 ops/doc_freshness.py --write      # refresh hashes/version/counts in place
 
 # On the deployed server: prove what is live
 python3 ops/deploy_and_verify.sh --verify-only
@@ -98,15 +183,72 @@ python3 ops/quality_audit.py --db bestgaa/state/bot_state.sqlite3 --limit 200 --
 
 # "idi manadenaa link?" - one URL in, one verdict out (no database needed)
 python3 ops/quality_audit.py --publisher 5478322 --tag "" --check-url "<url>"
+
+# "categories wise ga em jarigindi?" - per-shelf sends, routes, withheld + findings
+python3 ops/category_report.py --hours 24
+python3 ops/category_report.py --hours 72 --strict   # exit 1 on any actionable finding
+python3 ops/category_report.py --expand electronics  # the rows behind one shelf
+
+# "ee shelf links earn chestunnaya?" - money, trend and both surfaces per shelf
+python3 ops/category_report.py --hours 72 --days 14
+
+# say it once, when it happens: cron-able alarm over the same findings
+python3 ops/category_watch.py --quiet; echo "new alert: $?"
 ```
 
-To run an individual behavior suite, use `python3 test_render_job.py`,
-`python3 test_rescan.py`, `python3 test_pipeline_fixes.py`,
-`python3 test_best_copy.py`, `python3 test_duplicate_sim.py`,
-`python3 test_earnkaro_conversion.py`, `python3 test_hypd_links.py`, or
-`python3 test_line_fidelity.py` from the repository root. The bridge contract
-can also be run directly with `cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x
-WA_PHONE=919876543210 WA_CHANNEL=x@newsletter node bridge.js --self-test`.
+Every `test_*.py` in the proof table runs standalone from the repository root
+(`python3 test_render_job.py`, `python3 test_repo_consistency.py`, …); they set
+their own dummy credentials and use private temp paths. The bridge contract runs
+directly with `cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210
+WA_CHANNEL=x@newsletter node bridge.js --self-test`. The three DOM suites need
+jsdom on `NODE_PATH` and the interpreter that serves the dashboard HTML:
+
+```bash
+NODE_PATH=/tmp/category-ui-test/node_modules PYTHON=.venv/bin/python \
+  node test_dashboard_ui.cjs        # also: _setup.cjs, _sources.cjs
+```
+
+`test_repo_consistency.py` is the suite about the suite: it fails if a new test
+file is never wired into `ops/test_all.sh`, if a shell script stops parsing, if
+the CI workflow disappears, or if README's hashes, version label or check counts
+stop matching the tree.
+
+### What each offline suite proves
+
+Every suite below is wired into `ops/test_all.sh` and therefore into CI; the gate
+fails if one of them is added to the tree and left unwired.
+
+| Suite | What it proves |
+|---|---|
+| `test_render_job.py` | The Telegram pipeline renders and routes a real intake end to end, under strict-all provenance, with the `/-` price suffix intact in the posted text |
+| `test_pipeline_fixes.py` | "Post instantly, exactly once, nothing extra" — the immediacy/dedup regression set |
+| `test_line_fidelity.py` | Nothing the source wrote is lost, nothing of ours is added; Telegram/WhatsApp line parity; the Indian `/-` price suffix survives every cleaner byte-identical |
+| `test_best_copy.py` | Best-copy selection, the numeric-fidelity gate, and the quality auditor |
+| `test_duplicate_sim.py` | One product never reaches the same channel twice, through the real worker path |
+| `test_postdeploy_repeats.py` | The post-deploy repeat bug (one queue posted up to three times) stays fixed |
+| `test_delivery_fences.py` | Lost responses, restarts, simultaneous workers and identity fences — durable delivery |
+| `test_rescan.py` | `source_rescan_loop`, the event-stream dead-man's switch, recovers a missed message idempotently |
+| `test_source_runtime.py` | Runtime source membership and replay guards against fake Telegram responses |
+| `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
+| `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
+| `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
+| `test_hypd_links.py` | HYPD creator-store links: verified Meesho only, our store, Bitly-shortened |
+| `test_category_classifier.py` | Shelf regressions plus exact Python/JS classifier decision parity |
+| `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
+| `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
+| `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
+| `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
+| `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
+| `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
+| `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
+| `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
+| `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount, a pure price line is never the title, and the card keeps both numbers whole at lakhs-range prices |
+| `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
+| `test_post_buttons.py` | the post-button row: validation never guesses (non-Telegram host, plain http, third button, repeated URL, empty/41-char label, control chars all refused and nothing written), missing/corrupt config means zero buttons, atomic save leaves no tmp litter, and the bot's send path builds real Telethon URL buttons only once a row is saved |
+| `test_send_guard.mjs` | The WhatsApp durable send guard (`node --test`) |
+| `test_repo_consistency.py` | Gate coverage, shell syntax, the CI workflow, secret hygiene, and README's proof tables |
 
 The Python module requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`,
 `EARNKARO_API_KEY` and `AMAZON_TAG` at import time — it exits with
@@ -170,7 +312,7 @@ cd ops
 Individual deploys:
 
 - **Bot, first-time install (fresh machine):** `bash ops/install_bestgaa.sh` (run from the repo layout — it finds the sources in `../bestgaa`). Creates the app dir, checks python3/pip, writes `.env` (keeps an existing complete one, or migrates a legacy bot passed as argument 1, or prompts interactively), does the one-time interactive Telegram login (phone + code) so the session file exists, then installs `bestgaa.service` and verifies live-file == shipped-file hashes + the startup marker. Refuses to clobber an existing install.
-- **Bot only (update):** upload `bestgaa/` contents to `~/bestgaa-bot/bestgaa-bot/`, then `./deploy_bestgaa.sh` (auto-extracts creds from the old working bot, backs up, compiles, restarts `bestgaa.service`, rolls back on failure).
+- **Bot only (update):** upload `bestgaa/` contents to `~/bestgaa-bot/bestgaa-bot/`, then `./deploy_bestgaa.sh` (auto-extracts creds from the old working bot, backs up, compiles, restarts `bestgaa.service`, rolls back on failure). The script refuses to start unless every Python helper the bot imports — including `deal_facts.py` and `post_buttons.py` — is present beside `main_bot_new.py` AND compiles, so a half-uploaded host fails the deploy before anything is moved; `BESTGAA_KEEP_OFF=1` ships and verifies while the service stays stopped + disabled until `ops/approve_posting.sh --i-approve-posting`.
 - **Bridge only:** upload `tg-wa-bridge/` contents to `~/tg-wa-bridge/`, then `./install_bridge.sh` (prompts locally for BotFather token, WhatsApp number, Channel invite, and optional WhatsApp groups for fan-out; installs Node 20 + Tesseract if missing; pairs; starts `tg-wa-bridge.service`).
 - **New WhatsApp number, same Channel:** `./switch_whatsapp_number.sh` (stops only the bridge, backs up auth, preserves queue + state).
 - **First-time `.env` from legacy hardcoded creds:** `python3 migrate_legacy_env.py /path/to/old_main_bot.py`.
@@ -979,7 +1121,15 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   now only swallow **plain words** — a price, a digit, a percentage, a code or a
   link ends it — both cleaners trim the punctuation a removal leaves behind, the
   bracket fixer only touches a bracket that stands alone, and `strip_inline_cta`
-  undoes itself whenever a figure disappears. `test_line_fidelity.py` renders a
+  undoes itself whenever a figure disappears. (2b) *The `/-` suffix*: five
+  cleaners (`strip_inline_cta`, `strip_promo_lines`, `strict_orphan_token_cleanup`,
+  `strip_link_fragment_tokens`, `strip_amazon_ratings`) each ended their line
+  tidy-up with a trailing character sweep that ate the `-` of the Indian `/-`
+  price suffix - `Price: ₹18,999/-` posted as `₹18,999/` (user report
+  2026-10-18). No payload signature can catch that one (the digits survive, only
+  the suffix dash goes), so every trailing sweep now carries a `(?<!/)`
+  lookbehind: a dash that follows `/` is money, not punctuation. A dangling dash
+  with no `/` in front of it is still swept. `test_line_fidelity.py` renders a
   corpus through the real pipeline and asserts every source line survives, that no
   `…` appears, and that no amount or percentage is printed more often than the
   source wrote it. (3) *WhatsApp lost the most text and showed the price twice*:
@@ -1323,26 +1473,128 @@ source snapshot:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/main_bot_new.py (v19.0)` | `661555e234d3f5c93aa05d63c94c534728db38298a3feaba62d61b1b3326038e` |
-| `bestgaa/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
-| `tg-wa-bridge/bridge.js` | `01d9711beddd55fb938685052f6dc59e77db54ebadbe446b48b3f1a531bb16ae` |
-| `tg-wa-bridge/category_rules.json` | `e957c89924db528c075b9d22d1e83ac948333afc1d7a738188c4b8edc7dfca81` |
-| `ops/coverage_audit.py` | `98fa0cc3cb91575b5d57e65547352fe05883b58c8eb9423510373666af64a66f` |
-| `ops/quality_audit.py` | `8ad8d347554bd794ffb305b7006bd8115a0792f48c258e0c485125666331e08f` |
-| `ops/conversion_report.py` | `ea2655376f7697b4d6fb727f922459e723d710388122e2dc285db4a40206fd85` |
-| `ops/test_all.sh` | `1a20ecae5161a130a27e1580e9dcd5ab731c411ac4a2468603090fd5db68de62` |
-| `ops/repack_bundles.sh` | `8cceff22911b52dd9168137c4d7523e8f31c474c40f0a03b9d7742da37b2045f` |
+| `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
+| `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
+| `bestgaa/deal_facts.py` | `096c76c53b2c4e2b60bfa8de6c48556de6ed131ed7e597ccb369fd53a56e5d01` |
+| `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
+| `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
+| `bestgaa/main_bot_new.py` (v19.0) | `bf9ba8fc331b801b68676c543729dea5745fa44f4bb68b4053e7aa5f6ede6600` |
+| `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
+| `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
+| `tg-wa-bridge/bridge.js` | `a33fd901a55ec9521d7c2c3dd849ded07fbc96031eecc861e4e1a14bfc871467` |
+| `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
+| `tg-wa-bridge/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `tg-wa-bridge/install_bridge.sh` | `02114267758a5eed5e1f97e3c481fbabc63d4c1b8d78558cf8b4908709da8a41` |
+| `tg-wa-bridge/package.json` | `298fc3299b5d70761b402977e9fc1d4b1ad1230b197c99f9f618180400edb766` |
+| `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
+| `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
+| `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
+| `dashboard/app.py` | `f2baf159b8d6cf4185311c4d1e2737b2e062de196d1952824f0f7f3db70cea93` |
+| `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
+| `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
+| `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
+| `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
+| `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
+| `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
+| `ops/category_report.py` | `b0d462a743c774c03950d2862f519e14c3947fc06ba836eb67bd9f0ec4860ee6` |
+| `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
+| `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
+| `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
+| `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
+| `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
+| `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
+| `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
+| `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
+| `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
+| `ops/diagnose.sh` | `54612630daed7ef2562d12ebcee087a8bbf0fc2ed5013bc52f1cbd3406f1fa8f` |
+| `ops/doc_freshness.py` | `2cd359f38b031046ccfdf6e25d480b6b88df9f334ac94f7f25a7e28cad34438d` |
+| `ops/earnkaro_check.py` | `066d2a46837b8cdfe1207cad61d9d1551ddabba699b1361200f0fc0fadfc114e` |
+| `ops/hypd_links.py` | `0794d1fa91015282574be398380310ad33070ee800f5083b960ec442762a1706` |
+| `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
+| `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
+| `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
+| `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
+| `ops/quality_audit.py` | `51ab5558f80965f00d9aed6f7173f18097606ce3efb34284d2d4ac544743b081` |
+| `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
+| `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
-| `ops/deploy_and_verify.sh` | `7b784afd12fc72c36b8c8f30a49700dc9612c8e4c4bb9f8497bd10a4bf99ae7` |
-| `test_render_job.py` | `e583c796b093a786840900b02d858fb42a51e7a3d5229488b7ba56e29a5122ee` |
-| `test_line_fidelity.py` | `e648cb84378191865257250a94d239141980d1634989e09953daacaf9b2b01fa` |
-| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
-| `test_duplicate_sim.py` | `de827a979773ee933037de16c8e1fe494e69f983c2e538ddd5e9e6f6f62b06bd` |
+| `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
+| `ops/test_all.sh` | `329dbd3e1b68eeacd1ab8c08127fb166e5f947a331de7e87b6e662b38d86f8dc` |
 | `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
-| `test_earnkaro_conversion.py` | `771f22a147f1b9ce929ea75cdd5cf4ddb6fae1760b16665e525932f358b6eec0` |
-| `test_hypd_links.py` | `71c8f3e6f8c44871a1ac92e26146936108b938a2dfe28d84e0a05a086406a229` |
+| `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
+| `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
+| `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
+| `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
+| `test_dashboard.py` | `f9b0469ab92094a547fa2e380759271c056832e27744b411b3584ece6fc55a43` |
+| `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
+| `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
+| `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
+| `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
+| `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
+| `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
+| `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
+| `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
+| `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
+| `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
+| `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
+| `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
+| `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
+| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
+| `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
+| `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
+| `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
+| `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
+| `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
+| `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
+| `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
+| `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
+| `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |
 
-**Offline verification on this source tree (2026-10-11):** `PYTHON=.venv/bin/python bash ops/test_all.sh` completed successfully. The gate covers category-taxonomy parity; 211 render/routing checks (including readable URL slugs, a shortened link resolved to a product slug, ambiguous/mixed items, and name-price-link fidelity); rescan/recovery, pipeline, best-copy, duplicate, EarnKaro, HYPD, and line-fidelity suites; the WhatsApp bridge self-test; plus Python compilation and JavaScript syntax validation. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
+**Offline verification on this source tree (2026-10-18):** `PYTHON=.venv/bin/python ./ops/test_all.sh` completed successfully. The gate covers category-taxonomy and HYPD-policy parity; the render/routing and pipeline-fix suites (per-suite check counts are published below, generated from the run's own log, not hand-copied); rescan/recovery, best-copy, duplicate, delivery-fence, post-deploy-repeat, link-inspector, category-preview, source-setup, source-runtime, live-channel, dashboard, EarnKaro, HYPD and line-fidelity suites; the three jsdom dashboard DOM suites (guided setup, source picker, category studio); the WhatsApp bridge self-test; `bash -n` on every shell script; Python compilation; pyflakes lint; a repo self-consistency suite; and finally README's own proof tables, checked against the bytes on disk and against the completed log. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
+
+Suite totals, generated from a real gate run and re-verified on every run (so a
+hand-edited number fails the gate):
+
+<!-- gate-suite-totals:begin -->
+<!-- generated by ops/doc_freshness.py --write from a real gate run;
+     do not edit by hand -->
+| Suite | Checks passed | Failed |
+|---|---|---|
+| pipeline fixes | 238 | 0 |
+| render and routing | 235 | 0 |
+<!-- gate-suite-totals:end -->
+
+Every hash in the source table above, the bot's version label, and those counts
+are checked by `ops/doc_freshness.py`, which the gate runs against its own
+completed log. After any source change, one command refreshes all of it:
+
+```bash
+python3 ops/doc_freshness.py --write
+```
+
+A live rollout is never blocked by documentation. `ops/deploy_and_verify.sh
+--with-tests` — and therefore `deploy_fresh.sh` / `deploy_stable.sh` /
+`deploy_r15_keep_off.sh` — runs the **same** `ops/test_all.sh` that CI runs, with
+`GATE_DOC_MODE=warn`, and falls back to the core suites individually if a
+checkout cannot run the full gate (no Node, no bridge dependencies). Before this,
+the deploy path carried a hardcoded list of 8 suites while the gate had 32
+sections, so delivery fences, post-deploy repeats, the dashboard API and DOM
+suites, category invariants, the send guard, shell syntax and repo consistency
+were all shipping unverified from exactly the path that matters most.
+
+`GATE_DOC_MODE` is `check` (default: drift fails the gate — CI and local runs),
+`warn` (drift printed loudly, exit 0 — deploys) or `off` (skipped, and says so).
+A typo exits 2 rather than silently downgrading the check.
+
+Drift is a gate failure, not a warning: a proof table that describes bytes which
+no longer exist is worse than no table, because an operator trusts it. (Found
+2026-10-18: 14 of the 18 documented hashes had drifted, one row carried a
+63-character digest that could never match any file, and the render/routing count
+read 211 against 232 actual checks.)
 
 | Suite | Current coverage |
 |---|---|
@@ -1485,6 +1737,357 @@ Run the dashboard from the repository (`python -m dashboard.app`); bot/bridge de
 bundles do not package the dashboard UI or its Python helpers. No production restart
 or deployment is performed by these tests.
 
+
+### Category-wise truth: what each shelf actually received (2026-10-18)
+
+"Categories wise ga em jarigindi?" is now answerable from data instead of from
+scrolling a channel. The dashboard's **Categories** panel and
+`ops/category_report.py` are the *same engine* reading the same live database,
+bot log, `channels.json` and installed rules, so the CLI on the server and the
+panel in the browser cannot disagree.
+
+```bash
+python3 ops/category_report.py                      # last 24h, human-readable
+python3 ops/category_report.py --hours 72 --strict  # exit 1 on any error/warn finding
+python3 ops/category_report.py --strict-errors      # exit 1 on ERRORS only (deploy gate)
+python3 ops/category_report.py --days 14            # a longer IST-day trend
+python3 ops/category_report.py --expand electronics # the delivery rows behind one shelf
+python3 ops/category_report.py --json               # machine-readable (CI, scripts)
+python3 ops/category_report.py --rules /tmp/new_rules.json  # measure a taxonomy BEFORE installing it
+python3 ops/category_report.py --db /path/bot_state.sqlite3 --log /path/bot.log
+python3 ops/category_watch.py --quiet               # cron/systemd: NEW alerts only, exit 1
+python3 ops/category_report.py --html /tmp/shelf.html   # shareable report, no JS, no assets
+```
+
+Per shelf (`electronics`, `fashion`, `footwear`, `home_kitchen`, `beauty`,
+`grocery`, `accessories`) it reports:
+
+| Column | Where it comes from |
+|---|---|
+| `state` | `ok` · `silent` · `skipping` · `disabled` · `no_channel` — "configured but switched off" is a different problem from "never configured", and they are never merged |
+| targets | every channel that claims the shelf, marking `(disabled)` and `(tagless)` ones; env-declared `TG_CATEGORY_<KEY>_TARGET` counts too |
+| sent / skipped / held | the delivery ledger, joined to the queue for the window. A `sent` row carrying an error is a skip, never a send |
+| pending | queue rows still waiting, attributed through their `targets_json` |
+| routed | the bot's own `CATEGORY ROUTE` log lines — how many deals the classifier actually sent this shelf's way |
+| withheld | `CATEGORY WITHHELD` lines with their reasons (`mixed_or_conflicting`, `insufficient_product_evidence`) — posts classified for the shelf that never reached it |
+| money | of the posts this shelf actually delivered: how many carry a link that **pays us**, how many pay **nobody**, how many carry **somebody else's** Amazon tag, and how many could not be matched to the link tables at all |
+| trend | sends and skips per IST day (`--days`, default 7) — block characters on a terminal, a sparkline in the dashboard, exact numbers in the tooltip |
+| surfaces | the same shelf on Telegram and on WhatsApp, with the bridge's `category:<key>` policy only where it will really be applied |
+| deal quality | the bot's own `premium_score` average/min/max over the posts it received, plus the rupee spread from `posted_deals.price` (min–max, median, how many under ₹99) — "this shelf gets weak deals" is the bot's own ranking, not a new opinion |
+| sources | which sources actually fed the shelf in the window, next to the sources its channels declare |
+| last send | the newest real send, in IST |
+
+Plus, separately from the shelves: **Main** (unfiltered targets, which take every
+category), **unclassified** posts withheld from every shelf because nothing
+matched, and deliveries to targets **no config claims** — reported under their
+own name rather than silently dropped.
+
+The findings are the part that saves a week of guessing:
+
+| Finding | Severity | What it means |
+|---|---|---|
+| `rules_parity` | error | the bot's and the bridge's `category_rules.json` differ, so Telegram and WhatsApp classify the same product differently |
+| `rules_version_drift` | error | the running bot classified with a different rules version than this checkout — a deploy or approved restart is pending |
+| `routing_disabled` | error | the bot logged `CATEGORY ROUTING DISABLED` (rules unreadable) |
+| `target_collision` | error | one Telegram target was given to two categories, so the bot disabled those routes |
+| `target_unresolved` | warn | a shelf's target is not reachable; those deals fell back to Main |
+| `no_channel` | warn | nothing is configured for this category at all |
+| `disabled_shelf` | warn | configured, but every channel serving it is switched off |
+| `silent_shelf` | warn | Main posted in this window, this shelf got zero sends and zero routes |
+| `skipping_shelf` | warn | this shelf skips more than it sends, with the top reasons |
+| `withheld_majority` | warn | most of what was classified for this shelf never reached it |
+| `unknown_category_withheld` | warn | the bot withheld posts for a category this taxonomy does not define (rules drift, seen from the log side) |
+| `unknown_target` | warn | the ledger has deliveries for a target no config claims |
+| `db_unreadable` | warn | the database could not be opened read-only, so counts are zero — stated, never presented as a quiet week |
+| `ledger_unreadable` / `ledger_capped` | warn | the delivery ledger could not be read, or only its newest rows were (`--max-posts`), so money and trend cover part of the window — said out loud instead of quietly undercounting |
+| `foreign_tag_posted` | warn | a published post carries an Amazon tag that is not ours: those clicks pay a stranger. Warn, not error, because blocking a deploy cannot un-publish it |
+| `unmonetized_shelf` | warn | posts went out from this shelf with links that pay nobody (clean merchant passthrough, untagged Amazon page) |
+| `money_blind` | info | none of this shelf's posts could be matched to `link_cache`/`owned_link_proofs`, so commission here is unproven rather than absent |
+| `amazon_tag_parity` | error | the bot's `OUR_AMAZON_TAGS` and the bridge's differ, so one surface credits another Associates account for the same deal |
+| `amazon_tag_unreadable` / `amazon_tag_unknown` | warn | the tag sets could not be read from source, so no Amazon link can be proved ours |
+| `wa_category_collision` | error | two WhatsApp categories share one channel, or a category channel is also a core channel — the bridge then keeps the old policy and filters neither |
+| `wa_shelf_unfiltered` | warn | a WhatsApp channel is configured for the shelf but will get no `category:<key>` policy, so it behaves like a core channel |
+| `wa_surface_missing` / `tg_surface_missing` | warn | the shelf exists on one service only, so the same deal reaches one audience |
+| `amazon_tag_surface_mismatch` | warn | the Amazon tag is declared for this shelf on Telegram or WhatsApp only, so the same deal earns on one surface and not the other |
+| `unknown_surface_channel` | warn | a `WA_CHANNEL_*` name that is not a category key — the bridge builds its category channels from `category_rules.json`, so the value is ignored |
+| `wa_values_masked` | info | WhatsApp values that are not plain JIDs are shown masked, so a shared-channel collision cannot be proved offline |
+| `wa_pending_activation` | warn | a WhatsApp channel saved from the dashboard has no `WA_CHANNEL_<KEY>` in the bridge env yet — paste the generated env line and restart the bridge, or that shelf stays unfiltered |
+| `weak_shelf_quality` | warn | the shelf's average `premium_score` is under half the fleet's over 3+ scored posts: the weakest deals are landing here |
+| `quality_blind` / `price_blind` | info | the posts carry no `premium_score` / no `posted_deals.price`, so quality or rupee spread is unproven rather than bad |
+| `zero_score_posts` | info | posts scored 0: no discount, no price bonus, no lowest-price claim |
+| `undeclared_source` | warn | the shelf received posts from a source its channels do not declare now — config changed after those posts, or a renamed source still feeds it |
+| `dead_source` | info | a source a channel declares produced nothing in the window (widen `--hours` before concluding it is dead) |
+| `unclassified_withheld` | info, or warn when abstention out-runs routing | posts withheld from every shelf because no category matched |
+| `tagless_shelf` | info | Amazon links stay withheld on this shelf until the tag is declared — the documented policy, stated as a fact rather than discovered as a mystery |
+
+`--strict` exits 1 on any `error`/`warn` finding, so a silent shelf can gate a
+deploy the same way a failed suite does. `--strict-errors` fails only on `error`
+findings, and that is what `ops/deploy_and_verify.sh` uses in its
+`==== 6. CATEGORY-WISE HEALTH ====` step: an operator who runs three shelves must
+not have a rollout blocked because the other four have no channel, but a bot
+classifying with different rules than the checkout must stop one. Warnings are
+printed there, not fatal. Read-only by contract: the database is
+opened `mode=ro`, nothing is queued, sent or restarted, and no Telegram,
+WhatsApp or affiliate credentials are needed. `test_category_report.py`
+proves the engine against a database built by the bot's own `Store` (so the schema is the
+real one, never a hand-written copy), and
+`test_dashboard_categories.cjs` drives the panel in a DOM — including the
+guarantee that a channel name, category label or logged reason carrying
+`<img src=x onerror=…>` is shown as text, and that a dead `/api/categories`
+cannot blank the rest of the dashboard.
+
+### Does each shelf earn? Money, trend, both surfaces, and an alarm (2026-10-18)
+
+"Shelf ki posts vellayi" is half the question. The other half is *what those
+posts are worth*, *whether one bad day is hiding in a healthy average*, and
+*whether the same shelf exists on the other service*. All three are now answered
+from data, per shelf, by the same read-only engine.
+
+**Money.** For every post a shelf actually delivered, the URLs in its published
+text are matched against `link_cache` (what the bot published, and the real
+destination behind it) and `owned_link_proofs` (the durable proof behind our own
+bit.ly/is.gd hop), then classified:
+
+| Verdict | Meaning |
+|---|---|
+| `owned` | an Amazon page carrying **our** Associates tag, an EarnKaro link, a verified `hypd.store` link, or a shortened hop whose proof row resolves to one of those |
+| `earns_nothing` | a clean merchant passthrough (`affiliate_url == resolved_url`) or an Amazon page with **no** tag — posted, published, paying nobody |
+| `foreign_tag` | an Amazon page carrying a tag that is **not ours**: those clicks pay a stranger, which is a different problem from earning nothing |
+| `unattributed` | no URL in the published text, or a shortener hop with no proof row — commission here is *unproven*, and the report says so instead of guessing |
+
+Our tag is never copied into this tool: it is **read** from `OUR_AMAZON_TAGS` in
+`bestgaa/main_bot_new.py` and `tg-wa-bridge/bridge.js`, and the two sets are
+compared — a drift is the `amazon_tag_parity` error, because it means one surface
+credits another Associates account for the same deal. The route vocabulary
+(`passthrough`, `hypd`, `earnkaro`, `amazon`, `shortened`, `affiliate`, `other`)
+is the same decision tree as `ops/conversion_report.py`, and
+`test_category_report.py` compares the two implementations link shape by link
+shape plus all four host tables, so "does this link pay us?" can never mean two
+different things in two reports.
+
+```
+  Electronics [electronics] state=ok
+    money   : owned=4 earns-nothing=1 foreign-tag=0 unattributed=0 of 5 post(s) (amazon x4, hypd x1)
+    trend   : 7d sent ▁▁▃▅█▃▂ (0/1/2/3/5/2/1) | skipped (0/0/1/0/1/0/0)
+    surface : telegram @electroshelf(tag) | whatsapp 120363001@newsletter category:electronics(tag)
+  MONEY | 9 delivered post(s): owned=6 earns-nothing=2 foreign-tag=1 unattributed=0 (amazon x6, hypd x2)
+```
+
+**Trend.** Sends and skips per IST day (`--days`, default 7; `history_days` in
+JSON). A shelf that died on Tuesday and recovered on Friday looks healthy in a
+7-day total and obvious in seven numbers. On a terminal it prints as block
+characters that survive SSH; in the dashboard it is a sparkline whose tooltip
+carries the exact per-day counts, so the picture is never the only evidence. The
+IST day is UTC+5:30 computed directly — no `tzdata`, no server-timezone
+assumption — and the boundary is tested (18:30 UTC is the next IST day).
+
+**Surfaces.** Telegram shelves come from `channels.json` and
+`TG_CATEGORY_<KEY>_TARGET`; WhatsApp shelves come from `WA_CHANNEL_<KEY>`, which
+the bridge turns into a `category:<key>` policy **only** when that channel is
+unique among the category channels and is not also `WA_CHANNEL_UNDER99`,
+`WA_CHANNEL_UNDER499` or `WA_CHANNEL_BEST_OF`. "Configured" and "filtered" are
+therefore different states, and both are reported: a shared channel is a
+`wa_category_collision` error and shows as `not filtered`, exactly as the bridge
+would behave. The Amazon-tag allowance is per surface too
+(`AMAZON_TAG_CATEGORY_TARGETS` on Telegram names *targets*,
+`WA_AMAZON_TAG_CATEGORY_TARGETS` on WhatsApp names *category keys*), so a shelf
+declared on one only earns on one only — `amazon_tag_surface_mismatch`. A
+`WA_CHANNEL_*` name that matches no category key is reported as ignored rather
+than silently dropped. Nothing here runs WhatsApp: it reads env, and a surface
+with no `WA_CHANNEL_*` at all is reported as *not judged*, never as broken. Env
+means both sources — the `.env`/unit files (`--env-file`, repeatable) and the
+process environment, with the file winning — because a shelf declared only in one
+of them must not produce two different reports from the CLI and from
+`/api/categories`.
+
+WhatsApp values are printed only when they are a plain JID
+(`…@newsletter`, `…@g.us`, `…@s.whatsapp.net`, `…@broadcast`); anything else —
+an invite link, for instance — is shown as `set (masked)`, and masked values are
+never used to claim a collision. `load_env` keeps only channel plumbing
+(`TG_CATEGORY_*`, `WA_CHANNEL_*`, `AMAZON_TAG*`), so a token in the same `.env`
+cannot reach the report, the JSON or the dashboard.
+
+**Quality and sources.** Two more columns answer "is this shelf getting good
+deals, and from where?" with numbers the bot already keeps: `queue.premium_score`
+(the bot's own ranking — discount ×10, a sub-₹99/₹499 bonus, a lowest-price-claim
+bonus) and `posted_deals.price` (the rupee price it published). A shelf averaging
+under half the fleet's score over 3+ scored posts is `weak_shelf_quality`; empty
+columns are reported as *unproven*, never as "cheap". The source matrix compares
+what arrived against what each channel declares (`channels.json` `sources`), with
+the same case-insensitive handle comparison `channels_config` uses — so a renamed
+source shows up as `undeclared_source` and a silent one as `dead_source`, instead
+of both looking like "a quiet week". `--html PATH` writes the whole report as one
+self-contained HTML file (no JavaScript, no external asset, every value escaped):
+it opens from a phone or an email attachment and cannot fetch or run anything.
+
+**Drill-down.** `--expand <key>` (or clicking a shelf row in the dashboard) adds
+that shelf's newest delivery rows: queue id, IST time, target, status, the
+bucketed skip reason, the money verdict and a short text snippet. A number you
+can open is a number you do not have to argue with. The dashboard builds this
+table with DOM text nodes only — never `innerHTML` — because deal captions and
+channel names are operator text.
+
+**Alarm.** `ops/category_watch.py` runs the same engine and speaks once:
+
+```bash
+python3 ops/category_watch.py                    # NEW alerts, exit 1 if any
+python3 ops/category_watch.py --quiet            # exit code only (cron/systemd)
+python3 ops/category_watch.py --min-severity error   # page on breakage only
+python3 ops/category_watch.py --repeat-after 6   # re-report a still-open alert after 6h
+python3 ops/category_watch.py --json             # machine-readable
+python3 ops/category_watch.py --resolve          # forget the memory (re-arm after a fix)
+```
+
+Exit `1` means *a new alert*, `0` means nothing new (or something resolved), `2`
+means the report itself could not be built — which is also an alert. A condition
+that stays broken is remembered with a `seen` count instead of failing every run,
+because an alarm that always rings is an alarm nobody reads; when it disappears
+the watchdog prints `RESOLVED`. `unclassified_withheld` is deliberately quiet:
+the classifier abstaining on a mixed post is the documented behaviour, not an
+outage. Running with `--min-severity error` does not erase the warnings another
+watcher is remembering — tracked conditions and pageable conditions are separate
+lists. State is one small JSON file (default `<db directory>/.category_watch.json`,
+or `CATEGORY_WATCH_STATE`, or `--state`), written atomically, and an unreadable
+one starts fresh rather than crashing. **That state file is the only thing the
+watchdog writes**: the database is opened `mode=ro` through the report engine,
+`channels.json` and the rules are untouched, nothing is restarted and nothing is
+posted. `test_category_report.py` proves all of it, including the byte hashes of
+the database and `channels.json` before and after a run.
+
+Nothing here installs itself. To have it watched, the operator adds one line:
+
+```cron
+*/15 * * * * cd /home/ubuntu/bestgaa-bot/bestgaa-bot && python3 ops/category_watch.py --quiet || true
+```
+
+or a systemd pair (`OnCalendar=*:0/15`, `Persistent=true`, and
+`OnFailure=` on the service) so a new alert can notify whoever is on call.
+
+### The deal-card studio: what a post looks like on the phone (2026-10-18)
+
+A big channel's post is a **photo plus a caption**: product image on the left, a
+red `-35%` pill, the deal price large, the M.R.P. struck through, a coupon box
+("Coupon Discount / Save 4% now / -₹3.12") and a green "Final Price: ₹75" bar.
+Ours has been text, so the same deal looks poorer on the same phone — and when a
+deal crosses **from one channel to another**, the copy is re-filtered per
+destination, so two destinations can even disagree about the price.
+
+`ops/deal_card.py` closes that gap as a **preview**: given a caption (pasted, or
+`--text-file`), it reads the deal with the bot's own parsers — `parse_price`,
+`parse_discount`, `has_lowest_price_claim`, which now live once in
+`bestgaa/deal_facts.py` and are imported by `bestgaa/main_bot_new.py` instead of
+being a second copy that could drift — and adds the coupon/min-qty/MRP reading a
+card needs (`parse_coupon`, `parse_min_qty`, `parse_mrp`, `final_price`, where a
+coupon bigger than the price keeps the deal price because a caption typo is not a
+free product).
+
+**Prices must survive the text.** `parse_discount` derives its discount from the
+same `MRP_RE` that reads the struck-through price - a dotted `M.R.P.:`, a
+`list price` and a plain `MRP` all derive the identical percentage. A
+hand-rolled regex here used to match only the literal `MRP`, so a deal written
+`Deal ₹499 M.R.P.: ₹2,499` carried no derived discount: the caption dropped its
+M.R.P. line entirely and the price-tier routing saw a weaker deal than the same
+caption spelled `MRP`. `deal_title` also skips a pure price line
+(`Rs.1299/- only`), so a product title never reads
+"Rs.1299/- only @ ₹1,299" - the same number twice and no product. Then it:
+
+* **draws the card** — `--png out.png`, or `/api/card.png` in the dashboard:
+  photo slot (a local file via `--photo`, else an honest gradient placeholder),
+  discount pill, big final price, struck M.R.P. only when it is genuinely above
+  the deal price, coupon box with the paise a percentage coupon saves on a
+  sub-₹1000 deal, green final bar with `Min Buy Qnty`. Pillow draws it; when the
+  installed font has no rupee glyph the card falls back to `Rs.` instead of a
+  missing-glyph box (`Fonts.rupee` compares ₹ against a private-use codepoint),
+  and emoji are stripped for the raster only — Telegram and WhatsApp render them
+  on the client, so captions keep them. A lakhs-range price shrinks until it fits
+  its column, and when the struck M.R.P. would run off the right edge it wraps to
+  its own line (`price_mrp_layout`) — a clipped "M.R.P" with half a number after
+  it reads exactly like "the price got cut", so neither number is ever clipped;
+* **writes one caption per surface** — telegram / whatsapp / premium / text —
+  plain text, no markdown, because the bot sends with `parse_mode=None`;
+* **says where it would land** — `forward_plan()` lists every configured
+  destination (channels.json shelves and Main targets, `TG_CATEGORY_<KEY>_TARGET`,
+  `WA_CHANNEL_<KEY>` and the core WhatsApp channels) with `card + caption` or
+  `not sent` and the reason, and names the function that would carry it:
+  `send_file(entity, png, caption=…)` for Telegram, `broadcastMediaItem(...)` for
+  WhatsApp. Both carriers already send a photo with a per-target caption today;
+* **cross-channel in one click** - "load a recent post" fills the caption and the
+  link it carried straight from the ledger (`/api/recent` now returns a snippet
+  and the first URL per job), so a deal that arrived on channel A can be previewed
+  for every destination B - shelves, Main, Telegram and WhatsApp - in seconds;
+* **one-click button presets** - the button editor offers our own enabled public
+  channels (`https://t.me/<handle>`, read from channels.json) plus the folder link
+  (read from the bot's own `OUR_FOLDER_LINK`), so adding a join button never means
+  typing a URL that could point anywhere else;
+* **carries the join-button row** a big channel ends every post with - up to two
+  `https://t.me/…` buttons configured in the dashboard (`post_buttons.json`,
+  edited next to the card preview and validated by `bestgaa/post_buttons.py`:
+  https-only, Telegram hosts only, two at most, no repeats). Telegram draws them
+  below the message; the studio preview renders the same row under the card so
+  what you save is what a reader taps. WhatsApp channels have no inline buttons,
+  so WhatsApp stays text-only and says so. Zero buttons = today's posts, byte
+  for byte: `deliver()` passes `buttons=None` until an operator saves a row;
+* **refuses to print a link it cannot prove ours** — the verdict comes from
+  `link_cache` / `owned_link_proofs` through the same `url_money()` the money
+  report uses, so an untagged Amazon page or a stranger's tag is *withheld* from
+  every caption with the reason, exactly like the send path withholds it.
+
+The dashboard's **Card studio** panel is the same engine over HTTP
+(`/api/card-studio`, `/api/card.png`; the PNG is fetched with the token header and
+shown through a blob URL, so the token never appears in a URL). Everything there
+is preview-only: nothing is queued, nothing is sent, and posting stays off until
+`./ops/approve_posting.sh --i-approve-posting`. Wiring the card into the live send
+path later is a one-line change at the send site, not a new delivery path.
+
+```bash
+python3 ops/deal_card.py --text-file /tmp/deal.txt --link https://amzn.lt/xyz
+python3 ops/deal_card.py --text-file /tmp/deal.txt --png /tmp/card.png --surface whatsapp
+python3 ops/deal_card.py --text-file /tmp/deal.txt --json      # the studio payload
+```
+
+`test_deal_card.py` pins the whole contract (75 checks: shared parsers, coupon
+maths, PNG pixels, link provenance, plan agreement, CLI), and
+`test_dashboard_card_studio.cjs` drives the panel in a DOM.
+
+**Link conversion book.** The **Conversion** card (`/api/link-conversion`) opens the
+converter's own book - `link_cache` (source URL → published affiliate URL →
+resolved destination) plus `owned_link_proofs` - and classifies every published
+link with the same `url_money()` verdicts the money report uses, so "mana links
+maruthunnaya?" gets a number: cached links, the converted share (our tag, our
+shortener or a proof row), how many would pay a stranger, how many earn nothing,
+and a per-link table with the proof mark and the IST time. Read-only, mode=ro,
+and `test_category_report.py` pins the semantics (a proved hop is owned, a blind
+hop is unattributed, a stranger's tag is foreign, limits cap the table but never
+the totals).
+
+**WhatsApp channels from the dashboard.** The bridge builds its WhatsApp policy
+from `WA_CHANNEL_<KEY>` env at startup, so the **WhatsApp channels** card does
+not pretend to hot-wire a running process: it saves the declared intent
+(`channels.json` gains a `whatsapp` section, validated by
+`channels_config.validate_whatsapp_list`), generates the exact env lines to
+paste, and until the env catches up `/api/categories` reports the row as
+`pending` with a `wa_pending_activation` finding. One channel shared by two keys
+is refused at save time - the bridge would silently stop filtering one shelf -
+and an invite link is not a channel.
+
+**Per-channel conversion cells.** The same ledger folds into
+`channel_conversion` - per target channel, per source: sends, the ones that rode
+OUR link, the ones riding a FOREIGN tag, the ones that earn nothing - and the
+channel list renders it on every dashboard row (`converts: deals 3/4 ours ·
+1 FOREIGN`), so "ee source nunchi ee channel ki convert ayi post avuthunda" is
+visible per pipe instead of one fleet-wide percentage.
+
+**Pipe drill + per-day conversion trend.** Every `converts:` chip on a channel
+row is a button: clicking it opens the **Pipe** card (`/api/channel-pipe`),
+which lists the posts that one source actually sent to that one channel -
+newest first, each with its own money verdict, route, snippet and IST stamp -
+so a pipe is never just a number. The Conversion card also grows a per-IST-day
+trend (`conversion_trend` over `link_cache`): one bar per day, zero days
+included, a foreign-tag day turning the bar red, because a single converted
+share can hide a converter that stopped carrying our tag yesterday. Rendering
+needs
+Pillow (`bestgaa/requirements.txt`); without it the studio still serves captions
+and says the card is unavailable.
 
 ### Easy setup: link → category → channel
 

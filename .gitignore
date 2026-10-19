@@ -26,6 +26,9 @@ bestgaa/bestgaa.sqlite3*
 bestgaa/logs/
 bestgaa/media/
 tg-wa-bridge/bridge-state*.json
+# routing snapshot the bot/dashboard regenerate at startup (runtime truth, not source)
+routing_snapshot.json
+bestgaa/routing_snapshot.json
 tg-wa-bridge/bridge.backup.*.js
 tg-wa-bridge/.env.backup.*
 *.log

@@ -51,6 +51,41 @@ if [[ "$DO_TESTS" == "1" ]]; then
   # exactly that) and the checkout fills with test logs/DBs - which is what
   # conversion_report then read back as "live". Isolate both.
   SUITE_TMP="$(mktemp -d /tmp/deploy-suites-XXXXXX)"
+
+  # Run the SAME gate CI runs, not a hardcoded subset that silently rots. On
+  # 2026-10-18 this list held 8 suites while ops/test_all.sh had 32 sections:
+  # delivery fences, post-deploy repeats, the whole dashboard (API + DOM),
+  # category invariants, the send guard, shell syntax and the repo-consistency
+  # checks were all shipping unverified from this path. Documentation drift is a
+  # WARNING here, never a blocked rollout (GATE_DOC_MODE=warn): a stale README
+  # must be reported to the operator, not used to hold a live deploy hostage.
+  # If this checkout cannot run the full gate (no node, no bridge deps), it says
+  # so and falls back to the core suites below - the deploy is never worse off
+  # than it was before this change.
+  GATE_RAN=0
+  if [[ -f "$REPO/ops/test_all.sh" ]]; then
+    gate_rc=0
+    ( cd "$REPO" && GATE_DOC_MODE=warn PYTHON="${PYTHON:-python3}" \
+        timeout 1800 bash ops/test_all.sh ) >/tmp/test_all.deploy.log 2>&1 || gate_rc=$?
+    if [[ "$gate_rc" -eq 0 ]]; then
+      ok "full offline gate - the same ops/test_all.sh CI runs (/tmp/test_all.deploy.log)"
+      GATE_RAN=1
+      if grep -q "DOCUMENTATION DRIFT" /tmp/test_all.deploy.log; then
+        warn "README no longer describes this tree - run: python3 ops/doc_freshness.py --write"
+      fi
+    elif [[ "$gate_rc" -eq 2 ]]; then
+      info "full gate cannot run in this checkout (missing deps, exit 2) - using the core suites"
+      info "  reason: $(grep -m1 '^ERROR:' /tmp/test_all.deploy.log || tail -1 /tmp/test_all.deploy.log)"
+    else
+      warn "full offline gate did NOT pass (exit $gate_rc) - core suites below for detail; last lines: $(tail -3 /tmp/test_all.deploy.log | tr '\n' ' ')"
+    fi
+  else
+    info "ops/test_all.sh is absent from this checkout - running the core suites individually"
+  fi
+
+  if [[ "$GATE_RAN" == "1" ]]; then
+    : # the full gate already ran every suite below, plus the ones it never listed
+  else
   for suite in test_pipeline_fixes test_render_job test_best_copy test_duplicate_sim \
                test_line_fidelity test_rescan test_earnkaro_conversion test_hypd_links; do
     if [[ ! -f "$REPO/$suite.py" ]]; then
@@ -65,6 +100,7 @@ if [[ "$DO_TESTS" == "1" ]]; then
       warn "$suite failed - last lines: $(tail -3 "/tmp/$suite.deploy.log" | tr '\n' ' ')"
     fi
   done
+  fi
   if [[ -f "$REPO/ops/sync_identity.py" ]]; then
     # The auditor answers "did we post this product twice?" with the bot's own
     # identity rule, generated from bestgaa/main_bot_new.py. If somebody edited one
@@ -250,6 +286,34 @@ if [[ -f "$AUDIT" && -f "$DB" ]]; then
   fi
 else
   info "skipped (audit=$AUDIT db=$DB) - run it once the bundle with quality_audit.py is deployed"
+fi
+
+echo ""
+echo "==== 6. CATEGORY-WISE HEALTH (per shelf, from the live DB + log) ===="
+# Aggregate numbers hide a dead shelf: Main can post all day while the
+# electronics channel sits empty because its target is unresolved or the running
+# bot classifies with older rules. This is the same engine the dashboard's
+# Categories panel uses, so the deploy report and the panel cannot disagree.
+# --strict-errors gates only on breakage (rules parity/version, routing disabled,
+# target collision): an operator running three shelves must not fail a rollout
+# because the other four have no channel. Warnings are printed, not fatal.
+CATEGORY_REPORT="$HERE/category_report.py"
+[[ -f "$CATEGORY_REPORT" ]] || CATEGORY_REPORT="$BESTGAA_DIR/category_report.py"
+if [[ -f "$CATEGORY_REPORT" && -f "$DB" ]]; then
+  if python3 "$CATEGORY_REPORT" --db "$DB" --log "$BOT_LOG" --hours 6 \
+      --strict-errors >/tmp/category_report.log 2>&1; then
+    ok "no category ERROR finding (rules parity, bot rules version, routing on, no collision)"
+    while IFS= read -r line; do info "${line#  }"; done \
+      < <(grep -E '^  (WARN|INFO)' /tmp/category_report.log | head -8)
+    grep -E '^  [A-Za-z].*state=' /tmp/category_report.log | head -8 \
+      | while IFS= read -r line; do info "${line#  }"; done
+  else
+    warn "category report has ERROR finding(s) - see /tmp/category_report.log"
+    while IFS= read -r line; do warn "${line#  }"; done \
+      < <(grep -E '^  ERROR' /tmp/category_report.log | head -5)
+  fi
+else
+  info "skipped (report=$CATEGORY_REPORT db=$DB) - run it once this bundle is deployed"
 fi
 
 echo ""

@@ -19,6 +19,13 @@ What it does
   * Status: queue depth, today's real sends vs skips per the ledger, last
     posted deal, bot uptime.
   * Recent: latest jobs with per-job send/skip counts.
+  * Categories: per-shelf truth from the live database, the bot log, the saved
+    config and the installed rules - sends/skips/holds, pending backlog, how many
+    deals the classifier routed to the shelf versus withheld from it (and why),
+    the last time anything landed there, and actionable findings (rules parity,
+    a stale bot rules version, an unresolved or colliding shelf target, a shelf
+    that stayed silent while Main posted). Same engine as
+    `python3 ops/category_report.py`.
   * Audit: the same SENDS vs SKIPS + findings summary ops/quality_audit.py
     produces, over the live database (read-only).
 
@@ -31,6 +38,7 @@ import hmac
 import importlib.util
 import json
 import os
+import re
 import shlex
 import sqlite3
 import subprocess
@@ -317,7 +325,20 @@ async def api_channels(request: web.Request):
     dashboard_names = {c["name"].lower() for c in data["channels"]}
     dashboard_names.update(str(n).lower() for n in snap.get("dashboard_added", []))
     targets = [str(t) for t in snap.get("targets", [])]
-    return web.json_response({
+    try:
+        wa_module = load_category_report()
+        wa = wa_module.wa_surfaces(category_env(wa_module), load_rules(),
+                                   channels_config.load_channels())
+        whatsapp = {"live_channels": wa["channels"], "live_core": wa["core"],
+                    "file": wa["file"], "file_rows": wa["file_rows"],
+                    "pending": wa["pending"],
+                    "env_lines": wa["env_lines"], "collisions": wa["collisions"],
+                    "masked": wa["masked"]}
+    except Exception as exc:                       # the panel degrades, never lies
+        whatsapp = {"error": str(exc), "live_channels": {}, "live_core": {},
+                    "file": {}, "file_rows": [], "pending": [], "env_lines": []}
+    payload_extra = {"whatsapp": whatsapp}
+    return web.json_response({**payload_extra,
         "builtin": sorted(t for t in targets if t.lower() not in dashboard_names),
         "dashboard": data["channels"],
         "revision": config_revision(),
@@ -429,6 +450,7 @@ async def api_recent(request: web.Request):
             try:
                 rows = conn.execute(
                     f"SELECT q.id, q.source, q.status, q.created_at, q.last_error, "
+                    f"q.rendered_text, "
                     f"{sends_expr} AS sends, {skips_expr} AS skips, "
                     "SUM(CASE WHEN d.status='held' THEN 1 ELSE 0 END) AS held FROM queue q "
                     "LEFT JOIN deliveries d ON d.queue_id=q.id "
@@ -436,9 +458,13 @@ async def api_recent(request: web.Request):
             except sqlite3.OperationalError:
                 rows = []
             for row in rows:
+                text = str(row["rendered_text"] or "")
+                match = re.search(r"https?://[^\s<>()\[\]]+", text)
                 jobs.append({
                     "id": row["id"], "source": row["source"], "status": row["status"],
                     "created_at": row["created_at"], "error": (row["last_error"] or "")[:120],
+                    "snippet": " ".join(text.split())[:240],
+                    "link": match.group(0) if match else "",
                     "sends": int(row["sends"] or 0), "skips": int(row["skips"] or 0),
                     "held": int(row["held"] or 0),
                 })
@@ -452,6 +478,343 @@ def load_quality_audit():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_category_report():
+    """The category-wise report engine, shared with `python3 ops/category_report.py`.
+
+    One implementation, two front doors: the CLI an operator runs on the server
+    and this dashboard read the same code, so the numbers cannot disagree.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "dash_category_report", ROOT / "ops" / "category_report.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_deal_card():
+    """The deal-card engine, shared with `python3 ops/deal_card.py`.
+
+    Same reason the categories endpoint loads its engine by path: the CLI an
+    operator runs on the server and this dashboard must draw the same card from
+    the same caption, so there is one implementation and two front doors.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "dash_deal_card", ROOT / "ops" / "deal_card.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def category_env(module) -> dict[str, str]:
+    """Env-declared shelf targets, without ever echoing a secret value.
+
+    Only the channel-plumbing keys are read (TG_CATEGORY_*_TARGET,
+    AMAZON_TAG*, WA_CHANNEL_*, WA_AMAZON_TAG_CATEGORY_TARGETS); the module keeps
+    nothing else from a .env, so a token in the same file cannot reach this
+    response. WhatsApp values are masked by the module unless they are a plain
+    JID, so an invite link is never echoed either.
+    """
+    env = module.load_env()
+    for key, value in os.environ.items():
+        if (key.startswith(("TG_CATEGORY_", "WA_CHANNEL_"))
+                or key in ("AMAZON_TAG_CATEGORY_TARGETS", "WA_AMAZON_TAG_CATEGORY_TARGETS",
+                           "AMAZON_TAG")):
+            env.setdefault(key, str(value).strip())
+    return env
+
+
+@require_token
+async def api_categories(request: web.Request):
+    """Per-shelf truth: sends, skips, backlog, routed vs withheld, and findings.
+
+    Also per shelf: whether the links it published pay us (`money`), the IST-day
+    trend (`history`), and how the same shelf is configured on Telegram and on
+    WhatsApp (`surfaces`). `expand=<key>` adds the newest delivery rows for that
+    one shelf so a number can be opened instead of argued with.
+
+    Read-only like every other endpoint here: the database is opened mode=ro and
+    nothing is queued, restarted or sent.
+    """
+    try:
+        hours = max(1.0, min(168.0, float(request.query.get("hours", "24"))))
+    except (TypeError, ValueError):
+        hours = 24.0
+    try:
+        days = max(1, min(30, int(request.query.get("days", "7"))))
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        expand_limit = max(1, min(50, int(request.query.get("expand_limit", "12"))))
+    except (TypeError, ValueError):
+        expand_limit = 12
+    # The drill-down key is a shelf key, "main", or the "target:Name" the report
+    # itself produced. Anything else is dropped rather than passed on, so a query
+    # string can never become anything the engine did not already name.
+    expand = request.query.get("expand", "") or ""
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", expand):
+        expand = ""
+    try:
+        module = load_category_report()
+        report = module.build_report(
+            db=db_path(), log=module.default_log(), hours=hours,
+            channels_data=channels_config.load_channels(), rules=load_rules(),
+            env=category_env(module), snapshot=snapshot(), days=days,
+            expand=expand or None, expand_limit=expand_limit)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    payload = module.jsonable(report)
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
+@require_token
+async def api_card_png(request: web.Request):
+    """The raster deal card for one caption, exactly as the CLI would draw it.
+
+    Preview only: it renders and returns bytes. Nothing is queued, nothing is
+    sent, and the send path still posts what it posts today.
+    """
+    text = request.query.get("text", "") or ""
+    if len(text) > 6000 or not text.strip():
+        return web.json_response({"error": "text is required (max 6000 chars)"}, status=400)
+    try:
+        width = max(320, min(1600, int(request.query.get("width", "1080"))))
+    except (TypeError, ValueError):
+        width = 1080
+    try:
+        module = load_deal_card()
+        png = module.card_png(module.deal_facts(text), width=width)
+    except module.CardUnavailable as exc:
+        return web.json_response({"error": str(exc)}, status=503)
+    except Exception as exc:                       # a bad photo must not 500 the UI
+        return web.json_response({"error": f"card render failed: {exc}"}, status=400)
+    return web.Response(body=png, content_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+
+@require_token
+async def api_card_studio(request: web.Request):
+    """Everything the card studio shows for one caption: the bot's own reading of
+    price/discount/coupon, the caption per surface, and which destinations would
+    receive card+caption (and which would skip it, with the reason).
+
+    Read-only: the link verdict opens the database mode=ro via ops/deal_card.py,
+    and the plan reads channels.json and the category rules the bot and bridge
+    both use. Nothing is written and nothing is sent.
+    """
+    text = request.query.get("text", "") or ""
+    link = request.query.get("link", "") or ""
+    if len(text) > 6000 or not text.strip():
+        return web.json_response({"error": "text is required (max 6000 chars)"}, status=400)
+    if len(link) > 500:
+        return web.json_response({"error": "link too long (max 500 chars)"}, status=400)
+    try:
+        module = load_deal_card()
+        payload = module.studio(text, link=link, db=str(db_path()))
+    except Exception as exc:
+        return web.json_response({"error": f"card studio failed: {exc}"}, status=503)
+    payload["db_exists"] = db_path().exists()
+    payload["preview_only"] = True
+    return web.json_response(payload)
+
+
+@require_token
+async def api_put_whatsapp(request: web.Request):
+    """Save the WhatsApp channels the dashboard declares (channels.json
+    `whatsapp`), with the exact env lines the bridge needs to activate them.
+
+    The bridge builds its WhatsApp policy from `WA_CHANNEL_<KEY>` env at startup
+    and this dashboard never restarts it, so saving here records intent and
+    generates the lines; `/api/categories` then shows the row as pending until
+    the env catches up. Collisions (one channel for two keys) are refused at
+    save time because the bridge would silently stop filtering one shelf.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    cleaned, errors = channels_config.validate_whatsapp_list(
+        (body or {}).get("whatsapp"), set(category_catalog()))
+    if errors:
+        return web.json_response({"errors": errors}, status=400)
+    data = channels_config.load_channels()
+    data["whatsapp"] = cleaned
+    channels_config.save_channels(data)
+    return web.json_response({"saved": True, "whatsapp": cleaned,
+                              "env_lines": channels_config.wa_env_lines(cleaned)})
+
+
+@require_token
+async def api_post_buttons_get(request: web.Request):
+    """The configured Telegram button row (join buttons under every post)."""
+    import post_buttons
+    return web.json_response({
+        "buttons": post_buttons.load_buttons(),
+        "presets": post_buttons.preset_buttons(),
+        "max_buttons": post_buttons.MAX_BUTTONS,
+        "max_label": post_buttons.MAX_LABEL,
+        "allowed_hosts": list(post_buttons.ALLOWED_HOSTS),
+        "path": str(post_buttons.config_path()),
+    })
+
+
+@require_token
+async def api_post_buttons_put(request: web.Request):
+    """Save the button row. Validation lives in post_buttons, so the CLI, the bot
+    and this endpoint can never disagree about what a button is."""
+    import post_buttons
+    try:
+        body = await request.json()
+    except ValueError:
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    target, errors = post_buttons.save_buttons((body or {}).get("buttons"))
+    if errors:
+        return web.json_response({"errors": errors}, status=400)
+    return web.json_response({"saved": True, "buttons": post_buttons.load_buttons(target),
+                              "path": str(target)})
+
+
+@require_token
+async def api_link_conversion(request: web.Request):
+    """"Mana links maruthunnaya?" - answered per link, from the converter's book.
+
+    link_cache holds source URL -> published affiliate URL -> resolved
+    destination; each published URL is classified with the same url_money() the
+    money report uses, so "converted" here means exactly what it means there:
+    our tag, our shortener, or a proof row. Read-only, mode=ro.
+    """
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "25"))))
+    except (TypeError, ValueError):
+        limit = 25
+    conn = read_only_db()
+    try:
+        module = load_category_report()
+        read = module.our_amazon_tags()
+        tags = frozenset(read.get("bestgaa") or set()) | frozenset(read.get("bridge") or set())
+        payload = module.link_conversion(conn, tags, limit=limit)
+        try:
+            days = max(1, min(30, int(request.query.get("days", "7"))))
+        except (TypeError, ValueError):
+            days = 7
+        payload["trend"] = module.conversion_trend(conn, tags, days=days)
+    except Exception as exc:
+        return web.json_response({"error": f"conversion view failed: {exc}"}, status=503)
+    finally:
+        if conn is not None:
+            conn.close()
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
+@require_token
+async def api_channel_pipe(request: web.Request):
+    """Open one source -> channel pipe: the posts it sent, each with its money
+    verdict. The channel list shows the pipe counts; this is the evidence
+    inside a single pipe, newest first. Read-only, mode=ro.
+    """
+    target = (request.query.get("target") or "").strip()
+    source = (request.query.get("source") or "").strip()
+    if not target or not source:
+        return web.json_response({"error": "target and source are required"}, status=400)
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "15"))))
+    except (TypeError, ValueError):
+        limit = 15
+    try:
+        hours = max(1, min(24 * 60, int(request.query.get("hours", "168"))))
+    except (TypeError, ValueError):
+        hours = 168
+    conn = read_only_db()
+    try:
+        module = load_category_report()
+        read = module.our_amazon_tags()
+        tags = frozenset(read.get("bestgaa") or set()) | frozenset(read.get("bridge") or set())
+        ledger = module.ledger_rows(conn, time.time() - hours * 3600)
+        links = module.link_index(conn) if conn is not None else {
+            "by_affiliate": {}, "by_source": {}, "proofs": {}}
+        payload = module.pipe_rows(ledger.get("rows") or [], links, tags,
+                                   target, source, limit=limit)
+        payload["hours"] = hours
+        payload["ledger_error"] = ledger.get("error") or ""
+    except Exception as exc:
+        return web.json_response({"error": f"pipe view failed: {exc}"}, status=503)
+    finally:
+        if conn is not None:
+            conn.close()
+    payload["db_exists"] = db_path().exists()
+    return web.json_response(payload)
+
+
+_RATE_BUCKETS: dict[str, list[float]] = {}
+
+
+def _rate_limit_allowed(key: str) -> tuple[bool, float]:
+    """Token bucket per peer for MUTATING /api calls (enterprise review #3).
+
+    The dashboard token is shared by everyone who has it, so without a bucket
+    one loop (or one slipped token) can hammer writes. Capacity and refill come
+    from DASHBOARD_RATE_LIMIT="capacity:refill_per_second" (default 60:2); the
+    bucket refills continuously and idle peers are pruned after an hour.
+    """
+    spec = os.getenv("DASHBOARD_RATE_LIMIT", "60:2")
+    try:
+        capacity, refill = (float(part) for part in spec.split(":", 1))
+    except ValueError:
+        capacity, refill = 60.0, 2.0
+    capacity = max(1.0, capacity)
+    refill = max(0.001, refill)
+    now = time.time()
+    bucket = _RATE_BUCKETS.get(key)
+    if bucket is None or now - bucket[1] > 3600:
+        bucket = [capacity, now]
+        _RATE_BUCKETS[key] = bucket
+    tokens = min(capacity, bucket[0] + (now - bucket[1]) * refill)
+    if tokens < 1.0:
+        bucket[0] = tokens
+        bucket[1] = now
+        return False, (1.0 - tokens) / refill
+    bucket[0] = tokens - 1.0
+    bucket[1] = now
+    if len(_RATE_BUCKETS) > 4096:
+        for stale in [k for k, v in _RATE_BUCKETS.items() if now - v[1] > 3600]:
+            _RATE_BUCKETS.pop(stale, None)
+    return True, 0.0
+
+
+@web.middleware
+async def security_headers(request: web.Request, handler):
+    """Baseline response hardening: no framing, no MIME sniffing, no referrer
+    leaks, and nothing cacheable behind the token."""
+    if request.path.startswith("/api/") and request.method in (
+            "POST", "PATCH", "PUT", "DELETE"):
+        allowed, retry = _rate_limit_allowed(f"{request.remote or '?'}:write")
+        if not allowed:
+            limited = web.json_response(
+                {"error": "too many write requests, slow down",
+                 "retry_after": round(retry, 1)}, status=429)
+            limited.headers["Retry-After"] = str(max(1, int(retry + 0.999)))
+            return limited
+    response = await handler(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    # Enterprise review #4: a CSP for a single-file dashboard. The panel ships
+    # its script and styles inline, so those two keep 'unsafe-inline' (a nonce
+    # would need per-response HTML rewriting); everything ELSE is locked down -
+    # no plugins, no frames, no forms posting out, no base-tag hijack, and
+    # images/connects only from this origin (plus the data:/blob: URLs the card
+    # studio and the PNG endpoint legitimately use).
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+        "form-action 'self'; frame-ancestors 'none'")
+    return response
 
 
 @require_token
@@ -507,7 +870,7 @@ async def index(request: web.Request):
 
 
 def create_app() -> web.Application:
-    app = web.Application()
+    app = web.Application(middlewares=[security_headers])
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/channels", api_channels)
@@ -516,8 +879,16 @@ def create_app() -> web.Application:
     app.router.add_post("/api/inspect-link", api_inspect_link)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
+    app.router.add_put("/api/channels/whatsapp", api_put_whatsapp)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)
     app.router.add_get("/api/recent", api_recent)
+    app.router.add_get("/api/categories", api_categories)
+    app.router.add_get("/api/link-conversion", api_link_conversion)
+    app.router.add_get("/api/channel-pipe", api_channel_pipe)
+    app.router.add_get("/api/post-buttons", api_post_buttons_get)
+    app.router.add_put("/api/post-buttons", api_post_buttons_put)
+    app.router.add_get("/api/card.png", api_card_png)
+    app.router.add_get("/api/card-studio", api_card_studio)
     app.router.add_get("/api/audit", api_audit)
     app.router.add_post("/api/restart", api_restart)
     return app

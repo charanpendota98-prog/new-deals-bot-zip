@@ -126,6 +126,17 @@ async def case(store, name, text, resolve_map, convert_map, expect_exception=Non
 async def test_strict_owned_link_policy(store):
     saved_strict = bot.STRICT_OUR_LINKS
     saved_tag = bot.OUR_TAG
+    await case(
+        store, "the Indian /- price suffix reaches the channel byte-identical",
+        "Smart LED 43 inch\nPrice: ₹18,999/-\nAfter coupon: ₹17,499/-\nhttps://amzn.lt/led9",
+        {"https://amzn.lt/led9": "https://www.amazon.in/dp/B0LED9"},
+        {"https://amzn.lt/led9": bot.LinkResult(
+            source="https://amzn.lt/led9", resolved="https://www.amazon.in/dp/B0LED9",
+            affiliate="https://www.amazon.in/dp/B0LED9?tag=mama086-21",
+            deal_key="amazon:B0LED9")},
+        expect_render_contains=("₹18,999/-", "₹17,499/-"),
+        msg_id=9150,
+    )
     saved_publisher = bot.OUR_EK_ID
     saved_targets = set(bot.AMAZON_TAG_TARGET_KEYS)
     bot.STRICT_OUR_LINKS = True

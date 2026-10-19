@@ -17,7 +17,11 @@ cd "$APP_DIR"
 
 echo "[1/9] Checking uploaded files..."
 [[ -f "$NEW_FILE" ]] || { echo "ERROR: main_bot_new.py not found"; exit 1; }
-for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py source_catalog.json; do
+# deal_facts.py is a HARD import of main_bot_new.py (price/MRP/discount reading)
+# and post_buttons.py is imported in the send path - a host missing either boots
+# into ImportError or fails every send, so the deploy refuses to start without
+# them (DEPLOY GAP found 2026-10-19 while preparing the perfect-deploy pass).
+for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py source_catalog.json deal_facts.py post_buttons.py; do
   [[ -f "$APP_DIR/$helper" ]] || { echo "ERROR: $helper missing; upload it beside main_bot_new.py"; exit 1; }
 done
 [[ -f "$APP_DIR/category_rules.json" ]] || { echo "ERROR: category_rules.json missing; upload it beside main_bot_new.py"; exit 1; }
@@ -67,6 +71,11 @@ chmod 600 "$ENV_FILE"
 
 echo "[3/9] Compiling new bot..."
 python3 -m py_compile "$NEW_FILE"
+# A half-uploaded helper used to surface as a runtime crash AFTER the restart;
+# compiling every Python helper here fails the deploy BEFORE anything is moved.
+for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py deal_facts.py post_buttons.py migrate_legacy_env.py; do
+  python3 -m py_compile "$APP_DIR/$helper" || { echo "ERROR: $helper does not compile"; exit 1; }
+done
 
 echo "[4/9] Installing dependencies..."
 python3 -m pip install --user --quiet -r "$APP_DIR/requirements.txt"

@@ -89,6 +89,15 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+# Price/discount/MRP reading lives in deal_facts so the card renderer, the
+# dashboard's card studio and the routing all read one caption the same way.
+try:
+    from bestgaa.deal_facts import (parse_price, parse_discount,          # noqa: F401
+                                    has_lowest_price_claim)
+except ImportError:  # running as a plain script from inside bestgaa/
+    from deal_facts import (parse_price, parse_discount,                  # noqa: F401
+                            has_lowest_price_claim)
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
@@ -909,11 +918,20 @@ def strip_amazon_ratings(text: str) -> str:
     """
     out = []
     for line in (text or "").splitlines():
+        # LAST-MILE REPAIR (USER REPORT 2026-10-18): the separator tidy-up below
+        # used to run on EVERY line, and its trailing-strip ate the "-" of the
+        # Indian "/-" price suffix - "Price: ₹18,999/-" posted as "₹18,999/".
+        # A line with no rating in it must pass through byte-identical: the
+        # posted text carries the source's money exactly as written.
+        if not _AMAZON_RATING_RE.search(line):
+            out.append(line)
+            continue
         cleaned = _AMAZON_RATING_RE.sub(" ", line)
         # tidy the separators the removal leaves behind ("899 |  | 70% OFF")
         cleaned = re.sub(r"\s*\|\s*(?=\||$)", "", cleaned)
         cleaned = re.sub(r"^\s*[|,\-\u2013\u2014]\s*", "", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).rstrip(" |,-\u2013\u2014")
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"(?<!/)[\s|,\-\u2013\u2014]+\Z", "", cleaned)
         # a line that was ONLY a rating disappears; one that had other words stays
         if cleaned.strip() or not line.strip():
             out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
@@ -2451,107 +2469,6 @@ def product_key(value: str) -> str:
     return extract_product_id(value) or "URL:" + hashlib.sha256(merchant_url(value).encode()).hexdigest()
 
 
-def parse_price(text: str) -> int | None:
-    """Prefer explicit deal/effective price; avoid MRP/coupon/bank discount values.
-
-    Deep-audit fixes (2026-09-04): "MRP ₹1,999 Deal ₹899" used to return the
-    MRP (routing a ₹899 deal as if it cost ₹1,999); "INR 799", "Price: 349/-"
-    and "349/-" (the Indian price suffix) were not read at all. MRP-labelled
-    amounts are masked before the generic currency scan, so the generic match
-    can only ever see the DEAL price. Bare numbers with no currency marker are
-    still ignored on purpose - a model number is not a price."""
-    value = text or ""
-    # Mask "MRP ₹1,999" style amounts so no later pattern can mistake the MRP
-    # for the deal price. The deal-price labels below never say MRP.
-    masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
-                    " ", value)
-    # A DISCOUNT is not a price. "Save Rs.500", "Rs.99 off", "Flat 200 off" and
-    # "Rs.50 cashback" all name money the buyer does NOT pay; reading one as the
-    # price prints a figure the source never charged. Masked before the scan so
-    # no pattern below can reach them.
-    masked = re.sub(r"(?i)\b(?:save|flat|upto|up\s*to|extra|discount|off|cashback)\s*"
-                    r"(?:rs\.?|₹|inr)?\s*[\d,]+", " ", masked)
-    # Only the amount IMMEDIATELY before the word, with no space swallowed from
-    # a preceding price: "Rs.1,999 Discount: 66%" must keep the 1,999. So the
-    # currency mark is required, or the number must hug the word.
-    masked = re.sub(r"(?i)(?:rs\.?|₹|inr)\s*[\d,]+\s*(?:off|cashback)\b", " ", masked)
-    masked = re.sub(r"(?i)\b[\d,]+\s*%?\s*(?:off|cashback)\b", " ", masked)
-    patterns = [
-        r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
-        r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
-        # \b anchors the END of the number: without it "Rs.99 off" backtracked to
-        # "9" (the lookahead only had to fail for the SHORTER match) and printed
-        # a price of 9 rupees.
-        r"(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)\b(?!\s*(?:off|coupon|cashback))",
-        # Indian "/-" price suffix: "Price: 349/-", "349/-" is explicit money.
-        r"(?:price\s*[:@-]?\s*)?([\d,]{2,})\s*/-",
-        # Suffix currency: "749 rs" / "249Rs." / "1,299 INR" - money named AFTER
-        # the number is still explicit money.
-        r"([\d,]{2,})\s*(?:rs\.?|inr)\b",
-        r"^\s*([\d,]{2,})\s+(?:https?://|$)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, masked, re.I | re.M)
-        if match:
-            price = int(match.group(1).replace(",", ""))
-            if 1 <= price <= 1_000_000:
-                return price
-    # "899 (MRP 2990)" - the deal price written as a BARE number, with the MRP
-    # right after it. Nothing above matches (no currency mark, no @/only/at),
-    # so the MRP fallback below used to answer 2990: the post advertised a
-    # price the buyer does not pay, and price drives routing and dedup.
-    # A bare number immediately followed by an MRP is the deal price.
-    bare_before_mrp = re.search(
-        r"(?<![\d,.])([\d,]{2,})\s*[({\[]?\s*"
-        r"(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\b",
-        value, re.I)
-    if bare_before_mrp:
-        price = int(bare_before_mrp.group(1).replace(",", ""))
-        if 1 <= price <= 1_000_000:
-            return price
-    # No deal price anywhere: an MRP-only line ("MRP: ₹270") is still the only
-    # money on the post, so it is the best available answer (old behaviour).
-    # The masking above only stops MRP from SHADOWING a real deal price.
-    mrp = re.search(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)", value)
-    if mrp:
-        price = int(mrp.group(1).replace(",", ""))
-        if 1 <= price <= 1_000_000:
-            return price
-    return None
-
-
-def parse_discount(text: str, price: int | None = None) -> int | None:
-    """Return the strongest explicit/derived product discount percentage."""
-    value = text or ""
-    found: list[int] = []
-    patterns = (
-        r"(?:up\s*to|upto|flat|save|get)?\s*([1-9]\d?|100)\s*%\s*(?:off|discount)",
-        # "save 25 %" / "get 40 %" with a space before the sign and no
-        # off/discount word after it — the label BEFORE the number is what
-        # makes it a discount, so plain "25 %" alone still never matches.
-        r"(?:save|get|upto|up\s*to|flat)\s+([1-9]\d?|100)\s*%",
-        # "Discount: 26%" is how a loot channel actually writes it - the colon after
-        # the label used to lose the whole percentage, which matters because the
-        # discount decides which price-tier channel a deal is routed to.
-        r"(?:off|discount|savings?)\s*[:=-]?\s*(?:up\s*to|upto|flat)?\s*[:=-]?\s*([1-9]\d?|100)\s*(?:%|percent\b)",
-    )
-    for pattern in patterns:
-        for match in re.finditer(pattern, value, re.I):
-            percent = int(match.group(1))
-            if 1 <= percent <= 100:
-                found.append(percent)
-
-    mrp_matches = re.findall(r"\bMRP\s*[:@-]?\s*(?:rs\.?|₹)?\s*([\d,]+)", value, re.I)
-    deal_price = price if price is not None else parse_price(value)
-    if mrp_matches and deal_price:
-        with contextlib.suppress(ValueError):
-            mrp = max(int(raw.replace(",", "")) for raw in mrp_matches)
-            if mrp > deal_price > 0:
-                found.append(round((mrp - deal_price) * 100 / mrp))
-    return max(found) if found else None
-
-
 def classify_priority(text: str, has_media: bool = False) -> int:
     """Priority for the Telegram delivery queue.
 
@@ -2650,14 +2567,6 @@ def eligible_for_power_loots(price: int | None, discount: int | None,
         or (discount is not None and discount >= 70)
         or card_offer
     )
-
-
-def has_lowest_price_claim(text: str) -> bool:
-    return bool(re.search(
-        r"\b(?:lowest(?:\s+ever)?\s+price|all[ -]?time\s+low|price\s+drop|"
-        r"lower\s+than\s+market|historical\s+low|best\s+price)\b",
-        text or "", re.I,
-    ))
 
 
 def append_folder_link(text: str) -> str:
@@ -2980,7 +2889,12 @@ def strip_inline_cta(line: str) -> str:
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
     # that OPENED with a colon, which reads exactly like bot damage.
-    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
+    # Leading and trailing sweeps are split on purpose: the trailing one must
+    # not eat the "-" of the Indian "/-" price suffix (USER REPORT 2026-10-18) -
+    # "Price: ₹18,999/-" posted as "₹18,999/". The payload signature below
+    # cannot catch this: the digits survive, only the suffix dash goes.
+    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+", "", out)
+    out = re.sub(r"(?<!/)[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
     # Fidelity rule (user, round 10): a lost line is as bad as an added one. If a
     # CTA clause took the price, the discount or the coupon code with it, the
     # clause removal is undone for that line - the source wrote those words.
@@ -3518,7 +3432,9 @@ def strip_link_fragment_tokens(text: str) -> str:
             # variation selector is emoji, not residue: "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE
             # \u26a1\ufe0f\u26a1\ufe0f" must come out exactly as the source wrote it, so only an
             # ORPHAN \ufe0f (nothing in front of it but space/start) is dropped.
-            line = re.sub(r"[\s\u279c\u27a1\u2192\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
+            # (?<!/) keeps the "-" of the Indian "/-" price suffix: this sweep
+            # posted "Price: ₹18,999/-" as "₹18,999/" (USER REPORT 2026-10-18).
+            line = re.sub(r"(?<!/)[\s\u279c\u27a1\u2192\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
             line = re.sub(r"(?<=\s)\ufe0f+(?=\s*$)", "", line)
             line = re.sub(r"^\ufe0f+", "", line)
         lines.append(line)
@@ -4000,7 +3916,14 @@ def strict_orphan_token_cleanup(text: str, *, list_context: bool = False) -> str
         # real URL (real URLs are normally on their own and fail this pattern).
         if not URL_RE.fullmatch(stripped):
             stripped = re.sub(r"(?i)\b(?:htt|ttp|tps|s)[:/][A-Za-z0-9/:._-]*", "", stripped)
-            stripped = re.sub(r"\s{2,}", " ", stripped).strip(" :|+-")
+            # Tidy the edges the fragment removal left, but NEVER eat the "-" of
+            # the Indian "/-" price suffix (USER REPORT 2026-10-18): a plain
+            # strip(" :|+-") posted "Price: ₹18,999/-" as "₹18,999/". The
+            # lookbehind keeps a "-" that follows "/", drops every other
+            # dangling dash/pipe/colon.
+            stripped = re.sub(r"\s{2,}", " ", stripped)
+            stripped = re.sub(r"\A[\s:|+-]+", "", stripped)
+            stripped = re.sub(r"(?<!/)[\s:|+-]+\Z", "", stripped)
             if not stripped:
                 continue
             # Removing a broken fragment can leave a bare CTA label behind
@@ -8224,24 +8147,50 @@ async def send_media_group(client, entity, caption: str, paths: list[str], refs:
     return True
 
 
-async def send_media_item(client, entity, media, caption: str, refs: list | None = None) -> None:
+async def send_media_item(client, entity, media, caption: str, refs: list | None = None,
+                          buttons: list | None = None) -> None:
     """One photo with its caption, or the whole album as one grid, with real fallbacks.
 
     If the grid cannot be sent, the first photo goes out with the caption - exactly what
     the bot always did - and the remaining photos follow as their own messages, so the
-    reader still gets every image the source posted.
+    reader still gets every image the source posted. `buttons` rides only on sends that
+    carry the caption: an album's raw multi-media request keeps today's shape until its
+    markup path is covered by tests.
     """
     paths = media_list(media)
     if len(paths) <= 1:
         await client.send_file(entity, paths[0] if paths else None, caption=caption,
-                               parse_mode=None)
+                               parse_mode=None, buttons=buttons or None)
         return
     if await send_media_group(client, entity, caption, paths, list(refs or [])):
         return
-    await client.send_file(entity, paths[0], caption=caption, parse_mode=None)
+    await client.send_file(entity, paths[0], caption=caption, parse_mode=None,
+                           buttons=buttons or None)
     for extra in paths[1:]:
         with contextlib.suppress(Exception):
             await client.send_file(entity, extra, parse_mode=None)
+
+
+def post_inline_buttons():
+    """The dashboard-configured URL button row, ready for Telethon, or [].
+
+    Telegram draws inline URL buttons below the message - the "Join … ❤️" row a
+    big channel ends every post with. Empty config (the default, and every
+    deployment until an operator saves buttons) returns [], and `deliver` then
+    passes buttons=None, so nothing about today's posts changes. WhatsApp has no
+    inline buttons, so this is a Telegram-only surface.
+    """
+    try:
+        import post_buttons
+    except ImportError:  # imported as bestgaa.main_bot_new
+        from bestgaa import post_buttons
+    rows = post_buttons.load_buttons()
+    if not rows:
+        return []
+    from telethon import Button
+    # `entry`, not `row`: these are config dicts, and the pipeline suite audits
+    # every row["…"] read against the SQL table it came from.
+    return [[Button.url(entry["label"], entry["url"])] for entry in rows]
 
 
 def channel_header_line() -> str:
@@ -8304,8 +8253,13 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
         await attempt_callback(-1, plan_hash, "plan")
     if start_chunk > len(parts):
         return False, "invalid chunk checkpoint"
+    # The button row opens the post, exactly once: the first message actually sent
+    # (which is the photo when there is one). A resumed job puts it on the message
+    # that resumes, so a post never shows zero rows because of a retry.
+    button_row = post_inline_buttons() or None
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
+        chunk_buttons = button_row if index == start_chunk else None
         sent = False
         last_error = "unknown send failure"
         payload_hash = hashlib.sha256((kind + "\n" + content).encode()).hexdigest()
@@ -8316,10 +8270,12 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
                     break
             try:
                 if kind == "file":
-                    await send_media_item(client, entity, media_path, content, media_refs)
+                    await send_media_item(client, entity, media_path, content, media_refs,
+                                          chunk_buttons)
                 else:
                     await client.send_message(
-                        entity, content, parse_mode=None, link_preview=link_preview
+                        entity, content, parse_mode=None, link_preview=link_preview,
+                        buttons=chunk_buttons
                     )
             except FloodWaitError as exc:
                 if attempt_callback:
