@@ -748,16 +748,72 @@ async def api_channel_pipe(request: web.Request):
     return web.json_response(payload)
 
 
+_RATE_BUCKETS: dict[str, list[float]] = {}
+
+
+def _rate_limit_allowed(key: str) -> tuple[bool, float]:
+    """Token bucket per peer for MUTATING /api calls (enterprise review #3).
+
+    The dashboard token is shared by everyone who has it, so without a bucket
+    one loop (or one slipped token) can hammer writes. Capacity and refill come
+    from DASHBOARD_RATE_LIMIT="capacity:refill_per_second" (default 60:2); the
+    bucket refills continuously and idle peers are pruned after an hour.
+    """
+    spec = os.getenv("DASHBOARD_RATE_LIMIT", "60:2")
+    try:
+        capacity, refill = (float(part) for part in spec.split(":", 1))
+    except ValueError:
+        capacity, refill = 60.0, 2.0
+    capacity = max(1.0, capacity)
+    refill = max(0.001, refill)
+    now = time.time()
+    bucket = _RATE_BUCKETS.get(key)
+    if bucket is None or now - bucket[1] > 3600:
+        bucket = [capacity, now]
+        _RATE_BUCKETS[key] = bucket
+    tokens = min(capacity, bucket[0] + (now - bucket[1]) * refill)
+    if tokens < 1.0:
+        bucket[0] = tokens
+        bucket[1] = now
+        return False, (1.0 - tokens) / refill
+    bucket[0] = tokens - 1.0
+    bucket[1] = now
+    if len(_RATE_BUCKETS) > 4096:
+        for stale in [k for k, v in _RATE_BUCKETS.items() if now - v[1] > 3600]:
+            _RATE_BUCKETS.pop(stale, None)
+    return True, 0.0
+
+
 @web.middleware
 async def security_headers(request: web.Request, handler):
     """Baseline response hardening: no framing, no MIME sniffing, no referrer
     leaks, and nothing cacheable behind the token."""
+    if request.path.startswith("/api/") and request.method in (
+            "POST", "PATCH", "PUT", "DELETE"):
+        allowed, retry = _rate_limit_allowed(f"{request.remote or '?'}:write")
+        if not allowed:
+            limited = web.json_response(
+                {"error": "too many write requests, slow down",
+                 "retry_after": round(retry, 1)}, status=429)
+            limited.headers["Retry-After"] = str(max(1, int(retry + 0.999)))
+            return limited
     response = await handler(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "no-referrer"
     if request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
+    # Enterprise review #4: a CSP for a single-file dashboard. The panel ships
+    # its script and styles inline, so those two keep 'unsafe-inline' (a nonce
+    # would need per-response HTML rewriting); everything ELSE is locked down -
+    # no plugins, no frames, no forms posting out, no base-tag hijack, and
+    # images/connects only from this origin (plus the data:/blob: URLs the card
+    # studio and the PNG endpoint legitimately use).
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+        "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+        "form-action 'self'; frame-ancestors 'none'")
     return response
 
 

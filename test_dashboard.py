@@ -316,6 +316,33 @@ def test_http_api():
                           and all(r["bucket"] in {"owned", "foreign_tag", "unattributed",
                                                   "earns_nothing"} for r in body["rows"]),
                           str(body))
+                    os.environ["DASHBOARD_RATE_LIMIT"] = "3:0.5"
+                    burst = []
+                    for _ in range(6):
+                        st, _bd = await call("PUT", "/api/channels/whatsapp",
+                                             json={"whatsapp": []})
+                        burst.append(st)
+                    check("a write burst hits the token bucket",
+                          burst[:3] == [200, 200, 200] and 429 in burst[3:], str(burst))
+                    async with sess.request(
+                            "PUT", base + "/api/channels/whatsapp",
+                            headers={"X-Dashboard-Token": "test-token-123"},
+                            json={"whatsapp": []}) as resp:
+                        check("the 429 tells the client when to come back",
+                              resp.status != 429
+                              or resp.headers.get("Retry-After", "").isdigit(),
+                              str(resp.status) + str(dict(resp.headers)))
+                    os.environ["DASHBOARD_RATE_LIMIT"] = "1000:100"
+                    dash._RATE_BUCKETS.clear()   # fresh bucket for the rest of the suite
+                    async with sess.request("GET", base + "/api/status",
+                                            headers={}) as resp:
+                        csp = resp.headers.get("Content-Security-Policy", "")
+                    check("a CSP ships on every response",
+                          "object-src 'none'" in csp
+                          and "frame-ancestors 'none'" in csp
+                          and "connect-src 'self'" in csp
+                          and "img-src 'self' data: blob:" in csp, csp)
+
                     status, body = await call("GET", "/api/recent?limit=5")
                     job = next(j for j in body["jobs"] if j["id"] == 1)
                     check("recent jobs carry a snippet and their first link",
