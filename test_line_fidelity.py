@@ -2155,6 +2155,23 @@ def test_all_conditions_live_on_the_review_channel_only():
           bot.strip_amazon_ratings("Cello Bottle 1024 ml 4 pieces")
           == "Cello Bottle 1024 ml 4 pieces")
 
+    # USER REPORT 2026-10-18: "Price: ₹18,999/-" posted as "₹18,999/" - five
+    # separate trailing-sweeps each ate the "-" of the Indian "/-" suffix.
+    # The money the source wrote must reach the channel byte-identical.
+    slash_dash = "Price: ₹18,999/-"
+    for name in ("clean_source_text", "strip_inline_cta", "strip_promo_lines",
+                 "strict_orphan_token_cleanup", "strip_link_fragment_tokens",
+                 "strip_amazon_ratings", "tidy_post"):
+        fn = getattr(bot, name)
+        check(f"the /- price suffix survives {name}",
+              slash_dash in fn(slash_dash), fn(slash_dash))
+    check("a dangling dash still gets swept",
+          bot.strip_inline_cta("Deal ₹999 -") == "Deal ₹999",
+          bot.strip_inline_cta("Deal ₹999 -"))
+    check("and a glued CTA still comes off a price line",
+          bot.strip_inline_cta("Deal ₹999 buy now") == "Deal ₹999",
+          bot.strip_inline_cta("Deal ₹999 buy now"))
+
     src = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
     deliver = src[src.index("async def process_job"):]
     idx = deliver.index("if target == SHOPPING_TARGET:")

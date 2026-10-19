@@ -918,11 +918,20 @@ def strip_amazon_ratings(text: str) -> str:
     """
     out = []
     for line in (text or "").splitlines():
+        # LAST-MILE REPAIR (USER REPORT 2026-10-18): the separator tidy-up below
+        # used to run on EVERY line, and its trailing-strip ate the "-" of the
+        # Indian "/-" price suffix - "Price: ₹18,999/-" posted as "₹18,999/".
+        # A line with no rating in it must pass through byte-identical: the
+        # posted text carries the source's money exactly as written.
+        if not _AMAZON_RATING_RE.search(line):
+            out.append(line)
+            continue
         cleaned = _AMAZON_RATING_RE.sub(" ", line)
         # tidy the separators the removal leaves behind ("899 |  | 70% OFF")
         cleaned = re.sub(r"\s*\|\s*(?=\||$)", "", cleaned)
         cleaned = re.sub(r"^\s*[|,\-\u2013\u2014]\s*", "", cleaned)
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).rstrip(" |,-\u2013\u2014")
+        cleaned = re.sub(r"\s{2,}", " ", cleaned)
+        cleaned = re.sub(r"(?<!/)[\s|,\-\u2013\u2014]+\Z", "", cleaned)
         # a line that was ONLY a rating disappears; one that had other words stays
         if cleaned.strip() or not line.strip():
             out.append(cleaned if cleaned.strip() else line if not line.strip() else cleaned)
@@ -2880,7 +2889,12 @@ def strip_inline_cta(line: str) -> str:
     # A removed clause must not leave its own punctuation behind: stripping
     # "More offers" out of "More offers: Apply coupon X" used to publish a line
     # that OPENED with a colon, which reads exactly like bot damage.
-    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+|[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
+    # Leading and trailing sweeps are split on purpose: the trailing one must
+    # not eat the "-" of the Indian "/-" price suffix (USER REPORT 2026-10-18) -
+    # "Price: ₹18,999/-" posted as "₹18,999/". The payload signature below
+    # cannot catch this: the digits survive, only the suffix dash goes.
+    out = re.sub(r"^[\s|*•:,;\-\u2013\u2014~]+", "", out)
+    out = re.sub(r"(?<!/)[\s|*•:,;\-\u2013\u2014~]+$", "", out).strip()
     # Fidelity rule (user, round 10): a lost line is as bad as an added one. If a
     # CTA clause took the price, the discount or the coupon code with it, the
     # clause removal is undone for that line - the source wrote those words.
@@ -3418,7 +3432,9 @@ def strip_link_fragment_tokens(text: str) -> str:
             # variation selector is emoji, not residue: "\u26a1\ufe0f\u26a1\ufe0f 11 PM FLASH SALE
             # \u26a1\ufe0f\u26a1\ufe0f" must come out exactly as the source wrote it, so only an
             # ORPHAN \ufe0f (nothing in front of it but space/start) is dropped.
-            line = re.sub(r"[\s\u279c\u27a1\u2192\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
+            # (?<!/) keeps the "-" of the Indian "/-" price suffix: this sweep
+            # posted "Price: ₹18,999/-" as "₹18,999/" (USER REPORT 2026-10-18).
+            line = re.sub(r"(?<!/)[\s\u279c\u27a1\u2192\U0001f517\U0001f449\u2022\u2013\u2014-]+$", "", line).strip()
             line = re.sub(r"(?<=\s)\ufe0f+(?=\s*$)", "", line)
             line = re.sub(r"^\ufe0f+", "", line)
         lines.append(line)
@@ -3900,7 +3916,14 @@ def strict_orphan_token_cleanup(text: str, *, list_context: bool = False) -> str
         # real URL (real URLs are normally on their own and fail this pattern).
         if not URL_RE.fullmatch(stripped):
             stripped = re.sub(r"(?i)\b(?:htt|ttp|tps|s)[:/][A-Za-z0-9/:._-]*", "", stripped)
-            stripped = re.sub(r"\s{2,}", " ", stripped).strip(" :|+-")
+            # Tidy the edges the fragment removal left, but NEVER eat the "-" of
+            # the Indian "/-" price suffix (USER REPORT 2026-10-18): a plain
+            # strip(" :|+-") posted "Price: ₹18,999/-" as "₹18,999/". The
+            # lookbehind keeps a "-" that follows "/", drops every other
+            # dangling dash/pipe/colon.
+            stripped = re.sub(r"\s{2,}", " ", stripped)
+            stripped = re.sub(r"\A[\s:|+-]+", "", stripped)
+            stripped = re.sub(r"(?<!/)[\s:|+-]+\Z", "", stripped)
             if not stripped:
                 continue
             # Removing a broken fragment can leave a bare CTA label behind

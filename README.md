@@ -220,9 +220,9 @@ fails if one of them is added to the tree and left unwired.
 
 | Suite | What it proves |
 |---|---|
-| `test_render_job.py` | The Telegram pipeline renders and routes a real intake end to end, under strict-all provenance |
+| `test_render_job.py` | The Telegram pipeline renders and routes a real intake end to end, under strict-all provenance, with the `/-` price suffix intact in the posted text |
 | `test_pipeline_fixes.py` | "Post instantly, exactly once, nothing extra" — the immediacy/dedup regression set |
-| `test_line_fidelity.py` | Nothing the source wrote is lost, nothing of ours is added; Telegram/WhatsApp line parity |
+| `test_line_fidelity.py` | Nothing the source wrote is lost, nothing of ours is added; Telegram/WhatsApp line parity; the Indian `/-` price suffix survives every cleaner byte-identical |
 | `test_best_copy.py` | Best-copy selection, the numeric-fidelity gate, and the quality auditor |
 | `test_duplicate_sim.py` | One product never reaches the same channel twice, through the real worker path |
 | `test_postdeploy_repeats.py` | The post-deploy repeat bug (one queue posted up to three times) stays fixed |
@@ -1121,7 +1121,15 @@ Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
   now only swallow **plain words** — a price, a digit, a percentage, a code or a
   link ends it — both cleaners trim the punctuation a removal leaves behind, the
   bracket fixer only touches a bracket that stands alone, and `strip_inline_cta`
-  undoes itself whenever a figure disappears. `test_line_fidelity.py` renders a
+  undoes itself whenever a figure disappears. (2b) *The `/-` suffix*: five
+  cleaners (`strip_inline_cta`, `strip_promo_lines`, `strict_orphan_token_cleanup`,
+  `strip_link_fragment_tokens`, `strip_amazon_ratings`) each ended their line
+  tidy-up with a trailing character sweep that ate the `-` of the Indian `/-`
+  price suffix - `Price: ₹18,999/-` posted as `₹18,999/` (user report
+  2026-10-18). No payload signature can catch that one (the digits survive, only
+  the suffix dash goes), so every trailing sweep now carries a `(?<!/)`
+  lookbehind: a dash that follows `/` is money, not punctuation. A dangling dash
+  with no `/` in front of it is still swept. `test_line_fidelity.py` renders a
   corpus through the real pipeline and asserts every source line survives, that no
   `…` appears, and that no amount or percentage is printed more often than the
   source wrote it. (3) *WhatsApp lost the most text and showed the price twice*:
@@ -1472,7 +1480,7 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `86172c508f4385459dd3229e67eedcd124a2628945719da5a974d5a520ee736d` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `b47fd0bc9461f11f24bb903100f3295fe7655bf4cde475b3eab87a71fd80de32` |
+| `bestgaa/main_bot_new.py` (v19.0) | `bf9ba8fc331b801b68676c543729dea5745fa44f4bb68b4053e7aa5f6ede6600` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1532,13 +1540,13 @@ source snapshot:
 | `test_duplicate_sim.py` | `cccd332b1a481e803992c0d45248aeed0060cf644a9cf654819ab0a99b94cc59` |
 | `test_earnkaro_conversion.py` | `b0a83caed94b83c32dd8200ef58b463e19d45e7bfdfc9a09e09ca8367f892f59` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
-| `test_line_fidelity.py` | `85fa027c2cbc1568d09c9c4576ec153e806f51d74c06b86c45eda6ac95d3acc4` |
+| `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
 | `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
-| `test_render_job.py` | `d604b23ce64d7a4f3913cbf35a141515e8d00f153238256ab0e9260f84f18fc3` |
+| `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
 | `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
 | `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
@@ -1557,7 +1565,7 @@ hand-edited number fails the gate):
 | Suite | Checks passed | Failed |
 |---|---|---|
 | pipeline fixes | 238 | 0 |
-| render and routing | 232 | 0 |
+| render and routing | 235 | 0 |
 <!-- gate-suite-totals:end -->
 
 Every hash in the source table above, the bot's version label, and those counts
