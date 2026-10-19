@@ -176,6 +176,45 @@ class HalfDeadAffiliate(FakeAffiliate):
         return "DEAD" not in (text or "")
 
 
+SHORT_HOP = "https://bitli.in/gv6qjCD"
+
+
+class OutageHopAffiliate(FakeAffiliate):
+    """The short hop WE minted answers 503; the product page behind it is fine.
+
+    USER REPORT 2026-10-19 ("idlga vasthundi 503 Service Unavailable"): the
+    published link opened Shopsy's load balancer page - no server behind it.
+    A dead HOP is not a dead product: the verified long URL must be published
+    in its place, and the deal must still arrive on every channel.
+    """
+
+    def __init__(self):
+        super().__init__(link=SHORT_HOP, deal_key="ASIN:B0SIMPRODUCT")
+        self._short_to_long = {SHORT_HOP: OUR_LINK}
+
+    async def link_not_broken(self, url):
+        return bot.clean_url(url) != SHORT_HOP
+
+    async def rendered_links_not_broken(self, text):
+        return SHORT_HOP not in (text or "")
+
+    def link_outage(self, url):
+        return bot.clean_url(url) == SHORT_HOP
+
+
+class OutageOnlyAffiliate(FakeAffiliate):
+    """Every destination answers the outage page, and there is nothing to fall back to."""
+
+    async def link_not_broken(self, url):
+        return False
+
+    async def rendered_links_not_broken(self, text):
+        return False
+
+    def link_outage(self, url):
+        return True
+
+
 class UnresolvableAffiliate:
     """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
     sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
@@ -594,6 +633,43 @@ def test_scenarios():
                 [(-1009031, 1602, lizol)], 1, affiliate=DeadLinkAffiliate())
             check("[S9b] DROP_DEAD_LINKS=true still hands the operator the old hard block",
                   not sends_dead, str({name: len(v) for name, v in sends_dead.items()}))
+        finally:
+            bot.DROP_DEAD_LINKS = old_drop
+
+        # ---- S9c: a 503 hop is not a dead product (2026-10-19) ----------------
+        print("\n== S9c: the short hop answers 503, the product page does not ==")
+        try:
+            bot.DROP_DEAD_LINKS = False
+            store, client, sends, _ = await scenario(
+                "s9c", {(-1009032, 1603): FakeMsg(lizol, 1603)},
+                [(-1009032, 1603, lizol)], 1, affiliate=OutageHopAffiliate())
+            joined = "\n".join(text for texts in sends.values() for text in texts)
+            check("[S9c] every routed channel still got the post",
+                  bool(sends) and all(texts for texts in sends.values()),
+                  str({name: len(v) for name, v in sends.items()}))
+            check("[S9c] the hop that answers 503 is NOT published",
+                  "bitli.in/gv6qjCD" not in joined, joined[:200])
+            check("[S9c] the verified destination behind it is published instead",
+                  OUR_LINK in joined, joined[:200])
+        finally:
+            bot.DROP_DEAD_LINKS = old_drop
+
+        # ---- S9d: nothing behind the hop -> retry, never publish the 503 ------
+        print("\n== S9d: every destination answers 503 -> the job waits, nothing dead goes out ==")
+        try:
+            bot.DROP_DEAD_LINKS = False
+            store, client, sends_out, _ = await scenario(
+                "s9d", {(-1009033, 1604): FakeMsg(lizol, 1604)},
+                [(-1009033, 1604, lizol)], 1, affiliate=OutageOnlyAffiliate())
+            check("[S9d] no channel receives a link that is answering 503",
+                  not sends_out, str({name: len(v) for name, v in sends_out.items()}))
+            status, attempts, last_error = store.conn.execute(
+                "SELECT status, attempts, last_error FROM queue").fetchone()
+            check("[S9d] the job is REQUEUED for its next attempt, not dropped",
+                  status == "pending" and attempts == 1,
+                  f"status={status!r} attempts={attempts!r}")
+            check("[S9d] the stored error names the outage so the log explains it",
+                  "service-outage" in (last_error or ""), str(last_error)[:160])
         finally:
             bot.DROP_DEAD_LINKS = old_drop
 
