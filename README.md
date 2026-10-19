@@ -1481,7 +1481,7 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `8e46f97a45c558ea2a5d390de0d23c7b5de742c6769791e45f76eb29cda76a4d` |
+| `bestgaa/main_bot_new.py` (v19.0) | `c84fdb97d4ebfe96a851cf325cf927975ccf3522841e016773112c986d18adf8` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1513,19 +1513,19 @@ source snapshot:
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
 | `ops/diagnose.sh` | `54612630daed7ef2562d12ebcee087a8bbf0fc2ed5013bc52f1cbd3406f1fa8f` |
 | `ops/doc_freshness.py` | `2cd359f38b031046ccfdf6e25d480b6b88df9f334ac94f7f25a7e28cad34438d` |
-| `ops/earnkaro_check.py` | `066d2a46837b8cdfe1207cad61d9d1551ddabba699b1361200f0fc0fadfc114e` |
+| `ops/earnkaro_check.py` | `8e44f1c5b63db98c6abc6546fc23997a7ddd4eaa7090f320748a3916e048cb40` |
 | `ops/hypd_links.py` | `0794d1fa91015282574be398380310ad33070ee800f5083b960ec442762a1706` |
 | `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
-| `ops/quality_audit.py` | `dd22335536dee121198dca2393e176946283d0346aa041e7dbbe1c15827456cb` |
+| `ops/quality_audit.py` | `0cbcf8d8e582a04e6cdf563fc1e3e5fb4db9d94402efd34c347a44ae7f3de62d` |
 | `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
 | `ops/test_all.sh` | `329dbd3e1b68eeacd1ab8c08127fb166e5f947a331de7e87b6e662b38d86f8dc` |
-| `test_best_copy.py` | `c8f18d762262c0c92353f9270fba37b1a068cc8f5fed789a22363c81eaddcb57` |
+| `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
@@ -1538,8 +1538,8 @@ source snapshot:
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
-| `test_duplicate_sim.py` | `1f8f3b2b4484a239ea5c871591aca4b3707c810d175a40897e102083d96574f1` |
-| `test_earnkaro_conversion.py` | `6b454107b1142c01e191c535a022bf2c11814b4963c34d9cac4ee5b32d02b659` |
+| `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
+| `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
 | `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |

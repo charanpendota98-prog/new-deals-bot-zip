@@ -215,6 +215,36 @@ class OutageOnlyAffiliate(FakeAffiliate):
         return True
 
 
+class PreflightAffiliate(FakeAffiliate):
+    """A post with two links: one proven ours, one the preflight refuses.
+
+    USER RULE 2026-10-19 ("10 time check ... then post"): the last thing the
+    worker does is verify every link - is it OURS, does it open - before the
+    post leaves. A link that fails ownership is dropped from the copy; a post
+    whose every link fails is skipped instead of being published with a link
+    nobody can prove pays us.
+    """
+
+    OURS = "https://www.amazon.in/dp/B0PREFLIGHT01?tag=mama086-21"
+    BAD = "https://www.amazon.in/dp/B0PREFLIGHT02?tag=mama086-21"
+
+    def __init__(self, all_bad: bool = False):
+        super().__init__(link=self.OURS, deal_key="ASIN:B0PREFLIGHT01")
+        self.all_bad = all_bad
+
+    async def convert(self, source, multi_link, resolved=None):
+        link = self.BAD if self.all_bad or "BADLINK" in (source or "") else self.OURS
+        key = "ASIN:B0PREFLIGHT02" if link == self.BAD else "ASIN:B0PREFLIGHT01"
+        result = bot.LinkResult(source, link.split("?")[0], link, key)
+        await self.cache_link(result.source, result.affiliate, result.resolved, result.deal_key)
+        return result
+
+    async def preflight_links(self, text, require_ours=True):
+        urls = list(dict.fromkeys(bot.URL_RE.findall(text or "")))
+        bad = {url: "unowned" for url in urls if self.all_bad or "B0PREFLIGHT02" in url}
+        return urls, bad, 1
+
+
 class UnresolvableAffiliate:
     """A store we cannot monetize (no EarnKaro/Associates id in its URL) that two
     sources link in two different shapes: /ac-detail-a1?size=M and /ac-detail-a2.
@@ -833,6 +863,33 @@ def test_scenarios():
                   body_b.strip() == stored_copy.strip(), body_b[:120])
         st13b = store.conn.execute("select status, last_error from queue").fetchone()
         check("[S13b] no JOB FAIL, the row is 'done'", st13b[0] == "done", str(tuple(st13b)))
+        # ---- S15: the 10x preflight drops a link that is not ours --------------
+        print("\n== S15: a link that is not provably ours is never published ==")
+        mixed = ("Two deals in one post\n"
+                 "1) Steel Bottle  \u20b9299 https://amzn.to/BADLINK02\n"
+                 "2) Cotton Towel  \u20b9199 https://amzn.to/GOODLINK02")
+        store, client, sends, _ = await scenario(
+            "s15a", {(-1009050, 1801): FakeMsg(mixed, 1801)}, [(-1009050, 1801, mixed)], 1,
+            affiliate=PreflightAffiliate())
+        bodies = [text for texts in sends.values() for text in texts]
+        check("[S15a] the post still goes out (one refused link does not kill the deal)",
+              bool(bodies), str({k: len(v) for k, v in sends.items()}))
+        joined = "\n".join(bodies)
+        check("[S15a] the unverified link is not in what the channel received",
+              "B0PREFLIGHT02" not in joined, joined[:220])
+        check("[S15a] the verified link is", "B0PREFLIGHT01" in joined, joined[:220])
+        st15 = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
+        check("[S15a] the job finished clean", st15[0] == "done", str(tuple(st15)))
+
+        store, client, sends_all, _ = await scenario(
+            "s15b", {(-1009051, 1802): FakeMsg(mixed, 1802)}, [(-1009051, 1802, mixed)], 1,
+            affiliate=PreflightAffiliate(all_bad=True))
+        check("[S15b] a post whose every link is unverified does not go out",
+              not sends_all, str({k: len(v) for k, v in sends_all.items()}))
+        st15b = store.conn.execute("SELECT status, last_error FROM queue").fetchone()
+        check("[S15b] it is closed as a skip and the reason names ownership",
+              st15b[0] == "done" and "ownership" in (st15b[1] or ""), str(tuple(st15b)))
+
         # ---- S14: a caption/photo post whose source message is gone stays honest -----
         # No link and no media left to show means it is not a deal post any more, and the
         # pinned rule is that a photo post needs BOTH media and deal terms. Nothing is

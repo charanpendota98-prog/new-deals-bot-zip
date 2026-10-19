@@ -181,9 +181,13 @@ def test_link_policy():
     proven_network = "https://ekaro.in/enkr123"
     proven_hypd = "https://hypd.store/93944/afflink/daoll7ltm6mc5h7k1fq0"
     minted = {proven_short, proven_network, proven_hypd}
+    # The converter's REAL Flipkart shape: the money is attributed on
+    # affid+affExtParam1, with affExtParam2 naming us as the sub-publisher.
+    converted_flipkart = ("https://www.flipkart.com/x/p/itm1?pid=1&affid=deals101"
+                          "&cmpid=AFF_deals101&affExtParam1=ENKR20261019TEST&affExtParam2=5478322")
     ours = [
         "https://www.amazon.in/dp/B0TAGGED001?tag=mama086-21",
-        "https://www.flipkart.com/x/p/itm1?affExtParam2=5478322",
+        converted_flipkart,
         proven_short, proven_network, proven_hypd,
     ]
     theirs = [
@@ -204,6 +208,21 @@ def test_link_policy():
     for url in theirs:
         check(f"refused as not our verified link: {url[:44]}",
               qa.why_not_our_link(url, tag, publisher, minted) is not None)
+
+    # USER RULE 2026-10-19 ("valla long link lo mana number pedthe manaku vasthadi
+    # anukoku"): our NUMBER on somebody's long link is not a conversion. Without
+    # the converter's affExtParam1 nothing is attributed, so it must be a finding
+    # - exactly like a bare page - and never counted as our-publisher.
+    stamped_only = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=5478322"
+    check("a Flipkart page with only OUR NUMBER is refused (no conversion id)",
+          qa.why_not_our_link(stamped_only, tag, publisher, minted) is not None,
+          str(qa.why_not_our_link(stamped_only, tag, publisher, minted)))
+    check("and it is bucketed as unattributed, not as ours",
+          qa.classify_link(stamped_only, tag, publisher, minted) == "unattributed",
+          qa.classify_link(stamped_only, tag, publisher, minted))
+    check("the reason names the missing conversion id",
+          "NO conversion id" in (qa.why_not_our_link(stamped_only, tag, publisher, minted) or ""),
+          str(qa.why_not_our_link(stamped_only, tag, publisher, minted)))
 
 
 def test_link_ownership_is_data_backed():
@@ -244,7 +263,8 @@ def test_link_ownership_is_data_backed():
           str(qa.why_not_our_link("https://tinyurl.com/x", "", "", minted)))
 
     publisher = "5478322"
-    direct_ours = (f"https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2={publisher}")
+    direct_ours = ("https://www.flipkart.com/x/p/itm1?pid=1"
+                   f"&affid=deals101&affExtParam1=ENKR20261019TEST&affExtParam2={publisher}")
     direct_theirs = "https://www.flipkart.com/x/p/itm1?pid=1&affExtParam2=999999"
     check("a direct Flipkart link carrying OUR publisher id is ours",
           qa.why_not_our_link(direct_ours, "", publisher) is None,

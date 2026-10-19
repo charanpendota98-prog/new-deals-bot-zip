@@ -126,6 +126,49 @@ turned out to have its own cause, found in the same audit:
      (PID:...) is preserved, so dedup is unaffected. This is a FALLBACK: the
      converter is still asked first.
 
+4. "OUR NUMBER ON THEIR LONG LINK" IS NOT A COMMISSION (same day, same rule)
+-----------------------------------------------------------------------------
+    USER: "valla long link lo mana number pedthe manaku vasthadi anukoku correctga
+           mana link ah kada 10 time scheck perefctga convert then post"
+
+Correct, and the code now says so out loud. On the Flipkart family the click is
+attributed on the pair the network mints:
+
+    affid=<account> & affExtParam1=<click/conversion id>   <- the money
+    affExtParam2=<publisher>                               <- our sub-id inside it
+
+`affExtParam2=<our id>` alone is only a NUMBER: no conversion is recorded, so
+the page earns nothing. That is why attribute_with_our_publisher() (which can
+only append the number) is no longer ownership proof anywhere:
+
+  * Store.has_native_owned_attribution() - and the same rule in
+    ops/quality_audit.py - now require the conversion id on flipkart.com and
+    shopsy.in. A stamped-only page is reported as UNATTRIBUTED ("carries our
+    publisher id but NO conversion id"), never as our-publisher.
+  * "OUR LINK KEPT" (section 3) therefore only keeps links that are REAL
+    conversions. A stamped-only source link is converted like any other.
+  * ops/earnkaro_check.py prints the same warning on the link it inspects.
+
+5. TEN CHECKS BEFORE POSTING ("10 time scheck ... then post")
+-------------------------------------------------------------
+Right before delivery, every link in the final text is verified for POSTING:
+
+    is it provably OURS?   native tag / conversion id + our publisher /
+                           a converted hop with a stored proof / our HYPD link
+    does it open NOW?      a fresh probe (the render-time verdict is not reused)
+
+    POST_VERIFY_ATTEMPTS=10     passes (the happy path stops at the first clean
+                                one, so a healthy post costs a single check)
+    POST_VERIFY_SLEEP_SECONDS=2 pause between passes
+
+Outcomes, in the log:
+
+    POST VERIFY | pass 3/10: 1 link(s) not ready (outage); re-checking ...
+    LINK NOT OURS | refusing to publish 1 unverified link(s): <url>
+        -> that link is dropped from the copy, the rest of the deal still posts
+    SKIP | every link is unverified ownership (not our conversion)
+        -> nothing is published under somebody else's guess
+
 HOW TO CHECK IT
 ---------------
     python3 test_earnkaro_conversion.py     # outage detection + retry contract
@@ -136,6 +179,8 @@ log lines now:
 
     LINK OUTAGE | status=503 attempt 1/2 | the host has no server behind it
                   right now (retried, never published): https://...
+    LINK NOT OURS | refusing to publish N unverified link(s): https://...
+    POST VERIFY | pass 3/10: N link(s) not ready (outage); re-checking ...
     SHORT LINK REPAIRED | queue=.. <hop> -> <verified destination>
     OUR LINK KEPT | <host> already carries our publisher id ...
     LINK OUTAGE | queue=.. last attempt: dropped N destination(s) answering 503
