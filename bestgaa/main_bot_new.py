@@ -1453,8 +1453,19 @@ TRACKING_QUERY_KEYS = {
 # uses the Associates tag, Meesho uses a verified HYPD mapping, and no other store
 # may be promoted as ours merely because its product page opens.
 # ---------------------------------------------------------------------------
+# SHopsy belongs here (2026-10-19). It is Flipkart's own low-price marketplace
+# and the converter mints exactly the Flipkart shape on it - the user's own link
+# proof:
+#   https://www.shopsy.in/<slug>/p/itm5722ca2c8fa09?pid=...&marketplace=FLIPKART
+#       &affid=deals101&cmpid=AFF_deals101
+#       &affExtParam1=ENKR20261019A2241424426&affExtParam2=5478322
+# Leaving it out had two costs: a Shopsy page that ALREADY carried our publisher
+# id was not recognised as ours (so the deal was dropped when the converter had
+# nothing to add, even though the link paid us), and a bare Shopsy page could
+# never be rebuilt with our id. Both are fixed by listing the host; the id check
+# itself is unchanged, so a foreign affExtParam2 is still refused.
 EK_ATTRIBUTION_HOSTS = {h.strip().lower() for h in os.getenv(
-    "EK_ATTRIBUTION_HOSTS", "flipkart.com,myntra.com").split(",") if h.strip()}
+    "EK_ATTRIBUTION_HOSTS", "flipkart.com,shopsy.in,myntra.com").split(",") if h.strip()}
 ATTRIBUTE_PASSTHROUGH_LINKS = os.getenv(
     "ATTRIBUTE_PASSTHROUGH_LINKS", "true").strip().lower() not in ("0", "false", "no", "off")
 # Attribution parameters that belong to whoever else's link we are rebuilding -
@@ -7323,6 +7334,22 @@ class AffiliateClient:
                 return None
         # The native tagged link is still a fallback when it has not been tried yet.
         native_fallback_possible = native_amazon_possible and not native_direct_first
+        # ALREADY OURS (USER REPORT 2026-10-19: "chala miss chesthunnav"). A
+        # source channel can post a link that ALREADY carries our EarnKaro
+        # publisher id (affExtParam2=<our id>, the shape the converter mints) or
+        # our Associates tag. When the converter then answers "no campaign"
+        # - or the API is down - the deal used to be dropped even though the
+        # link in hand was a paid link of ours. Proven by the URL itself, it is
+        # published as it stands: the reader lands on the same product, the
+        # commission is still ours, and a doubt can no longer cost the post.
+        # A FOREIGN id never qualifies: has_native_owned_attribution() requires
+        # every value to be exactly ours.
+        already_ours = ""
+        if not is_amazon:
+            for candidate in (resolved, source_url):
+                if candidate and Store.has_native_owned_attribution(candidate):
+                    already_ours = clean_url(candidate)
+                    break
         earned: "LinkResult | None" = None
         # The Amazon switch must not touch other stores: with
         # AMAZON_VIA_EARNKARO=false an Amazon link never goes to the network,
@@ -7341,7 +7368,7 @@ class AffiliateClient:
                     != non_meesho_hypd_destination
                 )
                 if STRICT_OUR_LINKS:
-                    if not (native_fallback_possible or publisher_fallback):
+                    if not (native_fallback_possible or publisher_fallback or already_ours):
                         raise
                 elif not (native_fallback_possible or non_meesho_hypd_destination):
                     raise
@@ -7351,6 +7378,20 @@ class AffiliateClient:
                                 (urlparse(clean).hostname or clean)[:60])
         if earned is not None:
             return earned
+        if already_ours:
+            # No conversion was needed: the link we were given already pays us.
+            key = product_key(already_ours) if not is_amazon_search_or_browse_link(
+                source_url) else product_key(resolved)
+            await store.cache_link(source_url, already_ours, resolved, key)
+            # No proof row is written on purpose: the link IS the proof (its own
+            # affExtParam2/tag), and _strict_cache_pair_is_owned() plus
+            # verify_generated_text() both accept native attribution directly.
+            # Recording it under a converter proof type would claim a
+            # conversion that never happened.
+            log.warning("OUR LINK KEPT | %s already carries our publisher id - the converter "
+                        "had nothing to add, so the verified link is published as-is instead "
+                        "of losing the deal", (urlparse(already_ours).hostname or "")[:45])
+            return LinkResult(source_url, resolved, already_ours, key)
         if native_fallback_possible:
             # The network could not monetize this Amazon link. Dropping it would
             # lose the deal and posting it untagged would earn nothing, so publish

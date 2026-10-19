@@ -1481,7 +1481,7 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `1f6a61dead8c75ef9d4034caf994868f1f0509b612efb2bcd3addc2bf710306b` |
+| `bestgaa/main_bot_new.py` (v19.0) | `8e46f97a45c558ea2a5d390de0d23c7b5de742c6769791e45f76eb29cda76a4d` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1504,7 +1504,7 @@ source snapshot:
 | `ops/category_report.py` | `b0d462a743c774c03950d2862f519e14c3947fc06ba836eb67bd9f0ec4860ee6` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
-| `ops/conversion_report.py` | `0efaf463f2840214df305fb7508c51b9209592fe6e01219a492b110d191fceed` |
+| `ops/conversion_report.py` | `23f813366f4129104762717a2c956eae0669a906ce0ff391bad1e129d6f9308d` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
 | `ops/deploy_and_verify.sh` | `0e99c5d677298329b38a8681ea98325872e4c55e4c8b96248d03051d4f246b41` |
@@ -1519,7 +1519,7 @@ source snapshot:
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
-| `ops/quality_audit.py` | `51ab5558f80965f00d9aed6f7173f18097606ce3efb34284d2d4ac544743b081` |
+| `ops/quality_audit.py` | `dd22335536dee121198dca2393e176946283d0346aa041e7dbbe1c15827456cb` |
 | `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
@@ -1539,7 +1539,7 @@ source snapshot:
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_duplicate_sim.py` | `1f8f3b2b4484a239ea5c871591aca4b3707c810d175a40897e102083d96574f1` |
-| `test_earnkaro_conversion.py` | `eed1788811065395bb50a06e78da2fc668c7eecd7a9f81ee24cf0ff998fd3310` |
+| `test_earnkaro_conversion.py` | `6b454107b1142c01e191c535a022bf2c11814b4963c34d9cac4ee5b32d02b659` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
 | `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |

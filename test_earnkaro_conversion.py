@@ -36,6 +36,18 @@ What this file pins, and why each check exists:
     (before the API call and after it). Amazon /s? searches never touch the
     link cache - every search shares one canonical key, so caching would hand
     one search's link back for all the others.
+8.  AN OUTAGE IS A RETRY, NOT A REJECT (2026-10-19). A 5xx carrying the load
+    balancer's own words ("No server is available to handle this request") is
+    the one 5xx that is NOT datacenter-IP doubt: the converter hop or the
+    merchant page it points at has nothing behind it. It is re-probed, the
+    conversion is retried, a dead HOP is expanded back to the verified URL we
+    minted it from, and a post is held for its next attempt rather than
+    publishing a 503.
+9.  A LINK THAT ALREADY PAYS US IS NEVER DROPPED (2026-10-19, "chala miss
+    chesthunnav"). When the source link itself carries our publisher id
+    (affExtParam2=<our id>, including on shopsy.in) and the converter answers
+    "no campaign" - or is down - the deal posts with that link. Proven
+    attribution wins; a stranger's id is still refused.
 """
 import asyncio
 import json
@@ -747,6 +759,108 @@ def test_service_outage_is_retried_never_published():
     finally:
         bot.LINK_CHECK_RETRY_SLEEP_SECONDS = old_sleep
         bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+
+
+# The user's own link, 2026-10-19 - a Shopsy page the converter minted for us.
+OUR_SHOPPY = (
+    "https://www.shopsy.in/flipzon-waterproof-liquid-matte-lipstick-combo-pack-4-red"
+    "/p/itm5722ca2c8fa09?lid=LSTXLPHE4UTJHX8PQAFYCTGJL&marketplace=FLIPKART"
+    "&pid=XLPHE4UTJHX8PQAF&src=ot&affid=deals101&cmpid=AFF_deals101"
+    "&affExtParam1=ENKR20261019A2241424426&affExtParam2=5478322")
+
+
+def test_a_link_that_already_pays_us_is_never_dropped():
+    """USER REPORT 2026-10-19: "chala miss chesthunnav" - these were the misses.
+
+    A source channel can carry a link that ALREADY has our publisher id on it
+    (the user pasted exactly one). When the converter has nothing to add - the
+    usual "Url not found in post!" - the old pipeline returned None, and a deal
+    whose link was already a paid link of ours disappeared from every channel.
+    Worse, shopsy.in was missing from EK_ATTRIBUTION_HOSTS, so the bot could not
+    even SEE that the id was ours.
+
+    The rule now: proven attribution on the URL wins. The deal posts with that
+    link. A stranger's id never qualifies.
+    """
+    print("\n== a link that already carries our publisher id is published, not dropped ==")
+    print("\n== (shopsy.in is part of the attributable Flipkart family) ==")
+    check("our publisher id is read from the token", bot.OUR_EK_ID == "5478322", bot.OUR_EK_ID)
+    check("the user's own Shopsy link is recognised as OURS",
+          bot.Store.has_native_owned_attribution(OUR_SHOPPY) is True, OUR_SHOPPY[:80])
+    check("the same page minted for a stranger is NOT ours",
+          bot.Store.has_native_owned_attribution(
+              OUR_SHOPPY.replace("affExtParam2=5478322", "affExtParam2=999999")) is False)
+    bare_shopsy = ("https://www.shopsy.in/flipzon-combo/p/itm5722ca2c8fa09"
+                   "?pid=XLPHE4UTJHX8PQAF")
+    check("a bare Shopsy page can be rebuilt with our publisher id",
+          "affExtParam2=5478322" in bot.attribute_with_our_publisher(bare_shopsy),
+          bot.attribute_with_our_publisher(bare_shopsy))
+    check("...and a foreign id on it is replaced, never carried",
+          "affExtParam2=999999" not in bot.attribute_with_our_publisher(
+              bare_shopsy + "&affExtParam2=999999"),
+          bot.attribute_with_our_publisher(bare_shopsy + "&affExtParam2=999999"))
+
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
+    # (a) The converter answers "no campaign" - the commonest miss.
+    session = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                          gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live product")])
+    aff = LiveProbeAff(session)
+    result = asyncio.run(aff.convert(OUR_SHOPPY, False))
+    check("the converter really was asked (this is not a shortcut around it)",
+          len(session.posts) == 1, f"posts={len(session.posts)}")
+    check("a no-campaign answer keeps the deal, publishing OUR link",
+          bool(result) and result.affiliate == bot.clean_url(OUR_SHOPPY), repr(result))
+    check("and it is not published as an unmonetized page",
+          bool(result) and "affExtParam2=5478322" in result.affiliate, repr(result))
+    check("the product identity survives (no duplicate risk)",
+          bool(result) and result.deal_key == "PID:XLPHE4UTJHX8PQAF", repr(result))
+
+    # (b) The API is DOWN. A transient failure must not cost a deal whose link
+    # already pays us.
+    class DownAff(LiveProbeAff):
+        async def _earnkaro_link(self, *args, **kwargs):
+            raise RuntimeError("EarnKaro HTTP 503")
+
+    session2 = FakeSession([], gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live")])
+    result2 = asyncio.run(DownAff(session2).convert(OUR_SHOPPY, False))
+    check("an API outage still publishes the link that is already ours",
+          bool(result2) and result2.affiliate == bot.clean_url(OUR_SHOPPY), repr(result2))
+
+    # (c) Somebody else's page: never published as ours.
+    theirs = OUR_SHOPPY.replace("affExtParam2=5478322", "affExtParam2=999999")
+    # The link cache is keyed on the product id, so the row (a) wrote for OUR
+    # copy of this very product would answer for theirs. Clear it: the question
+    # here is what a FOREIGN page does on its own.
+    bot.store.conn.execute("DELETE FROM link_cache")
+    bot.store.conn.commit()
+    session3 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(theirs), 200, "live product")])
+    result3 = asyncio.run(LiveProbeAff(session3).convert(theirs, False))
+    check("a page carrying a FOREIGN publisher id is refused",
+          result3 is None, repr(result3))
+
+    # (c2) And with OUR row cached, the reader still never receives their id:
+    # one product, one cached conversion - ours.
+    session4 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(OUR_SHOPPY), 200, "live product")])
+    asyncio.run(LiveProbeAff(session4).convert(OUR_SHOPPY, False))
+    session5 = FakeSession([json.dumps({"success": 0, "message": "Url not found in post!"})],
+                           gets=[probe_page(bot.merchant_url(theirs), 200, "live product")])
+    result5 = asyncio.run(LiveProbeAff(session5).convert(theirs, False))
+    check("a foreign copy of a product we already monetize resolves to OUR link",
+          bool(result5) and "affExtParam2=5478322" in result5.affiliate
+          and "affExtParam2=999999" not in result5.affiliate, repr(result5))
+
+    # (d) The audit and the bot agree on the same URL (one verdict, two tools).
+    sys.path.insert(0, str(Path(__file__).parent / "ops"))
+    import quality_audit as qa  # noqa: E402
+    check("the audit calls the user's link OUR-PUBLISHER",
+          qa.classify_link(OUR_SHOPPY, "", "5478322") == "our-publisher",
+          qa.classify_link(OUR_SHOPPY, "", "5478322"))
+    check("the audit calls the stranger's copy FOREIGN",
+          qa.classify_link(theirs, "", "5478322") == "foreign",
+          qa.classify_link(theirs, "", "5478322"))
+    bot.EK_BREAKER.failures, bot.EK_BREAKER.opened_at = 0, 0.0
 
 
 def test_search_links_never_touch_the_cache():
@@ -1783,6 +1897,7 @@ def main():
     test_native_search_link_shortened_like_product()
     test_datacenter_404_never_vetoes_conversion()
     test_service_outage_is_retried_never_published()
+    test_a_link_that_already_pays_us_is_never_dropped()
     test_search_links_never_touch_the_cache()
     test_owned_link_proofs_are_bound_to_active_identity()
     test_token_claims()

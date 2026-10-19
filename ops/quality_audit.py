@@ -102,7 +102,10 @@ def link_host(url: str) -> str:
 # published WITHOUT it is not "a clean merchant page kept on purpose": it is a
 # link that opens the product and pays nobody, and it can be fixed. Kept in one
 # place so the count and the bot's own stamping rule stay in step.
-EK_ATTRIBUTION_HOSTS = ("flipkart.com", "myntra.com")
+# shopsy.in joined on 2026-10-19: the converter mints the same Flipkart shape
+# on it (?affid=..&affExtParam1=ENKR..&affExtParam2=<publisher>), so the
+# audit must draw the same line the bot does - see main_bot_new.py.
+EK_ATTRIBUTION_HOSTS = ("flipkart.com", "shopsy.in", "myntra.com")
 SERVICE_OFFER_DOMAINS = (
     "zomato.com", "zomato.in", "zom.to", "swiggy.com", "swiggy.in",
     "zepto.com", "dominos.in", "pizzahut.co.in", "pizzahut.com",

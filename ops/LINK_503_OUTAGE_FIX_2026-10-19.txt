@@ -100,16 +100,44 @@ e) The pre-send pass re-probes a verdict older than `PRESEND_FRESH_SECONDS`
    immediate.
 
 
+3. BONUS: THE MISSES THAT WERE NOT 503 AT ALL
+------------------------------------------------
+While proving the link above the second complaint ("chala miss chesthunnav")
+turned out to have its own cause, found in the same audit:
+
+   * `shopsy.in` was missing from EK_ATTRIBUTION_HOSTS (bot) and from the same
+     tuple in ops/quality_audit.py. Consequence: a Shopsy page that ALREADY
+     carried our affExtParam2 was not recognised as ours at all - the final
+     provenance gate would refuse it - and a bare Shopsy page could never be
+     rebuilt with our id. Shopsy is Flipkart's own marketplace and the converter
+     mints the identical shape on it (the user's link is the proof), so the host
+     is now listed. The id check itself is unchanged: a foreign affExtParam2 is
+     still refused everywhere.
+
+   * A link that ALREADY pays us was still dropped when the converter had
+     nothing to add ("Url not found in post!" is its commonest answer) or when
+     the API was down. convert() now keeps it:
+
+         OUR LINK KEPT | www.shopsy.in already carries our publisher id - the
+         converter had nothing to add, so the verified link is published as-is
+         instead of losing the deal
+
+     It is the same product, the commission is still ours, and the product id
+     (PID:...) is preserved, so dedup is unaffected. This is a FALLBACK: the
+     converter is still asked first.
+
 HOW TO CHECK IT
 ---------------
     python3 test_earnkaro_conversion.py     # outage detection + retry contract
     python3 test_duplicate_sim.py           # delivery: hop repaired / post held
 
-Both are in `ops/test_all.sh`. Live operators get these log lines now:
+Both are in `ops/test_all.sh` (249 and 400+ checks). Live operators get these
+log lines now:
 
     LINK OUTAGE | status=503 attempt 1/2 | the host has no server behind it
                   right now (retried, never published): https://...
     SHORT LINK REPAIRED | queue=.. <hop> -> <verified destination>
+    OUR LINK KEPT | <host> already carries our publisher id ...
     LINK OUTAGE | queue=.. last attempt: dropped N destination(s) answering 503
     JOB FAIL .. delivery retry required: N destination(s) answered a service-
                   outage page (503)
