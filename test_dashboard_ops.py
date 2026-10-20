@@ -196,6 +196,23 @@ def test_engine():
                   empty["events"] == [] and empty["counts"]["send"] == 0)
             check("last-of-kind is reported for each kind",
                   set(empty["last"]) == set(insight.EVENT_KINDS))
+            check("pulse returns one bucket per hour, capped at 24",
+                  len(flow["hourly"]) == 24, str(len(flow["hourly"])))
+            check("the hourly buckets carry every kind",
+                  all(set(insight.EVENT_KINDS) <= set(bucket) for bucket in flow["hourly"]))
+            check("the bucket total matches the events",
+                  sum(b["intake"] for b in flow["hourly"]) == flow["counts"]["intake"],
+                  f'{sum(b["intake"] for b in flow["hourly"])} vs {flow["counts"]["intake"]}')
+            short = insight.pulse(conn, hours=3, now=now)
+            check("a 3h window gives 3 buckets", len(short["hourly"]) == 3)
+
+            csv_text = insight.to_csv(flow["events"], ["at_ist", "kind", "label"])
+            check("csv has a header and one line per row",
+                  csv_text.splitlines()[0] == "at_ist,kind,label"
+                  and len(csv_text.splitlines()) == len(flow["events"]) + 1)
+            quoted = insight.to_csv([{"a": 'x,y', "b": 1, "c": None}], ["a", "b", "c"])
+            check("csv quotes a comma-bearing field instead of splitting it",
+                  quoted.splitlines() == ["a,b,c", '"x,y",1,'], repr(quoted))
 
             # ---- trace ---------------------------------------------------
             traced = insight.trace(conn, 1, now=now, analyze=source_target.analyze,
@@ -344,6 +361,42 @@ def test_http():
                     check("a one-letter search is a 400", status == 400, str(status))
                     status, body = await call("/api/search?q=")
                     check("an empty search is a 400", status == 400, str(status))
+
+                    # ---- CSV exports: same rows, with a header and a filename --
+                    async def export(path, token=True):
+                        headers = {"X-Dashboard-Token": "test-token-123"} if token else {}
+                        async with sess.get(base + path, headers=headers) as resp:
+                            return resp.status, await resp.text(), dict(resp.headers)
+
+                    status, text, headers = await export("/api/export?what=scorecard")
+                    check("scorecard csv exports", status == 200, str(status))
+                    check("the export is served as a file",
+                          headers.get("Content-Disposition", "").startswith("attachment;"),
+                          str(headers.get("Content-Disposition")))
+                    check("the scorecard csv has a header row",
+                          text.splitlines()[0].startswith("kind,target,source"), text[:80])
+                    check("the scorecard csv has one line per row",
+                          len(text.strip().splitlines()) >= 3, text[:120])
+                    status, text, _ = await export("/api/export?what=pulse&hours=24")
+                    check("the timeline csv exports", status == 200 and
+                          text.splitlines()[0].startswith("at_ist,kind"), text[:80])
+                    check("timeline rows are IST-stamped",
+                          all("IST" in line for line in text.strip().splitlines()[1:6]))
+                    status, text, _ = await export("/api/export?what=search&q=qled")
+                    check("the search csv exports", status == 200 and "qled" in text, text[:80])
+                    status, text, _ = await export("/api/export?what=health")
+                    check("the health csv exports", status == 200 and
+                          text.splitlines()[0] == "key,title,state,detail,fix", text[:80])
+                    check("an export without a token is refused",
+                          (await export("/api/export?what=health", token=False))[0] == 401)
+                    check("an unknown export is a 400",
+                          (await export("/api/export?what=nope"))[0] == 400)
+                    check("an unknown format is a 400",
+                          (await export("/api/export?what=health&format=xml"))[0] == 400)
+                    status, text, _ = await export("/api/export?what=health&format=json")
+                    check("json is offered too", status == 200 and '"checks"' in text, text[:80])
+                    status, text, _ = await export("/api/export?what=search&q=a")
+                    check("a too-short search export is a 400", status == 400, str(status))
 
                     status, body = await call("/api/scorecard?days=7")
                     check("scorecard answers 200", status == 200)

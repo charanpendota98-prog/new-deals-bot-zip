@@ -521,6 +521,21 @@ def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
                 label=f"proof · {row[2]}", status=str(row[3] or ""),
                 detail=f"{_short(str(row[0]))} → {_short(str(row[1]))}", severity="ok")
 
+    # Hourly throughput for the chart: one bucket per IST hour, every kind, so
+    # a gap is a visible empty bar instead of something to guess about.
+    buckets = max(1, min(24, int(round(float(hours)))))
+    hourly = []
+    for step in range(buckets - 1, -1, -1):
+        start = now - (step + 1) * 3600
+        row = {"at": start, "hour_ist": time.strftime("%H:00", time.gmtime(start + IST_OFFSET))}
+        for name in EVENT_KINDS:
+            row[name] = 0
+        hourly.append(row)
+    for event in events:
+        offset = int((now - event["at"]) // 3600)
+        if 0 <= offset < buckets:
+            hourly[buckets - 1 - offset][event["kind"]] += 1
+
     events.sort(key=lambda e: (e["at"], e["kind"]), reverse=True)
     capped = len(events) > limit
     counts = {k: sum(1 for e in events if e["kind"] == k) for k in EVENT_KINDS}
@@ -545,6 +560,7 @@ def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
         "counts": counts,
         "last": last,
         "silences": silences,
+        "hourly": hourly,
         "capped": capped,
         "events": [{"at": e["at"], "at_ist": ist(e["at"]), "age": age(now - e["at"]),
                     **{k: v for k, v in e.items() if k != "at"}} for e in events[:limit]],
@@ -832,6 +848,29 @@ def scorecard(conn: sqlite3.Connection, *, days: int = 7, now: float | None = No
                        "sends": sum(c["sends"] for c in channels),
                        "skips": sum(c["skips"] for c in channels),
                        "sources": len(sources)}}
+
+
+# --------------------------------------------------------------------------- #
+# CSV export (same rows the panels show)
+# --------------------------------------------------------------------------- #
+def to_csv(rows, columns) -> str:
+    """RFC 4180 CSV from the same dicts the panels render. Text stays text."""
+    import csv
+    import io
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(columns)
+    for row in rows:
+        writer.writerow([_csv_cell(row.get(column)) for column in columns])
+    return buffer.getvalue()
+
+
+def _csv_cell(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float):
+        return f"{value:.1f}"
+    return str(value)
 
 
 # --------------------------------------------------------------------------- #

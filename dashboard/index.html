@@ -64,6 +64,14 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 @media(max-width:760px){.ev{grid-template-columns:1fr;gap:2px;padding:9px 2px}}
 .trace-box{border:1px solid #2c4057;border-radius:12px;padding:14px 16px;background:#0d1521}
 .trace-post{white-space:pre-wrap;font-size:12.5px;color:#cfdaea;background:#0b131f;border-radius:9px;padding:10px 12px;margin:8px 0}
+.chart{display:flex;gap:5px;align-items:flex-end;height:84px;margin:10px 0 4px;padding:0 2px}
+.chart .col{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%}
+.chart .col i{display:block;border-radius:2px 2px 0 0;margin-top:1px;min-height:0}
+.chart .col i.intake{background:#5b8def}.chart .col i.send{background:#80f0cf}
+.chart .col i.block{background:#e2a33a}.chart .col i.link{background:#8b7cf6}.chart .col i.proof{background:#4ade80}
+.chart .lbl{font-size:9px;color:#8fa2bb;text-align:center;margin-top:4px}
+.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:11px;color:#9dacc1;margin:4px 0 10px}
+.legend b{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .meter{height:6px;border-radius:99px;background:#1d2b3f;overflow:hidden;min-width:60px}
 .meter i{display:block;height:100%;background:#80f0cf}
 .quick-workbench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr);gap:28px;align-items:start}.quick-workbench .inspector-grid{grid-template-columns:1fr;gap:12px}.source-picker{border:1px solid #345146;border-radius:14px;padding:20px;background:linear-gradient(140deg,#122a28,#101b29)}.source-picker h3{margin:5px 0 10px}.source-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.source-tools button{font-size:11px;padding:7px 10px}.source-list{max-height:310px;overflow:auto;display:grid;gap:6px;padding:5px 3px}.source-option{display:flex;align-items:center;gap:12px;padding:11px;border:1px solid #283e4b;border-radius:9px;margin:0;background:#0d1b26;cursor:pointer}.source-option:has(input:checked){border-color:#74dabb;background:#15332f}.source-option input{width:auto;flex-shrink:0;accent-color:#80f0cf}.source-option span{min-width:0;display:grid;gap:4px}.source-option strong{font-size:12px;overflow-wrap:anywhere}.source-option small{font-size:10px;color:#9dafc0;overflow-wrap:anywhere}.source-picker input[type=search],.source-picker textarea{width:100%;box-sizing:border-box}.source-selected{display:flex;gap:6px;flex-wrap:wrap;max-height:92px;overflow:auto;margin:10px 0}.source-selected button{font-size:10px;padding:5px 8px;background:#203d38;color:#b3efdb;border:1px solid #395c52}.source-count{font-size:12px;color:#8ce6cb;margin:10px 0}.source-picker details{border-top:1px solid #304652;margin-top:14px;padding-top:8px}.source-error{font-size:12px;color:#ffd49a}.setup-source-layout{display:grid;grid-template-columns:1fr 1.2fr;gap:24px}dialog{max-width:850px;width:calc(100% - 50px)}@media(max-width:760px){.quick-workbench,.setup-source-layout{grid-template-columns:1fr}.source-picker{padding:15px}.source-list{max-height:280px}}
@@ -134,20 +142,23 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <div class="card" id="console">
 <div class="section-heading"><div><span class="eyebrow">OPS CONSOLE · SELF-DIAGNOSIS + LIVE TIMELINE</span><h2>Is everything actually working?</h2></div>
 <div><label class="muted" for="pulsehours">Timeline</label> <select id="pulsehours" onchange="loadPulse()"><option value="1">last 1h</option><option value="6" selected>last 6h</option><option value="24">last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select>
+<button class="ghost" onclick="downloadExport('pulse',document.getElementById('pulsehours').value)">export .csv</button>
 <select id="pulsekind" onchange="loadPulse()"><option value="">every kind</option><option value="intake">intake</option><option value="send">send</option><option value="block">refusal</option><option value="link">link conversion</option><option value="proof">owned-link proof</option></select></div></div>
 <p class="muted">Every check below runs against the live database, the config beside it and the shared policy files — the same things you would SSH in to look at, but with the fix written next to the fault. Everything is read-only: a check can never post, queue or restart anything. <code>?services=1</code> also asks systemd about the three services.</p>
-<div class="row" style="margin:8px 0 0"><button class="ghost" id="healthcopy" onclick="copyHealthReport()">copy incident summary</button><span id="consoleupdated" class="muted" role="status" aria-live="polite">never refreshed</span></div>
+<div class="row" style="margin:8px 0 0"><button class="ghost" id="healthcopy" onclick="copyHealthReport()">copy incident summary</button><button class="ghost" onclick="downloadExport('health')">export checks .csv</button><span id="consoleupdated" class="muted" role="status" aria-live="polite">never refreshed</span></div>
 <div id="healthline" class="healthline"><span class="muted">checking…</span></div>
 <div id="healthrows" class="checks"></div>
 <h3>What just happened</h3>
 <p class="muted">One merged timeline: intake, send attempts, refusals, link conversions and owned-link proofs — newest first. A gap is as informative as an event, so the last of each kind is shown with its age.</p>
+<div id="pulsechart" class="chart" aria-label="Hourly throughput"></div>
+<div class="legend"><span><b style="background:#5b8def"></b>intake</span><span><b style="background:#80f0cf"></b>send</span><span><b style="background:#e2a33a"></b>refusal</span><span><b style="background:#8b7cf6"></b>link conversion</span><span><b style="background:#4ade80"></b>owned-link proof</span><span class="muted">bar height = events in that IST hour</span></div>
 <div id="pulselast" class="row"></div>
 <div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Kind</th><th>What</th><th>Detail</th><th>Post</th></tr></thead>
 <tbody id="pulserows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
 <p id="pulsenote" class="muted" role="status" aria-live="polite"></p>
 <h3>Find anything</h3>
 <p class="muted">Search posts, channels and refusals at once: any text the source wrote, a source name, a <code>@channel</code>, a price like <code>₹899</code>, or a queue id. Matches are shown with the line they came from, never guessed.</p>
-<div class="row"><input id="qsearch" aria-label="Search posts, channels and refusals" placeholder="text, source, @channel, ₹price, or a queue id" onkeydown="if(event.key==='Enter')runSearch()"><button onclick="runSearch()">Search</button><button class="ghost" onclick="clearSearch()">Clear</button></div>
+<div class="row"><input id="qsearch" aria-label="Search posts, channels and refusals" placeholder="text, source, @channel, ₹price, or a queue id" onkeydown="if(event.key==='Enter')runSearch()"><button onclick="runSearch()">Search</button><button class="ghost" onclick="clearSearch()">Clear</button><button class="ghost" onclick="downloadExport('search')">export results .csv</button></div>
 <div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Kind</th><th>Post</th><th>Source</th><th>Target</th><th>Status</th><th>Match</th></tr></thead>
 <tbody id="qrows"><tr><td colspan="7" class="muted">nothing searched yet</td></tr></tbody></table></div>
 </div>
@@ -163,7 +174,8 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </div>
 <div class="card" id="scorecard">
 <div class="section-heading"><div><span class="eyebrow">SCORECARD · PER CHANNEL AND PER SOURCE</span><h2>Who is receiving, who is silent, who earns its place</h2></div>
-<div><label class="muted" for="scdays">Window</label> <select id="scdays" onchange="loadScorecard()"><option value="1">today</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></div></div>
+<div><label class="muted" for="scdays">Window</label> <button class="ghost" onclick="downloadExport('scorecard',document.getElementById('scdays').value)">export .csv</button>
+<select id="scdays" onchange="loadScorecard()"><option value="1">today</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></div></div>
 <p class="muted">Delivery-ledger truth per channel: how many posts it actually received, how often a delivery was refused or failed, the top skip reason, average deal quality, the IST hour it tends to receive at, and how long it has been silent. Per source: how many intakes it produced and what share became posts. Read-only.</p>
 <div class="row" id="sctotals"></div>
 <div class="tablewrap"><table><thead><tr><th>Channel</th><th>Today</th><th>Sent</th><th>Skipped</th><th>Delivered</th><th>Avg quality</th><th>Best hour (IST)</th><th>Last send</th><th>Top skip reason</th></tr></thead>
@@ -1617,6 +1629,35 @@ async function loadHealth(){
   }
 }
 let showServices=false;
+function renderChart(hourly){
+  // A plain stacked bar per IST hour. No chart library, nothing to load.
+  const box=document.getElementById('pulsechart'); if(!box) return;
+  const rows=Array.isArray(hourly)?hourly:[];
+  if(!rows.length){ box.innerHTML=''; return; }
+  const kinds=['intake','send','block','link','proof'];
+  const totals=rows.map(r=>kinds.reduce((sum,k)=>sum+(Number(r[k])||0),0));
+  const top=Math.max(1,...totals);
+  box.innerHTML=rows.map((r,index)=>{
+    const total=totals[index];
+    const height=Math.round(total/top*62);
+    const segments=kinds.filter(k=>Number(r[k])>0).map(k=>{
+      const h=Math.max(2,Math.round((Number(r[k])/Math.max(1,total))*height));
+      return `<i class="${k}" style="height:${h}px" title="${k}: ${Number(r[k])}"></i>`;
+    }).join('');
+    return `<div class="col" title="${escapeHTML(r.hour_ist)} · ${total} event(s)">${segments}<div class="lbl">${escapeHTML((r.hour_ist||'').slice(0,2))}</div></div>`;
+  }).join('');
+}
+function downloadExport(what, windowValue){
+  // A CSV of exactly the rows the panel is showing. The token rides in the
+  // query string because a download cannot carry a header; require_token()
+  // accepts either, and the response is no-store.
+  if(!TOKEN && !DEMO_MODE){ return; }
+  let url='/api/export?what='+encodeURIComponent(what)+'&token='+encodeURIComponent(TOKEN);
+  if(what==='pulse') url+='&hours='+encodeURIComponent(windowValue||6);
+  if(what==='scorecard') url+='&days='+encodeURIComponent(windowValue||7);
+  if(what==='search') url+='&q='+encodeURIComponent(document.getElementById('qsearch')?.value||'');
+  window.open(url,'_blank','noopener');
+}
 async function loadPulse(){
   const body=document.getElementById('pulserows'), last=document.getElementById('pulselast'),
     note=document.getElementById('pulsenote');
@@ -1631,6 +1672,7 @@ async function loadPulse(){
       const seen=(p.last||{})[k];
       return `<div class="stat"><b>${escapeHTML(String(n))}</b><span>${escapeHTML(k)} · last ${seen?escapeHTML(seen.age)+' ago':'never'}</span></div>`;
     }).join('') || '<span class="muted">nothing in this window</span>';
+    renderChart(p.hourly);
     body.innerHTML=(p.events||[]).map(ev=>
       `<tr><td class="muted">${escapeHTML(ev.at_ist)}</td><td>${kindPill(ev.kind)}</td>`
       + `<td>${escapeHTML(ev.label)}</td><td class="muted">${escapeHTML(ev.detail)}</td>`
