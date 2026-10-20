@@ -285,6 +285,127 @@ def test_engine():
             conn.close()
 
 
+def test_degenerate_states():
+    """A dashboard that lies is worse than one that is down.
+
+    Five ways a real server gets into a state the happy-path tests never see:
+    no database at all, a zero-byte file, an old schema, a corrupt file, and a
+    channels.json that is not JSON. Every endpoint must answer with a sentence,
+    never an HTML 500 (that is what `/api/recent`, `/api/audit`, `/api/categories`
+    and `/api/safety` used to do on a corrupt file) and never a confident empty
+    answer that hides the fault.
+    """
+    print("\n== degenerate states: no db / empty / old schema / corrupt / bad config ==")
+    # The bot module builds a Store at import time, so it must be imported
+    # before any probe points BOT_DB_PATH somewhere else.
+    import importlib
+    importlib.import_module("main_bot_new")
+
+    async def probe(db: Path, channels: Path):
+        saved = {key: os.environ.get(key) for key in
+                 ("BOT_DB_PATH", "CHANNELS_JSON_PATH", "DASHBOARD_TOKEN", "BOT_LOG")}
+        os.environ.update({"BOT_DB_PATH": str(db),
+                           "CHANNELS_JSON_PATH": str(channels),
+                           "DASHBOARD_TOKEN": "test-token-123",
+                           "BOT_LOG": str(db.parent / "missing.log")})
+        runner, base = await dash_started()
+        out = {}
+        try:
+            async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=20)) as sess:
+                for path in ("/api/status", "/api/channels", "/api/recent?limit=5",
+                             "/api/audit?limit=20",
+                             "/api/categories?hours=24", "/api/safety?days=7",
+                             "/api/health", "/api/pulse?hours=6", "/api/trace?queue_id=1",
+                             "/api/search?q=ab", "/api/scorecard?days=7",
+                             "/api/export?what=health", "/api/export?what=pulse",
+                             "/api/link-conversion?limit=5", "/api/channel-pipe?target=A&source=B"):
+                    async with sess.get(base + path,
+                                        headers={"X-Dashboard-Token": "test-token-123"}) as resp:
+                        text = await resp.text()
+                        out[path] = (resp.status, text)
+        finally:
+            await runner.cleanup()
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        return out
+
+    with tempfile.TemporaryDirectory() as td:
+        tdp = Path(td)
+        absent = tdp / "absent"
+        cases = {}
+
+        cases["no database"] = asyncio.run(
+            probe(absent / "x.sqlite3", absent / "channels.json"))
+
+        empty = tdp / "empty.sqlite3"
+        empty.write_bytes(b"")
+        cases["zero-byte file"] = asyncio.run(probe(empty, tdp / "c1.json"))
+
+        old = tdp / "old.sqlite3"
+        conn = sqlite3.connect(old)
+        conn.execute("CREATE TABLE queue(id INTEGER PRIMARY KEY, chat_id INT, msg_id INT, "
+                     "source TEXT, status TEXT, attempts INT, created_at REAL, "
+                     "rendered_text TEXT, targets_json TEXT)")
+        conn.execute("INSERT INTO queue VALUES(1,-1,1,'deals','done',1,?,?, '[]')",
+                     (time.time(), "hi https://bit.ly/x"))
+        conn.commit()
+        conn.close()
+        cases["old schema"] = asyncio.run(probe(old, tdp / "c2.json"))
+
+        corrupt = tdp / "corrupt.sqlite3"
+        corrupt.write_bytes(b"this is not a database" * 400)
+        cases["corrupt file"] = asyncio.run(probe(corrupt, tdp / "c3.json"))
+
+        real = tdp / "real.sqlite3"
+        store = bot.Store(real)
+        store.conn.commit()
+        store.conn.close()
+        junk = tdp / "junk.json"
+        junk.write_text("{not json")
+        cases["garbage channels.json"] = asyncio.run(probe(real, junk))
+
+        for name, responses in cases.items():
+            codes = {path: status for path, (status, _) in responses.items()}
+            check(f"{name}: no endpoint 500s",
+                  all(status < 500 or status == 503 for status in codes.values()),
+                  str({p: c for p, c in codes.items() if c >= 500 and c != 503}))
+            check(f"{name}: every failure is JSON with a sentence",
+                  all(not text.startswith("<!") and (status == 200 or '"error"' in text)
+                      for status, text in responses.values()),
+                  str([p for p, (c, t) in responses.items()
+                       if c != 200 and ('"error"' not in t or t.startswith("<!"))]))
+
+        # the fault is named, not swallowed
+        status, text = cases["corrupt file"]["/api/safety?days=7"]
+        check("a corrupt database is named in the answer",
+              status == 503 and "not a SQLite database" in text, text[:160])
+        status, text = cases["corrupt file"]["/api/categories?hours=24"]
+        check("a corrupt database cannot blank the category panel silently",
+              status == 503, f"{status} {text[:120]}")
+        status, text = cases["no database"]["/api/health"]
+        check("health calls a missing database a fault, not a clean bill",
+              status == 200 and '"overall": "fail"' in text, text[:160])
+        status, text = cases["no database"]["/api/audit?limit=20"]
+        check("a missing database is 'come back later' (503), not 404", status == 503,
+              f"{status} {text[:120]}")
+        status, text = cases["zero-byte file"]["/api/trace?queue_id=1"]
+        check("an empty database says it has no queue table yet",
+              status == 503 and "no queue table yet" in text, f"{status} {text[:160]}")
+        status, text = cases["corrupt file"]["/api/trace?queue_id=1"]
+        check("trace on a corrupt file explains the file, not the id",
+              status == 503 and "not a SQLite database" in text, f"{status} {text[:160]}")
+        status, text = cases["old schema"]["/api/trace?queue_id=1"]
+        check("trace still works on an old schema missing last_error",
+              status == 200 and '"queue_id": 1' in text, f"{status} {text[:160]}")
+        status, text = cases["garbage channels.json"]["/api/channels"]
+        check("a garbage channels.json is tolerated, not fatal",
+              status == 200 and '"whatsapp"' in text, f"{status} {text[:120]}")
+
+
 def test_http():
     print("\n== HTTP: health / pulse / trace / search / scorecard ==")
 
@@ -398,6 +519,27 @@ def test_http():
                     status, text, _ = await export("/api/export?what=search&q=a")
                     check("a too-short search export is a 400", status == 400, str(status))
 
+                    # ---- the server is not a one-request-at-a-time machine ---
+                    # Every read-only panel queries SQLite synchronously. Before
+                    # `in_thread`, eight concurrent requests took as long as eight
+                    # sequential ones and the whole dashboard froze during a
+                    # refresh. Two concurrent slow scorecards must overlap.
+                    import time as _time
+                    real_scorecard = dash.insight.scorecard
+                    dash.insight.scorecard = lambda *a, **k: (_time.sleep(0.6), real_scorecard(*a, **k))[1]
+                    try:
+                        async def slow_scorecard():
+                            t0 = _time.time()
+                            await call("/api/scorecard?days=7")
+                            return _time.time() - t0
+                        started = _time.time()
+                        await asyncio.gather(slow_scorecard(), slow_scorecard())
+                        concurrent = _time.time() - started
+                    finally:
+                        dash.insight.scorecard = real_scorecard
+                    check("two slow panels run at the same time, not one after the other",
+                          concurrent < 1.05, f"{concurrent:.2f}s (serial would be ~1.2s)")
+
                     status, body = await call("/api/scorecard?days=7")
                     check("scorecard answers 200", status == 200)
                     check("scorecard lists channels and sources",
@@ -427,6 +569,7 @@ async def dash_started():
 
 def main() -> int:
     test_engine()
+    test_degenerate_states()
     test_http()
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: " + "; ".join(FAILS[:6]))

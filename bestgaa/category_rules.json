@@ -1,5 +1,5 @@
 {
- "version": 4,
+ "version": 5,
  "min_score": 3,
  "min_margin": 2,
  "categories": [
@@ -950,6 +950,26 @@
     [
      "32 inch tv",
      6
+    ],
+    [
+     "redmi note",
+     6
+    ],
+    [
+     "hp pavilion",
+     6
+    ],
+    [
+     "inverter battery",
+     6
+    ],
+    [
+     "tubular battery",
+     7
+    ],
+    [
+     "luminous inverter",
+     7
     ]
    ]
   },

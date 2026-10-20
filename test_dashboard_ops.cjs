@@ -336,6 +336,24 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
     'a source name cannot inject markup');
   assert.match(d.getElementById('sctotals').textContent, /7/, 'totals reconcile');
 
+  // ---- the 5 s tick does not re-run the expensive books ----------------
+  calls.length = 0;
+  await w.refresh(false);
+  const light = calls.map(c => c.path);
+  assert.ok(light.includes('/api/status'), 'the light tick still refreshes status');
+  assert.ok(light.some(p => p.startsWith('/api/pulse')),
+    'the light tick still refreshes the timeline');
+  for (const heavy of ['/api/audit?limit=200', '/api/categories?hours=24',
+    '/api/link-conversion?limit=5', '/api/scorecard?days=7']) {
+    assert.ok(!light.some(p => p.startsWith(heavy.split('?')[0])),
+      `the light tick skips ${heavy}`);
+  }
+  calls.length = 0;
+  await w.refresh();
+  const full = calls.map(c => c.path);
+  assert.ok(full.some(p => p.startsWith('/api/audit')), 'a full refresh still runs the audit');
+  assert.ok(full.some(p => p.startsWith('/api/categories')), 'and the category books');
+
   // ---- dead endpoints cannot take the page down -------------------------
   healthStatus = 500; pulseStatus = 500; scoreStatus = 500; searchStatus = 500;
   await w.loadHealth();
