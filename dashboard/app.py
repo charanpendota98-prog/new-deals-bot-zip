@@ -28,6 +28,21 @@ What it does
     `python3 ops/category_report.py`.
   * Audit: the same SENDS vs SKIPS + findings summary ops/quality_audit.py
     produces, over the live database (read-only).
+  * Console: self-diagnosis + live timeline (`dashboard/insight.py`). Health
+    checks the database, schema, backlog, silence, bot-vs-bridge policy and
+    rules parity, channels config, routing snapshot, log errors and disk, and
+    gives every non-green check a fix line. The timeline merges intake, send
+    attempts, refusals, link conversions and owned-link proofs into one
+    newest-first stream, with the age of the last event of each kind so a
+    silence is visible too.
+  * Trace: one queue id, the whole chain - what the planner predicted, what
+    the readers and the safety gate made of it, which targets actually
+    received it, which were skipped and with what error, the delivered link,
+    and any refusal recorded against it.
+  * Search: posts, channels and refusals by text, source, @channel, price or
+    queue id, each hit shown with the line it came from.
+  * Scorecard: per channel and per source - sends, skips with the top reason,
+    last send, average quality, best IST hour, silence.
   * Safety: why a post was NOT published. Every refusal by the public-channel
     content policy (adult, abusive, betting, solicitation, intimate products,
     suggestive wording) with its category, masked match, human reason and the
@@ -61,7 +76,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import source_target  # noqa: E402
+from dashboard import insight, source_target  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -1000,6 +1015,142 @@ async def api_safety(request: web.Request):
 
 
 @require_token
+async def api_health(request: web.Request):
+    """Self-diagnosis: every check the operator would otherwise run by hand.
+
+    Read-only. `?services=1` adds `systemctl is-active` for the three services
+    (still read-only, and it degrades to `unknown` where systemd is absent).
+    A non-green check always carries a `fix` line, so the panel says what to do
+    instead of only that something is wrong.
+    """
+    want_services = request.query.get("services", "") in ("1", "true", "yes")
+    try:
+        payload = insight.health(
+            db=db_path(), root=ROOT,
+            channels_json=channels_config.channels_json_path(),
+            snapshot=snapshot(), log_path=_dashboard_log_path(),
+            services=want_services)
+    except Exception as exc:  # noqa: BLE001 - a health check must never 500 the page
+        return web.json_response({"overall": "unknown", "headline": f"health check failed: {exc}",
+                                  "counts": {"ok": 0, "warn": 0, "fail": 0, "unknown": 1},
+                                  "checks": [], "facts": {}, "error": str(exc)}, status=200)
+    payload["pending_restart"] = pending_restart()
+    return web.json_response(payload)
+
+
+def _dashboard_log_path() -> Path:
+    env = os.getenv("BOT_LOG", "").strip()
+    if env:
+        return Path(env)
+    try:
+        module = load_category_report()
+        return module.default_log()
+    except Exception:  # noqa: BLE001
+        return ROOT / "bestgaa" / "logs" / "bot.log"
+
+
+@require_token
+async def api_pulse(request: web.Request):
+    """One merged timeline: intake, send attempts, refusals, conversions, proofs."""
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"events": [], "counts": {}, "last": {}, "silences": [],
+                                  "database": "missing"}, status=200)
+    try:
+        hours = max(0.25, min(168.0, float(request.query.get("hours", "6"))))
+    except (TypeError, ValueError):
+        hours = 6.0
+    try:
+        limit = max(1, min(500, int(request.query.get("limit", "200"))))
+    except (TypeError, ValueError):
+        limit = 200
+    kind = request.query.get("kind", "") if request.query.get("kind") in insight.EVENT_KINDS else ""
+    source = request.query.get("source", "")[:80]
+    target = request.query.get("target", "")[:80]
+    try:
+        payload = insight.pulse(conn, hours=hours, kind=kind, source=source,
+                                target=target, limit=limit)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        conn.close()
+    payload["database"] = "ok"
+    return web.json_response(payload)
+
+
+@require_token
+async def api_trace(request: web.Request):
+    """One post, the whole chain: predicted vs what really happened, per target."""
+    try:
+        queue_id = int(request.query.get("queue_id", ""))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "queue_id must be a number"}, status=400)
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"error": "no database yet"}, status=503)
+    try:
+        payload = insight.trace(conn, queue_id, analyze=source_target.analyze,
+                                snapshot=snapshot(),
+                                channels=channels_config.load_channels())
+    except LookupError as exc:
+        return web.json_response({"error": str(exc)}, status=404)
+    except KeyError as exc:
+        return web.json_response({"error": str(exc)}, status=503)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        conn.close()
+    payload["policy"] = load_safety_policy()
+    return web.json_response(payload)
+
+
+@require_token
+async def api_search(request: web.Request):
+    """Find a post, a target, or a refusal. Never guesses: no hit is a hit."""
+    query = (request.query.get("q") or "").strip()
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "40"))))
+    except (TypeError, ValueError):
+        limit = 40
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"query": query, "results": [], "count": 0,
+                                  "database": "missing"}, status=200)
+    try:
+        payload = insight.search(conn, query, limit=limit)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        conn.close()
+    payload["database"] = "ok"
+    return web.json_response(payload)
+
+
+@require_token
+async def api_scorecard(request: web.Request):
+    """Per channel and per source: is it receiving, is it silent, is it worth it."""
+    try:
+        days = max(1, min(30, int(request.query.get("days", "7"))))
+    except (TypeError, ValueError):
+        days = 7
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"channels": [], "sources": [], "database": "missing"},
+                                 status=200)
+    try:
+        payload = insight.scorecard(conn, days=days)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        conn.close()
+    payload["database"] = "ok"
+    payload["pending_restart"] = pending_restart()
+    return web.json_response(payload)
+
+
+@require_token
 async def api_restart(request: web.Request):
     cmd = os.getenv("DASHBOARD_RESTART_CMD", f"systemctl restart {SERVICE_DEFAULT}").strip()
     if not cmd:
@@ -1046,6 +1197,11 @@ def create_app() -> web.Application:
     app.router.add_get("/api/card-studio", api_card_studio)
     app.router.add_get("/api/audit", api_audit)
     app.router.add_get("/api/safety", api_safety)
+    app.router.add_get("/api/health", api_health)
+    app.router.add_get("/api/pulse", api_pulse)
+    app.router.add_get("/api/trace", api_trace)
+    app.router.add_get("/api/search", api_search)
+    app.router.add_get("/api/scorecard", api_scorecard)
     app.router.add_post("/api/restart", api_restart)
     return app
 
