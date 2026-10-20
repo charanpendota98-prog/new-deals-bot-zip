@@ -100,6 +100,7 @@ compiled and linted there too):
 | `install_bestgaa.sh` | First-time bot installer |
 | `install_dashboard_secure.sh` | Idempotent token-gated dashboard install plus the approval gate (token never printed in full, never in Git) |
 | `repack_bundles.sh` | Rebuild the deploy zips from this source |
+| `build_deploy_zip.py` | Build `bestgaa_deploy.zip` from the tracked files (bot at the archive root, bridge under `tg-wa-bridge/`, plus `MANIFEST.sha256` + `BUILD_INFO.txt`, deterministic bytes); `--check` proves the tracked zip is byte-identical to the tree |
 | `set_earnkaro_key.sh` | Write/rotate the EarnKaro key into the server `.env`, pin the publisher from the token, restart, verify (token never printed) |
 | `diagnose.sh` | One-command server diagnosis: services, deployed-fix markers, queue, FloodWait, env, groups, night window, intake |
 | `telegram_check.sh` | Where posts die when sources are active but channels are silent: render/provenance/eligibility vs the actual SEND per target |
@@ -118,6 +119,7 @@ compiled and linted there too):
 | `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
 | `sync_identity.py` | Regenerate the auditor's copy of the product-identity rule (`--check` is a test) |
 | `bestgaa_nightfix.zip` | Prebuilt nightfix bundle (regenerable with `repack_bundles.sh`) |
+| `bestgaa_deploy.zip` (repo root) | The single-file deploy bundle the operator uploads: bot files at the archive root, the bridge under `tg-wa-bridge/`, `MANIFEST.sha256` + `BUILD_INFO.txt`. Regenerate with `python3 ops/build_deploy_zip.py`; `ops/test_all.sh` fails if it ever drifts from the tree |
 
 **Notes** (dated incident/decision records — read the date before trusting one):
 
@@ -242,6 +244,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
 | `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_deploy_zip.py` | The bundle the operator actually uploads is the code in the tree: every shipped file matches `MANIFEST.sha256`, all Python compiles and the bot + every hard-imported helper import from the **unpacked** zip, the bridge loads its policy out of the bundle and blocks, and the reported post still prices at ₹60,000 and routes to electronics from inside the zip |
 | `test_source_to_target.py` | The whole chain for the operator's reported post (`Samsung neo qled 55" @ ₹60k` on `link.amazon/B0gWibFuA`): the price is ₹60,000 (not ₹60), the shelf is electronics (the caption never says "TV"), `link.amazon` is an Amazon wrapper that is never published as-is, the main feed + PowerLoots + the electronics shelf receive it while Under99/Under499/Premium/Fashion withhold it with reasons — plus the Indian magnitude arithmetic (`60k`, `1.5 lakh`, `2 lac`, `5L`/`190L`/`kg` never money), the planner's mirrored host sets against the bot's own, the CLI, and the dashboard endpoint |
 | `test_safety_filter.py` | The public-channel content policy: 50 shared cases decided identically by the bot (`bestgaa/safety_filter.py`) and the WhatsApp bridge (`tg-wa-bridge/safety_filter.js`) — explicit/escort/abuse/betting/solicitation/intimate/suggestive wording blocked, evasion (`s.e.x`, `s3x`, `b00bs`, full-width) normalised, real products (`unisex`, `XXXL`, `cocktail`, `analog`, `massage gun`, `bra`, `lingerie`, coupon `XXXX`) never refused, and the operator switches proven |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
@@ -1654,6 +1657,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
+| `ops/build_deploy_zip.py` | `1b9909df1a980898e5f0fce77e203e3b640939bb2ec408f346b7a01d6f5e4e56` |
 | `ops/category_report.py` | `aa1092bb60152bbee49ede2bd720925bc713923973f6cc237c7487b2568a913b` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1678,7 +1682,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `976b32dfd4a789aebbe8ef1717330668e49c477b6fdedf984aaeee40bfdf5447` |
+| `ops/test_all.sh` | `82d94211923d34a2055eded0246946a54b84dcb9e8eb309b96b093bf9f2b78fc` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1693,6 +1697,7 @@ source snapshot:
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
+| `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
 | `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
