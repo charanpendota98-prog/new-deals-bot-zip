@@ -235,6 +235,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: source picker' node test_dashboard_sources.cjs
   run 'dashboard DOM: category panel' node test_dashboard_categories.cjs
   run 'dashboard DOM: card studio' node test_dashboard_card_studio.cjs
+  run 'dashboard DOM: source -> target + safety' node test_dashboard_source_target.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
   printf '  install once : npm install --prefix %s --no-package-lock jsdom\n' "$JSDOM_PREFIX"
