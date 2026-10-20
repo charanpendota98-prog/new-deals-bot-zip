@@ -267,6 +267,7 @@ def check(zip_path: str | None = None) -> int:
                 problems.append(
                     f"stale in the bundle: {archive_name} differs from {repo_path} "
                     "(rebuild: python3 ops/build_deploy_zip.py)")
+            # (repo_path is already repo-relative, e.g. bestgaa/category_rules.json)
         for name in sorted(names):
             base = os.path.basename(name)
             if base == ".env" or name.endswith(FORBIDDEN_SUFFIXES):

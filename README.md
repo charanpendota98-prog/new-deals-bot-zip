@@ -805,6 +805,15 @@ all read-only — a panel can never post, queue or restart anything.
 | `GET /api/export?what=scorecard\|pulse\|search\|health&format=csv\|json` | The rows a panel is showing, as a file: same engine, same rows, `attachment; filename=bestgaa-…-<IST stamp>.csv`. A CSV is quoted by the `csv` module, never by splitting on commas. |
 | `GET /api/scorecard?days=` | *Who is actually receiving, and who earns its place?* Per channel: today, sends, skips, delivered share, average quality, best IST hour, last send (with a `SILENT` flag past 24h), top skip reason. Per source: intakes, posted share, failures, last intake. |
 
+**Category rules v5 (2026-10-20).** Five electronics aliases were added from a
+20-post corpus check — `redmi note`, `hp pavilion`, `inverter battery`,
+`tubular battery`, `luminous inverter`. Before: those three real deal posts were
+withheld from every electronics shelf because the classifier found no evidence
+(`Redmi Note 13 5G`, `HP Pavilion i5`, `Luminous inverter battery`). `led bulb`
+stays `home_kitchen`, which is why the additions are whole phrases rather than
+bare `led`/`5g`/`i5`. `tests/category_cases.json` grew 149 → 154 with those
+cases, pinned in both Python and JavaScript.
+
 **Honesty rules the panels keep.** A missing table is reported as missing, not as
 zero. A bridge directory that is not on this host is `unknown`, not a failure —
 set `BRIDGE_DIR=~/tg-wa-bridge` to compare the running copy. The trace marks a
@@ -1695,7 +1704,7 @@ source snapshot:
 | File | SHA-256 |
 |---|---|
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
-| `bestgaa/category_rules.json` | `756cc601c35cbb8f640be94e11a97ce1bf9b369a270c6fddc7417307a2a8c3dc` |
+| `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
@@ -1709,7 +1718,7 @@ source snapshot:
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
 | `tg-wa-bridge/bridge.js` | `40cc06023b67410dfaa21cdd3108a1c3231ff968ff8449a16de414c5b59e8b41` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
-| `tg-wa-bridge/category_rules.json` | `756cc601c35cbb8f640be94e11a97ce1bf9b369a270c6fddc7417307a2a8c3dc` |
+| `tg-wa-bridge/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `tg-wa-bridge/install_bridge.sh` | `02114267758a5eed5e1f97e3c481fbabc63d4c1b8d78558cf8b4908709da8a41` |
 | `tg-wa-bridge/package.json` | `298fc3299b5d70761b402977e9fc1d4b1ad1230b197c99f9f618180400edb766` |
@@ -1726,7 +1735,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `1b9909df1a980898e5f0fce77e203e3b640939bb2ec408f346b7a01d6f5e4e56` |
+| `ops/build_deploy_zip.py` | `8a4f980c0ecfcd6e6aea51b4c7e76413b0cf7465a0d131ae976a8a5a95f3292f` |
 | `ops/category_report.py` | `aa1092bb60152bbee49ede2bd720925bc713923973f6cc237c7487b2568a913b` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
