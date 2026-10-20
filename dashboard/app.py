@@ -28,6 +28,13 @@ What it does
     `python3 ops/category_report.py`.
   * Audit: the same SENDS vs SKIPS + findings summary ops/quality_audit.py
     produces, over the live database (read-only).
+  * Safety: why a post was NOT published. Every refusal by the public-channel
+    content policy (adult, abusive, betting, solicitation, intimate products,
+    suggestive wording) with its category, masked match, human reason and the
+    policy version, plus counters for today / the window / all time and the
+    pre-send gate. The policy itself (categories, severities, switches) is read
+    from bestgaa/safety_filter.py so the panel can never describe a policy the
+    bot is not running.
 
 Read-only on the bot database always; the only writes are channels.json, its
 .pending sidecar, and the optional restart command.
@@ -845,6 +852,110 @@ async def api_audit(request: web.Request):
     })
 
 
+def load_safety_policy() -> dict:
+    """The live policy (categories, severities, switches) from the bot module.
+
+    Read from `bestgaa/safety_filter.py` so the dashboard can never describe a
+    policy that is not the one the bot is running.
+    """
+    try:
+        from safety_filter import policy_summary
+        return policy_summary()
+    except Exception as exc:  # noqa: BLE001 - the panel must still render
+        return {"version": "", "enabled": None, "categories": [],
+                "error": f"policy unavailable: {exc}"}
+
+
+@require_token
+async def api_safety(request: web.Request):
+    """Why something was NOT posted: the public-channel content-safety panel.
+
+    Read-only over the bot database. Every refusal the bot or the WhatsApp
+    bridge made is in `blocked_content`, with its category, the matched term
+    (masked in the excerpt) and the human reason - plus the policy that was
+    active at the time. Nothing here can change what posts.
+    """
+    try:
+        days = max(1, min(30, int(request.query.get("days", "7"))))
+    except ValueError:
+        days = 7
+    try:
+        limit = max(1, min(200, int(request.query.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+    now = time.time()
+    since = now - days * 86400
+    today = ist_day_start()
+    policy = load_safety_policy()
+    payload: dict = {
+        "policy": policy,
+        "window_days": days,
+        "generated_at": now,
+        "totals": {"today": 0, "window": 0, "all_time": 0, "by_category": {},
+                   "by_stage": {}, "by_source": {}},
+        "blocked": [],
+        "presend_skips": 0,
+        "presend_examples": [],
+        "database": "missing",
+    }
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response(payload)
+    payload["database"] = "ok"
+    try:
+        tables = {str(row[0]) for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if "blocked_content" in tables:
+            def count(where: str, args: tuple) -> int:
+                row = conn.execute(
+                    f"SELECT COUNT(*) FROM blocked_content WHERE {where}", args).fetchone()
+                return int(row[0] or 0)
+
+            payload["totals"]["today"] = count("created_at>=?", (today,))
+            payload["totals"]["window"] = count("created_at>=?", (since,))
+            payload["totals"]["all_time"] = count("1=1", ())
+            for key, group in (("by_category", "category"), ("by_stage", "stage"),
+                              ("by_source", "source")):
+                rows = conn.execute(
+                    f"SELECT COALESCE(NULLIF({group},''),'unknown') AS k, COUNT(*) n "
+                    "FROM blocked_content WHERE created_at>=? GROUP BY k ORDER BY n DESC "
+                    "LIMIT 12", (since,)).fetchall()
+                payload["totals"][key] = {row["k"]: int(row["n"]) for row in rows}
+            rows = conn.execute(
+                "SELECT stage, source, msg_id, queue_id, target, category, label, matched, "
+                "reason, policy_version, excerpt, created_at FROM blocked_content "
+                "WHERE created_at>=? ORDER BY created_at DESC LIMIT ?", (since, limit)).fetchall()
+            payload["blocked"] = [{
+                "stage": row["stage"], "source": row["source"], "msg_id": row["msg_id"],
+                "queue_id": row["queue_id"], "target": row["target"],
+                "category": row["category"], "label": row["label"],
+                "matched": row["matched"], "reason": row["reason"],
+                "policy_version": row["policy_version"],
+                "excerpt": row["excerpt"], "created_at": row["created_at"],
+            } for row in rows]
+        # Belt and braces: a pre-send refusal recorded on the delivery ledger
+        # (the bridge's gate) counts too, even if no blocked_content row exists.
+        if "deliveries" in tables and "last_error" in delivery_columns(conn):
+            row = conn.execute(
+                "SELECT COUNT(*) FROM deliveries WHERE COALESCE(last_error,'') "
+                "LIKE '%content policy%' AND status IN ('skipped','held','failed')").fetchone()
+            payload["presend_skips"] = int(row[0] or 0)
+            rows = conn.execute(
+                "SELECT d.queue_id, d.target, d.status, d.last_error, q.source "
+                "FROM deliveries d LEFT JOIN queue q ON q.id=d.queue_id "
+                "WHERE COALESCE(d.last_error,'') LIKE '%content policy%' "
+                "ORDER BY d.rowid DESC LIMIT 10").fetchall()
+            payload["presend_examples"] = [{
+                "queue_id": r["queue_id"], "target": r["target"], "status": r["status"],
+                "source": r["source"] or "", "error": str(r["last_error"])[:200],
+            } for r in rows]
+    except sqlite3.OperationalError as exc:
+        payload["database"] = f"unreadable: {exc}"
+    finally:
+        conn.close()
+    return web.json_response(payload)
+
+
 @require_token
 async def api_restart(request: web.Request):
     cmd = os.getenv("DASHBOARD_RESTART_CMD", f"systemctl restart {SERVICE_DEFAULT}").strip()
@@ -890,6 +1001,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/card.png", api_card_png)
     app.router.add_get("/api/card-studio", api_card_studio)
     app.router.add_get("/api/audit", api_audit)
+    app.router.add_get("/api/safety", api_safety)
     app.router.add_post("/api/restart", api_restart)
     return app
 

@@ -98,6 +98,14 @@ try:
 except ImportError:  # running as a plain script from inside bestgaa/
     from deal_facts import (parse_price, parse_discount,                  # noqa: F401
                             has_lowest_price_claim)
+# PUBLIC-CHANNEL CONTENT SAFETY (user rule 2026-10-19): our channels are public
+# and read by women and families, so a source's adult / abusive / betting /
+# "DM me" junk must never become OUR post. One policy file, shared with the
+# WhatsApp bridge (tg-wa-bridge/safety_filter.js) so both surfaces agree.
+try:
+    from bestgaa.safety_filter import scan as safety_scan  # noqa: F401
+except ImportError:  # running as a plain script from inside bestgaa/
+    from safety_filter import scan as safety_scan  # noqa: F401
 from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
@@ -4993,6 +5001,25 @@ class Store:
         INSERT OR IGNORE INTO premium_state(id) VALUES(1);
         -- Daily send counter for the review channel (IST day key), so the
         -- 20-30/day pace survives restarts instead of resetting to zero.
+        -- Every post refused by the content-safety policy, with the reason.
+        -- Read-only history for the dashboard: "why was this not posted?".
+        -- `excerpt` masks the matched term so the log stays safe to open.
+        CREATE TABLE IF NOT EXISTS blocked_content (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          stage TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT '',
+          msg_id INTEGER,
+          queue_id INTEGER,
+          target TEXT NOT NULL DEFAULT '',
+          category TEXT NOT NULL DEFAULT '',
+          label TEXT NOT NULL DEFAULT '',
+          matched TEXT NOT NULL DEFAULT '',
+          reason TEXT NOT NULL DEFAULT '',
+          policy_version TEXT NOT NULL DEFAULT '',
+          excerpt TEXT NOT NULL DEFAULT '',
+          created_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS ix_blocked_created ON blocked_content(created_at);
         CREATE TABLE IF NOT EXISTS shopping_quota (
           day_key TEXT PRIMARY KEY,
           sent_count INTEGER NOT NULL DEFAULT 0,
@@ -5472,8 +5499,55 @@ class Store:
             ).fetchone()
         return bool(posted or claimed)
 
+    async def record_safety_block(self, stage: str, verdict: dict, text: str = "",
+                                  source: str = "", msg_id: int | None = None,
+                                  queue_id: int | None = None, target: str = "") -> None:
+        """Remember a refusal so the dashboard can answer "why was this blocked?".
+
+        Bookkeeping only: a failure here must never block a send or a skip.
+        """
+        if not verdict:
+            return
+        try:
+            matched = str(verdict.get("matched") or "")
+            excerpt = " ".join((text or "").split())[:160]
+            if matched:
+                excerpt = re.sub(re.escape(matched), "*" * min(len(matched), 8), excerpt,
+                                 flags=re.I)
+            async with self.lock:
+                self.conn.execute(
+                    "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,"
+                    "label,matched,reason,policy_version,excerpt,created_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (stage, source or "", msg_id, queue_id, target or "",
+                     str(verdict.get("category") or ""), str(verdict.get("label") or ""),
+                     matched[:80], str(verdict.get("reason") or ""),
+                     str(verdict.get("version") or ""), excerpt, time.time()),
+                )
+                await self._commit()
+        except Exception as exc:  # noqa: BLE001 - logging must never break posting
+            log.warning("SAFETY RECORD skipped: %s", exc)
+
     async def enqueue(self, chat_id: int, msg_id: int, source: str,
                       text: str = "", has_media: bool = False) -> bool:
+        # HARD GATE, first thing: a post that cannot be published on a public
+        # channel never enters the queue, so it can never burn a render cycle,
+        # never reach a channel and never be retried. The reason is recorded
+        # and logged - a refusal is never silent.
+        if text:
+            try:
+                verdict = safety_scan(text)
+            except Exception as exc:  # noqa: BLE001 - never crash intake
+                log.warning("SAFETY CHECK unavailable for %s msg=%s: %s "
+                            "(posting continues, filter is OFF until fixed)",
+                            source, msg_id, exc)
+                verdict = None
+            if verdict and verdict.get("blocked"):
+                log.warning("INTAKE SAFETY BLOCK | source=%s msg=%s category=%s "
+                            "matched=%r why=%s", source, msg_id, verdict["category"],
+                            verdict.get("matched", "")[:40], verdict.get("reason", "")[:120])
+                await self.record_safety_block("intake", verdict, text, source, msg_id)
+                return False
         # Best-lists first, then super discounts, then photos - so the highest
         # value Telegram post is rendered/delivered ahead of ordinary ones.
         priority = classify_priority(text, has_media)
@@ -9929,6 +10003,27 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     await store.delivery_skipped(
                         row["id"], target, f"unverified link at pre-send: {bad_link[:120]}")
                     continue
+            # LAST GATE BEFORE THE SEND: the copy has been cleaned, rewritten,
+            # link-verified and headed by now, and this is the exact text the
+            # channel would receive. Nothing that reads as adult / abusive /
+            # betting / solicitation is published, whatever produced it (a queue
+            # row from before the policy existed, a re-render, a source edit).
+            try:
+                verdict = safety_scan(target_text)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("PRESEND SAFETY unavailable for queue=%s: %s", row["id"], exc)
+                verdict = None
+            if verdict and verdict.get("blocked"):
+                log.warning("PRESEND SAFETY BLOCK | queue=%s target=%s category=%s "
+                            "matched=%r why=%s", row["id"], target, verdict["category"],
+                            verdict.get("matched", "")[:40], verdict.get("reason", "")[:120])
+                await store.record_safety_block(
+                    "presend", verdict, target_text, row["source"], row["msg_id"],
+                    queue_id=row["id"], target=target)
+                await store.delivery_skipped(
+                    row["id"], target,
+                    f"content policy: {verdict['category']} ({verdict.get('matched', '')[:40]})")
+                continue
             # A forwarded deal photo is nearly always a marketplace screenshot -
             # the "images (screenshots/screen recordings)" the rejection cited.
             # The review channel goes text-only; every other channel keeps its

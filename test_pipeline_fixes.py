@@ -1617,7 +1617,10 @@ async def test_the_stored_copy_is_whole():
         check(f"the whole 4096-char post is on the row ({len(row['source_text'])} chars)",
               row["source_text"] == long_text)
         # and a longer-than-Telegram string is still kept to a bounded size, not dropped
-        huge = "x" * 20000
+        # Bulk but realistic text: a bare run of 20000 "x" is refused by the
+        # content-safety gate before the size cap is ever exercised, and this
+        # test is about the cap, not the policy.
+        huge = ("deal line ₹199 https://amzn.to/x\n" * 700)[:20000]
         await store.enqueue(-100777, 8802, "dealsvelocity", huge, False)
         big = store.conn.execute("SELECT source_text FROM queue WHERE msg_id=8802").fetchone()
         bounded = len(big["source_text"]) == 8000
