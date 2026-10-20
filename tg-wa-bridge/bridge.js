@@ -2,6 +2,7 @@
 import fs from 'node:fs'
 import { guardedSend, DeliveryHeld, pruneConfirmedFences } from './send_guard.js'
 import { classifyCategory } from './category_classifier.js'
+import { scan as safetyScan } from './safety_filter.js'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import os from 'node:os'
@@ -857,6 +858,32 @@ function sanitizeOutbound(text) {
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n')
   return out.trim()
 }
+// The public-channel content gate (adult / abusive / betting / solicitation).
+// Same policy file and the same verdict as the Python bot (see
+// bestgaa/safety_rules.json and test_safety_filter.py): if the two ever
+// disagree, that test fails. Called on the EXACT text about to be published,
+// after formatting and shortening, and throws a permanent error - a refusal is
+// logged with its reason and is never retried.
+function assertPublishable(text, where) {
+  let verdict
+  try {
+    verdict = safetyScan(text)
+  } catch (error) {
+    // A broken rules file must not stop the channel: shout and carry on.
+    log.error({ where, err: error.message }, 'SAFETY CHECK unavailable - filter OFF until fixed')
+    return
+  }
+  if (!verdict.blocked) return
+  log.warn({
+    where, category: verdict.category, matched: verdict.matched,
+    policy: verdict.version, why: verdict.reason, excerpt: String(text || '').slice(0, 120),
+  }, 'SAFETY BLOCK | content refused for a public channel')
+  const error = new Error(`content policy: ${verdict.category} (${verdict.label}) - ${verdict.reason}`)
+  error.permanent = true
+  error.safety = verdict
+  throw error
+}
+
 function canonicalUrlKey(url) {
   try {
     const u = new URL(url)
@@ -1387,6 +1414,7 @@ function watchAck(sock, messageId, windowMs = 9000) {
 // failures before the publication callback can use the text-only fallback.
 async function sendNewsletterMedia(sock, jid, { buffer, type, mimetype, caption: rawCaption }, publish = fn => fn()) {
   const caption = sanitizeOutbound(rawCaption)
+  if (caption) assertPublishable(caption, `newsletter-media:${jid}`)
   const isVideo = type === 'video'
   const mediaType = isVideo ? 'video' : 'image'
   const content = isVideo
@@ -1443,6 +1471,7 @@ async function sendNewsletterText(sock, jid, rawText) {
   // and empty brackets are removed here, after all formatting decisions, so
   // nothing unclean can reach a subscriber even if an earlier pass missed it.
   const text = sanitizeOutbound(rawText)
+  assertPublishable(text, `newsletter-text:${jid}`)
   const sent = await withTimeout(sock.sendMessage(jid, { text }), 90_000, 'sendMessage(text)')
   const ack = await watchAck(sock, sent?.key?.id, 6000)
   if (!ack.ok) throw new Error(`WhatsApp rejected Channel text (ack ${ack.error})`)
@@ -3441,7 +3470,9 @@ function isPermanent(error) {
   // so the job is dropped immediately (the user asked for skip, not retry).
   // "duplicate product" = same product inside the dedup window: dropping is
   // the correct behaviour too (a retry hours later would still be a dup).
-  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Own-link policy|Best-deal gate|duplicate product/i.test(error.message)
+  // "content policy" = the public-channel safety gate refused the copy: no
+  // retry can ever help, so the target is dropped and the bot records why.
+  return /No URL|Foreign\/source shortener|Amazon short link|tag mismatch|Publisher ID mismatch|Provenance mismatch|Broken destination|Own-link policy|Best-deal gate|duplicate product|content policy/i.test(error.message)
 }
 
 async function resolveNewsletterJid(sock, target) {
@@ -3845,6 +3876,7 @@ async function broadcastText(sock, job, tag, text) {
     if (body === null) { marks.push(mark); continue } // nothing under-₹99 left: skip, do not retry
     body = await shortenUntaggedCategoryCopy(job, jid, body)
     if (body === null) { marks.push(mark); continue } // optional category kept off when tag status is uncertain
+    assertPublishable(body, `text:${jid}`)
     const publish = publicationGuard(job, jid, tag, body)
     try {
       if (isNewsletterTarget(jid)) await publish(() => sendNewsletterText(sock, jid, body))
@@ -3881,6 +3913,7 @@ async function broadcastMediaItem(sock, job, item, caption) {
     if (caption && itemCaption === null) { marks.push(mark); continue }
     if (itemCaption) itemCaption = await shortenUntaggedCategoryCopy(job, jid, itemCaption)
     if (caption && itemCaption === null) { marks.push(mark); continue }
+    assertPublishable(itemCaption || '', `media:${jid}`)
     const publish = publicationGuard(job, jid, `media:${item.fileId}`, itemCaption || '')
     try {
       if (isNewsletterTarget(jid)) {

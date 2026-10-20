@@ -51,7 +51,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -220,6 +220,22 @@ Channel candidates use saved dashboard settings, not proof that the running bot 
 <div class="card"><h2>Recent jobs</h2>
 <table><thead><tr><th>#</th><th>Source</th><th>Status</th><th>Sends</th><th>Skips</th><th>Held</th><th>Error</th></tr></thead>
 <tbody id="recent"></tbody></table></div>
+<div class="card" id="safety">
+<div class="section-heading"><div><span class="eyebrow">PUBLIC-CHANNEL CONTENT SAFETY · READ-ONLY</span><h2>What was blocked, and why</h2></div>
+<div><label class="muted" for="safedays">Window</label> <select id="safedays" onchange="loadSafety()"><option value="1">last 24h</option><option value="7" selected>7 days</option><option value="30">30 days</option></select></div></div>
+<p class="muted">Every post the safety policy refused — adult, abusive, betting, solicitation, intimate products, suggestive wording — with the category, the matched term and the human reason. This is a hard gate at intake (the deal never enters the queue) and again on the exact text before send (Telegram and WhatsApp share one policy file). Nothing here can post, retry or unblock: it is the record of why a deal was <b>not</b> published.</p>
+<div id="safepolicy" class="row"></div>
+<div class="row" id="safetystats"></div>
+<div id="safebars"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Stage</th><th>Category</th><th>Source</th><th>Excerpt (match masked)</th><th>Why</th></tr></thead>
+<tbody id="safetyrows"><tr><td colspan="6" class="muted">loading…</td></tr></tbody></table></div>
+<p id="safetynote" class="muted" role="status" aria-live="polite"></p>
+<details class="advanced"><summary>Active policy — every category, its severity and why</summary>
+<div class="tablewrap"><table><thead><tr><th>Category</th><th>Severity</th><th>Terms</th><th>Domains</th><th>Why</th></tr></thead>
+<tbody id="safetycats"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+<p class="muted">One file, <code>bestgaa/safety_rules.json</code>, is executed by the bot and by the WhatsApp bridge; <code>python3 test_safety_filter.py</code> proves both return the same verdict.</p>
+</details>
+</div>
 <div class="card"><h2>Audit (live DB)</h2><div id="audit" class="muted">loading…</div></div>
 </main>
 <script>
@@ -322,6 +338,7 @@ async function refresh(){
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
     await loadCategories();   // never throws: a dead /api/categories must not blank the rest
     await loadConversion();   // same guarantee for the link-conversion book
+    await loadSafety();       // and for the refusal ledger
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
@@ -364,6 +381,84 @@ function surfaceCell(sf){
       +(wa.amazon_tag?' <span class="muted">(tag)</span>':'')
     : '<span class="muted">not configured</span>';
   return `TG ${targets}${tagNote}<br>WA ${channel}`;
+}
+async function loadSafety(){
+  // The refusal ledger, straight from the bot database (read-only). Never
+  // throws: a dead /api/safety must not blank the rest of the dashboard.
+  const stats=document.getElementById('safetystats');
+  const policy=document.getElementById('safepolicy');
+  const bars=document.getElementById('safebars');
+  const body=document.getElementById('safetyrows');
+  const note=document.getElementById('safetynote');
+  if(!body) return;
+  const days=document.getElementById('safedays')?.value||'7';
+  if(!TOKEN && !DEMO_MODE){ body.innerHTML='<tr><td colspan="6" class="muted">paste the token to begin</td></tr>'; return; }
+  let data=null;
+  try{ data=await api('GET','/api/safety?days='+encodeURIComponent(days)+'&limit=60'); }
+  catch(error){
+    body.innerHTML='<tr><td colspan="6" class="muted">safety view unavailable: '
+      +escapeHTML(String(error&&error.message||error))+'</td></tr>';
+    return;
+  }
+  const p=data.policy||{}, t=(data.totals||{});
+  const cats=Array.isArray(p.categories)?p.categories:[];
+  policy.innerHTML='<span class="badge '+(p.enabled===false?'warn':'ours')+'">'
+    +(p.enabled===false?'filter OFF':'filter active')+'</span> '
+    +'<span class="badge">policy v'+escapeHTML(p.version||'—')+'</span> '
+    +'<span class="badge">'+escapeHTML(cats.length)+' categories</span> '
+    +(p.strict_review?'<span class="badge warn">review → block</span> ':'')
+    +(p.allow_intimate?'<span class="badge warn">intimate products allowed</span> ':'')
+    +(p.allow_suggestive?'<span class="badge warn">suggestive allowed</span> ':'')
+    +(p.error?'<span class="badge warn">'+escapeHTML(p.error)+'</span>':'');
+  stats.innerHTML=stat(t.today??0,'blocked today')
+    +stat(t.window??0,'blocked in window')
+    +stat(t.all_time??0,'blocked all time')
+    +stat(data.presend_skips??0,'pre-send refusals');
+  const byCat=Object.entries(t.by_category||{}), byStage=Object.entries(t.by_stage||{}),
+    bySource=Object.entries(t.by_source||{});
+  const top=Math.max(1,...byCat.map(([,n])=>Number(n)||0));
+  const catRow=(label,entries,colour)=>entries.length
+    ? '<div class="muted" style="margin:8px 0 2px">'+escapeHTML(label)+'</div>'
+      +entries.slice(0,8).map(([name,n])=>{
+        const width=Math.max(2,Math.round((Number(n)||0)*100/top));
+        return '<div style="display:flex;align-items:center;gap:8px;margin:3px 0">'
+          +'<span style="width:190px;font-size:12px">'+escapeHTML(name||'unknown')+'</span>'
+          +'<span style="flex:1;background:#0f172a;border-radius:4px;height:10px">'
+          +'<i style="display:block;width:'+width+'%;height:10px;border-radius:4px;background:'
+          +colour+'"></i></span><b style="font-size:12px;min-width:36px;text-align:right">'
+          +escapeHTML(String(n))+'</b></div>';
+      }).join('')
+    : '';
+  bars.innerHTML=catRow('by category',byCat,'#e0645a')
+    +catRow('by stage',byStage,'#d9a441')
+    +catRow('by source',bySource,'#7a8ca6');
+  const rows=data.blocked||[];
+  body.innerHTML=rows.map(row=>
+    '<tr><td class="muted">'+escapeHTML(fmtTime(row.created_at))+'</td>'
+    +'<td>'+escapeHTML(row.stage)+'</td>'
+    +'<td><b>'+escapeHTML(row.category||'—')+'</b><br><span class="muted">'
+      +escapeHTML(row.label||'')+'</span></td>'
+    +'<td class="muted">'+escapeHTML(row.source||'—')
+      +(row.target?'<br>'+escapeHTML(row.target):'')+'</td>'
+    +'<td class="muted">'+escapeHTML(row.excerpt||'')+'</td>'
+    +'<td class="muted">'+escapeHTML(row.reason||'')+'</td></tr>').join('')
+    || '<tr><td colspan="6" class="muted">nothing blocked in this window — good news</td></tr>';
+  const examples=(data.presend_examples||[]).slice(0,3);
+  note.textContent=(data.database!=='ok'
+    ? 'database: '+data.database+'. '
+    : '')
+    +(t.window?'':'no refusals in the selected window. ')
+    +((data.presend_skips||0)?data.presend_skips+' delivery row(s) were refused by the pre-send gate':'' )
+    +(examples.length?' — e.g. '+examples.map(e=>'#'+e.queue_id+' '+e.source).join(', '):'')
+    +(t.window&&!data.presend_skips?' · the pre-send gate has refused nothing (intake caught it first)':'');
+  // The category table doubles as documentation of the live policy.
+  const catdoc=document.getElementById('safetycats');
+  if(catdoc) catdoc.innerHTML=cats.map(c=>
+    '<tr><td><b>'+escapeHTML(c.key)+'</b></td><td><span class="badge '
+    +(c.severity==='block'?'warn':'')+'">'+escapeHTML(c.severity)+'</span></td>'
+    +'<td>'+escapeHTML(c.patterns)+'</td><td>'+escapeHTML(c.domains)+'</td>'
+    +'<td class="muted">'+escapeHTML(c.why)+'</td></tr>').join('')
+    ||'<tr><td colspan="5" class="muted">policy unavailable</td></tr>';
 }
 async function loadConversion(){
   if(!TOKEN && !DEMO_MODE) return;

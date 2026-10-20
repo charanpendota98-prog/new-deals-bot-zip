@@ -169,6 +169,23 @@ def test_http_api():
                 "publisher_id,created_at) VALUES(?,?,?,?,?)",
                 ("https://bit.ly/dash-owned-1", "https://ekaro.in/enkr-dash-1",
                  "earnkaro_api", "5478322", now))
+            # The refusal ledger: one adult post blocked at intake today, one
+            # gambling post blocked by the pre-send gate yesterday.
+            store.conn.execute(
+                "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,label,"
+                "matched,reason,policy_version,excerpt,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("intake", "deals", 77, None, "", "sexual_explicit", "Explicit sexual content",
+                 "sex", "Our channels are public and read by everyone, including women and "
+                 "families. Explicit sexual content is never posted.", "2026-10-19.3",
+                 "new **** video leaked", now - 120))
+            store.conn.execute(
+                "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,label,"
+                "matched,reason,policy_version,excerpt,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("presend", "dealsvelocity", 78, 2, "LootZoneIndia11", "gambling_betting",
+                 "Gambling / betting", "1xbet.com", "No betting on our channels.",
+                 "2026-10-19.3", "loot offer **** join now", now - 86400 - 600))
             store.conn.commit()
             store.conn.close()
 
@@ -342,6 +359,38 @@ def test_http_api():
                           and "frame-ancestors 'none'" in csp
                           and "connect-src 'self'" in csp
                           and "img-src 'self' data: blob:" in csp, csp)
+
+                    status, body = await call("GET", "/api/safety?days=7", token=False)
+                    check("the safety panel needs the dashboard token", status == 401, str(status))
+                    status, body = await call("GET", "/api/safety?days=7")
+                    check("the safety panel reports the refusals from the ledger",
+                          status == 200 and body["totals"]["window"] == 2
+                          and body["totals"]["today"] == 1, str(body.get("totals")))
+                    check("each refusal carries its category, masked excerpt and reason",
+                          {(r["stage"], r["category"]) for r in body["blocked"]}
+                          == {("intake", "sexual_explicit"),
+                              ("presend", "gambling_betting")}
+                          and all(r["reason"] and r["excerpt"] for r in body["blocked"])
+                          and any("****" in r["excerpt"] for r in body["blocked"]),
+                          str(body["blocked"])[:300])
+                    check("the panel counts by category and by stage",
+                          body["totals"]["by_category"].get("sexual_explicit") == 1
+                          and body["totals"]["by_stage"].get("presend") == 1,
+                          str(body["totals"]))
+                    check("the panel shows the live policy it is enforcing",
+                          body["policy"]["version"]
+                          == json.loads((ROOT / "bestgaa/safety_rules.json")
+                                        .read_text(encoding="utf-8"))["version"]
+                          and body["policy"]["enabled"] is True
+                          and len(body["policy"]["categories"]) >= 6,
+                          str(body["policy"])[:200])
+                    check("the policy lists every category's severity and reason",
+                          all(c.get("why") and c.get("severity") in ("block", "review")
+                              for c in body["policy"]["categories"]),
+                          str(body["policy"]["categories"])[:200])
+                    status, body = await call("GET", "/api/safety?days=0&limit=abc")
+                    check("a nonsense window/limit falls back instead of erroring",
+                          status == 200 and body["window_days"] == 1, str(body.get("window_days")))
 
                     status, body = await call("GET", "/api/recent?limit=5")
                     job = next(j for j in body["jobs"] if j["id"] == 1)
@@ -575,6 +624,44 @@ def test_package_import_merge():
     check("package-style import snapshots dashboard_added", "SNAP-OK" in proc.stdout, out[-300:])
 
 
+def test_safety_gate():
+    print("\n== safety: the intake gate records why it refused ==")
+
+    async def run():
+        with tempfile.TemporaryDirectory() as td:
+            store = bot.Store(Path(td) / "gate.sqlite3")
+            allowed = await store.enqueue(-100, 900, "deals",
+                                          "Noise smartwatch at \u20b91,299 with our link "
+                                          "https://bitli.in/abc")
+            blocked = await store.enqueue(-100, 901, "deals", "S.E.X video leaked, join fast")
+            blocked2 = await store.enqueue(-100, 902, "dealsvel" + "ocity",
+                                           "1xbet.com bonus, join my channel")
+            queued = store.conn.execute("SELECT COUNT(*) FROM queue").fetchone()[0]
+            rows = store.conn.execute(
+                "SELECT stage, source, msg_id, category, reason, excerpt FROM blocked_content "
+                "ORDER BY id").fetchall()
+            store.conn.close()
+            return allowed, blocked, blocked2, queued, rows
+
+    allowed, blocked, blocked2, queued, rows = asyncio.run(run())
+    check("an ordinary deal still enters the queue", allowed is True, str(allowed))
+    check("an explicit post never enters the queue", blocked is False, str(blocked))
+    check("a betting/solicitation post never enters the queue", blocked2 is False, str(blocked2))
+    check("only the clean deal is queued", queued == 1, str(queued))
+    check("each refusal is recorded with its category", len(rows) == 2
+          and {r["category"] for r in rows} == {"sexual_explicit", "gambling_betting"},
+          str([dict(r) for r in rows])[:300])
+    check("the record says which stage refused it", all(r["stage"] == "intake" for r in rows),
+          str([r["stage"] for r in rows]))
+    check("the record keeps the source and message id",
+          {(r["source"], r["msg_id"]) for r in rows} == {("deals", 901), ("dealsvelocity", 902)},
+          str([(r["source"], r["msg_id"]) for r in rows]))
+    check("the record explains WHY, in words an operator can read",
+          all(len(r["reason"]) > 20 for r in rows), str([r["reason"] for r in rows]))
+    check("the stored excerpt masks the matched term", any("****" in r["excerpt"] for r in rows),
+          str([r["excerpt"] for r in rows]))
+
+
 def test_category_shelf():
     print("\n== category shelf: dashboard targets keep only their categories ==")
     old = bot.DASHBOARD_CATEGORY_FILTERS
@@ -596,6 +683,7 @@ def test_category_shelf():
 if __name__ == "__main__":
     test_config_manager()
     test_http_api()
+    test_safety_gate()
     test_bot_merge()
     test_package_import_merge()
     test_category_shelf()

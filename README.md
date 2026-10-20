@@ -241,6 +241,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
 | `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_safety_filter.py` | The public-channel content policy: 50 shared cases decided identically by the bot (`bestgaa/safety_filter.py`) and the WhatsApp bridge (`tg-wa-bridge/safety_filter.js`) — explicit/escort/abuse/betting/solicitation/intimate/suggestive wording blocked, evasion (`s.e.x`, `s3x`, `b00bs`, full-width) normalised, real products (`unisex`, `XXXL`, `cocktail`, `analog`, `massage gun`, `bra`, `lingerie`, coupon `XXXX`) never refused, and the operator switches proven |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
@@ -669,6 +670,68 @@ one command away. Learning a link removes it from that list automatically.
 Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
 `HYPD MISSING` / `HYPD WANTED` (product needs a HYPD link; on the to-do list),
 `BITLY unavailable; posting OUR HYPD link as it is` (outage fallback).
+
+## Public-channel content safety (2026-10-19)
+
+The operator's rule: **"random kuda vasthunnai — alga ravoddu, public ladies andaru
+untaru so avi vaddu."** A deal channel is public and read by women and families, so
+whatever a *source* mixes in with its offers must never become *our* post. Adult and
+explicit content, escort/call-girl services, abuse, betting/rummy spam, "join my
+channel / DM me / earn daily" solicitation, intimate products and suggestive wording
+are refused — twice:
+
+1. **At intake, before the queue.** `Store.enqueue()` asks `safety_scan(text)` first.
+   A blocked post never gets a row, never burns a render cycle and is never retried:
+   `INTAKE SAFETY BLOCK | source=… msg=… category=… matched=… why=…`.
+2. **Immediately before the send, on the exact text.** After cleaning, rewriting,
+   link verification and the channel header, the same scan runs on what the channel
+   would receive: `PRESEND SAFETY BLOCK | queue=… target=… category=…`. A queue row
+   written before the policy existed is caught here. The WhatsApp bridge runs the
+   identical gate (`assertPublishable`) and raises a permanent `content policy` error,
+   so a refusal drops that target instead of retrying it.
+
+One policy file, two languages: `bestgaa/safety_rules.json` is read by
+`bestgaa/safety_filter.py` (bot) and `tg-wa-bridge/safety_filter.js` (bridge).
+`python3 test_safety_filter.py` feeds 50 shared cases to both and asserts the verdicts
+are identical, so a policy edit that lands on one side alone fails the gate.
+
+```bash
+# what would happen to this text? (no database, no network)
+python3 bestgaa/safety_filter.py --check "S.E.X video leaked" --check "Unisex XXXL tshirt"
+python3 bestgaa/safety_filter.py --policy            # the live categories + switches
+node tg-wa-bridge/safety_filter.js "1xbet.com join"  # the bridge's answer, same policy
+```
+
+| Category | Default | Examples |
+|---|---|---|
+| `sexual_explicit` | block | explicit words in English and romanised Hindi, `xnxx`, leak/MMS spam |
+| `adult_service` | block | call girl, escort, adult massage, 26 adult domains (with or without a scheme) |
+| `abuse_hate` | block | slurs and abuse, "kill yourself" |
+| `gambling_betting` | block | bet apps, teen patti, matka, colour prediction, 12 betting domains |
+| `solicitation_spam` | block | "join my channel", "DM me", "earn daily", free-recharge spam |
+| `intimate_product` | block | condoms, vibrators, lubricants (real product deals; off by default for this audience) |
+| `suggestive` | block | "sexy", "hot bhabhi", "model girls", dating apps |
+
+Evasions are normalised before matching: NFKC (full-width), lowercase, leet
+(`0→o 1→i 3→e 4→a 5→s 7→t @→a $→s`) and dotted/spaced single letters (`s.e.x`,
+`s e x`, `s_e_x`). The allow list wins over every block pattern, so `unisex`, `XXXL`,
+`2XL`, `Essex`, `cocktail`, `cockroach`, `Dickens`, `analog(ue)`, `analysis`,
+`cumin/cummin`, `massage gun`, `bra`, `panties`, `lingerie`, `sanitary pads`,
+`menstrual cup` and a masked coupon (`code XXXX`) stay publishable. A broken rules
+file raises instead of allowing everything; at runtime the bot logs
+`SAFETY CHECK unavailable … filter is OFF until fixed` and keeps posting rather than
+crashing a send path.
+
+Operator switches (all optional, in `bestgaa/.env.example` and
+`tg-wa-bridge/.env.example`): `SAFETY_ALLOW_INTIMATE_PRODUCTS`, `SAFETY_ALLOW_SUGGESTIVE`,
+`SAFETY_STRICT_REVIEW`, `SAFETY_EXTRA_BLOCK_TERMS`, `SAFETY_ALLOW_TERMS`,
+`SAFETY_FILTER_DISABLED`.
+
+The dashboard has a **Safety** panel (`GET /api/safety?days=7`) that answers "why was
+this not posted?": refusals today/in the window/all time, the pre-send count, the
+breakdown by category, stage and source, and every refusal with the matched term
+masked, the human reason and the policy version that was active. Read-only: nothing in
+that panel can post, retry or unblock.
 
 ## Key behaviour (see `ops/` notes for full detail)
 
@@ -1482,20 +1545,23 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `c84fdb97d4ebfe96a851cf325cf927975ccf3522841e016773112c986d18adf8` |
+| `bestgaa/main_bot_new.py` (v19.0) | `f999dfeb9363c9817836959b36e944aff2f76e8088eddde54c36031c798a099c` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
+| `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
-| `tg-wa-bridge/bridge.js` | `a33fd901a55ec9521d7c2c3dd849ded07fbc96031eecc861e4e1a14bfc871467` |
+| `tg-wa-bridge/bridge.js` | `40cc06023b67410dfaa21cdd3108a1c3231ff968ff8449a16de414c5b59e8b41` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
 | `tg-wa-bridge/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
 | `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `tg-wa-bridge/install_bridge.sh` | `02114267758a5eed5e1f97e3c481fbabc63d4c1b8d78558cf8b4908709da8a41` |
 | `tg-wa-bridge/package.json` | `298fc3299b5d70761b402977e9fc1d4b1ad1230b197c99f9f618180400edb766` |
+| `tg-wa-bridge/safety_filter.js` | `bdd2f046d2587e121e861447d8ad1cb29986621c9706eb7ccaca9c33e6b2c033` |
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `f2baf159b8d6cf4185311c4d1e2737b2e062de196d1952824f0f7f3db70cea93` |
+| `dashboard/app.py` | `c13a3eb2f897761baf63bfeddbad772dd6a072bbdbaafa44c1fc1eab9fc3d3be` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
@@ -1521,17 +1587,17 @@ source snapshot:
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
 | `ops/quality_audit.py` | `0cbcf8d8e582a04e6cdf563fc1e3e5fb4db9d94402efd34c347a44ae7f3de62d` |
-| `ops/repack_bundles.sh` | `de1f3b0dc0fdf7fbc498e30e79a65ae1d3db0e8fcf08a22b46856d92a3e1eac1` |
+| `ops/repack_bundles.sh` | `ac4b8ff19811bdbb2966159cbf8ea90db1748314dfd21e0181607174b3582176` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `2d4f98562c26c0400c09e6507fc9580a35e18fa9ac764001ac98a7cdd5b8274f` |
+| `ops/test_all.sh` | `dd0b80326af9467c997345376e90d859b92d74cd1ceffb0dbd95f2e7c6781e92` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_dashboard.py` | `f9b0469ab92094a547fa2e380759271c056832e27744b411b3584ece6fc55a43` |
+| `test_dashboard.py` | `2d64687ded4a5a1d8fa930ae60db81b7dcd18c8ff6155596c0860f84a467d483` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
@@ -1545,7 +1611,7 @@ source snapshot:
 | `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
-| `test_pipeline_fixes.py` | `cc042699c2cd8537b0522b4751d3260964a52554d35b2ce2b0339d4d220b71a4` |
+| `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |
 | `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
 | `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
@@ -1553,6 +1619,7 @@ source snapshot:
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
 | `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
 | `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
+| `test_safety_filter.py` | `781eef8c858c30f5987e7b537999d61b1f5dc428e02d4eba1b3fe716c383b04b` |
 | `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
 | `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
 | `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |

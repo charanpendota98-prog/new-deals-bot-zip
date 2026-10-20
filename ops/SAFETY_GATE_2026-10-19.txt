@@ -1,0 +1,53 @@
+PUBLIC-CHANNEL CONTENT SAFETY GATE — 2026-10-19
+==============================================
+
+USER RULE
+  "random kuda vasthunnai — alga ravoddu; public, ladies andaru untaru, so avi
+   vaddu."   (Nothing random/adult on the public channels.)
+
+WHAT SHIPS
+  bestgaa/safety_rules.json     one policy: 7 categories, allow list, version
+  bestgaa/safety_filter.py      the bot's engine (scan / is_safe / policy_summary)
+  tg-wa-bridge/safety_filter.js the bridge's engine, same JSON, same verdicts
+  bestgaa/main_bot_new.py       gate at intake (Store.enqueue) and again before
+                                each send (worker, after all transforms)
+  tg-wa-bridge/bridge.js        assertPublishable() before every publish
+  dashboard/app.py + index.html GET /api/safety + the Safety panel
+  tests/safety_cases.json       50 shared cases (Python == JavaScript)
+  test_safety_filter.py         the parity + evasion + false-positive suite
+
+WHERE IT ACTS
+  intake   Store.enqueue() -> blocked text never enters `queue`
+  presend  worker, on target_text -> `blocked_content` row + delivery_skipped
+  whatsapp bridge -> assertPublishable -> permanent "content policy" error
+
+WHAT IT WRITES
+  table `blocked_content` (stage, source, msg_id, queue_id, target, category,
+  label, matched, reason, policy_version, excerpt, created_at). The excerpt
+  masks the matched term. Nothing is deleted or rewritten.
+
+LOG LINES TO GREP AFTER DEPLOY
+  INTAKE SAFETY BLOCK | source=... msg=... category=... matched=... why=...
+  PRESEND SAFETY BLOCK | queue=... target=... category=... matched=... why=...
+  SAFETY BLOCK | content refused for a public channel        (bridge)
+  SAFETY CHECK unavailable ... filter is OFF until fixed      (must never appear
+                                                               in a healthy run)
+
+OPERATOR SWITCHES (both .env.example files)
+  SAFETY_ALLOW_INTIMATE_PRODUCTS=true   allow condoms/vibrators/lubricants
+  SAFETY_ALLOW_SUGGESTIVE=true          record "sexy"/"hot bhabhi" instead of blocking
+  SAFETY_STRICT_REVIEW=false            (true = strictest)
+  SAFETY_EXTRA_BLOCK_TERMS=a,b          your own words (word-bounded)
+  SAFETY_ALLOW_TERMS=word               words the policy must never act on
+  SAFETY_FILTER_DISABLED=true           switch the filter off (logged as OFF)
+
+VERIFY
+  python3 test_safety_filter.py
+  python3 bestgaa/safety_filter.py --policy
+  node tg-wa-bridge/safety_filter.js "1. S.E.X clip  2. unisex XXXL tshirt"
+  curl -s -H "X-Dashboard-Token: $DASHBOARD_TOKEN" \
+       http://127.0.0.1:8080/api/safety?days=7 | python3 -m json.tool | head -40
+
+ROLLBACK
+  Set SAFETY_FILTER_DISABLED=true and restart; no code change needed. The gate
+  then logs "filter disabled" in every verdict and blocks nothing.
