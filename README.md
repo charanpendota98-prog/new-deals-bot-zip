@@ -245,6 +245,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_to_target.py` | The whole chain for the operator's reported post (`Samsung neo qled 55" @ ₹60k` on `link.amazon/B0gWibFuA`): the price is ₹60,000 (not ₹60), the shelf is electronics (the caption never says "TV"), `link.amazon` is an Amazon wrapper that is never published as-is, the main feed + PowerLoots + the electronics shelf receive it while Under99/Under499/Premium/Fashion withhold it with reasons — plus the Indian magnitude arithmetic (`60k`, `1.5 lakh`, `2 lac`, `5L`/`190L`/`kg` never money), the planner's mirrored host sets against the bot's own, the CLI, and the dashboard endpoint |
 | `test_safety_filter.py` | The public-channel content policy: 50 shared cases decided identically by the bot (`bestgaa/safety_filter.py`) and the WhatsApp bridge (`tg-wa-bridge/safety_filter.js`) — explicit/escort/abuse/betting/solicitation/intimate/suggestive wording blocked, evasion (`s.e.x`, `s3x`, `b00bs`, full-width) normalised, real products (`unisex`, `XXXL`, `cocktail`, `analog`, `massage gun`, `bra`, `lingerie`, coupon `XXXX`) never refused, and the operator switches proven |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
+| `test_dashboard_source_target.cjs` | jsdom: the Source → Target panel prices the reported post at ₹60,000, shows the `amazon_short` wrapper as never-published-as-is, lists the channels that receive it and the ones that withhold it with reasons, and the Safety panel lists refusals with their masked match, stage, reason and the live policy version — with source-channel text kept as text, a dead endpoint that cannot blank the rest, and an empty post refused without a request |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
@@ -1677,7 +1678,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `efff86d62e59ff24779efc45671685f2956798f3902099497949caa66345b2b2` |
+| `ops/test_all.sh` | `976b32dfd4a789aebbe8ef1717330668e49c477b6fdedf984aaeee40bfdf5447` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1687,6 +1688,7 @@ source snapshot:
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
+| `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
