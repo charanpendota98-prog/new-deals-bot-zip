@@ -39,6 +39,11 @@ const pulsePayload = {
          block: null, link: null, proof: null},
   silences: [{kind: 'send', age: '5m', why: 'nothing of this kind in 5m'}],
   capped: false,
+  hourly: [
+    {at: 1, hour_ist: '17:00', intake: 0, send: 0, block: 0, link: 0, proof: 0},
+    {at: 2, hour_ist: '18:00', intake: 1, send: 0, block: 0, link: 0, proof: 0},
+    {at: 3, hour_ist: '19:00', intake: 2, send: 2, block: 1, link: 2, proof: 1},
+  ],
   events: [
     {at: 1792506000, at_ist: '2026-10-20 19:52 IST', age: '1m', kind: 'block', queue_id: 3,
      source: 'Offerzone_deals', target: 'LootZoneIndia11',
@@ -234,6 +239,30 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   await w.loadPulse();
   assert.ok(calls.some(c => c.path.includes('/api/pulse') && c.path.includes('kind=block')),
     'the kind filter goes to the endpoint');
+
+  // ---- the throughput chart ---------------------------------------------
+  const columns = d.querySelectorAll('#pulsechart .col');
+  assert.equal(columns.length, 3, 'one bar per IST hour');
+  assert.equal(columns[2].querySelectorAll('i').length, 5,
+    'the busiest hour stacks every kind that happened in it');
+  assert.equal(columns[0].querySelectorAll('i').length, 0, 'an empty hour is an empty bar');
+  assert.match(columns[2].innerHTML, /title="send: 2"/);
+  assert.match(d.getElementById('pulsechart').textContent, /19/, 'the hour is labelled');
+
+  // ---- exports are a URL to the same rows --------------------------------
+  let opened = '';
+  w.open = url => { opened = url; return null; };
+  d.getElementById('pulsehours').value = '24';
+  w.downloadExport('pulse', '24');
+  assert.match(opened, /^\/api\/export\?what=pulse/);
+  assert.match(opened, /hours=24/);
+  assert.match(opened, /token=test/, 'a download carries the token in the query');
+  d.getElementById('qsearch').value = 'qled';
+  w.downloadExport('search');
+  assert.match(opened, /what=search/);
+  assert.match(opened, /q=qled/);
+  w.downloadExport('scorecard', '30');
+  assert.match(opened, /what=scorecard&token=test&days=30/);
 
   // ---- a timeline queue id opens the trace ------------------------------
   const traceButton = [...d.querySelectorAll('#pulserows button')]

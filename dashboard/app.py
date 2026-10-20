@@ -1150,6 +1150,82 @@ async def api_scorecard(request: web.Request):
     return web.json_response(payload)
 
 
+
+@require_token
+async def api_export(request: web.Request):
+    """Download the rows a panel is showing, as CSV.
+
+    Same engine, same rows, no new query: an export can never disagree with the
+    screen it came from. `what` is one of `scorecard`, `pulse`, `search`,
+    `health`; `format=csv` (default) or `json`.
+    """
+    what = request.query.get("what", "scorecard")
+    wanted = request.query.get("format", "csv")
+    if wanted not in ("csv", "json"):
+        return web.json_response({"error": "format must be csv or json"}, status=400)
+    try:
+        days = max(1, min(30, int(request.query.get("days", "7"))))
+    except (TypeError, ValueError):
+        days = 7
+    try:
+        hours = max(0.25, min(168.0, float(request.query.get("hours", "24"))))
+    except (TypeError, ValueError):
+        hours = 24.0
+    query = (request.query.get("q") or "").strip()
+
+    conn = read_only_db()
+    try:
+        if what == "scorecard":
+            if conn is None:
+                return web.json_response({"error": "no database yet"}, status=503)
+            data = insight.scorecard(conn, days=days)
+            rows = [{**row, "kind": "channel"} for row in data["channels"]] + \
+                   [{**row, "kind": "source"} for row in data["sources"]]
+            payload, columns, name = data, [
+                "kind", "target", "source", "today", "sends", "skips", "deliver_rate",
+                "avg_quality", "best_hour_ist", "last_send_ist", "top_skip_reason",
+                "intakes", "done", "failed", "post_rate", "last_intake_ist"], "scorecard"
+        elif what == "pulse":
+            if conn is None:
+                return web.json_response({"error": "no database yet"}, status=503)
+            data = insight.pulse(conn, hours=hours, limit=500)
+            rows, payload = data["events"], data
+            columns, name = ["at_ist", "kind", "label", "detail", "source", "target",
+                             "queue_id", "status"], "timeline"
+        elif what == "search":
+            if conn is None:
+                return web.json_response({"error": "no database yet"}, status=503)
+            try:
+                data = insight.search(conn, query, limit=100)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=400)
+            rows, payload = data["results"], data
+            columns, name = ["at_ist", "kind", "queue_id", "source", "target", "status",
+                             "snippet"], "search"
+        elif what == "health":
+            data = insight.health(db=db_path(), root=ROOT,
+                                  channels_json=channels_config.channels_json_path(),
+                                  snapshot=snapshot(), log_path=_dashboard_log_path())
+            rows, payload = data["checks"], data
+            columns, name = ["key", "title", "state", "detail", "fix"], "health"
+        else:
+            return web.json_response({"error": "what must be scorecard, pulse, search or health"},
+                                     status=400)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        if conn is not None:
+            conn.close()
+
+    if wanted == "json":
+        return web.json_response(payload)
+    body = insight.to_csv(rows, columns)
+    stamp = time.strftime("%Y%m%d-%H%M", time.gmtime(time.time() + IST_OFFSET))
+    return web.Response(text=body, content_type="text/csv", charset="utf-8",
+                        headers={"Content-Disposition":
+                                 f'attachment; filename="bestgaa-{name}-{stamp}.csv"'})
+
+
 @require_token
 async def api_restart(request: web.Request):
     cmd = os.getenv("DASHBOARD_RESTART_CMD", f"systemctl restart {SERVICE_DEFAULT}").strip()
@@ -1202,6 +1278,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/trace", api_trace)
     app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/scorecard", api_scorecard)
+    app.router.add_get("/api/export", api_export)
     app.router.add_post("/api/restart", api_restart)
     return app
 

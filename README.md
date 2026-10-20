@@ -774,6 +774,7 @@ all read-only — a panel can never post, queue or restart anything.
 | `GET /api/pulse` | *What just happened?* One merged, newest-first stream of intake, send attempts (`sent`/`started`/`uncertain`), refusals, link conversions and owned-link proofs — with the age of the last event **of each kind**, so a silence is as visible as an event. Filters: `hours`, `kind`, `source`, `target`, `limit`. |
 | `GET /api/trace?queue_id=` | *What happened to this post?* The stored post, the planner's prediction (same engine as Source → Target), the readers' price/shelf, the safety verdict, every target with **predicted vs actual** (`delivered`, `skipped` + the exact error, `held`, or **`not_attempted`** when the planner expected it and the bot never wrote a delivery row), the send-attempt fence, the delivered link and any refusal row. |
 | `GET /api/search?q=` | *Where is that thing I remember?* Posts, targets and refusals in one answer, by text, source, `@channel`, `₹price` or queue id. Numeric ids match exactly as well as by text; `%`/`_` are stripped so a query cannot become a wildcard. |
+| `GET /api/export?what=scorecard\|pulse\|search\|health&format=csv\|json` | The rows a panel is showing, as a file: same engine, same rows, `attachment; filename=bestgaa-…-<IST stamp>.csv`. A CSV is quoted by the `csv` module, never by splitting on commas. |
 | `GET /api/scorecard?days=` | *Who is actually receiving, and who earns its place?* Per channel: today, sends, skips, delivered share, average quality, best IST hour, last send (with a `SILENT` flag past 24h), top skip reason. Per source: intakes, posted share, failures, last intake. |
 
 **Honesty rules the panels keep.** A missing table is reported as missing, not as
@@ -783,6 +784,12 @@ planned target with no delivery row as `not_attempted` instead of quietly
 dropping it. Search returns "no row" when there is no row. Every string from a
 source channel is escaped before it reaches the DOM, and a dead endpoint blanks
 only its own panel.
+
+Above the timeline sits an **hourly throughput chart** built from the same pulse
+payload (one stacked bar per IST hour: intake, send, refusal, conversion, proof),
+so "nothing for six hours" is a row of empty bars rather than a claim. `export
+.csv` on each panel downloads exactly what is on screen — handy for a chat, a
+spreadsheet, or a bug report.
 
 The timeline is not a log scraper: it is built from the same tables the bot
 writes (`queue`, `send_attempts`, `blocked_content`, `link_cache`,
@@ -1682,8 +1689,8 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `cb00aead9715f028fcd062e69cf2441720bd16fa78f0bd1798226dd485040a9a` |
-| `dashboard/insight.py` | `fcbd996b772eb154173575ba0ab4c22915ca198b91361dfb5ddc5a601c2d89e8` |
+| `dashboard/app.py` | `d0b9d7c1d77629e8a537a98cf78a2c09e55c6ee73bb31fb3e31c6877f76ab818` |
+| `dashboard/insight.py` | `6f6f05c804b63cfa0658d9992562a53c3bac78a1047f563487a6a276f9c02aed` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
@@ -1725,8 +1732,8 @@ source snapshot:
 | `test_dashboard.py` | `572a5e5994e96c88cf1d83c34e6f166ac5ae1460464003067aacd20ef71715da` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
-| `test_dashboard_ops.cjs` | `3d53e162549357d778ba8d9734c5c0c642cd668e6f0c96c9fbd621f172b382d8` |
-| `test_dashboard_ops.py` | `53c0ebd84ede9ae3eabc3fb3119fdf0fc17f9134f2aea12e15023d0a86a62370` |
+| `test_dashboard_ops.cjs` | `30e44e8480264d11719066e062db20b4139ee42f027a93ecc05016adec1beb2d` |
+| `test_dashboard_ops.py` | `ca66883b91f562f4e5a159f09b8e4056f8b12323b33303f91f552fb404e4f9c0` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
