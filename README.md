@@ -70,9 +70,9 @@ separate operator-controlled step.
 | `bestgaa/` | Telegram affiliate bot: `main_bot_new.py` (its version is stated once, in the proof table the gate verifies), `category_classifier.py` + the shared `category_rules.json`, `channels_config.py` (targets/sources/Amazon-tag allowlists), `live_channels.py` (runtime membership + staged activation), `hypd_policy.py` (byte-identical to the bridge's copy), `source_catalog.json` (the selectable source feed catalog), `deploy_bestgaa.sh`, `migrate_legacy_env.py`, `.env.example`, `bestgaa.service` |
 | `tg-wa-bridge/` | Telegram → WhatsApp Channel bridge: `bridge.js` (Baileys client, durable queue, provenance gate), `category_classifier.js` + the shared `category_rules.json`, `send_guard.js` (durable send fence), `hypd_policy.py` (byte-identical to the bot's copy), `package.json`, `install_bridge.sh`, `switch_whatsapp_number.sh`, `.env.example`, `tg-wa-bridge.service` |
 | `ops/` | `deploy_fresh.sh` (the one-command fresh deploy: ship → teach → prove → report), `conversion_report.py` (per-route status of what is actually converting, from the live DB + log), `apply_dual_hotfix.sh` (one-shot server deploy of both services), `install_bestgaa.sh` (first-time bot installer), `repack_bundles.sh` (rebuild deploy zips from source), `earnkaro_check.py` (prove the EarnKaro API key converts — token claims + live probes + raw API bodies; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry), `set_earnkaro_key.sh` (write/rotate that key into the server `.env`, pin the publisher from the token, restart, verify), `coverage_audit.py` (source-vs-channel coverage report + `--heal` re-queue of posts that never went out), `diagnose.sh` (deployed-fix markers + coverage in one command), `sync_identity.py` (regenerates the auditor's copy of the product-identity rule; `--check` is a test), `identity_probe.py` (ask, from the CLI, whether two posts are the same product on both services), `hypd_links.py` (list/learn OUR HYPD share links and look up which product they cover), `test_all.sh` (one-command offline regression gate — self-logging, then verifies README's proof tables against the run it just produced; the same script CI runs), `doc_freshness.py` (verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite check counts: `--check` fails on drift, `--write` repairs README in one command), the remaining deploy/ops scripts listed under [Other ops scripts and notes](#other-ops-scripts-and-notes), routing + media-fix notes |
-| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, a preview-only Card studio with the configurable two-button join row, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only. Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Content-Security-Policy` (`object-src 'none'`, `frame-ancestors 'none'`, `base-uri`/`form-action`/`connect-src` locked to `'self'`; script/style keep `'unsafe-inline'` because the panel is one file, images allow `data:`/`blob:` for the card studio), and `/api/*` adds `Cache-Control: no-store`. Mutating `/api` calls (`POST/PATCH/PUT/DELETE`) pass a per-peer token bucket (`DASHBOARD_RATE_LIMIT="capacity:refill_per_second"`, default `60:2`) that answers `429` with `Retry-After` — the token is shared, so one slipped token must not mean unlimited writes |
+| `dashboard/` | Operator dashboard (`python -m dashboard.app`): `app.py` (token-gated HTTP API + the served `UI_HTML`), `preview.py` (link inspector and category batch preview — never fetches merchant pages), `source_target.py` (the Source → Target planner: one pasted post in, and out come the link plan, the price the bot routes on, the shelf with its evidence, the content-policy verdict, and every channel that receives or withholds it — offline and read-only), `index.html`, `__init__.py`, `bestgaa-dashboard.service`. Channel studio, guided setup, source picker, live status, category-wise panel (`/api/categories`, with money verdicts, deal-quality scores, the source→shelf matrix, a preview-only Card studio with the configurable two-button join row, IST-day sparklines, both surfaces and click-to-open drill-down) and audit; read-only on the bot database, localhost/SSH-tunnel only. Every response carries `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, a `Content-Security-Policy` (`object-src 'none'`, `frame-ancestors 'none'`, `base-uri`/`form-action`/`connect-src` locked to `'self'`; script/style keep `'unsafe-inline'` because the panel is one file, images allow `data:`/`blob:` for the card studio), and `/api/*` adds `Cache-Control: no-store`. Mutating `/api` calls (`POST/PATCH/PUT/DELETE`) pass a per-peer token bucket (`DASHBOARD_RATE_LIMIT="capacity:refill_per_second"`, default `60:2`) that answers `429` with `Retry-After` — the token is shared, so one slipped token must not mean unlimited writes |
 | `test_*.py`, `test_*.mjs`, `test_*.cjs` | The offline regression suites. `ops/test_all.sh` must reference every one of them; `test_repo_consistency.py` fails the gate if a new suite is added and never wired in |
-| `tests/` | Shared fixtures (`category_cases.json`) used by the category suites |
+| `tests/` | Shared fixtures: `category_cases.json` (Python/JS category parity) and `safety_cases.json` (Python/JS content-policy parity) |
 | `ops/ci/` | `offline-gate.yml` — the GitHub Actions workflow **as shipped**: runs `ops/test_all.sh` on every push and pull request (Python 3.11, Node 20, jsdom, pyflakes), asserts the gate left the checkout clean, and reads **no secrets**. `ops/install_ci_workflow.sh` publishes it to `.github/workflows/`, the only path GitHub reads — see the CI note below for why that is a separate step |
 | `.github/workflows/` | Where the workflow must live for GitHub Actions to run it. Not committed by automation: GitHub rejects a workflow push from an App token without the `workflows` permission, so a human publishes it once |
 | `archive/` | Original uploaded hotfix zip, kept for provenance |
@@ -114,6 +114,7 @@ compiled and linted there too):
 | `category_watch.py` | The same findings as an alarm that speaks once: prints only NEW alerts, exits 1 for cron/systemd `OnFailure`, announces `RESOLVED` when a condition disappears, and writes nothing but its own state file (`--quiet`, `--json`, `--min-severity`, `--repeat-after`, `--resolve`, `--state`) |
 | `earnkaro_check.py` | Prove the EarnKaro key converts; `--plan --deal-url <link>` runs the bot's OWN pipeline and prints the exact link the channel will carry |
 | `identity_probe.py` | CLI: are these two posts the same product, answered by both services' own rule |
+| `source_to_target.py` | Source → Target from the CLI: paste a source post (`--text`, `--source`) and print the link plan, the price the bot routes on, the shelf with its evidence, the content-policy verdict and which channels receive or withhold it, each with its reason (`--json`, `--snapshot`, `--policy`) |
 | `hypd_links.py` | List/learn OUR HYPD share links and look up which product they cover |
 | `sync_identity.py` | Regenerate the auditor's copy of the product-identity rule (`--check` is a test) |
 | `bestgaa_nightfix.zip` | Prebuilt nightfix bundle (regenerable with `repack_bundles.sh`) |
@@ -241,6 +242,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
 | `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
+| `test_source_to_target.py` | The whole chain for the operator's reported post (`Samsung neo qled 55" @ ₹60k` on `link.amazon/B0gWibFuA`): the price is ₹60,000 (not ₹60), the shelf is electronics (the caption never says "TV"), `link.amazon` is an Amazon wrapper that is never published as-is, the main feed + PowerLoots + the electronics shelf receive it while Under99/Under499/Premium/Fashion withhold it with reasons — plus the Indian magnitude arithmetic (`60k`, `1.5 lakh`, `2 lac`, `5L`/`190L`/`kg` never money), the planner's mirrored host sets against the bot's own, the CLI, and the dashboard endpoint |
 | `test_safety_filter.py` | The public-channel content policy: 50 shared cases decided identically by the bot (`bestgaa/safety_filter.py`) and the WhatsApp bridge (`tg-wa-bridge/safety_filter.js`) — explicit/escort/abuse/betting/solicitation/intimate/suggestive wording blocked, evasion (`s.e.x`, `s3x`, `b00bs`, full-width) normalised, real products (`unisex`, `XXXL`, `cocktail`, `analog`, `massage gun`, `bra`, `lingerie`, coupon `XXXX`) never refused, and the operator switches proven |
 | `test_dashboard.py` | Dashboard `channels.json` config handling and the HTTP API contract, the WhatsApp-intent save endpoint (`PUT /api/channels/whatsapp`: collisions refused, env lines generated), the channel-pipe endpoint (`/api/channel-pipe`: both ends required, per-post verdicts) and the `whatsapp` section round-trip |
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
@@ -670,6 +672,88 @@ one command away. Learning a link removes it from that list automatically.
 Log markers: `HYPD LINK` (converted, with the Bitly URL and the page behind it),
 `HYPD MISSING` / `HYPD WANTED` (product needs a HYPD link; on the to-do list),
 `BITLY unavailable; posting OUR HYPD link as it is` (outage fallback).
+
+## Source → Target: one post, the whole chain (2026-10-20)
+
+The operator pastes what a source channel posted — text and link — and gets the
+entire chain answered before anything is posted. The dashboard panel is
+**Source → Target** (`POST /api/source-to-target`), and the same engine runs from
+the command line:
+
+```bash
+python3 ops/source_to_target.py --source DealSauce \
+  --text 'Samsung neo qled 55” @ ₹60k https://link.amazon/B0gWibFuA'
+```
+
+```
+PRICE       ₹60,000
+CATEGORY    electronics (Electronics)   [matched]
+              · 'neo qled' +6 (text)
+SAFETY      ALLOWED
+LINKS
+  https://link.amazon/B0gWibFuA
+    Amazon short wrapper · this wrapper itself is never published
+    → followed to the real /dp/ page, our Associates tag applied, shortened with our shortener
+TARGETS
+  ✓ @LootZoneIndia11   [source route]   ✓ @PowerLoots1  [source route]
+  ✓ @ElectroShelf      [shelf] a electronics shelf
+  ✗ @Under99Deals11    ₹60000 is above ₹99
+  ✗ @under499loots     ₹60000 is above ₹499
+  ✗ @Premiumlootsdeals not premium-grade
+```
+
+What it answers, and from where:
+
+| Question | Answer comes from |
+|---|---|
+| What does this link become? | the same host sets the bot uses (mirrored, equality pinned by `test_source_to_target.py`): Amazon wrapper / our shortener / runtime shortener / merchant / unknown wrapper / Telegram link, and whether the wrapper may ever be published (`never posted as-is`) |
+| What is the price really? | `deal_facts.parse_price` — the reader that drives routing, dedupe and the deal card |
+| Which shelf? | `category_classifier` (Python) — the same rules file the bridge uses |
+| May it post at all? | the content policy in `bestgaa/safety_rules.json` |
+| Which of OUR channels receive it? | the bot's own `routing_snapshot.json` (`source_targets`, `price_targets`, `category_filters`, `tricks_sources`), published by `main_bot_new` at startup — the dashboard never re-implements routing |
+| Why not the others? | the same snapshot: above/below the ₹99/₹499 bands, not premium-grade, shelf takes other categories, source not configured |
+
+Honesty rules: it is **read-only and offline** — the affiliate converter is not
+called, so "our link verified" is decided at send time and never faked here; the
+plan is labelled a prediction of the published routing map, with the send-time
+gates (link ownership, duplicate product, channel access, daily caps) still to
+run; and a missing snapshot or an unknown source makes the plan say so instead of
+guessing.
+
+### The arithmetic behind it (fixed 2026-10-20)
+
+Indian captions write prices in magnitudes, and the reader used to break on them:
+
+| Caption | Before | Now |
+|---|---|---|
+| `Samsung neo qled 55” @ ₹60k` | **₹60** (a ₹60,000 TV priced at sixty rupees) | ₹60,000 |
+| `₹60 K` | ₹60 | ₹60,000 |
+| `₹1.5 lakh laptop` | none | ₹1,50,000 |
+| `boAt 141 @ ₹899` | **₹141** (the "At" inside "boAt") | ₹899 |
+| `1.5L bottle @ ₹199`, `190L fridge`, `2 kg`, `5L cooker` | capacity/number read as money | ₹199 / ₹12,999 / nothing / ₹1,299 |
+
+`k` (thousand), `lakh`/`lac` and `crore`/`cr` are expanded; a bare `L` is
+deliberately **not** treated as lakh (it is a capacity far more often than a
+price). Links are masked first, so an ASIN or a short code can never become a
+price. The same expansion runs in the product-identity rule the auditor mirrors
+(`ops/sync_identity.py`), so the bot and `ops/quality_audit.py` still agree.
+
+### `link.amazon` is an Amazon wrapper (fixed 2026-10-20)
+
+`link.amazon/<code>` is Amazon's own short domain, like `a.co`/`amzn.to`. It was
+missing from the bot's short-domain list, with three consequences now closed:
+
+* an unresolved wrapper was **not cut** by the last-mile repair, so it could
+  reach a channel (the code belongs to whoever created it — it opens their page,
+  not ours);
+* the strict ownership check treated an Amazon **output** on that host as "not a
+  short host", so a wrapper could pass the "is this our link?" gate;
+* an Amazon-only post was not recognised as Amazon, skipping the Associates
+  rules that apply to it (ratings strip, review-channel handling).
+
+It is now a short host everywhere (`AMAZON_SHORT_DOMAINS` in the bot,
+`OPAQUE_HOSTS` in the classifier, `AMAZON_SHORT`/`AMAZON_HOSTS` in
+`ops/quality_audit.py`, `ops/conversion_report.py`, `ops/category_report.py`).
 
 ## Public-channel content safety (2026-10-19)
 
@@ -1538,14 +1622,14 @@ source snapshot:
 
 | File | SHA-256 |
 |---|---|
-| `bestgaa/category_classifier.py` | `53063bad4634666d36398212ebf492ae417d2862cbfdd15d1a98cfdde4c97113` |
-| `bestgaa/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
+| `bestgaa/category_rules.json` | `756cc601c35cbb8f640be94e11a97ce1bf9b369a270c6fddc7417307a2a8c3dc` |
 | `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
-| `bestgaa/deal_facts.py` | `096c76c53b2c4e2b60bfa8de6c48556de6ed131ed7e597ccb369fd53a56e5d01` |
+| `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `f999dfeb9363c9817836959b36e944aff2f76e8088eddde54c36031c798a099c` |
+| `bestgaa/main_bot_new.py` (v19.0) | `e32b42d0e20b876881cdef92532fd4450cf26eb23eaf8826af68f5ec7d863050` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1553,7 +1637,7 @@ source snapshot:
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
 | `tg-wa-bridge/bridge.js` | `40cc06023b67410dfaa21cdd3108a1c3231ff968ff8449a16de414c5b59e8b41` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
-| `tg-wa-bridge/category_rules.json` | `44343e42c203e358b4637a1f219cafa38218dd2b3f209bebb6b2ce31462b75a2` |
+| `tg-wa-bridge/category_rules.json` | `756cc601c35cbb8f640be94e11a97ce1bf9b369a270c6fddc7417307a2a8c3dc` |
 | `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `tg-wa-bridge/install_bridge.sh` | `02114267758a5eed5e1f97e3c481fbabc63d4c1b8d78558cf8b4908709da8a41` |
 | `tg-wa-bridge/package.json` | `298fc3299b5d70761b402977e9fc1d4b1ad1230b197c99f9f618180400edb766` |
@@ -1561,17 +1645,18 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `c13a3eb2f897761baf63bfeddbad772dd6a072bbdbaafa44c1fc1eab9fc3d3be` |
+| `dashboard/app.py` | `efe9426ee04ab5505b49bdcb35b467ff312b41cdee8176c7cce4f84e35630481` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
+| `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/category_report.py` | `b0d462a743c774c03950d2862f519e14c3947fc06ba836eb67bd9f0ec4860ee6` |
+| `ops/category_report.py` | `aa1092bb60152bbee49ede2bd720925bc713923973f6cc237c7487b2568a913b` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
-| `ops/conversion_report.py` | `23f813366f4129104762717a2c956eae0669a906ce0ff391bad1e129d6f9308d` |
+| `ops/conversion_report.py` | `8a8ea38ef279d0ff8e64558c20783f4dcfda371b7a97abebc00ec824b1f6a7e6` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
 | `ops/deploy_and_verify.sh` | `fba393a6468a81cf540c2f20c260c0ac84afbcec8e1b20143fd998aa64af31eb` |
@@ -1586,18 +1671,19 @@ source snapshot:
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
-| `ops/quality_audit.py` | `0cbcf8d8e582a04e6cdf563fc1e3e5fb4db9d94402efd34c347a44ae7f3de62d` |
-| `ops/repack_bundles.sh` | `232d8bdddea615b84e5a3ea61146e26af68df8b24e9d5871c786f05ed9e7ef66` |
+| `ops/quality_audit.py` | `6b9d1533353495f83e0ca5159150d72f399b766b18c03177a23a01522e766afa` |
+| `ops/repack_bundles.sh` | `b7970b1af18e85071aac011773ff953b59fb493eeab1e1f3eb10bb3d18c335fb` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
+| `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `dd0b80326af9467c997345376e90d859b92d74cd1ceffb0dbd95f2e7c6781e92` |
+| `ops/test_all.sh` | `efff86d62e59ff24779efc45671685f2956798f3902099497949caa66345b2b2` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_dashboard.py` | `2d64687ded4a5a1d8fa930ae60db81b7dcd18c8ff6155596c0860f84a467d483` |
+| `test_dashboard.py` | `572a5e5994e96c88cf1d83c34e6f166ac5ae1460464003067aacd20ef71715da` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
@@ -1623,6 +1709,7 @@ source snapshot:
 | `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
 | `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
 | `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |
+| `test_source_to_target.py` | `436b5168537eb013f5bbee62e29eb269536867cdef1a9a71b8f2a6224493a6db` |
 
 **Offline verification on this source tree (2026-10-18):** `PYTHON=.venv/bin/python ./ops/test_all.sh` completed successfully. The gate covers category-taxonomy and HYPD-policy parity; the render/routing and pipeline-fix suites (per-suite check counts are published below, generated from the run's own log, not hand-copied); rescan/recovery, best-copy, duplicate, delivery-fence, post-deploy-repeat, link-inspector, category-preview, source-setup, source-runtime, live-channel, dashboard, EarnKaro, HYPD and line-fidelity suites; the three jsdom dashboard DOM suites (guided setup, source picker, category studio); the WhatsApp bridge self-test; `bash -n` on every shell script; Python compilation; pyflakes lint; a repo self-consistency suite; and finally README's own proof tables, checked against the bytes on disk and against the completed log. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
 

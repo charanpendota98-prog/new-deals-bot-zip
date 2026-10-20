@@ -94,10 +94,12 @@ from typing import Any, Iterable
 # dashboard's card studio and the routing all read one caption the same way.
 try:
     from bestgaa.deal_facts import (parse_price, parse_discount,          # noqa: F401
-                                    has_lowest_price_claim)
+                                    has_lowest_price_claim,
+                                    premium_score, eligible_for_premium)
 except ImportError:  # running as a plain script from inside bestgaa/
     from deal_facts import (parse_price, parse_discount,                  # noqa: F401
-                            has_lowest_price_claim)
+                            has_lowest_price_claim,
+                            premium_score, eligible_for_premium)
 # PUBLIC-CHANNEL CONTENT SAFETY (user rule 2026-10-19): our channels are public
 # and read by women and families, so a source's adult / abusive / betting /
 # "DM me" junk must never become OUR post. One policy file, shared with the
@@ -830,7 +832,15 @@ def retag_foreign_amazon_links(text: str) -> str:
 # AMAZON_DOMAINS (which is the list used for tagging, where only a full
 # amazon.in URL can carry a tag). Judging "is this an Amazon post?" by that
 # list alone refused every post whose source used an amzn.to link.
-AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co"})
+AMAZON_SHORT_DOMAINS = frozenset({"amzn.to", "amzn.eu", "amzn.in", "a.co",
+                                  # "link.amazon/<code>" is the same kind of
+                                  # wrapper (2026-10-20: a Samsung QLED post used
+                                  # it). Without this it was neither recognised as
+                                  # Amazon nor cut/repaired, so an unresolved
+                                  # wrapper could reach the channel - and the
+                                  # strict gate accepted an Amazon output on it
+                                  # as "ours" because the host looked unknown.
+                                  "link.amazon", "link.amazon.in"})
 
 
 def is_amazon_short_host(host: str) -> bool:
@@ -1339,6 +1349,20 @@ try:
             "categories": {str(key): str(item.get("label", key))
                            for key, item in CATEGORY_DEFINITIONS.items()
                            if isinstance(item, dict)},
+            # The routing truth the dashboard's "source -> target" planner reads.
+            # Published by the bot itself (not re-implemented in the dashboard),
+            # so a preview can never disagree with what the real router does.
+            "source_targets": {str(key): [str(t) for t in targets]
+                               for key, targets in SOURCE_TO_TARGETS.items()},
+            "price_targets": {"under99": UNDER99_TARGET, "under499": UNDER499_TARGET,
+                              "premium": PREMIUM_TARGET, "power": POWER_FILTER_TARGET,
+                              "secret": SECRET_TARGET, "tricks": TRICKS_TARGET},
+            "tricks_sources": sorted(str(t) for t in TRICKS_SOURCES),
+            # Original channel spelling ("ElectroShelf"), so the dashboard can show
+            # the channel the operator named rather than its lookup key.
+            "category_filters": {str(name): sorted(cats) for name, cats in
+                                 (_dashboard_summary.get("category_filters")
+                                  or DASHBOARD_CATEGORY_FILTERS).items()},
             "channels_mtime": os.path.getmtime(_dashboard_channels.channels_json_path())
             if _dashboard_channels.channels_json_path().exists() else 0,
         }, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -2327,8 +2351,29 @@ _SIG_PRICE_RE = re.compile(
     r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
 
 
+# "₹60k" / "60 K" / "1.5 lakh": the identity rule must read the same money the
+# caption wrote. Self-contained on purpose (the block is mirrored into
+# ops/quality_audit.py), so the expansion is inline rather than a call to
+# deal_facts.expand_money_suffixes.
+_SIG_MULTIPLIER_RE = re.compile(
+    r"(?<![\dA-Za-z.,])(\d[\d,]*(?:\.\d+)?)\s*(k|K|lakhs?|lacs?|crores?|cr)\b")
+
+
+def _sig_expand_money(text: str) -> str:
+    def expand(match: re.Match) -> str:
+        unit = match.group(2).lower()
+        factor = 1_000 if unit == "k" else 100_000 if unit.startswith(("lakh", "lac")) else 10_000_000
+        try:
+            value = float(match.group(1).replace(",", "")) * factor
+        except ValueError:
+            return match.group(0)
+        return str(int(value)) if value == int(value) else match.group(0)
+
+    return _SIG_MULTIPLIER_RE.sub(expand, text or "")
+
+
 def _sig_line_price(line: str) -> int | None:
-    match = _SIG_PRICE_RE.search(line or "")
+    match = _SIG_PRICE_RE.search(_sig_expand_money(line))
     if not match:
         return None
     raw = next((g for g in match.groups() if g), "")
@@ -2759,37 +2804,6 @@ def eligible_for_secret(text: str, price: int | None, discount: int | None,
     if price is not None and price <= 499 and has_lowest_price_claim(text):
         return True
     return bool(card_offer and discount is not None and discount >= 70)
-
-
-def premium_score(text: str, price: int | None, discount: int | None) -> int:
-    """Balanced premium ranking: strongest discounts and low verified prices first."""
-    score = min(discount or 0, 100) * 10
-    if price is not None and price <= 99:
-        score += 650
-    elif price is not None and price <= 499:
-        score += 250
-    if has_lowest_price_claim(text):
-        score += 300
-    return score
-
-
-def eligible_for_premium(text: str, price: int | None, discount: int | None) -> bool:
-    """PREMIUM channel = only the BEST deals (user rule, Aug 2026 restated:
-    "premium dantlo best ga ... highest discount vunte post cheyali alantivi"):
-      * 80%+ discount (any price) - a true top-tier deal,
-      * a sub-₹99 price that ALSO carries a real discount (50%+) or an explicit
-        lowest-price claim - cheap alone is not "the highest discount",
-      * ₹100-₹499 with a 70%+ discount or a lowest-price claim.
-    Best multi-product LISTS and credit/bank-card offers are added to Premium
-    directly by the router regardless of this gate."""
-    if discount is not None and discount >= 80:
-        return True
-    if price is not None and price <= 99 and ((discount or 0) >= 50 or has_lowest_price_claim(text)):
-        return True
-    return bool(
-        price is not None and 100 <= price <= 499
-        and ((discount is not None and discount >= 70) or has_lowest_price_claim(text))
-    )
 
 
 def tricks_footer() -> str:
@@ -5512,8 +5526,10 @@ class Store:
             matched = str(verdict.get("matched") or "")
             excerpt = " ".join((text or "").split())[:160]
             if matched:
-                excerpt = re.sub(re.escape(matched), "*" * min(len(matched), 8), excerpt,
-                                 flags=re.I)
+                # Mask the evaded spelling too: the policy matched "sex" in a post
+                # that wrote "S.E.X", so a literal replace would leave it readable.
+                evaded = r"[\W_]*".join(re.escape(ch) for ch in matched)
+                excerpt = re.sub(evaded, "*" * min(len(matched), 8), excerpt, flags=re.I)
             async with self.lock:
                 self.conn.execute(
                     "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,"

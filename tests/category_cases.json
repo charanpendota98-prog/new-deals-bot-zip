@@ -579,5 +579,33 @@
   {
     "text": "Deal https://www.meesho.com/cotton%2Dkurti/p/abc12345",
     "expected": "fashion"
+  },
+  {
+    "text": "Samsung neo qled 55” @ ₹60k",
+    "expected": "electronics"
+  },
+  {
+    "text": "Sony Bravia 65 inch 4K TV ₹89,990 https://link.amazon/B0gWibFuA",
+    "expected": "electronics"
+  },
+  {
+    "text": "Mi 43 inch smart tv at ₹24,999",
+    "expected": "electronics"
+  },
+  {
+    "text": "LG OLED evo C3 55 inch",
+    "expected": "electronics"
+  },
+  {
+    "text": "Boat home theatre 5.1 with soundbar",
+    "expected": "electronics"
+  },
+  {
+    "text": "Study table 55 inch",
+    "expected": null
+  },
+  {
+    "text": "Samsung 253L refrigerator",
+    "expected": "home_kitchen"
   }
 ]

@@ -51,7 +51,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -138,6 +138,29 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <h3>Which source feeds which shelf</h3>
 <p class="muted">Observed sends per source per shelf from the delivery ledger, against the sources each channel declares. <span class="badge warn">DEAD</span> = declared by a channel, nothing arrived in this window.</p>
 <div class="tablewrap" id="catsourceswrap"><table><thead id="catsourcehead"></thead><tbody id="catsources"></tbody></table></div>
+</div>
+<div class="card" id="srctarget">
+<div class="section-heading"><div><span class="eyebrow">SOURCE → TARGET · OFFLINE PREVIEW</span><h2>Paste a source post, see the whole chain</h2></div></div>
+<p class="muted">Paste exactly what the source channel posted (text and link) and name the source. You get, in one screen: <b>what the link becomes</b> (a wrapper is resolved, tagged with ours and shortened — never published as-is), <b>the price the bot will route on</b>, <b>the shelf</b> with its evidence, the <b>content-policy verdict</b>, and <b>which of our channels receive it</b>, each with its reason. Read-only and offline: nothing is queued, converted or posted, and the final link ownership is verified at send time.</p>
+<div class="setup-source-layout">
+<div>
+<label for="sttext">Source post (text + link)</label>
+<textarea id="sttext" rows="7" maxlength="12000" placeholder="Samsung neo qled 55” @ ₹60k&#10;https://link.amazon/B0gWibFuA"></textarea>
+<label for="stsource">Source channel (who posted it)</label>
+<input id="stsource" list="stsources" placeholder="e.g. DealSauce" autocomplete="off">
+<datalist id="stsources"></datalist>
+<div class="row" style="margin-top:10px"><button id="strun" onclick="analyseSource()">Analyse source → target</button><button class="ghost" onclick="loadSourceExample()">Load a real example</button></div>
+<p id="sterror" class="bad" role="alert"></p>
+</div>
+<div class="inspect-result" id="stcard"><span class="muted">Paste a post and press Analyse. Nothing is sent.</span></div>
+</div>
+<div class="row" id="stfacts"></div>
+<div class="tablewrap"><table><thead><tr><th>Link</th><th>Kind</th><th>What the bot does</th></tr></thead><tbody id="stlinks"><tr><td colspan="3" class="muted">—</td></tr></tbody></table></div>
+<div class="setup-source-layout" style="margin-top:18px">
+<div><h3 class="ok">✓ Receives it</h3><div class="tablewrap"><table><thead><tr><th>Channel</th><th>Why</th></tr></thead><tbody id="styes"><tr><td colspan="2" class="muted">—</td></tr></tbody></table></div></div>
+<div><h3 class="bad">✗ Withheld</h3><div class="tablewrap"><table><thead><tr><th>Channel</th><th>Why</th></tr></thead><tbody id="stno"><tr><td colspan="2" class="muted">—</td></tr></tbody></table></div></div>
+</div>
+<p id="stnotes" class="muted" role="status" aria-live="polite"></p>
 </div>
 <div class="card" id="conversion">
 <h2>Link conversion — source link → our link</h2>
@@ -337,6 +360,7 @@ async function refresh(){
       `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
       `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
     await loadCategories();   // never throws: a dead /api/categories must not blank the rest
+    loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
     await loadConversion();   // same guarantee for the link-conversion book
     await loadSafety();       // and for the refusal ledger
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
@@ -459,6 +483,71 @@ async function loadSafety(){
     +'<td>'+escapeHTML(c.patterns)+'</td><td>'+escapeHTML(c.domains)+'</td>'
     +'<td class="muted">'+escapeHTML(c.why)+'</td></tr>').join('')
     ||'<tr><td colspan="5" class="muted">policy unavailable</td></tr>';
+}
+const SOURCE_EXAMPLE = 'Samsung neo qled 55” @ ₹60k\n\nhttps://link.amazon/B0gWibFuA';
+function loadSourceExample(){
+  document.getElementById('sttext').value = SOURCE_EXAMPLE;
+  if(!document.getElementById('stsource').value) document.getElementById('stsource').value = 'DealSauce';
+  analyseSource();
+}
+function loadSourceChoices(sources){
+  const list = (sources||[]).map(s=>'<option value="'+escapeHTML(s)+'"></option>').join('');
+  const box = document.getElementById('stsources');
+  if(box) box.innerHTML = list;
+}
+async function analyseSource(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const text = document.getElementById('sttext').value;
+  const source = document.getElementById('stsource').value.trim();
+  const error = document.getElementById('sterror');
+  const card = document.getElementById('stcard');
+  error.textContent='';
+  const facts=document.getElementById('stfacts'), links=document.getElementById('stlinks'),
+    yes=document.getElementById('styes'), no=document.getElementById('stno'),
+    notes=document.getElementById('stnotes');
+  if(!text.trim()){ error.textContent='paste the source post first'; return; }
+  const button=document.getElementById('strun'); if(button) button.disabled=true;
+  let data=null;
+  try{ data=await api('POST','/api/source-to-target',{text, source}); }
+  catch(e){
+    error.textContent=String(e&&e.message||e);
+    card.innerHTML='<span class="muted">nothing to show yet</span>';
+    if(button) button.disabled=false;
+    return;
+  }
+  if(button) button.disabled=false;
+  const f=data.facts||{}, cat=data.category||{}, safe=data.safety||{}, plan=data.plan||{};
+  const money = (f.price==null? '—' : '₹'+Number(f.price).toLocaleString('en-IN'));
+  const verdict = safe.allowed===false
+    ? '<span class="badge warn">BLOCKED · '+escapeHTML(safe.category||'')+'</span>'
+    : (safe.allowed===null ? '<span class="badge warn">policy unavailable</span>'
+                           : '<span class="badge ours">content allowed</span>');
+  card.innerHTML = '<span class="muted">'+escapeHTML(source||'source not named')+'</span>'
+    +'<h3>'+escapeHTML(money)+'</h3>'
+    +'<div class="muted">'+(f.mrp?('MRP ₹'+Number(f.mrp).toLocaleString('en-IN')+' · '):'')
+    +(f.discount?(f.discount+'% off · '):'')+'quality score '+escapeHTML(f.quality_score??0)+'</div>'
+    +'<p>'+verdict+' <span class="badge">'+escapeHTML(cat.key||'unclassified')+'</span></p>'
+    +'<p class="muted">'+((cat.evidence||[]).slice(0,4).map(e=>'“'+escapeHTML(e.phrase)+'” +'+escapeHTML(e.weight)).join(' · ') || 'no category evidence')+'</p>';
+  facts.innerHTML = stat(money,'price the bot routes on')
+    + stat(cat.key||'—','category shelf')
+    + stat((plan.targets||[]).length,'channels receive it')
+    + stat((plan.excluded||[]).length,'channels withhold it')
+    + stat(safe.allowed===false?'BLOCKED':'allowed','content policy');
+  links.innerHTML=(data.links||[]).map(l=>
+    '<tr><td style="overflow-wrap:anywhere">'+escapeHTML(l.url)+'</td>'
+    +'<td><span class="badge '+(l.role==='ours'?'ours':'')+'">'+escapeHTML(l.role)+'</span>'
+    +(l.never_published_as?'<br><span class="muted">never posted as-is</span>':'')+'</td>'
+    +'<td class="muted">'+escapeHTML(l.why)+'</td></tr>').join('')
+    || '<tr><td colspan="3" class="muted">no link in this post — nothing to convert</td></tr>';
+  yes.innerHTML=(plan.targets||[]).map(t=>
+    '<tr><td><b>@'+escapeHTML(t.name)+'</b><br><span class="muted">'+escapeHTML(t.phase)+'</span></td>'
+    +'<td class="muted">'+escapeHTML(t.why)+'</td></tr>').join('')
+    || '<tr><td colspan="2" class="muted">no channel predicted (see the notes)</td></tr>';
+  no.innerHTML=(plan.excluded||[]).map(t=>
+    '<tr><td><b>@'+escapeHTML(t.name)+'</b></td><td class="muted">'+escapeHTML(t.why)+'</td></tr>').join('')
+    || '<tr><td colspan="2" class="muted">nothing withheld</td></tr>';
+  notes.innerHTML=[...(plan.notes||[]),...(data.warnings||[])].map(n=>
+    '<span class="bad">!</span> '+escapeHTML(n)).join('<br>');
 }
 async function loadConversion(){
   if(!TOKEN && !DEMO_MODE) return;

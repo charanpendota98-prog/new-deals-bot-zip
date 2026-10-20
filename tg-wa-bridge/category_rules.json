@@ -1,157 +1,2145 @@
 {
-  "version": 3,
-  "min_score": 3,
-  "min_margin": 2,
-  "categories": [
-    {
-      "key": "footwear",
-      "label": "Footwear",
-      "aliases": [
-        ["footwear", 5], ["shoes", 3], ["shoe", 3], ["running shoes", 5], ["sports shoes", 5],
-        ["walking shoes", 5], ["sneakers", 5], ["sneaker", 5], ["sandals", 5], ["sandal", 5],
-        ["slippers", 5], ["slipper", 5], ["flip flops", 5], ["flip flop", 5], ["chappals", 5],
-        ["chappal", 5], ["जूते", 5], ["चप्पल", 5], ["చెప్పులు", 5], ["loafers", 5], ["loafter", 4],
-        ["boots", 1], ["heels", 1], ["wedges", 1], ["clogs", 4], ["moccasins", 4], ["floaters", 4],
-        ["crocs", 4], ["slides", 1], ["sports footwear", 5], ["casual shoes", 6],
-        ["school shoes", 6], ["formal shoes", 6], ["ankle boots", 6], ["shoe insoles", 6],
-        ["shoe laces", 6], ["heel sandals", 6], ["platform wedges", 6], ["slide sandals", 6]
-      ]
-    },
-    {
-      "key": "fashion",
-      "label": "Clothing",
-      "aliases": [
-        ["fashion", 1], ["clothing", 1], ["apparel", 1], ["garment", 4], ["saree", 5],
-        ["sarees", 5], ["sari", 5], ["saris", 5], ["साड़ी", 5], ["చీర", 5], ["kurti", 5],
-        ["kurtis", 5], ["kurta", 5], ["kurtas", 5], ["कुर्ती", 5], ["కుర్తా", 5], ["lehenga", 5],
-        ["lehenga choli", 5], ["salwar kameez", 5], ["dupatta", 4], ["blouse", 4],
-        ["ethnic wear", 5], ["t shirt", 4], ["tshirt", 4], ["tee shirt", 4], ["shirt", 4],
-        ["shirts", 4], ["jeans", 4], ["trousers", 4], ["pants", 1], ["dress", 4], ["dresses", 4],
-        ["gown", 4], ["jacket", 4], ["hoodie", 4], ["sweatshirt", 4], ["leggings", 4],
-        ["track pants", 4], ["shorts", 1], ["women wear", 5], ["womens wear", 5], ["mens wear", 5],
-        ["kids wear", 5], ["innerwear", 4], ["nightwear", 4], ["कपड़े", 4], ["బట్టలు", 4],
-        ["t shirts", 6], ["tshirts", 6], ["tee shirts", 6], ["polo shirt", 6], ["polo tshirt", 6],
-        ["cotton shirt", 6], ["cotton shirts", 6], ["formal shirt", 6], ["formal shirts", 6],
-        ["denim jeans", 6], ["cargo pants", 6], ["joggers", 6], ["tracksuit", 6], ["tracksuits", 6],
-        ["sweaters", 6], ["sweater", 6], ["cardigan", 6], ["sweatshirts", 6], ["hoodies", 6],
-        ["jackets", 6], ["socks", 6], ["vest", 6], ["vests", 6], ["bra", 6], ["bras", 6],
-        ["briefs", 6], ["boxers", 6], ["night suit", 6], ["night suits", 6], ["pyjamas", 6],
-        ["pajamas", 6], ["raincoat", 6], ["rain jacket", 6], ["salwar", 6], ["churidar", 6],
-        ["palazzo", 6], ["cotton shorts", 6], ["denim shorts", 6], ["sports shorts", 6],
-        ["bermuda shorts", 6]
-      ]
-    },
-    {
-      "key": "electronics",
-      "label": "Electronics",
-      "aliases": [
-        ["electronics", 1], ["electronic gadget", 5], ["gadget", 1], ["smartphone", 5],
-        ["mobile phone", 5], ["mobile", 1], ["cell phone", 5], ["phone", 1], ["मोबाइल", 5],
-        ["फोन", 4], ["మొబైల్", 5], ["ఫోన్", 4], ["laptop", 5], ["notebook computer", 5],
-        ["tablet", 1], ["ipad", 4], ["earbuds", 5], ["earphones", 5], ["headphones", 5],
-        ["headset", 4], ["bluetooth speaker", 5], ["speaker", 1], ["soundbar", 5],
-        ["television", 5], ["smart tv", 5], ["tv", 4], ["smartwatch", 5], ["smart watch", 5],
-        ["charger", 4], ["power bank", 5], ["keyboard", 4], ["computer mouse", 5],
-        ["wireless mouse", 5], ["monitor", 1], ["router", 4], ["wifi router", 5], ["camera", 1],
-        ["printer", 4], ["ssd", 4], ["hard drive", 5], ["memory card", 4], ["usb cable", 4],
-        ["data cable", 4], ["bluetooth", 1], ["gaming console", 5], ["playstation", 5], ["xbox", 5],
-        ["projector", 4], ["webcam", 4], ["microphone", 4], ["graphics card", 5],
-        ["computer component", 4], ["samsung phone", 6], ["apple iphone", 6], ["iphone", 6],
-        ["android phone", 6], ["android tablet", 6], ["drawing tablet", 6], ["computer monitor", 6],
-        ["baby monitor", 6], ["digital camera", 6], ["security camera", 6], ["cctv camera", 6],
-        ["dslr camera", 6], ["usb charger", 6], ["charging cable", 6], ["type c cable", 6],
-        ["type c charger", 6], ["pendrive", 6], ["pen drive", 6], ["usb hub", 6],
-        ["tws earbuds", 6], ["neckband", 6], ["in ear headphones", 6], ["over ear headphones", 6],
-        ["laptops", 6], ["smartphones", 6], ["speakers", 6], ["bluetooth headphones", 6],
-        ["gaming mouse", 6], ["gaming keyboard", 6], ["fitness band", 6],
-        ["phone case", 7], ["mobile back cover", 7], ["iphone case", 7], ["smartphone case", 7], ["tablet case", 7], ["earbuds case", 7]
-      ]
-    },
-    {
-      "key": "home_kitchen",
-      "label": "Home & Kitchen",
-      "aliases": [
-        ["home and kitchen", 5], ["home kitchen", 5], ["home decor", 5], ["home appliance", 5],
-        ["kitchen", 1], ["cookware", 5], ["utensils", 4], ["pressure cooker", 5], ["cooker", 4],
-        ["mixer grinder", 5], ["mixer", 4], ["grinder", 4], ["juicer", 5], ["air fryer", 5],
-        ["induction cooktop", 5], ["gas stove", 5], ["kadai", 5], ["tawa", 5], ["frying pan", 5],
-        ["cutlery", 4], ["crockery", 4], ["storage container", 5], ["food container", 5],
-        ["containers", 1], ["organizer", 1], ["shoe rack", 6], ["rack", 1], ["bedsheet", 5],
-        ["bed sheet", 5], ["blanket", 4], ["pillow", 4], ["cushion", 4], ["curtain", 4],
-        ["mattress", 4], ["furniture", 5], ["sofa", 4], ["chair", 1], ["dining table", 4],
-        ["wardrobe", 5], ["laundry", 1], ["mop", 3], ["vacuum cleaner", 5], ["cleaning brush", 4],
-        ["water bottle", 4], ["lunch box", 4], ["flask", 1], ["home storage", 4],
-        ["bathroom accessories", 4], ["रसोई", 5], ["कुकर", 4], ["వంటగది", 5], ["కుక్కర్", 4],
-        ["washing machine", 6], ["refrigerator", 6], ["air conditioner", 6], ["ceiling fan", 6],
-        ["table fan", 6], ["pedestal fan", 6], ["exhaust fan", 6], ["air cooler", 6],
-        ["room heater", 6], ["water heater", 6], ["water purifier", 6], ["electric kettle", 6],
-        ["microwave oven", 6], ["rice cooker", 6], ["coffee maker", 6], ["coffee grinder", 6],
-        ["tea kettle", 6], ["tea cups", 6], ["coffee mugs", 6], ["tea strainer", 6],
-        ["milk frother", 6], ["milk pan", 6], ["butter dish", 6], ["salt shaker", 6],
-        ["spice rack", 6], ["dishwasher tablets", 6], ["laundry detergent", 6],
-        ["fabric conditioner", 6], ["toilet cleaner", 6], ["floor cleaner", 6],
-        ["dishwash liquid", 6], ["dish soap", 6], ["dishwasher", 6], ["dinner set", 6],
-        ["plates", 6], ["bowls", 6], ["spoons", 6], ["spatula", 6], ["chopping board", 6],
-        ["kitchen knife", 6], ["kitchen towels", 6], ["bath towel", 6], ["bath towels", 6],
-        ["towels", 6], ["bed sheets", 6], ["bedsheets", 6], ["pillow covers", 6],
-        ["cushion covers", 6], ["curtains", 6], ["shoe racks", 6], ["tv stand", 6],
-        ["phone stand", 6], ["laptop stand", 6], ["washing machine cover", 6], ["laptop table", 6],
-        ["ironing board", 6], ["storage boxes", 6], ["led bulb", 6], ["led bulbs", 6],
-        ["table lamp", 6],
-        ["shoe storage box", 7], ["shoe storage boxes", 7], ["saree organizer", 7], ["saree storage bags", 7], ["clothes organizer", 7], ["shirt organizer", 7], ["garment steamer", 7], ["garment rack", 7], ["garment bag", 7], ["makeup organizer", 7], ["cosmetic organizer", 7], ["jewellery box", 7], ["jewelry box", 7], ["watch organizer", 7], ["tea storage container", 7], ["rice storage container", 7]
-      ]
-    },
-    {
-      "key": "beauty",
-      "label": "Beauty",
-      "aliases": [
-        ["beauty", 1], ["personal care", 4], ["skincare", 5], ["skin care", 5], ["makeup", 5],
-        ["cosmetics", 5], ["face wash", 5], ["facewash", 5], ["cleanser", 4], ["serum", 5],
-        ["sunscreen", 5], ["moisturizer", 5], ["moisturiser", 5], ["face cream", 4],
-        ["lipstick", 5], ["kajal", 5], ["mascara", 5], ["foundation", 1], ["shampoo", 4],
-        ["conditioner", 1], ["hair oil", 4], ["haircare", 4], ["body wash", 4], ["perfume", 4],
-        ["deodorant", 4], ["nail polish", 4], ["grooming", 4], ["beard trimmer", 5], ["trimmer", 3],
-        ["hair dryer", 3], ["सौंदर्य", 5], ["लिपस्टिक", 5], ["शैम्पू", 4], ["ముఖ సంరక్షణ", 5],
-        ["hair conditioner", 6], ["body butter", 6], ["cleansing milk", 6],
-        ["makeup foundation", 6], ["liquid foundation", 6], ["face powder", 6], ["bb cream", 6],
-        ["lip balm", 6], ["shower gel", 6], ["hand wash", 6], ["body lotion", 6], ["toothpaste", 6],
-        ["toothbrush", 6], ["electric toothbrush", 6], ["hair straightener", 6], ["face mask", 6],
-        ["sheet mask", 6], ["hair mask", 6], ["lip gloss", 6], ["eyeliner", 6], ["nail paint", 6],
-        ["shaving razor", 6], ["shaving foam", 6],
-        ["green tea face wash", 7], ["rice face wash", 7], ["rice water shampoo", 7], ["coffee face scrub", 7], ["sugar body scrub", 7], ["chocolate lip balm", 7], ["coconut oil hair mask", 7]
-      ]
-    },
-    {
-      "key": "grocery",
-      "label": "Grocery",
-      "aliases": [
-        ["grocery", 1], ["groceries", 1], ["grocery staples", 5], ["food", 1], ["rice", 5],
-        ["basmati", 4], ["atta", 5], ["wheat flour", 5], ["flour", 4], ["dal", 5], ["lentils", 4],
-        ["pulses", 4], ["sugar", 4], ["salt", 4], ["spices", 5], ["spice", 4], ["masala", 5],
-        ["ghee", 4], ["edible oil", 5], ["cooking oil", 4], ["tea", 4], ["coffee", 4],
-        ["green tea", 4], ["snacks", 4], ["chips", 4], ["biscuits", 4], ["cookies", 4],
-        ["chocolate", 4], ["dry fruits", 5], ["nuts", 1], ["oats", 4], ["cereal", 4],
-        ["noodles", 4], ["pasta", 4], ["juice", 1], ["beverage", 1], ["honey", 4], ["jam", 4],
-        ["pickle", 4], ["soy sauce", 4], ["instant food", 4], ["milk", 1], ["butter", 1],
-        ["organic food", 4], ["चावल", 5], ["किराना", 5], ["आटा", 5], ["दाल", 5], ["బియ్యం", 5],
-        ["కిరాణా", 5], ["potato chips", 6], ["cow milk", 6], ["toned milk", 6],
-        ["peanut butter", 6], ["almond butter", 6], ["fruit juice", 6], ["orange juice", 6],
-        ["apple juice", 6], ["cashew nuts", 6], ["almonds", 6], ["raisins", 6], ["pistachios", 6],
-        ["walnuts", 6], ["wheat atta", 6], ["sunflower oil", 6], ["mustard oil", 6],
-        ["olive oil", 6], ["coconut oil", 6], ["protein powder", 6], ["peanut chikki", 6]
-      ]
-    },
-    {
-      "key": "accessories",
-      "label": "Bags & Accessories",
-      "aliases": [
-        ["handbag", 4], ["handbags", 4], ["purse", 3], ["wallet", 3], ["backpack", 5],
-        ["backpacks", 5], ["suitcase", 5], ["suitcases", 5], ["trolley bag", 5], ["duffel bag", 5],
-        ["sling bag", 5], ["tote bag", 5], ["wallets", 5], ["purses", 5], ["sunglasses", 5],
-        ["earrings", 5], ["necklace", 5], ["bangle", 5], ["bangles", 5], ["bracelet", 5],
-        ["jewellery", 5], ["jewelry", 5], ["wrist watch", 5], ["analog watch", 5],
-        ["laptop backpack", 7], ["laptop bag", 7], ["laptop sleeve", 7], ["camera bag", 7], ["tablet sleeve", 7]
-      ]
-    }
-  ]
+ "version": 4,
+ "min_score": 3,
+ "min_margin": 2,
+ "categories": [
+  {
+   "key": "footwear",
+   "label": "Footwear",
+   "aliases": [
+    [
+     "footwear",
+     5
+    ],
+    [
+     "shoes",
+     3
+    ],
+    [
+     "shoe",
+     3
+    ],
+    [
+     "running shoes",
+     5
+    ],
+    [
+     "sports shoes",
+     5
+    ],
+    [
+     "walking shoes",
+     5
+    ],
+    [
+     "sneakers",
+     5
+    ],
+    [
+     "sneaker",
+     5
+    ],
+    [
+     "sandals",
+     5
+    ],
+    [
+     "sandal",
+     5
+    ],
+    [
+     "slippers",
+     5
+    ],
+    [
+     "slipper",
+     5
+    ],
+    [
+     "flip flops",
+     5
+    ],
+    [
+     "flip flop",
+     5
+    ],
+    [
+     "chappals",
+     5
+    ],
+    [
+     "chappal",
+     5
+    ],
+    [
+     "जूते",
+     5
+    ],
+    [
+     "चप्पल",
+     5
+    ],
+    [
+     "చెప్పులు",
+     5
+    ],
+    [
+     "loafers",
+     5
+    ],
+    [
+     "loafter",
+     4
+    ],
+    [
+     "boots",
+     1
+    ],
+    [
+     "heels",
+     1
+    ],
+    [
+     "wedges",
+     1
+    ],
+    [
+     "clogs",
+     4
+    ],
+    [
+     "moccasins",
+     4
+    ],
+    [
+     "floaters",
+     4
+    ],
+    [
+     "crocs",
+     4
+    ],
+    [
+     "slides",
+     1
+    ],
+    [
+     "sports footwear",
+     5
+    ],
+    [
+     "casual shoes",
+     6
+    ],
+    [
+     "school shoes",
+     6
+    ],
+    [
+     "formal shoes",
+     6
+    ],
+    [
+     "ankle boots",
+     6
+    ],
+    [
+     "shoe insoles",
+     6
+    ],
+    [
+     "shoe laces",
+     6
+    ],
+    [
+     "heel sandals",
+     6
+    ],
+    [
+     "platform wedges",
+     6
+    ],
+    [
+     "slide sandals",
+     6
+    ]
+   ]
+  },
+  {
+   "key": "fashion",
+   "label": "Clothing",
+   "aliases": [
+    [
+     "fashion",
+     1
+    ],
+    [
+     "clothing",
+     1
+    ],
+    [
+     "apparel",
+     1
+    ],
+    [
+     "garment",
+     4
+    ],
+    [
+     "saree",
+     5
+    ],
+    [
+     "sarees",
+     5
+    ],
+    [
+     "sari",
+     5
+    ],
+    [
+     "saris",
+     5
+    ],
+    [
+     "साड़ी",
+     5
+    ],
+    [
+     "చీర",
+     5
+    ],
+    [
+     "kurti",
+     5
+    ],
+    [
+     "kurtis",
+     5
+    ],
+    [
+     "kurta",
+     5
+    ],
+    [
+     "kurtas",
+     5
+    ],
+    [
+     "कुर्ती",
+     5
+    ],
+    [
+     "కుర్తా",
+     5
+    ],
+    [
+     "lehenga",
+     5
+    ],
+    [
+     "lehenga choli",
+     5
+    ],
+    [
+     "salwar kameez",
+     5
+    ],
+    [
+     "dupatta",
+     4
+    ],
+    [
+     "blouse",
+     4
+    ],
+    [
+     "ethnic wear",
+     5
+    ],
+    [
+     "t shirt",
+     4
+    ],
+    [
+     "tshirt",
+     4
+    ],
+    [
+     "tee shirt",
+     4
+    ],
+    [
+     "shirt",
+     4
+    ],
+    [
+     "shirts",
+     4
+    ],
+    [
+     "jeans",
+     4
+    ],
+    [
+     "trousers",
+     4
+    ],
+    [
+     "pants",
+     1
+    ],
+    [
+     "dress",
+     4
+    ],
+    [
+     "dresses",
+     4
+    ],
+    [
+     "gown",
+     4
+    ],
+    [
+     "jacket",
+     4
+    ],
+    [
+     "hoodie",
+     4
+    ],
+    [
+     "sweatshirt",
+     4
+    ],
+    [
+     "leggings",
+     4
+    ],
+    [
+     "track pants",
+     4
+    ],
+    [
+     "shorts",
+     1
+    ],
+    [
+     "women wear",
+     5
+    ],
+    [
+     "womens wear",
+     5
+    ],
+    [
+     "mens wear",
+     5
+    ],
+    [
+     "kids wear",
+     5
+    ],
+    [
+     "innerwear",
+     4
+    ],
+    [
+     "nightwear",
+     4
+    ],
+    [
+     "कपड़े",
+     4
+    ],
+    [
+     "బట్టలు",
+     4
+    ],
+    [
+     "t shirts",
+     6
+    ],
+    [
+     "tshirts",
+     6
+    ],
+    [
+     "tee shirts",
+     6
+    ],
+    [
+     "polo shirt",
+     6
+    ],
+    [
+     "polo tshirt",
+     6
+    ],
+    [
+     "cotton shirt",
+     6
+    ],
+    [
+     "cotton shirts",
+     6
+    ],
+    [
+     "formal shirt",
+     6
+    ],
+    [
+     "formal shirts",
+     6
+    ],
+    [
+     "denim jeans",
+     6
+    ],
+    [
+     "cargo pants",
+     6
+    ],
+    [
+     "joggers",
+     6
+    ],
+    [
+     "tracksuit",
+     6
+    ],
+    [
+     "tracksuits",
+     6
+    ],
+    [
+     "sweaters",
+     6
+    ],
+    [
+     "sweater",
+     6
+    ],
+    [
+     "cardigan",
+     6
+    ],
+    [
+     "sweatshirts",
+     6
+    ],
+    [
+     "hoodies",
+     6
+    ],
+    [
+     "jackets",
+     6
+    ],
+    [
+     "socks",
+     6
+    ],
+    [
+     "vest",
+     6
+    ],
+    [
+     "vests",
+     6
+    ],
+    [
+     "bra",
+     6
+    ],
+    [
+     "bras",
+     6
+    ],
+    [
+     "briefs",
+     6
+    ],
+    [
+     "boxers",
+     6
+    ],
+    [
+     "night suit",
+     6
+    ],
+    [
+     "night suits",
+     6
+    ],
+    [
+     "pyjamas",
+     6
+    ],
+    [
+     "pajamas",
+     6
+    ],
+    [
+     "raincoat",
+     6
+    ],
+    [
+     "rain jacket",
+     6
+    ],
+    [
+     "salwar",
+     6
+    ],
+    [
+     "churidar",
+     6
+    ],
+    [
+     "palazzo",
+     6
+    ],
+    [
+     "cotton shorts",
+     6
+    ],
+    [
+     "denim shorts",
+     6
+    ],
+    [
+     "sports shorts",
+     6
+    ],
+    [
+     "bermuda shorts",
+     6
+    ]
+   ]
+  },
+  {
+   "key": "electronics",
+   "label": "Electronics",
+   "aliases": [
+    [
+     "electronics",
+     1
+    ],
+    [
+     "electronic gadget",
+     5
+    ],
+    [
+     "gadget",
+     1
+    ],
+    [
+     "smartphone",
+     5
+    ],
+    [
+     "mobile phone",
+     5
+    ],
+    [
+     "mobile",
+     1
+    ],
+    [
+     "cell phone",
+     5
+    ],
+    [
+     "phone",
+     1
+    ],
+    [
+     "मोबाइल",
+     5
+    ],
+    [
+     "फोन",
+     4
+    ],
+    [
+     "మొబైల్",
+     5
+    ],
+    [
+     "ఫోన్",
+     4
+    ],
+    [
+     "laptop",
+     5
+    ],
+    [
+     "notebook computer",
+     5
+    ],
+    [
+     "tablet",
+     1
+    ],
+    [
+     "ipad",
+     4
+    ],
+    [
+     "earbuds",
+     5
+    ],
+    [
+     "earphones",
+     5
+    ],
+    [
+     "headphones",
+     5
+    ],
+    [
+     "headset",
+     4
+    ],
+    [
+     "bluetooth speaker",
+     5
+    ],
+    [
+     "speaker",
+     1
+    ],
+    [
+     "soundbar",
+     5
+    ],
+    [
+     "television",
+     5
+    ],
+    [
+     "smart tv",
+     5
+    ],
+    [
+     "tv",
+     4
+    ],
+    [
+     "smartwatch",
+     5
+    ],
+    [
+     "smart watch",
+     5
+    ],
+    [
+     "charger",
+     4
+    ],
+    [
+     "power bank",
+     5
+    ],
+    [
+     "keyboard",
+     4
+    ],
+    [
+     "computer mouse",
+     5
+    ],
+    [
+     "wireless mouse",
+     5
+    ],
+    [
+     "monitor",
+     1
+    ],
+    [
+     "router",
+     4
+    ],
+    [
+     "wifi router",
+     5
+    ],
+    [
+     "camera",
+     1
+    ],
+    [
+     "printer",
+     4
+    ],
+    [
+     "ssd",
+     4
+    ],
+    [
+     "hard drive",
+     5
+    ],
+    [
+     "memory card",
+     4
+    ],
+    [
+     "usb cable",
+     4
+    ],
+    [
+     "data cable",
+     4
+    ],
+    [
+     "bluetooth",
+     1
+    ],
+    [
+     "gaming console",
+     5
+    ],
+    [
+     "playstation",
+     5
+    ],
+    [
+     "xbox",
+     5
+    ],
+    [
+     "projector",
+     4
+    ],
+    [
+     "webcam",
+     4
+    ],
+    [
+     "microphone",
+     4
+    ],
+    [
+     "graphics card",
+     5
+    ],
+    [
+     "computer component",
+     4
+    ],
+    [
+     "samsung phone",
+     6
+    ],
+    [
+     "apple iphone",
+     6
+    ],
+    [
+     "iphone",
+     6
+    ],
+    [
+     "android phone",
+     6
+    ],
+    [
+     "android tablet",
+     6
+    ],
+    [
+     "drawing tablet",
+     6
+    ],
+    [
+     "computer monitor",
+     6
+    ],
+    [
+     "baby monitor",
+     6
+    ],
+    [
+     "digital camera",
+     6
+    ],
+    [
+     "security camera",
+     6
+    ],
+    [
+     "cctv camera",
+     6
+    ],
+    [
+     "dslr camera",
+     6
+    ],
+    [
+     "usb charger",
+     6
+    ],
+    [
+     "charging cable",
+     6
+    ],
+    [
+     "type c cable",
+     6
+    ],
+    [
+     "type c charger",
+     6
+    ],
+    [
+     "pendrive",
+     6
+    ],
+    [
+     "pen drive",
+     6
+    ],
+    [
+     "usb hub",
+     6
+    ],
+    [
+     "tws earbuds",
+     6
+    ],
+    [
+     "neckband",
+     6
+    ],
+    [
+     "in ear headphones",
+     6
+    ],
+    [
+     "over ear headphones",
+     6
+    ],
+    [
+     "laptops",
+     6
+    ],
+    [
+     "smartphones",
+     6
+    ],
+    [
+     "speakers",
+     6
+    ],
+    [
+     "bluetooth headphones",
+     6
+    ],
+    [
+     "gaming mouse",
+     6
+    ],
+    [
+     "gaming keyboard",
+     6
+    ],
+    [
+     "fitness band",
+     6
+    ],
+    [
+     "phone case",
+     7
+    ],
+    [
+     "mobile back cover",
+     7
+    ],
+    [
+     "iphone case",
+     7
+    ],
+    [
+     "smartphone case",
+     7
+    ],
+    [
+     "tablet case",
+     7
+    ],
+    [
+     "earbuds case",
+     7
+    ],
+    [
+     "qled",
+     6
+    ],
+    [
+     "neo qled",
+     6
+    ],
+    [
+     "oled",
+     5
+    ],
+    [
+     "oled tv",
+     6
+    ],
+    [
+     "qled tv",
+     6
+    ],
+    [
+     "led tv",
+     5
+    ],
+    [
+     "uhd tv",
+     5
+    ],
+    [
+     "4k tv",
+     5
+    ],
+    [
+     "4k smart tv",
+     6
+    ],
+    [
+     "smart television",
+     6
+    ],
+    [
+     "android tv",
+     5
+    ],
+    [
+     "google tv",
+     5
+    ],
+    [
+     "home theatre",
+     5
+    ],
+    [
+     "home theater",
+     5
+    ],
+    [
+     "sound bar",
+     5
+    ],
+    [
+     "55 inch tv",
+     6
+    ],
+    [
+     "65 inch tv",
+     6
+    ],
+    [
+     "43 inch tv",
+     6
+    ],
+    [
+     "32 inch tv",
+     6
+    ]
+   ]
+  },
+  {
+   "key": "home_kitchen",
+   "label": "Home & Kitchen",
+   "aliases": [
+    [
+     "home and kitchen",
+     5
+    ],
+    [
+     "home kitchen",
+     5
+    ],
+    [
+     "home decor",
+     5
+    ],
+    [
+     "home appliance",
+     5
+    ],
+    [
+     "kitchen",
+     1
+    ],
+    [
+     "cookware",
+     5
+    ],
+    [
+     "utensils",
+     4
+    ],
+    [
+     "pressure cooker",
+     5
+    ],
+    [
+     "cooker",
+     4
+    ],
+    [
+     "mixer grinder",
+     5
+    ],
+    [
+     "mixer",
+     4
+    ],
+    [
+     "grinder",
+     4
+    ],
+    [
+     "juicer",
+     5
+    ],
+    [
+     "air fryer",
+     5
+    ],
+    [
+     "induction cooktop",
+     5
+    ],
+    [
+     "gas stove",
+     5
+    ],
+    [
+     "kadai",
+     5
+    ],
+    [
+     "tawa",
+     5
+    ],
+    [
+     "frying pan",
+     5
+    ],
+    [
+     "cutlery",
+     4
+    ],
+    [
+     "crockery",
+     4
+    ],
+    [
+     "storage container",
+     5
+    ],
+    [
+     "food container",
+     5
+    ],
+    [
+     "containers",
+     1
+    ],
+    [
+     "organizer",
+     1
+    ],
+    [
+     "shoe rack",
+     6
+    ],
+    [
+     "rack",
+     1
+    ],
+    [
+     "bedsheet",
+     5
+    ],
+    [
+     "bed sheet",
+     5
+    ],
+    [
+     "blanket",
+     4
+    ],
+    [
+     "pillow",
+     4
+    ],
+    [
+     "cushion",
+     4
+    ],
+    [
+     "curtain",
+     4
+    ],
+    [
+     "mattress",
+     4
+    ],
+    [
+     "furniture",
+     5
+    ],
+    [
+     "sofa",
+     4
+    ],
+    [
+     "chair",
+     1
+    ],
+    [
+     "dining table",
+     4
+    ],
+    [
+     "wardrobe",
+     5
+    ],
+    [
+     "laundry",
+     1
+    ],
+    [
+     "mop",
+     3
+    ],
+    [
+     "vacuum cleaner",
+     5
+    ],
+    [
+     "cleaning brush",
+     4
+    ],
+    [
+     "water bottle",
+     4
+    ],
+    [
+     "lunch box",
+     4
+    ],
+    [
+     "flask",
+     1
+    ],
+    [
+     "home storage",
+     4
+    ],
+    [
+     "bathroom accessories",
+     4
+    ],
+    [
+     "रसोई",
+     5
+    ],
+    [
+     "कुकर",
+     4
+    ],
+    [
+     "వంటగది",
+     5
+    ],
+    [
+     "కుక్కర్",
+     4
+    ],
+    [
+     "washing machine",
+     6
+    ],
+    [
+     "refrigerator",
+     6
+    ],
+    [
+     "air conditioner",
+     6
+    ],
+    [
+     "ceiling fan",
+     6
+    ],
+    [
+     "table fan",
+     6
+    ],
+    [
+     "pedestal fan",
+     6
+    ],
+    [
+     "exhaust fan",
+     6
+    ],
+    [
+     "air cooler",
+     6
+    ],
+    [
+     "room heater",
+     6
+    ],
+    [
+     "water heater",
+     6
+    ],
+    [
+     "water purifier",
+     6
+    ],
+    [
+     "electric kettle",
+     6
+    ],
+    [
+     "microwave oven",
+     6
+    ],
+    [
+     "rice cooker",
+     6
+    ],
+    [
+     "coffee maker",
+     6
+    ],
+    [
+     "coffee grinder",
+     6
+    ],
+    [
+     "tea kettle",
+     6
+    ],
+    [
+     "tea cups",
+     6
+    ],
+    [
+     "coffee mugs",
+     6
+    ],
+    [
+     "tea strainer",
+     6
+    ],
+    [
+     "milk frother",
+     6
+    ],
+    [
+     "milk pan",
+     6
+    ],
+    [
+     "butter dish",
+     6
+    ],
+    [
+     "salt shaker",
+     6
+    ],
+    [
+     "spice rack",
+     6
+    ],
+    [
+     "dishwasher tablets",
+     6
+    ],
+    [
+     "laundry detergent",
+     6
+    ],
+    [
+     "fabric conditioner",
+     6
+    ],
+    [
+     "toilet cleaner",
+     6
+    ],
+    [
+     "floor cleaner",
+     6
+    ],
+    [
+     "dishwash liquid",
+     6
+    ],
+    [
+     "dish soap",
+     6
+    ],
+    [
+     "dishwasher",
+     6
+    ],
+    [
+     "dinner set",
+     6
+    ],
+    [
+     "plates",
+     6
+    ],
+    [
+     "bowls",
+     6
+    ],
+    [
+     "spoons",
+     6
+    ],
+    [
+     "spatula",
+     6
+    ],
+    [
+     "chopping board",
+     6
+    ],
+    [
+     "kitchen knife",
+     6
+    ],
+    [
+     "kitchen towels",
+     6
+    ],
+    [
+     "bath towel",
+     6
+    ],
+    [
+     "bath towels",
+     6
+    ],
+    [
+     "towels",
+     6
+    ],
+    [
+     "bed sheets",
+     6
+    ],
+    [
+     "bedsheets",
+     6
+    ],
+    [
+     "pillow covers",
+     6
+    ],
+    [
+     "cushion covers",
+     6
+    ],
+    [
+     "curtains",
+     6
+    ],
+    [
+     "shoe racks",
+     6
+    ],
+    [
+     "tv stand",
+     6
+    ],
+    [
+     "phone stand",
+     6
+    ],
+    [
+     "laptop stand",
+     6
+    ],
+    [
+     "washing machine cover",
+     6
+    ],
+    [
+     "laptop table",
+     6
+    ],
+    [
+     "ironing board",
+     6
+    ],
+    [
+     "storage boxes",
+     6
+    ],
+    [
+     "led bulb",
+     6
+    ],
+    [
+     "led bulbs",
+     6
+    ],
+    [
+     "table lamp",
+     6
+    ],
+    [
+     "shoe storage box",
+     7
+    ],
+    [
+     "shoe storage boxes",
+     7
+    ],
+    [
+     "saree organizer",
+     7
+    ],
+    [
+     "saree storage bags",
+     7
+    ],
+    [
+     "clothes organizer",
+     7
+    ],
+    [
+     "shirt organizer",
+     7
+    ],
+    [
+     "garment steamer",
+     7
+    ],
+    [
+     "garment rack",
+     7
+    ],
+    [
+     "garment bag",
+     7
+    ],
+    [
+     "makeup organizer",
+     7
+    ],
+    [
+     "cosmetic organizer",
+     7
+    ],
+    [
+     "jewellery box",
+     7
+    ],
+    [
+     "jewelry box",
+     7
+    ],
+    [
+     "watch organizer",
+     7
+    ],
+    [
+     "tea storage container",
+     7
+    ],
+    [
+     "rice storage container",
+     7
+    ]
+   ]
+  },
+  {
+   "key": "beauty",
+   "label": "Beauty",
+   "aliases": [
+    [
+     "beauty",
+     1
+    ],
+    [
+     "personal care",
+     4
+    ],
+    [
+     "skincare",
+     5
+    ],
+    [
+     "skin care",
+     5
+    ],
+    [
+     "makeup",
+     5
+    ],
+    [
+     "cosmetics",
+     5
+    ],
+    [
+     "face wash",
+     5
+    ],
+    [
+     "facewash",
+     5
+    ],
+    [
+     "cleanser",
+     4
+    ],
+    [
+     "serum",
+     5
+    ],
+    [
+     "sunscreen",
+     5
+    ],
+    [
+     "moisturizer",
+     5
+    ],
+    [
+     "moisturiser",
+     5
+    ],
+    [
+     "face cream",
+     4
+    ],
+    [
+     "lipstick",
+     5
+    ],
+    [
+     "kajal",
+     5
+    ],
+    [
+     "mascara",
+     5
+    ],
+    [
+     "foundation",
+     1
+    ],
+    [
+     "shampoo",
+     4
+    ],
+    [
+     "conditioner",
+     1
+    ],
+    [
+     "hair oil",
+     4
+    ],
+    [
+     "haircare",
+     4
+    ],
+    [
+     "body wash",
+     4
+    ],
+    [
+     "perfume",
+     4
+    ],
+    [
+     "deodorant",
+     4
+    ],
+    [
+     "nail polish",
+     4
+    ],
+    [
+     "grooming",
+     4
+    ],
+    [
+     "beard trimmer",
+     5
+    ],
+    [
+     "trimmer",
+     3
+    ],
+    [
+     "hair dryer",
+     3
+    ],
+    [
+     "सौंदर्य",
+     5
+    ],
+    [
+     "लिपस्टिक",
+     5
+    ],
+    [
+     "शैम्पू",
+     4
+    ],
+    [
+     "ముఖ సంరక్షణ",
+     5
+    ],
+    [
+     "hair conditioner",
+     6
+    ],
+    [
+     "body butter",
+     6
+    ],
+    [
+     "cleansing milk",
+     6
+    ],
+    [
+     "makeup foundation",
+     6
+    ],
+    [
+     "liquid foundation",
+     6
+    ],
+    [
+     "face powder",
+     6
+    ],
+    [
+     "bb cream",
+     6
+    ],
+    [
+     "lip balm",
+     6
+    ],
+    [
+     "shower gel",
+     6
+    ],
+    [
+     "hand wash",
+     6
+    ],
+    [
+     "body lotion",
+     6
+    ],
+    [
+     "toothpaste",
+     6
+    ],
+    [
+     "toothbrush",
+     6
+    ],
+    [
+     "electric toothbrush",
+     6
+    ],
+    [
+     "hair straightener",
+     6
+    ],
+    [
+     "face mask",
+     6
+    ],
+    [
+     "sheet mask",
+     6
+    ],
+    [
+     "hair mask",
+     6
+    ],
+    [
+     "lip gloss",
+     6
+    ],
+    [
+     "eyeliner",
+     6
+    ],
+    [
+     "nail paint",
+     6
+    ],
+    [
+     "shaving razor",
+     6
+    ],
+    [
+     "shaving foam",
+     6
+    ],
+    [
+     "green tea face wash",
+     7
+    ],
+    [
+     "rice face wash",
+     7
+    ],
+    [
+     "rice water shampoo",
+     7
+    ],
+    [
+     "coffee face scrub",
+     7
+    ],
+    [
+     "sugar body scrub",
+     7
+    ],
+    [
+     "chocolate lip balm",
+     7
+    ],
+    [
+     "coconut oil hair mask",
+     7
+    ]
+   ]
+  },
+  {
+   "key": "grocery",
+   "label": "Grocery",
+   "aliases": [
+    [
+     "grocery",
+     1
+    ],
+    [
+     "groceries",
+     1
+    ],
+    [
+     "grocery staples",
+     5
+    ],
+    [
+     "food",
+     1
+    ],
+    [
+     "rice",
+     5
+    ],
+    [
+     "basmati",
+     4
+    ],
+    [
+     "atta",
+     5
+    ],
+    [
+     "wheat flour",
+     5
+    ],
+    [
+     "flour",
+     4
+    ],
+    [
+     "dal",
+     5
+    ],
+    [
+     "lentils",
+     4
+    ],
+    [
+     "pulses",
+     4
+    ],
+    [
+     "sugar",
+     4
+    ],
+    [
+     "salt",
+     4
+    ],
+    [
+     "spices",
+     5
+    ],
+    [
+     "spice",
+     4
+    ],
+    [
+     "masala",
+     5
+    ],
+    [
+     "ghee",
+     4
+    ],
+    [
+     "edible oil",
+     5
+    ],
+    [
+     "cooking oil",
+     4
+    ],
+    [
+     "tea",
+     4
+    ],
+    [
+     "coffee",
+     4
+    ],
+    [
+     "green tea",
+     4
+    ],
+    [
+     "snacks",
+     4
+    ],
+    [
+     "chips",
+     4
+    ],
+    [
+     "biscuits",
+     4
+    ],
+    [
+     "cookies",
+     4
+    ],
+    [
+     "chocolate",
+     4
+    ],
+    [
+     "dry fruits",
+     5
+    ],
+    [
+     "nuts",
+     1
+    ],
+    [
+     "oats",
+     4
+    ],
+    [
+     "cereal",
+     4
+    ],
+    [
+     "noodles",
+     4
+    ],
+    [
+     "pasta",
+     4
+    ],
+    [
+     "juice",
+     1
+    ],
+    [
+     "beverage",
+     1
+    ],
+    [
+     "honey",
+     4
+    ],
+    [
+     "jam",
+     4
+    ],
+    [
+     "pickle",
+     4
+    ],
+    [
+     "soy sauce",
+     4
+    ],
+    [
+     "instant food",
+     4
+    ],
+    [
+     "milk",
+     1
+    ],
+    [
+     "butter",
+     1
+    ],
+    [
+     "organic food",
+     4
+    ],
+    [
+     "चावल",
+     5
+    ],
+    [
+     "किराना",
+     5
+    ],
+    [
+     "आटा",
+     5
+    ],
+    [
+     "दाल",
+     5
+    ],
+    [
+     "బియ్యం",
+     5
+    ],
+    [
+     "కిరాణా",
+     5
+    ],
+    [
+     "potato chips",
+     6
+    ],
+    [
+     "cow milk",
+     6
+    ],
+    [
+     "toned milk",
+     6
+    ],
+    [
+     "peanut butter",
+     6
+    ],
+    [
+     "almond butter",
+     6
+    ],
+    [
+     "fruit juice",
+     6
+    ],
+    [
+     "orange juice",
+     6
+    ],
+    [
+     "apple juice",
+     6
+    ],
+    [
+     "cashew nuts",
+     6
+    ],
+    [
+     "almonds",
+     6
+    ],
+    [
+     "raisins",
+     6
+    ],
+    [
+     "pistachios",
+     6
+    ],
+    [
+     "walnuts",
+     6
+    ],
+    [
+     "wheat atta",
+     6
+    ],
+    [
+     "sunflower oil",
+     6
+    ],
+    [
+     "mustard oil",
+     6
+    ],
+    [
+     "olive oil",
+     6
+    ],
+    [
+     "coconut oil",
+     6
+    ],
+    [
+     "protein powder",
+     6
+    ],
+    [
+     "peanut chikki",
+     6
+    ]
+   ]
+  },
+  {
+   "key": "accessories",
+   "label": "Bags & Accessories",
+   "aliases": [
+    [
+     "handbag",
+     4
+    ],
+    [
+     "handbags",
+     4
+    ],
+    [
+     "purse",
+     3
+    ],
+    [
+     "wallet",
+     3
+    ],
+    [
+     "backpack",
+     5
+    ],
+    [
+     "backpacks",
+     5
+    ],
+    [
+     "suitcase",
+     5
+    ],
+    [
+     "suitcases",
+     5
+    ],
+    [
+     "trolley bag",
+     5
+    ],
+    [
+     "duffel bag",
+     5
+    ],
+    [
+     "sling bag",
+     5
+    ],
+    [
+     "tote bag",
+     5
+    ],
+    [
+     "wallets",
+     5
+    ],
+    [
+     "purses",
+     5
+    ],
+    [
+     "sunglasses",
+     5
+    ],
+    [
+     "earrings",
+     5
+    ],
+    [
+     "necklace",
+     5
+    ],
+    [
+     "bangle",
+     5
+    ],
+    [
+     "bangles",
+     5
+    ],
+    [
+     "bracelet",
+     5
+    ],
+    [
+     "jewellery",
+     5
+    ],
+    [
+     "jewelry",
+     5
+    ],
+    [
+     "wrist watch",
+     5
+    ],
+    [
+     "analog watch",
+     5
+    ],
+    [
+     "laptop backpack",
+     7
+    ],
+    [
+     "laptop bag",
+     7
+    ],
+    [
+     "laptop sleeve",
+     7
+    ],
+    [
+     "camera bag",
+     7
+    ],
+    [
+     "tablet sleeve",
+     7
+    ]
+   ]
+  }
+ ]
 }

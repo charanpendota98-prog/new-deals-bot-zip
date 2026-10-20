@@ -203,6 +203,15 @@ def test_http_api():
                 "main_sources": ["deals", "dealsvelocity"],
                 "targets": ["LootZoneIndia11", "PowerLoots1"], "dashboard_added": [],
                 "categories": {"electronics": "Electronics", "fashion": "Fashion"},
+                # The routing truth the source->target planner reads (published by
+                # the bot, never re-implemented by the dashboard).
+                "source_targets": {"deals": ["LootZoneIndia11", "PowerLoots1"],
+                                   "dealsvelocity": ["LootZoneIndia11", "PowerLoots1"]},
+                "price_targets": {"under99": "Under99Deals11", "under499": "under499loots",
+                                  "premium": "Premiumlootsdeals", "power": "PowerLoots1",
+                                  "secret": "SecretLootIndia1", "tricks": "LootzoneTricks"},
+                "tricks_sources": ["TrickXpert"],
+                "category_filters": {"ElectroShelf": ["electronics"]},
                 "channels_mtime": 0}), encoding="utf-8")
             runner = None
             try:
@@ -360,6 +369,47 @@ def test_http_api():
                           and "connect-src 'self'" in csp
                           and "img-src 'self' data: blob:" in csp, csp)
 
+                    status, body = await call("POST", "/api/source-to-target",
+                                              token=False, json={"text": "x", "source": "deals"})
+                    check("the source->target planner needs the token", status == 401, str(status))
+                    status, body = await call("POST", "/api/source-to-target", json={"text": "  "})
+                    check("an empty post is refused instead of analysed",
+                          status == 400 and body.get("errors"), str(body))
+                    status, body = await call("POST", "/api/source-to-target",
+                                              json={"text": "x" * 12001, "source": "deals"})
+                    check("an over-long post is refused", status == 400, str(status))
+                    sample = ("Samsung neo qled 55\u201d @ \u20b960k\n\n"
+                              "https://link.amazon/B0gWibFuA")
+                    status, body = await call("POST", "/api/source-to-target",
+                                              json={"text": sample, "source": "deals"})
+                    check("the planner answers with the facts, the shelf and the links",
+                          status == 200
+                          and body["facts"]["price"] == 60000
+                          and body["category"]["key"] == "electronics"
+                          and body["links"][0]["role"] == "amazon_short",
+                          str(body)[:300])
+                    check("the planner routes it to the channels that receive it",
+                          {t["name"] for t in body["plan"]["targets"]}
+                          >= {"LootZoneIndia11", "PowerLoots1"}
+                          and any(t["name"] == "ElectroShelf"
+                                  for t in body["plan"]["targets"]),
+                          str(body["plan"])[:300])
+                    check("the planner names the channels that withhold it, and why",
+                          any(t["name"] == "Under99Deals11" and "above" in t["why"]
+                              for t in body["plan"]["excluded"]),
+                          str(body["plan"]["excluded"])[:300])
+                    check("the planner carries the live content policy too",
+                          body.get("policy", {}).get("version")
+                          == json.loads((ROOT / "bestgaa/safety_rules.json")
+                                        .read_text(encoding="utf-8"))["version"],
+                          str(body.get("policy"))[:200])
+                    status, body = await call("POST", "/api/source-to-target",
+                                              json={"text": sample, "source": "Nobody"})
+                    check("an unknown source routes nowhere and says so",
+                          status == 200 and not body["plan"]["targets"]
+                          and any("not a configured source" in n
+                                  for n in body["plan"]["notes"]), str(body["plan"])[:300])
+
                     status, body = await call("GET", "/api/safety?days=7", token=False)
                     check("the safety panel needs the dashboard token", status == 401, str(status))
                     status, body = await call("GET", "/api/safety?days=7")
@@ -416,8 +466,10 @@ def test_http_api():
                           and body.get("categories", {}).get("electronics") == "Electronics",
                           str(body)[:200])
 
+                    installed_rules = json.loads(
+                        (ROOT / "bestgaa/category_rules.json").read_text(encoding="utf-8"))
                     check("installed taxonomy is available despite an older bot snapshot",
-                          body.get("category_rules_version") == 3
+                          body.get("category_rules_version") == installed_rules["version"]
                           and body.get("categories", {}).get("accessories") == "Bags & Accessories"
                           and body.get("categories", {}).get("fashion") == "Clothing")
 
