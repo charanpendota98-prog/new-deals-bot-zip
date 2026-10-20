@@ -18,7 +18,17 @@ import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const RULES_PATH = path.join(HERE, '..', 'bestgaa', 'safety_rules.json')
+// The bridge runs from its own directory (~/tg-wa-bridge on the server), so the
+// policy may sit next to this file (deploy bundle), one level up (repo
+// checkout), or wherever SAFETY_RULES_PATH says. First existing wins, and the
+// verdict is identical whichever copy is found.
+const RULES_CANDIDATES = [
+  process.env.SAFETY_RULES_PATH,
+  path.join(HERE, 'safety_rules.json'),
+  path.join(HERE, '..', 'bestgaa', 'safety_rules.json'),
+].filter(Boolean)
+const RULES_PATH = RULES_CANDIDATES.find((p) => { try { return fs.existsSync(p) } catch (e) { return false } })
+  || RULES_CANDIDATES[RULES_CANDIDATES.length - 1]
 
 const URL_RE = /https?:\/\/[^\s<>\[\](){}"']+/gi;
 // Captions often name a site without a scheme ("1xbet.com"). Only blocklisted
