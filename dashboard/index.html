@@ -46,12 +46,32 @@ button:focus-visible,a:focus-visible,input:focus-visible,summary:focus-visible{o
 h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0}.muted{color:#9dacc1;font-size:12px}#tokenbar{align-items:center;padding:12px 16px}#token{max-width:350px}#authstate{margin-left:auto}input,textarea,select{background:#0b131f;border-color:#344259;padding:11px 12px}.setup-card{border-color:#364e60;padding:28px}.steps{display:flex;gap:12px;padding:20px 0;margin-bottom:4px}.step{flex:1;background:transparent;color:#8fa2bb;border-color:#26364c;font-size:12px;text-align:left}.step.active{color:#80f0cf;border-color:#80f0cf;background:#132f2c}.inspector-grid{display:grid;grid-template-columns:1.15fr 1fr;gap:24px;margin:14px 0 24px}.inspect-input{padding:2px 0}.inspect-input button{margin-top:14px}.inspect-result{border:1px solid #2c4057;background:linear-gradient(150deg,#14283a,#111a27);border-radius:12px;padding:24px;display:flex;flex-direction:column;align-items:flex-start}.inspect-result h3{font-size:25px;margin-top:20px}.inspect-result #inext{font-size:13px;color:#c7d4e5}.inspect-result #iuse{margin-top:auto}.category-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:16px 0}.category-tile{position:relative;background:#0d1521;border:1px solid #29374c;border-radius:10px;padding:16px;cursor:pointer;font-size:13px;display:flex;flex-direction:column;gap:7px}.category-tile:has(input:checked){border-color:#80f0cf;background:#142d2a}.category-tile input{position:absolute;top:10px;right:12px;width:auto;accent-color:#80f0cf}.tile-code{display:inline-block;color:#80f0cf;font-family:monospace;font-size:11px;margin-bottom:8px}.category-tile small{color:#8fa2bb;font-size:10px;line-height:1.45}.step-actions{border-top:1px solid #26364c;margin-top:24px;padding-top:20px}.advanced{margin:22px 0;padding:16px;border:1px solid #2a3a50;border-radius:8px}summary{cursor:pointer;color:#b5c7dd;font-size:13px;margin:7px 0}.checkline{display:flex;align-items:center;gap:10px;margin:15px 0}.checkline input{width:auto}.review-box{background:#0b131f;border:1px solid #304059;border-radius:10px;padding:22px;white-space:pre-wrap;line-height:1.9}.badge{background:#25364a;color:#c2d5e7}.badge.ours{color:#a6f3d2}#addmsg{color:#f6c98c}#addmsg.ok{color:#80f0cf}[hidden]{display:none!important}
 @media(max-width:760px){main{padding:14px}.hero-note{display:none}.hero{padding:22px 0}.card,.setup-card{padding:18px}.inspector-grid{grid-template-columns:1fr}.category-grid{grid-template-columns:repeat(2,1fr)}.steps{gap:6px}.step{font-size:10px;padding:10px 6px}.topbar nav{gap:10px}.brand .muted{display:none}.section-heading{align-items:flex-start}#tokenbar{flex-wrap:wrap}#token{max-width:none;width:75%}#authstate{margin-left:0}}
 
+/* ops console: health tiles, a plain timeline, and state pills */
+.pill{display:inline-block;font-size:10px;font-weight:700;letter-spacing:.6px;padding:2px 7px;border-radius:99px;background:#25364a;color:#c2d5e7;vertical-align:middle}
+.pill.ok{background:#14532d;color:#a6f3d2}.pill.warn{background:#5b3a12;color:#ffd7a3}
+.pill.fail{background:#5f1d1d;color:#ffc4c4}.pill.unknown{background:#2b3340;color:#aab8ca}.pill.info{background:#1e3a5f;color:#bcd8ff}
+.checks{display:grid;grid-template-columns:repeat(auto-fill,minmax(255px,1fr));gap:8px;margin:10px 0}
+.check{border:1px solid #26364c;border-radius:10px;padding:9px 11px;background:#0d1521}
+.check b{display:block;font-size:12.5px;margin-bottom:3px}
+.check span{font-size:11.5px;color:#9dacc1;overflow-wrap:anywhere}
+.check .fix{color:#f6c98c;font-size:11px;margin-top:5px}
+.check.fail{border-color:#7f1d1d}.check.warn{border-color:#7a4a12}
+.healthline{display:flex;gap:12px;align-items:center;flex-wrap:wrap;border:1px solid #2c4057;border-radius:12px;padding:12px 14px;background:#0d1521}
+.healthline .big{font-size:15px;font-weight:700}
+.timeline{display:grid;gap:0}
+.ev{display:grid;grid-template-columns:132px 74px minmax(120px,220px) 1fr auto;gap:10px;align-items:baseline;padding:7px 2px;border-bottom:1px solid #1b2739;font-size:12.5px}
+.ev .when{color:#8fa2bb;font-size:11.5px}.ev .what{font-weight:600}.ev .detail{color:#a9b8cb;overflow-wrap:anywhere}
+@media(max-width:760px){.ev{grid-template-columns:1fr;gap:2px;padding:9px 2px}}
+.trace-box{border:1px solid #2c4057;border-radius:12px;padding:14px 16px;background:#0d1521}
+.trace-post{white-space:pre-wrap;font-size:12.5px;color:#cfdaea;background:#0b131f;border-radius:9px;padding:10px 12px;margin:8px 0}
+.meter{height:6px;border-radius:99px;background:#1d2b3f;overflow:hidden;min-width:60px}
+.meter i{display:block;height:100%;background:#80f0cf}
 .quick-workbench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr);gap:28px;align-items:start}.quick-workbench .inspector-grid{grid-template-columns:1fr;gap:12px}.source-picker{border:1px solid #345146;border-radius:14px;padding:20px;background:linear-gradient(140deg,#122a28,#101b29)}.source-picker h3{margin:5px 0 10px}.source-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.source-tools button{font-size:11px;padding:7px 10px}.source-list{max-height:310px;overflow:auto;display:grid;gap:6px;padding:5px 3px}.source-option{display:flex;align-items:center;gap:12px;padding:11px;border:1px solid #283e4b;border-radius:9px;margin:0;background:#0d1b26;cursor:pointer}.source-option:has(input:checked){border-color:#74dabb;background:#15332f}.source-option input{width:auto;flex-shrink:0;accent-color:#80f0cf}.source-option span{min-width:0;display:grid;gap:4px}.source-option strong{font-size:12px;overflow-wrap:anywhere}.source-option small{font-size:10px;color:#9dafc0;overflow-wrap:anywhere}.source-picker input[type=search],.source-picker textarea{width:100%;box-sizing:border-box}.source-selected{display:flex;gap:6px;flex-wrap:wrap;max-height:92px;overflow:auto;margin:10px 0}.source-selected button{font-size:10px;padding:5px 8px;background:#203d38;color:#b3efdb;border:1px solid #395c52}.source-count{font-size:12px;color:#8ce6cb;margin:10px 0}.source-picker details{border-top:1px solid #304652;margin-top:14px;padding-top:8px}.source-error{font-size:12px;color:#ffd49a}.setup-source-layout{display:grid;grid-template-columns:1fr 1.2fr;gap:24px}dialog{max-width:850px;width:calc(100% - 50px)}@media(max-width:760px){.quick-workbench,.setup-source-layout{grid-template-columns:1fr}.source-picker{padding:15px}.source-list{max-height:280px}}
 </style>
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -111,6 +131,48 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <p id="addmsg" role="status" aria-live="polite"></p>
 </section>
 <div class="card"><h2>Status</h2><div class="row" id="stats"></div><div id="uptime" class="muted"></div></div>
+<div class="card" id="console">
+<div class="section-heading"><div><span class="eyebrow">OPS CONSOLE · SELF-DIAGNOSIS + LIVE TIMELINE</span><h2>Is everything actually working?</h2></div>
+<div><label class="muted" for="pulsehours">Timeline</label> <select id="pulsehours" onchange="loadPulse()"><option value="1">last 1h</option><option value="6" selected>last 6h</option><option value="24">last 24h</option><option value="72">last 3d</option><option value="168">last 7d</option></select>
+<select id="pulsekind" onchange="loadPulse()"><option value="">every kind</option><option value="intake">intake</option><option value="send">send</option><option value="block">refusal</option><option value="link">link conversion</option><option value="proof">owned-link proof</option></select></div></div>
+<p class="muted">Every check below runs against the live database, the config beside it and the shared policy files — the same things you would SSH in to look at, but with the fix written next to the fault. Everything is read-only: a check can never post, queue or restart anything. <code>?services=1</code> also asks systemd about the three services.</p>
+<div class="row" style="margin:8px 0 0"><button class="ghost" id="healthcopy" onclick="copyHealthReport()">copy incident summary</button><span id="consoleupdated" class="muted" role="status" aria-live="polite">never refreshed</span></div>
+<div id="healthline" class="healthline"><span class="muted">checking…</span></div>
+<div id="healthrows" class="checks"></div>
+<h3>What just happened</h3>
+<p class="muted">One merged timeline: intake, send attempts, refusals, link conversions and owned-link proofs — newest first. A gap is as informative as an event, so the last of each kind is shown with its age.</p>
+<div id="pulselast" class="row"></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Kind</th><th>What</th><th>Detail</th><th>Post</th></tr></thead>
+<tbody id="pulserows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+<p id="pulsenote" class="muted" role="status" aria-live="polite"></p>
+<h3>Find anything</h3>
+<p class="muted">Search posts, channels and refusals at once: any text the source wrote, a source name, a <code>@channel</code>, a price like <code>₹899</code>, or a queue id. Matches are shown with the line they came from, never guessed.</p>
+<div class="row"><input id="qsearch" aria-label="Search posts, channels and refusals" placeholder="text, source, @channel, ₹price, or a queue id" onkeydown="if(event.key==='Enter')runSearch()"><button onclick="runSearch()">Search</button><button class="ghost" onclick="clearSearch()">Clear</button></div>
+<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Kind</th><th>Post</th><th>Source</th><th>Target</th><th>Status</th><th>Match</th></tr></thead>
+<tbody id="qrows"><tr><td colspan="7" class="muted">nothing searched yet</td></tr></tbody></table></div>
+</div>
+<div class="card" id="trace">
+<div class="section-heading"><div><span class="eyebrow">POST TRACE · PREDICTED VS ACTUAL</span><h2>What happened to this one post?</h2></div></div>
+<p class="muted">Give a queue id and see the whole chain for that post: what the routing planner <b>predicted</b>, what the safety gate and the readers made of it, which channels <b>actually received</b> it, which were skipped, the exact error on each, the delivered link, and any refusal recorded against it. A target the planner expected but that never got a delivery row is called out as <b>not attempted</b> instead of being hidden. Read-only.</p>
+<div class="row"><input id="traceid" aria-label="Queue id" inputmode="numeric" placeholder="queue id, e.g. 1" onkeydown="if(event.key==='Enter')tracePost()"><button onclick="tracePost()">Trace it</button><button class="ghost" onclick="traceNewest()">Newest failed post</button></div>
+<p id="traceerror" class="bad" role="alert"></p>
+<div id="tracehead"></div>
+<div class="row" id="tracefacts"></div>
+<div class="tablewrap"><table><thead><tr><th>Target</th><th>Predicted</th><th>Actual</th><th>Detail</th><th>Chunks</th></tr></thead><tbody id="tracerows"></tbody></table></div>
+<div id="traceextras"></div>
+</div>
+<div class="card" id="scorecard">
+<div class="section-heading"><div><span class="eyebrow">SCORECARD · PER CHANNEL AND PER SOURCE</span><h2>Who is receiving, who is silent, who earns its place</h2></div>
+<div><label class="muted" for="scdays">Window</label> <select id="scdays" onchange="loadScorecard()"><option value="1">today</option><option value="7" selected>7 days</option><option value="14">14 days</option><option value="30">30 days</option></select></div></div>
+<p class="muted">Delivery-ledger truth per channel: how many posts it actually received, how often a delivery was refused or failed, the top skip reason, average deal quality, the IST hour it tends to receive at, and how long it has been silent. Per source: how many intakes it produced and what share became posts. Read-only.</p>
+<div class="row" id="sctotals"></div>
+<div class="tablewrap"><table><thead><tr><th>Channel</th><th>Today</th><th>Sent</th><th>Skipped</th><th>Delivered</th><th>Avg quality</th><th>Best hour (IST)</th><th>Last send</th><th>Top skip reason</th></tr></thead>
+<tbody id="scchannels"><tr><td colspan="9" class="muted">loading…</td></tr></tbody></table></div>
+<h3>Sources</h3>
+<div class="tablewrap"><table><thead><tr><th>Source</th><th>Intakes</th><th>Posted</th><th>Failed</th><th>Last intake</th><th>Share posted</th></tr></thead>
+<tbody id="scsources"><tr><td colspan="6" class="muted">loading…</td></tr></tbody></table></div>
+</div>
+
 <div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
 <table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
@@ -363,6 +425,9 @@ async function refresh(){
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
     await loadConversion();   // same guarantee for the link-conversion book
     await loadSafety();       // and for the refusal ledger
+    await loadHealth();       // self-diagnosis; never throws into the page
+    await loadPulse();        // merged timeline
+    await loadScorecard();    // per-channel + per-source truth
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
@@ -1481,9 +1546,227 @@ document.getElementById('catrows').addEventListener('click', event=>{
   const row=event.target.closest('tr[data-key]'); if(!row) return;
   toggleShelf(row.dataset.key);
 });
+
+/* ---------------- ops console: health, timeline, search, trace, scorecard ----
+   Five panels built on the same rule as the rest of this page: read-only, and
+   a dead endpoint may never blank the others. Every string that came from a
+   source channel or a database row is escaped before it touches the DOM.      */
+function statePill(state){
+  const key=['ok','warn','fail','unknown','info'].includes(state)?state:'unknown';
+  const label={ok:'OK',warn:'WATCH',fail:'FAULT',unknown:'UNKNOWN',info:'INFO'}[key];
+  return `<span class="pill ${key}">${label}</span>`;
+}
+function kindPill(kind){
+  const map={intake:'info',send:'ok',block:'warn',link:'ok',proof:'ok'};
+  return `<span class="pill ${map[kind]||'unknown'}">${escapeHTML(kind)}</span>`;
+}
+function shortAge(seconds){
+  if(seconds===null||seconds===undefined) return '—';
+  const s=Math.max(0,Number(seconds)||0);
+  if(s<90) return Math.round(s)+'s';
+  if(s<5400) return Math.round(s/60)+'m';
+  if(s<172800) return (s/3600).toFixed(1)+'h';
+  return (s/86400).toFixed(1)+'d';
+}
+let lastHealth=null;
+async function copyHealthReport(){
+  // A plain-text incident summary, for a chat or a bug report. Built only from
+  // what the panel already received; no request, nothing invented.
+  const out=document.getElementById('consoleupdated');
+  if(!lastHealth){ if(out) out.textContent='nothing to copy yet'; return; }
+  const h=lastHealth, c=h.counts||{};
+  // Plain text for a chat window: angle brackets are dropped so a source
+  // channel's markup can never be pasted back as markup.
+  const clean=value=>String(value??'').replace(/[<>]/g,'');
+  const lines=[`BestGAA dashboard — ${new Date().toISOString()}`,
+    `overall ${String(h.overall||'unknown').toUpperCase()} · ${c.ok||0} ok, ${c.warn||0} watch, ${c.fail||0} fault, ${c.unknown||0} unknown`,
+    h.headline?`headline: ${clean(h.headline)}`:'',
+    ...(h.checks||[]).filter(x=>x.state!=='ok').map(x=>
+      `[${String(x.state).toUpperCase()}] ${clean(x.title)}: ${clean(x.detail)}`+(x.fix?'\n    fix: '+clean(x.fix):'')),
+    '', 'generated by the dashboard ops console (read-only)'];
+  const text=lines.filter(Boolean).join('\n');
+  try{
+    if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(text); }
+    else { const area=document.createElement('textarea'); area.value=text; document.body.append(area); area.select(); document.execCommand('copy'); area.remove(); }
+    if(out) out.textContent='incident summary copied ('+(h.checks||[]).length+' checks)';
+  }catch(e){ if(out) out.textContent='could not copy: '+e.message; }
+}
+async function loadHealth(){
+  const box=document.getElementById('healthrows'), line=document.getElementById('healthline');
+  if(!box||!line) return;
+  if(!TOKEN && !DEMO_MODE){ line.innerHTML='<span class="muted">paste the token to begin</span>'; return; }
+  try{
+    const h=await api('GET','/api/health'+(showServices?'?services=1':''));
+    lastHealth=h;
+    const stamp=document.getElementById('consoleupdated');
+    if(stamp) stamp.textContent='checks ran at '+new Date().toLocaleTimeString('en-IN',{hour12:false});
+    const c=h.counts||{};
+    line.innerHTML = `<span class="big">${statePill(h.overall)} ${escapeHTML((h.overall||'unknown').toUpperCase())}</span>`
+      + `<span class="muted">${escapeHTML(String(c.ok||0))} ok · ${escapeHTML(String(c.warn||0))} watch · `
+      + `${escapeHTML(String(c.fail||0))} fault · ${escapeHTML(String(c.unknown||0))} unknown</span>`
+      + `<span class="muted" style="flex:1;min-width:220px">${escapeHTML(h.headline||'')}</span>`
+      + `<button class="ghost" onclick="showServices=!showServices;loadHealth()">${showServices?'hide systemd':'ask systemd'}</button>`;
+    box.innerHTML = (h.checks||[]).map(item=>
+      `<div class="check ${escapeHTML(item.state)}"><b>${statePill(item.state)} ${escapeHTML(item.title)}</b>`
+      + `<span>${escapeHTML(item.detail)}</span>`
+      + (item.fix && item.state!=='ok'?`<div class="fix">${escapeHTML(item.fix)}</div>`:'')
+      + `</div>`).join('') || '<p class="muted">no checks ran (no database yet)</p>';
+  }catch(e){
+    line.innerHTML=`<span class="bad">health unavailable: ${escapeHTML(e.message)}</span>`;
+    box.innerHTML='';
+  }
+}
+let showServices=false;
+async function loadPulse(){
+  const body=document.getElementById('pulserows'), last=document.getElementById('pulselast'),
+    note=document.getElementById('pulsenote');
+  if(!body) return;
+  if(!TOKEN && !DEMO_MODE){ body.innerHTML='<tr><td colspan="5" class="muted">paste the token to begin</td></tr>'; return; }
+  const hours=document.getElementById('pulsehours')?.value||'6';
+  const kind=document.getElementById('pulsekind')?.value||'';
+  try{
+    const p=await api('GET','/api/pulse?limit=120&hours='+encodeURIComponent(hours)+(kind?'&kind='+encodeURIComponent(kind):''));
+    const counts=p.counts||{};
+    last.innerHTML=Object.entries(counts).map(([k,n])=>{
+      const seen=(p.last||{})[k];
+      return `<div class="stat"><b>${escapeHTML(String(n))}</b><span>${escapeHTML(k)} · last ${seen?escapeHTML(seen.age)+' ago':'never'}</span></div>`;
+    }).join('') || '<span class="muted">nothing in this window</span>';
+    body.innerHTML=(p.events||[]).map(ev=>
+      `<tr><td class="muted">${escapeHTML(ev.at_ist)}</td><td>${kindPill(ev.kind)}</td>`
+      + `<td>${escapeHTML(ev.label)}</td><td class="muted">${escapeHTML(ev.detail)}</td>`
+      + `<td>${ev.queue_id?`<button class="ghost" onclick="tracePost(${Number(ev.queue_id)})">#${Number(ev.queue_id)}</button>`:'<span class="muted">—</span>'}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="muted">nothing in this window</td></tr>';
+    note.textContent=(p.capped?'capped at 120 events — widen nothing, narrow the window. ':'')
+      + (p.since_ist?('since '+p.since_ist):'')
+      + ((p.silences||[]).length?' · silence: '+p.silences.map(x=>x.kind+' '+x.age).join(', '):'');
+  }catch(e){
+    body.innerHTML=`<tr><td colspan="5" class="bad">timeline unavailable: ${escapeHTML(e.message)}</td></tr>`;
+    note.textContent='';
+  }
+}
+function clearSearch(){
+  const input=document.getElementById('qsearch'); if(input) input.value='';
+  const body=document.getElementById('qrows');
+  if(body) body.innerHTML='<tr><td colspan="7" class="muted">nothing searched yet</td></tr>';
+}
+async function runSearch(){
+  const body=document.getElementById('qrows'); if(!body) return;
+  const query=(document.getElementById('qsearch')?.value||'').trim();
+  if(query.length<2){ body.innerHTML='<tr><td colspan="7" class="muted">type at least 2 characters</td></tr>'; return; }
+  body.innerHTML='<tr><td colspan="7" class="muted">searching…</td></tr>';
+  try{
+    const data=await api('GET','/api/search?q='+encodeURIComponent(query));
+    const rows=(data.results||[]).map(row=>{
+      const kind={post:'info',target:'ok',refusal:'warn'}[row.kind]||'unknown';
+      return `<tr><td class="muted">${escapeHTML(row.at_ist)}</td>`
+        + `<td><span class="pill ${kind}">${escapeHTML(row.kind)}</span></td>`
+        + `<td>${row.queue_id?`<button class="ghost" onclick="tracePost(${Number(row.queue_id)})">#${Number(row.queue_id)}</button>`:'<span class="muted">—</span>'}</td>`
+        + `<td>${escapeHTML(row.source||'—')}</td><td>${escapeHTML(row.target||'—')}</td>`
+        + `<td>${escapeHTML(row.status||'')}</td><td class="muted">${escapeHTML(row.snippet||'')}</td></tr>`;
+    }).join('');
+    body.innerHTML=rows||`<tr><td colspan="7" class="muted">no match for “${escapeHTML(query)}” — nothing is hidden, there really is no row.</td></tr>`;
+  }catch(e){
+    body.innerHTML=`<tr><td colspan="7" class="bad">search failed: ${escapeHTML(e.message)}</td></tr>`;
+  }
+}
+async function traceNewest(){
+  try{
+    const recent=await api('GET','/api/recent?limit=25');
+    const jobs=recent.jobs||[];
+    const pick=jobs.find(j=>j.status==='failed')||jobs[0];
+    if(!pick){ document.getElementById('traceerror').textContent='the queue is empty'; return; }
+    document.getElementById('traceid').value=pick.id;
+    await tracePost(pick.id);
+  }catch(e){ document.getElementById('traceerror').textContent=e.message; }
+}
+async function tracePost(id){
+  const head=document.getElementById('tracehead'), facts=document.getElementById('tracefacts'),
+    body=document.getElementById('tracerows'), extras=document.getElementById('traceextras'),
+    error=document.getElementById('traceerror');
+  if(!body) return;
+  const value=String(id ?? document.getElementById('traceid')?.value ?? '').trim();
+  error.textContent='';
+  if(!/^\d+$/.test(value)){ error.textContent='give a numeric queue id (the # shown in Recent jobs and on the timeline)'; return; }
+  if(document.getElementById('traceid')) document.getElementById('traceid').value=value;
+  body.innerHTML='<tr><td colspan="5" class="muted">tracing…</td></tr>';
+  try{
+    const t=await api('GET','/api/trace?queue_id='+encodeURIComponent(value));
+    const post=t.post||{}, predicted=t.predicted||{};
+    head.innerHTML=`<div class="trace-box"><b>#${Number(post.queue_id)}</b> · ${escapeHTML(post.source||'')} · `
+      + `<span class="pill ${post.status==='failed'?'fail':post.status==='done'?'ok':'info'}">${escapeHTML(post.status||'')}</span> · `
+      + `${escapeHTML(post.created_ist||'')} (${escapeHTML(post.age||'')} ago) · attempts ${Number(post.attempts||0)}`
+      + (post.error?`<div class="bad">error: ${escapeHTML(post.error)}</div>`:'')
+      + `<div class="trace-post">${escapeHTML(post.text||'(the bot stored no rendered text for this post)')}</div></div>`;
+    const f=predicted.facts||{}, cat=predicted.category||{}, safe=predicted.safety||{};
+    facts.innerHTML=[
+      ['price', f.price?('₹'+Number(f.price).toLocaleString('en-IN')):'not read'],
+      ['shelf', cat.key?(escapeHTML(cat.key)+' <span class="muted">'+escapeHTML(cat.label||'')+'</span>'):'no evidence'],
+      ['quality', f.quality_score!==undefined?escapeHTML(String(f.quality_score)):'—'],
+      ['safety', safe.allowed===false?('<span class="bad">refused · '+escapeHTML(safe.category||'')+'</span>'):escapeHTML(safe.severity||'—')],
+      ['received', escapeHTML((t.received_by||[]).join(', ')||'nobody')],
+      ['withheld', escapeHTML((t.withheld_by||[]).join(', ')||'nobody')],
+    ].map(([label,value])=>`<div class="stat"><b style="font-size:15px">${value}</b><span>${escapeHTML(label)}</span></div>`).join('');
+    const verdictPill={delivered:'ok',skipped:'warn',held:'warn',not_attempted:'fail'};
+    body.innerHTML=(t.planned_vs_actual||[]).map(row=>
+      `<tr><td>@${escapeHTML(row.target)}</td>`
+      + `<td class="muted">${escapeHTML(row.phase||'')}${row.why?'<br>'+escapeHTML(row.why):''}</td>`
+      + `<td><span class="pill ${verdictPill[row.verdict]||'unknown'}">${escapeHTML(String(row.verdict||'').replace('_',' '))}</span></td>`
+      + `<td class="muted">${escapeHTML(row.detail||'')}</td><td>${Number(row.chunks||0)}</td></tr>`).join('')
+      || '<tr><td colspan="5" class="muted">nothing predicted and nothing delivered</td></tr>';
+    const blocks=t.blocks||[], links=t.links||[], attempts=t.attempts||[];
+    extras.innerHTML =
+      (blocks.length?`<h3 class="bad">Refused</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Stage</th><th>Why</th><th>Matched</th></tr></thead><tbody>`
+        + blocks.map(b=>`<tr><td class="muted">${escapeHTML(b.at_ist)}</td><td>${escapeHTML(b.stage)}</td>`
+        + `<td>${escapeHTML(b.label||b.category)} — ${escapeHTML(b.reason||'')}</td><td>${escapeHTML(b.matched||'')}</td></tr>`).join('')
+        + `</tbody></table></div>`:'')
+      + (links.length?`<h3>Links</h3><div class="tablewrap"><table><thead><tr><th>Source link</th><th>Published as</th><th>Resolves to</th></tr></thead><tbody>`
+        + links.map(l=>`<tr><td>${escapeHTML(l.source)}</td><td>${escapeHTML(l.affiliate)}</td><td class="muted">${escapeHTML(l.resolved||'—')}</td></tr>`).join('')
+        + `</tbody></table></div>`:'')
+      + (attempts.length?`<h3>Send attempts (write-before-send fence)</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Target</th><th>Chunk</th><th>State</th></tr></thead><tbody>`
+        + attempts.map(a=>`<tr><td class="muted">${escapeHTML(a.at_ist)}</td><td>@${escapeHTML(a.target)}</td><td>${Number(a.chunk)}</td><td>${escapeHTML(a.state)}</td></tr>`).join('')
+        + `</tbody></table></div>`:'');
+  }catch(e){
+    error.textContent='trace failed: '+e.message;
+    body.innerHTML='';
+    head.innerHTML=''; facts.innerHTML=''; extras.innerHTML='';
+  }
+}
+async function loadScorecard(){
+  const channels=document.getElementById('scchannels'), sources=document.getElementById('scsources'),
+    totals=document.getElementById('sctotals');
+  if(!channels) return;
+  if(!TOKEN && !DEMO_MODE){ channels.innerHTML='<tr><td colspan="9" class="muted">paste the token to begin</td></tr>'; return; }
+  const days=document.getElementById('scdays')?.value||'7';
+  try{
+    const s=await api('GET','/api/scorecard?days='+encodeURIComponent(days));
+    const t=s.totals||{};
+    totals.innerHTML=stat(t.channels||0,'channels')+stat(t.sends||0,'sends')+stat(t.skips||0,'skips')
+      +stat(t.sources||0,'sources')+`<div class="stat"><b>${escapeHTML(String(s.days||days))}</b><span>days</span></div>`;
+    channels.innerHTML=(s.channels||[]).map(row=>{
+      const silent=row.last_send_age_s!==null && row.last_send_age_s>24*3600;
+      return `<tr><td>@${escapeHTML(row.target)}</td><td>${Number(row.today||0)}</td>`
+        + `<td>${Number(row.sends||0)}</td><td>${Number(row.skips||0)}</td>`
+        + `<td><div class="meter" title="${escapeHTML(String(row.deliver_rate||0))}% of attempts delivered"><i style="width:${Math.max(0,Math.min(100,Number(row.deliver_rate)||0))}%"></i></div><span class="muted">${escapeHTML(String(row.deliver_rate||0))}%</span></td>`
+        + `<td>${row.avg_quality===null||row.avg_quality===undefined?'<span class="muted">—</span>':escapeHTML(String(row.avg_quality))}</td>`
+        + `<td>${row.best_hour_ist===null||row.best_hour_ist===undefined?'<span class="muted">—</span>':escapeHTML(String(row.best_hour_ist)+':00')}</td>`
+        + `<td>${row.last_send_ist&&row.last_send_ist!=='—'?escapeHTML(row.last_send_ist)+(silent?' <span class="pill warn">SILENT</span>':''):'<span class="pill warn">never</span>'}</td>`
+        + `<td class="muted">${escapeHTML(row.top_skip_reason||'—')}</td></tr>`;
+    }).join('') || '<tr><td colspan="9" class="muted">no deliveries in this window</td></tr>';
+    sources.innerHTML=(s.sources||[]).map(row=>
+      `<tr><td>${escapeHTML(row.source)}</td><td>${Number(row.intakes||0)}</td><td>${Number(row.done||0)}</td>`
+      + `<td>${Number(row.failed||0)}</td><td class="muted">${escapeHTML(row.last_intake_ist||'—')} (${escapeHTML(shortAge(row.last_intake_age_s))} ago)</td>`
+      + `<td><div class="meter"><i style="width:${Math.max(0,Math.min(100,Number(row.post_rate)||0))}%"></i></div><span class="muted">${escapeHTML(String(row.post_rate||0))}%</span></td></tr>`).join('')
+      || '<tr><td colspan="6" class="muted">no intakes in this window</td></tr>';
+  }catch(e){
+    channels.innerHTML=`<tr><td colspan="9" class="bad">scorecard unavailable: ${escapeHTML(e.message)}</td></tr>`;
+    sources.innerHTML='';
+  }
+}
+
 if(TOKEN || DEMO_MODE) refresh();
 loadButtons();
 loadRecentForStudio();
+if(TOKEN || DEMO_MODE){ loadHealth(); loadPulse(); loadScorecard(); }
 setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
 </script>
 </body>
