@@ -61,6 +61,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
+from dashboard import source_target  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -262,6 +263,48 @@ async def api_category_preview(request: web.Request):
 @require_token
 async def api_category_batch(request: web.Request):
     return await category_preview_response(request, batch=True)
+
+
+@require_token
+async def api_source_to_target(request: web.Request):
+    """One source post → the whole pipeline's verdict, offline and read-only.
+
+    Link plan (what the wrapper becomes), the price the bot will route on, the
+    shelf + its evidence, the content-policy verdict, and which of OUR channels
+    receive it - each with its reason. The routing map is the bot's own
+    published snapshot, so this cannot disagree with the real router.
+    """
+    try:
+        body = await request.json()
+    except (ValueError, TypeError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    text = body.get("text")
+    source = body.get("source") or ""
+    links = body.get("links") or []
+    if text is None:
+        text = ""
+    if not isinstance(text, str) or not isinstance(source, str):
+        return web.json_response({"errors": ["text and source must be strings"]}, status=400)
+    if len(text) > 12000:
+        return web.json_response({"errors": ["post is too long (12000 characters max)"]},
+                                 status=400)
+    if not isinstance(links, list) or any(not isinstance(link, str) for link in links):
+        return web.json_response({"errors": ["links must be a list of URLs"]}, status=400)
+    if not text.strip() and not links:
+        return web.json_response({"errors": ["paste the source post (or a link)"]}, status=400)
+    try:
+        result = source_target.analyze(text, source, links,
+                                       snapshot=snapshot(),
+                                       rules=load_rules())
+    except Exception as exc:  # noqa: BLE001 - a bad post must not 500 the dashboard
+        return web.json_response({"errors": [f"could not analyse this post: {exc}"]},
+                                 status=400)
+    result["config_revision"] = config_revision()
+    result["pending_restart"] = pending_restart()
+    result["policy"] = source_target.policy()
+    return web.json_response(result)
 
 
 @require_token
@@ -988,6 +1031,7 @@ def create_app() -> web.Application:
     app.router.add_post("/api/category-preview", api_category_preview)
     app.router.add_post("/api/category-batch", api_category_batch)
     app.router.add_post("/api/inspect-link", api_inspect_link)
+    app.router.add_post("/api/source-to-target", api_source_to_target)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_put("/api/channels/whatsapp", api_put_whatsapp)

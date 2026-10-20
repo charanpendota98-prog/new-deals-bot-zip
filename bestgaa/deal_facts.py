@@ -16,10 +16,55 @@ import contextlib
 import re
 
 __all__ = [
-    "parse_price", "parse_discount", "has_lowest_price_claim", "parse_mrp",
+    "expand_money_suffixes", "premium_score", "eligible_for_premium", "parse_price", "parse_discount", "has_lowest_price_claim", "parse_mrp",
     "parse_coupon", "parse_min_qty", "deal_title", "coupon_saving",
     "final_price", "deal_facts",
 ]
+
+
+URL_MASK_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
+
+# "₹60k", "60 K", "1.5 lakh", "2 lac", "3 crore": Indian captions write a TV at
+# "₹60k", and the price reader used to return 60 (the "₹" digits stopped at the
+# "k") or None. A 60,000-rupee TV was priced at SIXTY rupees - which drives
+# price-tier routing, price dedup, premium ranking and the deal card, so the
+# error was published.
+#
+# Only k/K (thousand), lakh/lac/lacs (1e5) and crore/cr/crores (1e7) are accepted.
+# A bare "L"/"l" is NOT treated as lakh on purpose: "1.5L bottle", "190L fridge"
+# and "5L cooker" are capacities, and reading one as money would print a price
+# the source never asked. "kg" never matches (no word boundary after the k).
+_MULTIPLIER_RE = re.compile(
+    r"(?<![\dA-Za-z.,])(\d[\d,]*(?:\.\d+)?)(\s*)(k|K|lakhs?|lacs?|crores?|cr)\b")
+
+
+def _expand_multiplier(match: re.Match) -> str:
+    raw = match.group(1).replace(",", "")
+    unit = match.group(3).lower()
+    try:
+        number = float(raw)
+    except ValueError:
+        return match.group(0)
+    factor = 1_000 if unit == "k" else 100_000 if unit.startswith(("lakh", "lac")) else 10_000_000
+    value = number * factor
+    if value != int(value):
+        return match.group(0)
+    return str(int(value))
+
+
+def expand_money_suffixes(text: str) -> str:
+    """Rewrite "60k" / "1.5 lakh" / "2 cr" into plain numbers, links untouched."""
+    value = text or ""
+    if not value:
+        return value
+    pieces: list[str] = []
+    last = 0
+    for url_match in URL_MASK_RE.finditer(value):
+        pieces.append(_MULTIPLIER_RE.sub(_expand_multiplier, value[last:url_match.start()]))
+        pieces.append(url_match.group(0))
+        last = url_match.end()
+    pieces.append(_MULTIPLIER_RE.sub(_expand_multiplier, value[last:]))
+    return "".join(pieces)
 
 
 def parse_price(text: str) -> int | None:
@@ -31,7 +76,13 @@ def parse_price(text: str) -> int | None:
     amounts are masked before the generic currency scan, so the generic match
     can only ever see the DEAL price. Bare numbers with no currency marker are
     still ignored on purpose - a model number is not a price."""
-    value = text or ""
+    # Links are not prices: an ASIN, a shortener slug or our affiliate tag is
+    # full of digits, and none of them is what the buyer pays.
+    value = URL_MASK_RE.sub(" ", text or "")
+    # "Samsung QLED 55\" @ \u20b960k" is sixty THOUSAND rupees. Expanding the
+    # Indian magnitude suffix first means every pattern below sees a plain
+    # number, so no label/currency pattern can stop at the "60".
+    value = expand_money_suffixes(value)
     # Mask "MRP ₹1,999" style amounts so no later pattern can mistake the MRP
     # for the deal price. The deal-price labels below never say MRP.
     masked = re.sub(r"(?i)\b(?:mrp|m\.r\.p\.?|list\s*price|regular\s*price)\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*[\d,]+",
@@ -50,7 +101,9 @@ def parse_price(text: str) -> int | None:
     patterns = [
         r"(?:deal|effective|offer|final)\s*price\s*[:@-]?\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
         r"(?:deal|offer|now|today)\s*[:@-]?\s*(?:rs\.?|₹|inr)\s*\.?\s*([\d,]+)",
-        r"(?:only|at|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
+        # \b on the WORD forms: "boAt 141 @ ₹899" matched the "At" inside
+        # "boAt" and priced a ₹899 earbud at ₹141. "@" needs no boundary.
+        r"(?:\b(?:only|at)\b|@)\s*(?:rs\.?|₹|inr)?\s*([\d,]+)",
         # \b anchors the END of the number: without it "Rs.99 off" backtracked to
         # "9" (the lookahead only had to fail for the SHORTER match) and printed
         # a price of 9 rupees.
@@ -268,3 +321,40 @@ def deal_facts(text: str, price: int | None = None) -> dict:
         "min_qty": parse_min_qty(text),
         "lowest_price_claim": has_lowest_price_claim(text),
     }
+
+
+def premium_score(text: str, price: int | None, discount: int | None) -> int:
+    """Balanced premium ranking: strongest discounts and low verified prices first.
+
+    Shared with the dashboard's source-to-target planner (it must not carry a
+    second copy that could rank a deal differently from the bot).
+    """
+    score = min(discount or 0, 100) * 10
+    if price is not None and price <= 99:
+        score += 650
+    elif price is not None and price <= 499:
+        score += 250
+    if has_lowest_price_claim(text):
+        score += 300
+    return score
+
+
+def eligible_for_premium(text: str, price: int | None, discount: int | None) -> bool:
+    """PREMIUM channel = only the BEST deals (user rule, Aug 2026 restated:
+    "premium dantlo best ga ... highest discount vunte post cheyali alantivi"):
+      * 80%+ discount (any price) - a true top-tier deal,
+      * a sub-₹99 price that ALSO carries a real discount (50%+) or an explicit
+        lowest-price claim - cheap alone is not "the highest discount",
+      * ₹100-₹499 with a 70%+ discount or a lowest-price claim.
+    Best multi-product LISTS and credit/bank-card offers are added to Premium
+    directly by the router regardless of this gate."""
+    if discount is not None and discount >= 80:
+        return True
+    if price is not None and price <= 99 and ((discount or 0) >= 50 or has_lowest_price_claim(text)):
+        return True
+    return bool(
+        price is not None and 100 <= price <= 499
+        and ((discount is not None and discount >= 70) or has_lowest_price_claim(text))
+    )
+
+

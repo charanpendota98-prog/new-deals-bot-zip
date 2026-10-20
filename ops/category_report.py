@@ -391,7 +391,8 @@ HYPD_HOSTS = ("hypd.store",)
 EARNKARO_HOSTS = ("ekaro.in", "ekaro.app", "earnkaro.com", "affiliaters.in",
                   "earnkaro.in", "linkredirect.in", "clnk.in", "clnk.app")
 SHORTENER_HOSTS = ("bit.ly", "j.mp", "bitly.com", "is.gd", "t.co", "buff.ly")
-AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in")
+AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in", "a.co",
+                "link.amazon", "link.amazon.in")
 URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
 PAID_ROUTES = frozenset({"amazon", "earnkaro", "hypd", "affiliate"})
 MONEY_BUCKETS = ("owned", "earns_nothing", "foreign_tag", "unattributed")

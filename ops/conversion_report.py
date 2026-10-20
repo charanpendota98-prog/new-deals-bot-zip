@@ -90,7 +90,8 @@ HYPD_HOSTS = ("hypd.store",)
 EARNKARO_HOSTS = ("ekaro.in", "ekaro.app", "earnkaro.com", "affiliaters.in",
                   "earnkaro.in", "linkredirect.in", "clnk.in", "clnk.app")
 SHORTENER_HOSTS = ("bit.ly", "j.mp", "bitly.com", "is.gd", "t.co", "buff.ly")
-AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in")
+AMAZON_HOSTS = ("amazon.in", "amazon.com", "amzn.to", "amzn.in", "a.co",
+                "link.amazon", "link.amazon.in")
 
 LOG_MARKERS = (
     ("EK SUCCESS", "EarnKaro: API returned an attributable affiliate link"),

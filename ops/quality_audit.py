@@ -62,7 +62,7 @@ OUR_NETWORK_SHORT = re.compile(
     r"myntr\.it|ajiio\.in|cuelinks\.com|l\.ead\.me|affiliaters\.in|hypd\.store)/", re.I)
 OUR_T_ME = re.compile(r"https?://t\.me/(?:addlist/|LootZoneIndia11\b|SecretLootIndia1\b)", re.I)
 AMAZON_HOST = re.compile(r"^(?:www\.|m\.)?amazon\.[a-z.]{2,8}$", re.I)
-AMAZON_SHORT = re.compile(r"^(?:www\.)?amzn\.(?:to|in)$", re.I)
+AMAZON_SHORT = re.compile(r"^(?:www\.)?(?:amzn\.(?:to|in|eu)|a\.co|link\.amazon(?:\.in)?)$", re.I)
 FOREIGN_SHORTENERS = re.compile(
     r"https?://(?:[^/\s]*\.)?(?:bit\.ly|bitly\.com|tinyurl\.com|tinyurl\.net|cutt\.ly|t\.cg"
     r"|gpt\.sh|shorturl\.at|is\.gd|rb\.gy|ow\.ly|rebrand\.ly|tly\.in|s\.id/)", re.I)
@@ -422,8 +422,29 @@ _AUDIT_SIG_PRICE_RE = re.compile(
     r"|\b([\d,]{2,})(?=\s*\(?\s*\d{1,3}\s*(?:%|percent))")
 
 
+# "₹60k" / "60 K" / "1.5 lakh": the identity rule must read the same money the
+# caption wrote. Self-contained on purpose (the block is mirrored into
+# ops/quality_audit.py), so the expansion is inline rather than a call to
+# deal_facts.expand_money_suffixes.
+_AUDIT_SIG_MULTIPLIER_RE = re.compile(
+    r"(?<![\dA-Za-z.,])(\d[\d,]*(?:\.\d+)?)\s*(k|K|lakhs?|lacs?|crores?|cr)\b")
+
+
+def _sig_expand_money(text: str) -> str:
+    def expand(match: re.Match) -> str:
+        unit = match.group(2).lower()
+        factor = 1_000 if unit == "k" else 100_000 if unit.startswith(("lakh", "lac")) else 10_000_000
+        try:
+            value = float(match.group(1).replace(",", "")) * factor
+        except ValueError:
+            return match.group(0)
+        return str(int(value)) if value == int(value) else match.group(0)
+
+    return _AUDIT_SIG_MULTIPLIER_RE.sub(expand, text or "")
+
+
 def _sig_line_price(line: str) -> int | None:
-    match = _AUDIT_SIG_PRICE_RE.search(line or "")
+    match = _AUDIT_SIG_PRICE_RE.search(_sig_expand_money(line))
     if not match:
         return None
     raw = next((g for g in match.groups() if g), "")

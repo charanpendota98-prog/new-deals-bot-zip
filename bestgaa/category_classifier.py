@@ -12,8 +12,8 @@ from urllib.parse import urlparse, unquote, parse_qs
 
 URL_RE = re.compile(r"https?://[^\s<>\[\](){}\"']+", re.I)
 OPAQUE_HOSTS = frozenset({"bit.ly", "bitli.in", "bitl.in", "bitly.com", "amzn.to",
-    "amzn.in", "a.co", "ekaro.in", "clnk.in", "t.me", "telegram.me", "tinyurl.com",
-    "cutt.ly", "fkrt.co", "fkrt.cc", "hypd.store"})
+    "amzn.in", "a.co", "link.amazon", "link.amazon.in", "ekaro.in", "clnk.in", "t.me",
+    "telegram.me", "tinyurl.com", "cutt.ly", "fkrt.co", "fkrt.cc", "hypd.store"})
 
 def load_rules():
     try:

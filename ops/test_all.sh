@@ -249,15 +249,19 @@ run 'post-link guarantee (real worker, audited output)' "$PYTHON" test_post_link
 # The suite asserts the two verdicts are identical, so a policy edit that lands
 # on only one side fails the gate instead of reaching a channel.
 run 'public-channel content safety (Python == JavaScript)' "$PYTHON" test_safety_filter.py
+# SOURCE -> TARGET: the reported post (neo qled @ ₹60k on a link.amazon wrapper)
+# priced, classified, routed and gated end to end, including the dashboard's
+# planner and the ops CLI.
+run 'source -> target planner (the reported post)' "$PYTHON" test_source_to_target.py
 run 'HYPD link handling' "$PYTHON" test_hypd_links.py
 run 'line fidelity and Telegram/WhatsApp identity parity' "$PYTHON" test_line_fidelity.py
 run 'WhatsApp bridge contract' bash -c 'cd tg-wa-bridge && TELEGRAM_BOT_TOKEN=x WA_PHONE=919876543210 WA_CHANNEL=x@newsletter BESTGAA_DB_PATH="$BESTGAA_DB_PATH" EARNKARO_PUBLISHER_ID=5478322 AMAZON_TAG=mama086-21 SELF_TEST_PROVENANCE_URL=https://bit.ly/self-test-owned SELF_TEST_CACHE_ONLY_URL=https://bit.ly/self-test-cache-only SELF_TEST_HYPD_URL=https://hypd.store/93944/afflink/self-test-token SELF_TEST_WRONG_ACCOUNT_URL=https://bit.ly/self-test-wrong-account SELF_TEST_AMAZON_PROOF_URL=https://bit.ly/self-test-amazon SELF_TEST_STALE_AMAZON_URL=https://bit.ly/self-test-stale-amazon node bridge.js --self-test'
 run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'bridge safety gate syntax' node --check tg-wa-bridge/safety_filter.js
 run 'shell script syntax (bash -n)' shell_syntax_check
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
-  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
 
 run 'repo self-consistency (gate coverage + README proof tables)' "$PYTHON" test_repo_consistency.py
