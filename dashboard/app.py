@@ -55,6 +55,7 @@ Read-only on the bot database always; the only writes are channels.json, its
 .pending sidecar, and the optional restart command.
 """
 import argparse
+import asyncio
 import hashlib
 import hmac
 import importlib.util
@@ -171,6 +172,27 @@ def clear_pending() -> None:
         pass
 
 
+def in_thread(handler):
+    """Run a read-only handler in a worker thread instead of on the event loop.
+
+    Every panel here queries SQLite synchronously. On a 50k-post database
+    /api/categories takes ~1.3 s and /api/audit ~0.5 s, and because those ran on
+    the event loop the whole dashboard froze while they did - measured: eight
+    concurrent requests took as long as eight sequential ones (5.8 s vs 6.0 s),
+    so one refresh blocked every other tab, button and the 5 s auto-refresh.
+    sqlite3 releases the GIL while it runs, so a thread is real parallelism.
+
+    Only handlers whose body contains no `await` may use this (POST/PATCH
+    handlers read the request body, so they stay async).
+    """
+
+    async def wrapper(request: web.Request):
+        return await asyncio.to_thread(handler, request)
+
+    wrapper.__name__ = getattr(handler, "__name__", "handler")
+    return wrapper
+
+
 def require_token(handler):
     async def wrapper(request: web.Request):
         expected = os.environ.get("DASHBOARD_TOKEN", "")
@@ -186,7 +208,8 @@ def require_token(handler):
 
 
 @require_token
-async def api_status(request: web.Request):
+@in_thread
+def api_status(request: web.Request):
     conn = read_only_db()
     queue_counts: dict[str, int] = {}
     sends = skips = 0
@@ -384,7 +407,8 @@ def activation_status(snap=None):
 
 
 @require_token
-async def api_channels(request: web.Request):
+@in_thread
+def api_channels(request: web.Request):
     snap = snapshot()
     data = channels_config.load_channels()
     dashboard_names = {c["name"].lower() for c in data["channels"]}
@@ -482,7 +506,8 @@ async def api_edit_channel(request: web.Request):
 
 
 @require_token
-async def api_delete_channel(request: web.Request):
+@in_thread
+def api_delete_channel(request: web.Request):
     name = channels_config.normalize_handle(request.match_info.get("name", "")).lower()
     data = channels_config.load_channels()
     kept = [c for c in data["channels"] if c["name"].lower() != name]
@@ -495,7 +520,8 @@ async def api_delete_channel(request: web.Request):
 
 
 @require_token
-async def api_recent(request: web.Request):
+@in_thread
+def api_recent(request: web.Request):
     try:
         limit = max(1, min(100, int(request.query.get("limit", "20"))))
     except ValueError:
@@ -591,7 +617,8 @@ def category_env(module) -> dict[str, str]:
 
 
 @require_token
-async def api_categories(request: web.Request):
+@in_thread
+def api_categories(request: web.Request):
     """Per-shelf truth: sends, skips, backlog, routed vs withheld, and findings.
 
     Also per shelf: whether the links it published pay us (`money`), the IST-day
@@ -635,7 +662,8 @@ async def api_categories(request: web.Request):
 
 
 @require_token
-async def api_card_png(request: web.Request):
+@in_thread
+def api_card_png(request: web.Request):
     """The raster deal card for one caption, exactly as the CLI would draw it.
 
     Preview only: it renders and returns bytes. Nothing is queued, nothing is
@@ -660,7 +688,8 @@ async def api_card_png(request: web.Request):
 
 
 @require_token
-async def api_card_studio(request: web.Request):
+@in_thread
+def api_card_studio(request: web.Request):
     """Everything the card studio shows for one caption: the bot's own reading of
     price/discount/coupon, the caption per surface, and which destinations would
     receive card+caption (and which would skip it, with the reason).
@@ -712,7 +741,8 @@ async def api_put_whatsapp(request: web.Request):
 
 
 @require_token
-async def api_post_buttons_get(request: web.Request):
+@in_thread
+def api_post_buttons_get(request: web.Request):
     """The configured Telegram button row (join buttons under every post)."""
     import post_buttons
     return web.json_response({
@@ -742,7 +772,8 @@ async def api_post_buttons_put(request: web.Request):
 
 
 @require_token
-async def api_link_conversion(request: web.Request):
+@in_thread
+def api_link_conversion(request: web.Request):
     """"Mana links maruthunnaya?" - answered per link, from the converter's book.
 
     link_cache holds source URL -> published affiliate URL -> resolved
@@ -775,7 +806,8 @@ async def api_link_conversion(request: web.Request):
 
 
 @require_token
-async def api_channel_pipe(request: web.Request):
+@in_thread
+def api_channel_pipe(request: web.Request):
     """Open one source -> channel pipe: the posts it sent, each with its money
     verdict. The channel list shows the pipe counts; this is the evidence
     inside a single pipe, newest first. Read-only, mode=ro.
@@ -849,6 +881,50 @@ def _rate_limit_allowed(key: str) -> tuple[bool, float]:
     return True, 0.0
 
 
+def _database_message(exc: BaseException) -> str:
+    text = str(exc)
+    if "not a database" in text or "file is encrypted" in text:
+        return ("the file at BOT_DB_PATH is not a SQLite database (or is encrypted). "
+                "The dashboard never writes: point BOT_DB_PATH at the bot's real "
+                "bestgaa.sqlite3, or restore it from a backup.")
+    if "unable to open" in text or "permission" in text.lower():
+        return ("the database file exists but cannot be opened. The dashboard only "
+                "reads, so this is a path or a file-permission problem.")
+    if "locked" in text or "busy" in text:
+        return ("the database is busy (another process holds a write lock). Retry "
+                "in a moment; the panel reads only.")
+    if "no such table" in text:
+        return ("this database has no bot tables yet. Start the bot once on the merged "
+                "code so it creates the schema.")
+    return f"database error: {text}"
+
+
+@web.middleware
+async def json_errors(request: web.Request, handler):
+    """Every /api/* failure answers JSON with a sentence, never an HTML 500.
+
+    A corrupt or half-restored database used to reach the browser as
+    "500 Internal Server Error" for /api/recent, /api/audit, /api/categories and
+    /api/safety, which tells an operator nothing. All four now answer 503 with
+    what is wrong and what to do, like the conversion and pipe views already did.
+    """
+    try:
+        return await handler(request)
+    except web.HTTPException:
+        raise
+    except sqlite3.DatabaseError as exc:      # corrupt file, not-a-database, ...
+        return web.json_response({"error": _database_message(exc), "database": "unreadable"},
+                                 status=503)
+    except sqlite3.Error as exc:              # locked, busy, no such table, ...
+        return web.json_response({"error": _database_message(exc), "database": "error"},
+                                 status=503)
+    except Exception as exc:  # noqa: BLE001 - a panel must never take the page down
+        if request.path.startswith("/api/"):
+            return web.json_response(
+                {"error": f"{type(exc).__name__}: {exc}", "unexpected": True}, status=500)
+        raise
+
+
 @web.middleware
 async def security_headers(request: web.Request, handler):
     """Baseline response hardening: no framing, no MIME sniffing, no referrer
@@ -883,14 +959,18 @@ async def security_headers(request: web.Request, handler):
 
 
 @require_token
-async def api_audit(request: web.Request):
+@in_thread
+def api_audit(request: web.Request):
     try:
         limit = max(1, min(500, int(request.query.get("limit", "200"))))
     except ValueError:
         limit = 200
     conn = read_only_db()
     if conn is None:
-        return web.json_response({"error": "no database yet"}, status=404)
+        # Not a missing page: the bot has not created its database yet (or
+        # BOT_DB_PATH is wrong). 503 says "try again", 404 would say "wrong URL".
+        return web.json_response({"error": "no database yet", "database": "missing"},
+                                 status=503)
     try:
         audit_mod = load_quality_audit()
         findings, posts, link_counts, delivery = audit_mod.audit(
@@ -925,7 +1005,8 @@ def load_safety_policy() -> dict:
 
 
 @require_token
-async def api_safety(request: web.Request):
+@in_thread
+def api_safety(request: web.Request):
     """Why something was NOT posted: the public-channel content-safety panel.
 
     Read-only over the bot database. Every refusal the bot or the WhatsApp
@@ -1015,7 +1096,8 @@ async def api_safety(request: web.Request):
 
 
 @require_token
-async def api_health(request: web.Request):
+@in_thread
+def api_health(request: web.Request):
     """Self-diagnosis: every check the operator would otherwise run by hand.
 
     Read-only. `?services=1` adds `systemctl is-active` for the three services
@@ -1050,7 +1132,8 @@ def _dashboard_log_path() -> Path:
 
 
 @require_token
-async def api_pulse(request: web.Request):
+@in_thread
+def api_pulse(request: web.Request):
     """One merged timeline: intake, send attempts, refusals, conversions, proofs."""
     conn = read_only_db()
     if conn is None:
@@ -1079,7 +1162,8 @@ async def api_pulse(request: web.Request):
 
 
 @require_token
-async def api_trace(request: web.Request):
+@in_thread
+def api_trace(request: web.Request):
     """One post, the whole chain: predicted vs what really happened, per target."""
     try:
         queue_id = int(request.query.get("queue_id", ""))
@@ -1092,10 +1176,11 @@ async def api_trace(request: web.Request):
         payload = insight.trace(conn, queue_id, analyze=source_target.analyze,
                                 snapshot=snapshot(),
                                 channels=channels_config.load_channels())
-    except LookupError as exc:
+    except KeyError as exc:      # no queue table: the database, not the id
+        message = str(exc.args[0]) if exc.args else str(exc)
+        return web.json_response({"error": message, "database": "unreadable"}, status=503)
+    except LookupError as exc:   # no such queue row: the id
         return web.json_response({"error": str(exc)}, status=404)
-    except KeyError as exc:
-        return web.json_response({"error": str(exc)}, status=503)
     except sqlite3.OperationalError as exc:
         return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
     finally:
@@ -1105,7 +1190,8 @@ async def api_trace(request: web.Request):
 
 
 @require_token
-async def api_search(request: web.Request):
+@in_thread
+def api_search(request: web.Request):
     """Find a post, a target, or a refusal. Never guesses: no hit is a hit."""
     query = (request.query.get("q") or "").strip()
     try:
@@ -1129,7 +1215,8 @@ async def api_search(request: web.Request):
 
 
 @require_token
-async def api_scorecard(request: web.Request):
+@in_thread
+def api_scorecard(request: web.Request):
     """Per channel and per source: is it receiving, is it silent, is it worth it."""
     try:
         days = max(1, min(30, int(request.query.get("days", "7"))))
@@ -1152,7 +1239,8 @@ async def api_scorecard(request: web.Request):
 
 
 @require_token
-async def api_export(request: web.Request):
+@in_thread
+def api_export(request: web.Request):
     """Download the rows a panel is showing, as CSV.
 
     Same engine, same rows, no new query: an export can never disagree with the
@@ -1251,7 +1339,7 @@ async def index(request: web.Request):
 
 
 def create_app() -> web.Application:
-    app = web.Application(middlewares=[security_headers])
+    app = web.Application(middlewares=[security_headers, json_errors])
     app.router.add_get("/", index)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/channels", api_channels)

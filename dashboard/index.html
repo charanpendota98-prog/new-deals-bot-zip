@@ -369,7 +369,13 @@ async function api(method, path, body, revision){
 function fmtTime(ts){ if(!ts) return '—'; const d = new Date(ts*1000);
   return d.toLocaleString('en-IN',{hour12:false}) ; }
 let refreshBusy=false;
-async function refresh(){
+let slowTick = 0;
+async function refresh(full=true){
+  // `full=false` is the 5-second tick: status, channels, recent, timeline and
+  // health only. The expensive books (audit, categories, conversion, scorecard)
+  // cost ~1.8 s of server CPU on a 50k-post database, so they run on a slower
+  // tick instead of every five seconds. A first paint and every explicit action
+  // still pass `full=true`.
   if(refreshBusy) return;
   if(!TOKEN && !DEMO_MODE){ document.getElementById('authstate').textContent = 'paste the token to begin'; return; }
   refreshBusy=true;
@@ -427,19 +433,21 @@ async function refresh(){
     document.getElementById('recent').innerHTML = (r.jobs||[]).map(j=>
       `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td>${escapeHTML(j.held||0)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
       || '<tr><td colspan="7" class="muted">queue is empty</td></tr>';
-    const a = await api('GET','/api/audit?limit=200');
-    const d = a.delivery_summary||{}, l = a.link_summary||{};
-    document.getElementById('audit').innerHTML =
-      `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · held for review: <b>${d.held||0}</b> · ` +
-      `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
-      `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
-    await loadCategories();   // never throws: a dead /api/categories must not blank the rest
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
-    await loadConversion();   // same guarantee for the link-conversion book
-    await loadSafety();       // and for the refusal ledger
     await loadHealth();       // self-diagnosis; never throws into the page
     await loadPulse();        // merged timeline
-    await loadScorecard();    // per-channel + per-source truth
+    if(full){
+      const a = await api('GET','/api/audit?limit=200');
+      const d = a.delivery_summary||{}, l = a.link_summary||{};
+      document.getElementById('audit').innerHTML =
+        `posts checked: <b>${a.posts_checked}</b> · real sends: <b>${d.real_sends||0}</b> · skipped: <b>${d.skipped||0}</b> · held for review: <b>${d.held||0}</b> · ` +
+        `links: ${l.links||0} (ours: ${(l['our-short']||0)+(l['our-publisher']||0)}, foreign: ${l.foreign||0}) · ` +
+        `findings: ${Object.entries(a.findings_by_kind||{}).map(([k,v])=>escapeHTML(k)+'='+escapeHTML(v)).join(', ')||'none'}`;
+      await loadCategories();   // never throws: a dead /api/categories must not blank the rest
+      await loadConversion();   // same guarantee for the link-conversion book
+      await loadSafety();       // and for the refusal ledger
+      await loadScorecard();    // per-channel + per-source truth
+    }
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
@@ -1809,7 +1817,11 @@ if(TOKEN || DEMO_MODE) refresh();
 loadButtons();
 loadRecentForStudio();
 if(TOKEN || DEMO_MODE){ loadHealth(); loadPulse(); loadScorecard(); }
-setInterval(()=>{if(!document.hidden && (TOKEN||DEMO_MODE)) refresh();},5000);
+setInterval(()=>{
+  if(document.hidden || !(TOKEN||DEMO_MODE)) return;
+  slowTick += 1;
+  refresh(slowTick % 4 === 0);   // every 5 s light, every 20 s the full books
+},5000);
 </script>
 </body>
 </html>

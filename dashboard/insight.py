@@ -72,24 +72,32 @@ def age(seconds: float | None) -> str:
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
+    """Table names, or an empty set on an OLD database.
+
+    `sqlite3.OperationalError` is the "no such table"/“no such column” family,
+    which an old bot database legitimately produces; `sqlite3.DatabaseError`
+    (a corrupt or not-a-database file) is deliberately NOT caught here, so the
+    dashboard's JSON error middleware can answer 503 with a readable sentence
+    instead of pretending the post does not exist.
+    """
     try:
         return {str(row[0]) for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-    except sqlite3.Error:
+    except sqlite3.OperationalError:
         return set()
 
 
 def _cols(conn: sqlite3.Connection, table: str) -> set[str]:
     try:
         return {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
-    except sqlite3.Error:
+    except sqlite3.OperationalError:
         return set()
 
 
 def _one(conn: sqlite3.Connection, sql: str, params=(), default=0):
     try:
         row = conn.execute(sql, params).fetchone()
-    except sqlite3.Error:
+    except sqlite3.OperationalError:
         return default
     if row is None:
         return default
@@ -465,8 +473,10 @@ def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
         events.append(event)
 
     if "queue" in tables:
+        queue_cols = _cols(conn, "queue")
+        intake_error = "COALESCE(last_error,'')" if "last_error" in queue_cols else "''"
         for row in conn.execute(
-                "SELECT id, source, status, created_at, COALESCE(last_error,''), "
+                "SELECT id, source, status, created_at, " + intake_error + ", "
                 "COALESCE(rendered_text,'') FROM queue WHERE created_at>=? "
                 "ORDER BY created_at DESC LIMIT 500", (since,)):
             text = str(row[5] or "")
@@ -583,11 +593,13 @@ def trace(conn: sqlite3.Connection, queue_id: int, *, now: float | None = None,
     now = time.time() if now is None else now
     tables = _tables(conn)
     if "queue" not in tables:
-        raise KeyError("no queue table in this database")
-    quality_col = "premium_score" if "premium_score" in _cols(conn, "queue") else "NULL"
+        raise KeyError("this database has no queue table yet; start the bot once on the merged code")
+    queue_cols = _cols(conn, "queue")
+    quality_col = "premium_score" if "premium_score" in queue_cols else "NULL"
+    error_col = "COALESCE(last_error,'')" if "last_error" in queue_cols else "''"
     row = conn.execute(
         "SELECT id, chat_id, msg_id, source, status, attempts, COALESCE(rendered_text,''), "
-        "COALESCE(targets_json,''), COALESCE(last_error,''), created_at, "
+        "COALESCE(targets_json,''), " + error_col + ", created_at, "
         + quality_col + " FROM queue WHERE id=?", (int(queue_id),)).fetchone()
     if row is None:
         raise LookupError(f"no queue row {queue_id}")
@@ -787,35 +799,42 @@ def scorecard(conn: sqlite3.Connection, *, days: int = 7, now: float | None = No
     tables = _tables(conn)
     channels: list[dict] = []
     if "deliveries" in tables:
+        # Three queries in total, not five per channel. On a 50k-post database
+        # the per-channel version issued ~40 queries and took ~500 ms, which the
+        # browser paid on every 5 s refresh; the numbers are identical.
         cols = _cols(conn, "deliveries")
+        queue_cols = _cols(conn, "queue")
         error_expr = "COALESCE(d.last_error,'')" if "last_error" in cols else "''"
+        sent = "d.status='sent' AND " + error_expr + "=''"
+        quality_expr = ("AVG(CASE WHEN q.premium_score IS NOT NULL THEN q.premium_score END)"
+                        if "premium_score" in queue_cols else "NULL")
         rows = conn.execute(
             "SELECT d.target, "
-            "SUM(CASE WHEN d.status='sent' AND " + error_expr + "='' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN " + sent + " THEN 1 ELSE 0 END), "
             "SUM(CASE WHEN d.status<>'sent' OR " + error_expr + "<>'' THEN 1 ELSE 0 END), "
-            "MAX(CASE WHEN d.status='sent' AND " + error_expr + "='' THEN q.created_at END), "
-            "MAX(q.created_at), COUNT(*) "
+            "MAX(CASE WHEN " + sent + " THEN q.created_at END), "
+            "MAX(q.created_at), COUNT(*), "
+            "SUM(CASE WHEN q.created_at>=? AND " + sent + " THEN 1 ELSE 0 END), "
+            + quality_expr + " "
             "FROM deliveries d JOIN queue q ON q.id=d.queue_id WHERE q.created_at>=? "
-            "GROUP BY d.target ORDER BY 2 DESC", (since,)).fetchall()
-        for target, sends, skips, last_send, last_any, total in rows:
-            top_reason = _one(conn, "SELECT d.last_error FROM deliveries d JOIN queue q "
-                                    "ON q.id=d.queue_id WHERE d.target=? AND q.created_at>=? "
-                                    "AND COALESCE(d.last_error,'')<>'' GROUP BY d.last_error "
-                                    "ORDER BY COUNT(*) DESC LIMIT 1", (target, since), "")
-            quality = None
-            if "premium_score" in _cols(conn, "queue"):
-                quality = _one(conn, "SELECT AVG(q.premium_score) FROM deliveries d "
-                                     "JOIN queue q ON q.id=d.queue_id WHERE d.target=? "
-                                     "AND q.created_at>=? AND q.premium_score IS NOT NULL",
-                               (target, since), None)
-            hour = _one(conn, "SELECT CAST(((q.created_at + ?) % 86400)/3600 AS INTEGER) "
-                              "FROM deliveries d JOIN queue q ON q.id=d.queue_id "
-                              "WHERE d.target=? AND q.created_at>=? AND d.status='sent' "
-                              "GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 1",
-                        (IST_OFFSET, target, since), None)
-            today = _one(conn, "SELECT COUNT(*) FROM deliveries d JOIN queue q "
-                               "ON q.id=d.queue_id WHERE d.target=? AND q.created_at>=? "
-                               f"AND d.status='sent' AND {error_expr}=''", (target, day_since), 0)
+            "GROUP BY d.target ORDER BY 2 DESC", (day_since, since)).fetchall()
+        reasons: dict[str, str] = {}
+        for target, reason, _n in conn.execute(
+                "SELECT d.target, COALESCE(d.last_error,'') AS reason, COUNT(*) n "
+                "FROM deliveries d JOIN queue q ON q.id=d.queue_id "
+                "WHERE q.created_at>=? AND COALESCE(d.last_error,'')<>'' "
+                "GROUP BY d.target, reason ORDER BY n DESC", (since,)):
+            reasons.setdefault(str(target), str(reason))
+        hours: dict[str, int] = {}
+        for target, hour, _count in conn.execute(
+                "SELECT d.target, CAST(((q.created_at + ?) % 86400)/3600 AS INTEGER) AS h, "
+                "COUNT(*) n FROM deliveries d JOIN queue q ON q.id=d.queue_id "
+                "WHERE q.created_at>=? AND " + sent + " "
+                "GROUP BY d.target, h ORDER BY n DESC", (IST_OFFSET, since)):
+            hours.setdefault(str(target), int(hour))
+        for target, sends, skips, last_send, last_any, total, today, quality in rows:
+            top_reason = reasons.get(str(target), "")
+            hour = hours.get(str(target))
             channels.append({
                 "target": str(target or ""),
                 "sends": int(sends or 0), "skips": int(skips or 0),
