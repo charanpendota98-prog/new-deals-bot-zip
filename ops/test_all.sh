@@ -217,6 +217,10 @@ run 'link category inspector' "$PYTHON" test_link_inspector.py
 # Amazon pages. The doctor answers "valid? ours?" per link and prints the
 # repaired link; the same suite pins that no unprovable hop is minted or posted.
 run 'link doctor (valid? ours? repaired link) + no unprovable hop' "$PYTHON" test_link_doctor.py
+# 258 checks, 100 rounds: every Amazon shape one tag of ours, every tokenless hop
+# repaired from our own book or unwrapped live, a bare merchant page converted -
+# "commission asalu miss avvakunda" as an executable rule.
+run 'link commission (every published link is OURS, 100 rounds)' "$PYTHON" test_link_commission.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
 run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py

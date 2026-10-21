@@ -1950,6 +1950,20 @@ def is_amazon_search_or_browse_link(link: str) -> bool:
         return False
 
 
+async def repair_links_if_possible(client, text: str, **kwargs) -> tuple[str, list[dict]]:
+    """`client.repair_unowned_links()` when the client has it, else the text as-is.
+
+    The repair pass lives on AffiliateClient. A few tests (and any external
+    caller) drive the render path with a duck-typed client that only implements
+    convert/resolve; those must keep working unchanged instead of dying on an
+    AttributeError in the middle of a live post.
+    """
+    repair = getattr(client, "repair_unowned_links", None)
+    if repair is None:
+        return text, []
+    return await repair(text, **kwargs)
+
+
 def replace_url_everywhere(text: str, raw: str, replacement: str) -> str:
     """Replace `raw` - and its &amp;-escaped twin - with `replacement` in ONE pass.
 
@@ -1964,7 +1978,13 @@ def replace_url_everywhere(text: str, raw: str, replacement: str) -> str:
     """
     variants = [v for v in (raw, raw.replace("&", "&amp;")) if v]
     ordered = sorted(dict.fromkeys(variants), key=len, reverse=True)
-    pattern = re.compile("|".join(re.escape(v) for v in ordered))
+    # A URL is also a PREFIX of every longer URL built on it, so the match must
+    # stop at a URL boundary. Without the lookahead, replacing a bare
+    # `.../dp/ASIN` in a list that also carries `.../dp/ASIN?tag=ours` rewrote the
+    # prefix of the tagged one and produced `?tag=ours?tag=ours` - a doubled tag,
+    # which is not our tag, so the gate refused a perfectly good deal
+    # (found 2026-10-22 by test_link_commission.py, list case).
+    pattern = re.compile("|".join(re.escape(v) for v in ordered) + r"(?![\w&?=/%#+-])")
     return pattern.sub(lambda _match: replacement, text)
 
 
@@ -8041,6 +8061,14 @@ class AffiliateClient:
             log.warning("SHORTENER refused | not a link we could prove is ours: %s",
                         long_url[:90])
             return None
+        # USER RULE (2026-10-22, "commission asalu miss avvakunda"): a hop is only
+        # worth minting when the page behind it PAYS US. Wrapping a bare merchant
+        # page in bit.ly makes a link that opens, looks ours, and earns nothing -
+        # the exact shape of the two is.gd links that were reported twice.
+        if not await self.link_is_provably_ours(target):
+            log.warning("SHORTENER refused | the destination carries no attribution of "
+                        "ours, so the hop would earn nobody: %s", target[:90])
+            return None
         shortened = await self.bitly(target)
         if shortened:
             self._short_cache[long_url] = shortened
@@ -8118,6 +8146,173 @@ class AffiliateClient:
                 out = out.replace(raw, tag_native_amazon(native))
         return out
 
+    # ------------------------------------------------------------------ #
+    # LINK REPAIR (USER RULE 2026-10-22): "commission asalu miss avvakunda"
+    # ------------------------------------------------------------------ #
+    # Reported twice: `https://is.gd/c3Gl9d` and `https://is.gd/bO79HA` in a
+    # channel. Both were valid links and both resolved to UNTAGGED
+    # amazon.in/dp pages, so every click through them paid nobody. Refusing such
+    # a post protects the channel but still loses the sale, and a stale queue row
+    # can carry the hop again after a restart. So the last action before a post
+    # leaves is to REWRITE each link that cannot prove it pays us into one that
+    # can: unwrap the hop, read its destination, and publish the destination in
+    # OUR form (`amazon.in/dp/ASIN?tag=OURTAG`, or a converter link whose
+    # publisher id is ours). Nothing is dropped and no commission is left behind.
+    @staticmethod
+    def provable_form(url: str) -> str | None:
+        """`url` rewritten into a shape that proves it pays THIS account.
+
+        Returns None when no such shape exists (a hop, another account's tag, a
+        merchant page with no attribution we can add). Callers treat None as
+        "this link must not be published as-is", never as "publish it anyway".
+        """
+        url = clean_url(url or "")
+        if not url:
+            return None
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except ValueError:
+            return None
+        if in_domains(host, AMAZON_DOMAINS):
+            if not OUR_TAG:
+                return None                      # cannot make it pay us
+            tagged = apply_amazon_tag(url)
+            candidate = compact_amazon_product_link(tagged) or tagged
+            return candidate if Store.is_our_amazon_tag_link(candidate) else None
+        if (in_domains(host, SHORTENER_HOSTS) or in_domains(host, OUR_SHORTENER_DOMAINS)
+                or in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS)):
+            return None                          # a hop is never a provable form
+        if Store.has_native_owned_attribution(url):
+            return url                           # converter/HYPD attribution is ours
+        return None
+
+    async def link_is_provably_ours(self, url: str, book=None) -> bool:
+        """True when `url` itself proves it pays us, or our own book says so.
+
+        Two kinds of proof, and both are needed: the URL can carry the evidence
+        (our Associates tag), or the row we wrote when we minted it can (a
+        converter link bound to OUR publisher id in `owned_link_proofs`). A bare
+        shortener hostname is never proof of either kind.
+        """
+        url = clean_url(url or "")
+        if not url:
+            return False
+        if Store.has_native_owned_attribution(url):
+            return True                       # the URL itself carries our proof
+        book = book if book is not None else getattr(self, "repair_book", None)
+        if book is None:
+            book = store
+        checker = getattr(book, "cached_link_is_owned", None)
+        if checker is not None:
+            with contextlib.suppress(Exception):
+                if await checker(url, ""):
+                    return True
+        checker = getattr(book, "_strict_url_is_owned", None)
+        if checker is not None:
+            with contextlib.suppress(Exception):
+                if checker(url):
+                    return True
+        return False
+
+    @staticmethod
+    def _is_service_link(url: str) -> bool:
+        try:
+            return in_domains((urlparse(clean_url(url)).hostname or "").lower(),
+                              SERVICE_OFFER_DOMAINS)
+        except ValueError:
+            return False
+
+    async def repair_unowned_links(self, text: str, *, store_obj=None,
+                                   multi_link: bool = False) -> tuple[str, list[dict]]:
+        """Rewrite every link that cannot prove it pays us. Returns (text, notes).
+
+        For each candidate the destination is taken from our own book first
+        (`link_cache`/`owned_link_proofs`), and only a hop with no stored
+        destination costs a network round trip. `notes` is the audit trail: one
+        row per link, `status` in {kept, repaired, unrepairable}.
+        """
+        book = store_obj
+        if book is None:
+            # `repair_book` is the seam tests use: a link book that records what
+            # was written instead of touching an operator's database.
+            book = getattr(self, "repair_book", None)
+        if book is None:
+            book = store
+        out = text or ""
+        notes: list[dict] = []
+        family = {clean_url(OUR_FOLDER_LINK), *(clean_url(x) for x in OUR_MAIN_CHANNEL_LINKS)}
+        for raw in dict.fromkeys(URL_RE.findall(out)):
+            if raw not in out:
+                continue
+            url = clean_url(raw)
+            if url in family or is_share_intent(url) or self._is_service_link(url):
+                continue                          # not an affiliate destination
+            if await self.link_is_provably_ours(url, book):
+                continue                      # already proves it pays us
+            own_form = self.provable_form(url)
+            if own_form:
+                if own_form == url:
+                    continue                      # already proves it pays us
+                # The same page in OUR form (a foreign/absent tag): swap it now,
+                # a stranger's tag pays a stranger and no tag pays nobody.
+                out = replace_url_everywhere(out, raw, own_form)
+                notes.append({"url": url, "raw": raw, "host": (urlparse(url).hostname or "").lower(),
+                              "hop": False, "destination": url, "repaired": own_form,
+                              "status": "repaired", "why": ""})
+                log.info("LINK REPAIR | %s -> %s (attribution retagged)", url[:70], own_form[:90])
+                continue
+            host = (urlparse(url).hostname or "").lower()
+            hop = (in_domains(host, SHORTENER_HOSTS) or in_domains(host, OUR_SHORTENER_DOMAINS)
+                   or in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS))
+            note = {"url": url, "raw": raw, "host": host, "hop": hop,
+                    "destination": "", "repaired": "", "status": "unrepairable",
+                    "why": ""}
+            destination = ""
+            if book is not None:
+                with contextlib.suppress(Exception):
+                    destination = clean_url(await book.affiliate_destination(url) or "")
+            if not destination and not hop:
+                destination = url                 # a plain page: the page IS the destination
+            if not destination and hop:
+                # No stored destination: only a live unwrap can tell us what the
+                # hop hides. A dead hop stays unrepairable - and therefore never
+                # gets published as "probably ours".
+                with contextlib.suppress(Exception):
+                    destination = clean_url(await self.resolve(url))
+            note["destination"] = destination
+            repaired = self.provable_form(destination) if destination else None
+            if not repaired and destination and not hop:
+                # A plain merchant page we do not yet earn on: convert it now, so
+                # the deal keeps its link AND the commission.
+                with contextlib.suppress(Exception):
+                    result = await self.convert(destination, multi_link, destination)
+                    if result and result.affiliate:
+                        candidate = clean_url(result.affiliate)
+                        # A converter link is ours because OUR proof row says so,
+                        # not because of its hostname (ekaro.in is anybody's).
+                        if await self.link_is_provably_ours(candidate, book):
+                            repaired = candidate
+                            note["converted"] = True
+            if repaired and not await self.link_is_provably_ours(repaired, book):
+                note.setdefault("why", "the candidate form does not prove ownership")
+                repaired = ""
+            if repaired and repaired != url:
+                out = replace_url_everywhere(out, raw, repaired)
+                note.update(status="repaired", repaired=repaired)
+                if book is not None:
+                    # Bind the rewritten link to the destination we just proved,
+                    # so the final gate can read the same answer without network.
+                    with contextlib.suppress(Exception):
+                        await book.cache_link(url, repaired, repaired, product_key(repaired))
+                log.info("LINK REPAIR | %s -> %s (destination %s)", url[:70],
+                         repaired[:90], destination[:70] or "unknown")
+            else:
+                note["why"] = ("hop has no destination we can prove" if hop
+                               else "no attribution we can add")
+                log.warning("LINK REPAIR failed | %s: %s", url[:80], note["why"])
+            notes.append(note)
+        return out, notes
+
     async def shorten_long_urls_in_text(self, rendered: str) -> str:
         """FINAL guarantee that no link leaves the post clumsy/long:
           1. Every Amazon PRODUCT (/dp/ASIN) URL is collapsed to its shortest
@@ -8129,6 +8324,15 @@ class AffiliateClient:
         Links already on a shortener domain are never re-shortened; if the
         shortener is unavailable the original link is kept (a deal is never lost)."""
         out = rendered or ""
+        # Pass -1 (2026-10-22): repair every link that cannot prove it pays us
+        # BEFORE any cosmetic work. A hop reported in a channel ("ilaga invalid
+        # url link vasthunnai") is unwrapped here and republished as OUR tagged
+        # destination, so the post keeps its link and we keep the commission.
+        out, repair_notes = await self.repair_unowned_links(out)
+        if any(note["status"] == "repaired" for note in repair_notes):
+            log.info("LINK REPAIR | %d of %d unproven link(s) rewritten to ours",
+                     sum(1 for note in repair_notes if note["status"] == "repaired"),
+                     len(repair_notes))
         # Pass 0: a foreign Amazon tag is replaced with OURS on every Amazon
         # link first (a stranger's tag pays a third party; an untagged link
         # earns nothing). apply_amazon_tag() keeps exactly one tag - ours.
@@ -9776,7 +9980,19 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
         # link the source wrote was a dead short link, cut above): the deal text still
         # goes out rather than being skipped.
         if URL_RE.search(rendered) and not await store.verify_generated_text(rendered, owned_external):
-            raise PermanentSkip("final provenance recheck failed")
+            # USER RULE (2026-10-22): a link that cannot prove it pays us is
+            # REPAIRED, not thrown away with the deal. Unwrap the hop, tag the
+            # destination, then re-run the same gate on the rewritten text.
+            repaired_text, repairs = await repair_links_if_possible(affiliate, rendered)
+            if repaired_text != rendered and await store.verify_generated_text(
+                    repaired_text, owned_external):
+                log.info("LINK REPAIR | queue=%s final recheck passed after rewriting %s link(s)",
+                         row["id"], sum(1 for n in repairs if n["status"] == "repaired"))
+                rendered = repaired_text
+                with contextlib.suppress(Exception):
+                    await store.update_rendered(row["id"], rendered)
+            else:
+                raise PermanentSkip("final provenance recheck failed")
         # Owned Telegram promo links are not merchant destinations; all other
         # generated shopping links still receive the normal health check.
         merchant_health_text = rendered
@@ -10096,6 +10312,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                 # loot-channel folder, which is precisely what a marketplace
                 # reviewer must not be shown.
                 target_text = prepend_channel_header(target_text)
+            # Repair runs in EVERY mode, not only strict: a stale queue row can
+            # still carry the hop that was reported twice (is.gd over an untagged
+            # Amazon page), and rewriting it earns the sale instead of skipping
+            # the target. Nothing to repair is a no-op - no network call.
+            target_text, send_repairs = await repair_links_if_possible(affiliate, target_text)
+            fixed = [n for n in send_repairs if n["status"] == "repaired"]
+            if fixed:
+                log.info("LINK REPAIR | queue=%s target=%s rewrote %s unproven link(s) "
+                         "to ours at pre-send", row["id"], target, len(fixed))
+            still_bad = [n["url"] for n in send_repairs if n["status"] == "unrepairable"]
             if STRICT_OUR_LINKS:
                 # Their links never post, our commission is never missed: the
                 # final text is re-verified link by link right before the send.
@@ -10106,7 +10332,9 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                                 "link and no missed commission can reach the channel",
                                 row["id"], target, bad_link[:80])
                     await store.delivery_skipped(
-                        row["id"], target, f"unverified link at pre-send: {bad_link[:120]}")
+                        row["id"], target,
+                        f"unverified link at pre-send: {bad_link[:120]}"
+                        + (f" ({len(still_bad)} link(s) could not be repaired)" if still_bad else ""))
                     continue
             # LAST GATE BEFORE THE SEND: the copy has been cleaned, rewritten,
             # link-verified and headed by now, and this is the exact text the

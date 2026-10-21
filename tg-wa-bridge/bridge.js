@@ -3407,12 +3407,57 @@ async function prepareAmazonShortLinks(job, fetchFn = fetch) {
   }
 }
 
+// USER REPORT (2026-10-21, twice: "ilaga invalid url link vasthunnai"): two
+// is.gd links reached a channel and both resolved to UNTAGGED Amazon pages, so
+// they opened fine and paid nobody. Refusing the post protects the channel but
+// still loses the sale, so a hop that proves nothing is REPAIRED here: follow it
+// and publish OUR form of the destination. Only a hop that will not resolve is
+// cut (the link goes, the deal stays) - a hop is never published as "probably
+// ours", in strict mode or out of it.
+async function prepareUnprovenHops(job, fetchFn = fetch) {
+  job.blockedLinks ||= {}
+  job.resolvedLinks ||= {}
+  for (const url of urlsIn(job.text || '')) {
+    const host = hostOf(url)
+    if (!REDIRECT_FOLLOW_HOSTS.has(host)) continue        // not a hop
+    if (isAmazonShortHost(host)) continue                 // prepareAmazonShortLinks owns these
+    if (job.blockedLinks[url] || job.resolvedLinks[url] || job.shortLinks?.[url]) continue
+    if (isOurGeneratedLink(url) && !TOKENLESS_HOSTS.has(host)) {
+      // Our converter's own link (bitli.in/ekaro.in/...): ours without a network
+      // call, unless this is a DIRECT-source job where the "ours" could be the
+      // source's own affiliate link. Those are checked against our proofs.
+      if (!job.direct) continue
+      const missing = await verifyBestGaaProvenance([url], job).catch(() => [url])
+      if (!missing.length) continue
+      log.warn({ id: job.id, url: url.slice(0, 60) },
+        'HOP REPAIR | a direct-source job carried somebody else\'s affiliate hop; re-attributing it')
+    }
+    const resolved = await resolveUrl(url, fetchFn).catch(() => null)
+    let destination = resolved && resolved !== url ? resolved : ''
+    if (destination) {
+      destination = isAmazonHost(hostOf(destination))
+        ? withOurAttribution(destination)
+        : attributeWithOurPublisher(destination)
+    }
+    if (destination && hasOwnAffiliateAttribution(destination)) {
+      job.resolvedLinks[url] = destination
+      log.info({ id: job.id, from: url.slice(0, 60), to: destination.slice(0, 90) },
+        'HOP REPAIRED | the hop proved nothing; OUR destination is what gets posted')
+    } else {
+      job.blockedLinks[url] = true
+      log.warn({ id: job.id, url: url.slice(0, 60), destination: String(destination || '').slice(0, 90) },
+        'HOP CUT | the hop would not resolve to a destination we can prove is ours; the link is out, the deal stays')
+    }
+  }
+}
+
 async function verifyJob(job, fetchFn = fetch) {
   // Repair native Amazon URLs with OUR tag, then resolve direct-source URLs to
   // an owned affiliate destination where one can be created.
   if (job.text) job.text = normalizeAmazonTags(job.text)
   if (job.direct) await prepareDirectJob(job)
   attributeBareMerchantPages(job)
+  await prepareUnprovenHops(job, fetchFn)
   await prepareAmazonShortLinks(job, fetchFn)
   if (STRICT_OUR_LINKS) {
     const rejected = urlsIn(job.text || '').find(url => job?.blockedLinks?.[url]
@@ -7256,6 +7301,43 @@ https://fktr.in/MANY${i}`,
       sendNewsletterText = saved.sendNewsletterText; sendNewsletterMedia = saved.sendNewsletterMedia
       telegramFile = saved.telegramFile; shortenUntaggedCategoryCopy = saved.shortenUntaggedCategoryCopy
     }
+  }
+  // ------------------------------------------------------------------ //
+  // HOP REPAIR (USER REPORT 2026-10-21/22, twice). A hop that proves nothing
+  // about who minted it must never be published as "probably ours": it is
+  // repaired (our tagged destination posted instead) or cut, and the deal stays.
+  // ------------------------------------------------------------------ //
+  {
+    const assert = (await import('node:assert/strict')).default
+    const hop = 'https://is.gd/c3Gl9d'
+    const taggedAmazon = `https://www.amazon.in/dp/B0HNPB6QBS?tag=${AMAZON_TAG}`
+    const pageFetch = async () => ({
+      url: 'https://www.amazon.in/dp/B0HNPB6QBS', body: { cancel: async () => {} },
+    })
+    const repaired = { id: 'hop-repair', direct: true, text: `Blanket \u20b9100 ${hop}` }
+    await prepareUnprovenHops(repaired, pageFetch)
+    assert.equal(repaired.resolvedLinks[hop], taggedAmazon,
+      'a hop over an UNTAGGED page is repaired to OUR tagged destination')
+    assert.ok(!repaired.blockedLinks[hop], 'a repairable hop is never cut')
+    assert.equal(displayUrl(repaired, hop), taggedAmazon, 'the display link is the repaired one')
+
+    const dead = { id: 'hop-dead', direct: true, text: 'Duffle \u20b9880 https://is.gd/bO79HA' }
+    await prepareUnprovenHops(dead, async () => { throw new Error('blocked host') })
+    assert.equal(dead.blockedLinks['https://is.gd/bO79HA'], true,
+      'an unresolvable hop is cut - never published as ours')
+    assert.equal(displayUrl(dead, 'https://is.gd/bO79HA'), '', 'a cut hop shows nothing')
+    assert.ok((dead.text || '').includes('Duffle'), 'the deal text itself stays')
+
+    const botJob = { id: 'bot-owned', direct: false, text: 'deal https://bitli.in/neoQLED55' }
+    await prepareUnprovenHops(botJob, async () => { throw new Error('no network') })
+    assert.equal(botJob.blockedLinks['https://bitli.in/neoQLED55'], undefined,
+      "our own converter's link in a BOT job is left alone (no network needed)")
+
+    const sourceJob = { id: 'source-owned', direct: true, text: 'deal https://bitli.in/self-test-cache-only' }
+    await prepareUnprovenHops(sourceJob, pageFetch)
+    assert.ok(sourceJob.resolvedLinks['https://bitli.in/self-test-cache-only']
+      || sourceJob.blockedLinks['https://bitli.in/self-test-cache-only'],
+      "somebody else's hop in a DIRECT job is repaired or cut, never trusted")
   }
   // ------------------------------------------------------------------ //
   // SHORT-LINK POLICY (USER REPORT 2026-10-21). Two is.gd links reached a
