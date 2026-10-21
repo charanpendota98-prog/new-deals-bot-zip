@@ -741,6 +741,12 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
     class NoSession:  # never used: the shortener itself is stubbed below
         pass
 
+    # Tag era: production runs with OUR tag (mama086-21), and a hop is only
+    # minted when its DESTINATION can carry that tag (see the tagless refusal at
+    # the end of this test). Pin it here so the list assertions test the real
+    # deployment instead of an unconfigured one.
+    saved_tag = bot.OUR_TAG
+    bot.OUR_TAG = "mama086-21"
     aff = bot.AffiliateClient(NoSession())  # type: ignore[arg-type]
     calls: list[str] = []
 
@@ -796,6 +802,19 @@ def test_lists_are_shortened_with_our_bitly_and_stay_neat():
     kept = asyncio.run(aff.shorten_long_urls_in_text(other))
     check("Bitly down: the deal still goes out with the tagged merchant links",
           "amazon.in/dp/B0COOK1" in kept and "bit.ly" not in kept, kept[:140])
+
+    # A host with NO tag configured cannot make any destination provably ours, so
+    # it must not mint a hop over an untagged page either: that hop is exactly what
+    # was reported on 2026-10-21 (is.gd -> amazon.in/dp/... with no ?tag=). The
+    # native link still leaves, so the deal is not lost.
+    bot.OUR_TAG = ""
+    try:
+        tagless = asyncio.run(aff.shorten_long_urls_in_text(
+            f"1) Tagless Thing \u20b9199 https://www.amazon.in/dp/B0NOTAG{'x' * 80}"))
+    finally:
+        bot.OUR_TAG = saved_tag
+    check("an untagged Amazon page is never wrapped in a hop - it stays native",
+          "amazon.in/dp/B0NOTAG" in tagless and "bit.ly" not in tagless, tagless[:140])
 
 
 def test_our_channel_link_sits_on_the_top_line_once():

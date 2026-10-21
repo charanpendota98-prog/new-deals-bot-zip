@@ -360,7 +360,12 @@ def build_busy_db(path: Path, now: float) -> None:
            for i in range(200)])
     conn.executemany("INSERT INTO link_cache VALUES (?,?,?,?,?)",
                      [(f"https://s/{i}", f"https://bitli.in/{i}", "https://www.amazon.in/dp/X",
-                       f"k{i}", now - 22 * 3600 + i * 60) for i in range(500)])
+                       f"k{i}", now - 22 * 3600 + i * 60) for i in range(500)]
+                     # Three tokenless hops over an untagged Amazon page - the exact
+                     # shape of the two is.gd links reported on 2026-10-21.
+                     + [(f"https://s/hop{i}", f"https://is.gd/hop{i}",
+                         "https://www.amazon.in/dp/Y", f"h{i}", now - 3 * 3600 + i * 60)
+                        for i in range(3)])
     conn.commit()
     conn.close()
 
@@ -545,6 +550,69 @@ def test_attention():
           str(dupes["items"]))
 
 
+def test_link_hygiene():
+    """The brief must be able to say "this hop proves nothing" cheaply.
+
+    Classification is ops/category_report.link_hygiene() - the same url_money()
+    the money report uses - so this test pins the wrapper's two jobs: it never
+    disagrees with the report, and it does not rescan 5,000 rows every five
+    seconds.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "category_report", Path(__file__).with_name("ops") / "category_report.py")
+    report = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(report)
+
+    tmp = Path(tempfile.mkdtemp(prefix="hygiene-"))
+    path = tmp / "busy.sqlite3"
+    build_busy_db(path, time.time())
+    conn = sqlite3.connect(path)
+    tags = frozenset({"mama086-21"})
+
+    direct = report.link_hygiene(conn, tags, limit=5)
+    check("hygiene counts the tokenless hops the report cannot name",
+          direct["unproven_hops"] == 3,
+          str(direct.get("unproven_hops")))
+    check("hygiene agrees with the money report on every shared bucket",
+          all(direct[k] == report.link_conversion(conn, tags, limit=1)["totals"][k]
+              for k in ("cached", "owned", "foreign_tag", "earns_nothing", "unattributed")),
+          str({k: direct[k] for k in ("cached", "owned", "earns_nothing")}))
+    check("hygiene names the example links, with their destination host",
+          direct["hop_examples"] and direct["hop_examples"][0]["host"] == "is.gd"
+          and direct["hop_examples"][0]["resolved_host"] == "www.amazon.in",
+          str(direct["hop_examples"])[:200])
+    check("a bitli.in hop is not called unprovable - it is our shortener",
+          all(row["host"] != "bitli.in" for row in direct["hop_examples"]))
+
+    calls = {"n": 0}
+
+    def reader(c, our_tags, limit=3):
+        calls["n"] += 1
+        return report.link_hygiene(c, our_tags, limit=limit)
+
+    first = trends.link_hygiene(conn, reader, tags)
+    second = trends.link_hygiene(conn, reader, tags)
+    check("the brief's reader is called once for an unchanged database",
+          calls["n"] == 1, str(calls["n"]))
+    check("the memoised answer is marked as a memo, with its age",
+          second["memo"] is True and second["checked_age_s"] >= 0,
+          str({k: second.get(k) for k in ("memo", "checked_age_s")}))
+    check("the memoised answer is the same answer",
+          {k: second[k] for k in direct} == {k: first[k] for k in direct})
+    conn.execute("INSERT INTO link_cache VALUES ('https://s/new', 'https://is.gd/new', "
+                 "'https://www.amazon.in/dp/Z', 'kz', ?)", (time.time(),))
+    conn.commit()
+    third = trends.link_hygiene(conn, reader, tags)
+    check("a changed database is never served from the memo",
+          calls["n"] == 2 and third["memo"] is False and third["unproven_hops"] == 4,
+          f"calls={calls['n']} hops={third.get('unproven_hops')}")
+    trends._HYGIENE_MEMO.clear()          # a fresh database, not a memo hit
+    check("a reader that raises leaves the brief standing, not broken",
+          trends.link_hygiene(conn, lambda *a, **k: 1 / 0, tags)["available"] is False)
+    conn.close()
+
+
 def test_degenerate_states():
     """A dashboard that lies is worse than one that is down.
 
@@ -685,6 +753,13 @@ def test_http():
             db = tdp / "ops.sqlite3"
             now = time.time()
             build_db(db, now)
+            # One published tokenless hop over an untagged page - the shape of the
+            # two is.gd links reported on 2026-10-21.
+            with sqlite3.connect(db) as hop_conn:
+                hop_conn.execute(
+                    "INSERT INTO link_cache VALUES(?,?,?,?,?)",
+                    ("https://s/isgd", "https://is.gd/c3Gl9d",
+                     "https://www.amazon.in/dp/B0HNPB6QBS", "ASIN:B0HNPB6QBS", now - 50))
             seed_snapshot(tdp / "routing_snapshot.json", now)
             (tdp / "channels.json").write_text(json.dumps({"version": 1, "channels": []}))
             saved = {key: os.environ.get(key) for key in
@@ -773,6 +848,22 @@ def test_http():
                     check("the brief reports the installed and running rules version",
                           "installed" in body.get("rules", {}) and "running" in body.get("rules", {}),
                           str(body.get("rules")))
+                    check("the brief counts published hops nobody can prove are ours",
+                          body.get("links", {}).get("unproven_hops") == 1,
+                          str({k: body.get("links", {}).get(k)
+                               for k in ("unproven_hops", "cached", "available")}))
+                    check("...and ranks them as work for a human",
+                          any("cannot prove" in item["title"] for item in body.get("items", [])),
+                          str([i["title"] for i in body.get("items", [])])[:300])
+                    status, conv = await call("/api/link-conversion?limit=3")
+                    check("the conversion card carries the same hygiene figures",
+                          status == 200
+                          and conv.get("hygiene", {}).get("unproven_hops") == 1,
+                          str(conv.get("hygiene", {}).get("unproven_hops")))
+                    check("...so the brief and the card can never disagree",
+                          conv["hygiene"]["cached"] == body["links"]["cached"]
+                          and conv["hygiene"]["owned"] == body["links"]["owned"],
+                          f"{conv['hygiene']['cached']} vs {body['links']['cached']}")
                     status, body = await call("/api/brief?services=1")
                     check("the brief can ask systemd too", status == 200, str(status))
 
@@ -883,6 +974,7 @@ def main() -> int:
     test_engine()
     test_counts_and_trends()
     test_attention()
+    test_link_hygiene()
     test_degenerate_states()
     test_http()
     if FAILS:

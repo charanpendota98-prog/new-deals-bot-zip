@@ -1828,6 +1828,23 @@ def is_our_hypd_link(url: str) -> bool:
 # and posts direct (no quota); lists always shorten (multi_link). Overridable.
 SHORTEN_MIN_LEN = int(os.getenv("SHORTEN_MIN_LEN", "70"))
 
+# USER REPORT (2026-10-21): "ilaga invalid url link vasthunnai mana channels lo"
+# with two `https://is.gd/xxxx` links in a channel that resolved to UNTAGGED
+# amazon.in/dp pages. An is.gd hop is the one link shape we can never prove: the
+# URL carries no publisher, no account and no record of who minted it, so a
+# tokenless shortener will happily wrap a page that pays nobody - and once such a
+# hop is in a channel it looks exactly like ours. Bitly stays (it is minted with
+# OUR token, so a proof row can bind it to our account); the tokenless fallback is
+# OFF unless this host explicitly opts in. With Bitly unavailable the native
+# tagged link is published instead - a deal is never lost to a cosmetic hop.
+TOKENLESS_SHORTENER = os.getenv(
+    "SHORTENER_TOKENLESS_FALLBACK", "0").strip().lower() in ("1", "true", "yes", "on")
+# Hosts whose links are provable by nothing but a stored proof: a tokenless hop.
+TOKENLESS_SHORTENER_DOMAINS = {"is.gd", "v.gd", "tinyurl.com", "tiny.cc", "rb.gy",
+                               "cutt.ly", "t.ly", "shorturl.at", "shorturl.gg",
+                               "spoo.me", "da.gd", "surl.li", "shrtco.de", "9qr.de",
+                               "cli.re", "v.ht", "shorte.st", "snip.ly"}
+
 
 def should_use_bitly(resolved_url: str, multi_link: bool) -> bool:
     """USER RULE: Bitly ONLY for lists (2+ links) and very long links —
@@ -6194,6 +6211,9 @@ class Store:
             return False
         async with self.lock:
             for url in check_urls:
+                host = (urlparse(url).hostname or "").lower()
+                if in_domains(host, TOKENLESS_SHORTENER_DOMAINS) and not self._strict_url_is_owned(url):
+                    return False
                 found = self.conn.execute(
                     "SELECT 1 FROM link_cache WHERE affiliate_url=? LIMIT 1", (url,)
                 ).fetchone()
@@ -6222,6 +6242,13 @@ class Store:
             for url in urls:
                 if url in family:
                     continue
+                host = (urlparse(url).hostname or "").lower()
+                # A tokenless hop is refused in EVERY mode, strict or legacy: the
+                # URL proves nothing about who minted it, so "it is probably ours"
+                # is exactly the assumption that put two is.gd links pointing at
+                # untagged Amazon pages into a channel (user report 2026-10-21).
+                if in_domains(host, TOKENLESS_SHORTENER_DOMAINS) and not self._strict_url_is_owned(url):
+                    return False, url
                 if self.has_native_owned_attribution(url):
                     continue
                 owned = self._strict_url_is_owned(url)
@@ -7957,23 +7984,81 @@ class AffiliateClient:
             log.error("EK NETWORK | conversion API retries exhausted: %s", last)
             raise RuntimeError(f"EarnKaro failed: {last}")
 
+    @staticmethod
+    def with_our_attribution(url: str) -> str:
+        """The same page carrying OUR attribution, before a hop is minted.
+
+        A hop is only safe when its destination is provably ours, so the tag is
+        applied to the DESTINATION first and the shortener is pointed at that.
+        The reported links (2026-10-21) are exactly what skipping this produces:
+        an is.gd hop to `amazon.in/dp/ASIN` with no tag, which opens fine and
+        pays nobody.
+        """
+        try:
+            host = (urlparse(clean_url(url)).hostname or "").lower()
+        except Exception:
+            return url
+        if in_domains(host, AMAZON_DOMAINS):
+            return apply_amazon_tag(url)
+        return url
+
+    @classmethod
+    def may_mint_short_link(cls, url: str) -> bool:
+        """True only for a URL whose DESTINATION can be made provably ours.
+
+        * a link that is ALREADY a hop is never wrapped in another hop (a source's
+          tinyurl inside our bit.ly hides both the store and the original owner);
+        * an Amazon page needs OUR Associates tag - which `with_our_attribution()`
+          puts there, so an untagged page is still fine to shorten as long as the
+          tag can be applied (i.e. AMAZON_TAG is configured);
+        * anything else (our converter's long affiliate URL, a tagged search page)
+          carries our attribution in the URL itself.
+        """
+        try:
+            parsed = urlparse(clean_url(url))
+            host = (parsed.hostname or "").lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+        if in_domains(host, SHORTENER_HOSTS):
+            return False
+        if in_domains(host, AMAZON_DOMAINS):
+            return bool(OUR_TAG) or Store.is_our_amazon_tag_link(url)
+        return True
+
     async def shorten(self, long_url: str) -> str | None:
         # Same long URL seen again (retry, re-render, another target)? Reuse the
         # short link we already minted instead of spending another API call.
         cached_short = self._short_cache.get(long_url)
         if cached_short:
             return cached_short
-        shortened = await self.bitly(long_url)
+        # Point the hop at a destination that carries OUR tag, never at the
+        # untagged page: that is the difference between an is.gd link that earns
+        # and the two that did not.
+        target = self.with_our_attribution(long_url)
+        if not self.may_mint_short_link(target):
+            log.warning("SHORTENER refused | not a link we could prove is ours: %s",
+                        long_url[:90])
+            return None
+        shortened = await self.bitly(target)
         if shortened:
             self._short_cache[long_url] = shortened
             self._short_to_long[shortened] = long_url
             return shortened
-        # Tokenless fallback for very long/multi-link posts. The authenticated
+        if not TOKENLESS_SHORTENER:
+            # Nothing in an is.gd URL says it is ours, and it may wrap a page that
+            # earns nothing (see TOKENLESS_SHORTENER). The caller keeps the native
+            # tagged link instead: shorter beats unprovable.
+            log.warning("SHORTENER unavailable (no Bitly); keeping the native link: %s",
+                        long_url[:90])
+            return None
+        # Tokenless fallback, only when this host opted in. The authenticated
         # affiliate destination is created first; this service only redirects to it.
         try:
             async with self.session.get(
                 "https://is.gd/create.php",
-                params={"format": "simple", "url": long_url},
+                params={"format": "simple", "url": target},
                 timeout=aiohttp.ClientTimeout(total=max(6.0, HTTP_TOTAL_TIMEOUT_SECONDS)),
             ) as response:
                 if response.status == 200:
@@ -8100,7 +8185,11 @@ class AffiliateClient:
             hypd_ours = is_our_hypd_link(url) and HYPD_ALWAYS_BITLY
             if len(url) <= SHORTEN_MIN_LEN and not hypd_ours:
                 continue
-            if in_domains(host, OUR_RUNTIME_SHORTENER_DOMAINS) or in_domains(host, OUR_SHORTENER_DOMAINS):
+            # A hop is never wrapped in another hop: SHORTENER_HOSTS is every
+            # shortener we know (ours and strangers'), so a source's is.gd link
+            # stays visible to the ownership gate instead of hiding behind a
+            # bit.ly that would look like ours.
+            if in_domains(host, SHORTENER_HOSTS) or in_domains(host, OUR_SHORTENER_DOMAINS):
                 continue
             pending.append((raw, url))
         shortened_all: list[str | None] = []
