@@ -695,6 +695,68 @@ def link_conversion(conn, our_tags: frozenset, limit: int = 25) -> dict:
     return {"rows": rows_out, "totals": totals, "converted_pct": pct}
 
 
+# A hop on one of these hostnames proves nothing about who minted it: anyone can
+# create is.gd/xyz. Kept as a tuple of bare hosts, matched with a suffix test.
+TOKENLESS_HOSTS = ("is.gd", "v.gd", "tinyurl.com", "tiny.cc", "rb.gy", "cutt.ly",
+                   "t.ly", "shorturl.at", "spoo.me", "da.gd", "surl.li",
+                   "shrtco.de", "cli.re", "v.ht", "shorte.st", "snip.ly")
+
+
+def is_tokenless_host(url: str) -> bool:
+    host = host_of(url)
+    return bool(host) and any(host == h or host.endswith("." + h) for h in TOKENLESS_HOSTS)
+
+
+def link_hygiene(conn, our_tags: frozenset, limit: int = 5) -> dict:
+    """The one question url_money() alone cannot answer: how many *published*
+    links are short hops nobody can prove are ours?
+
+    Same verdicts as the money report (url_money), split one level finer - an
+    unattributed link on a tokenless host is a hop we cannot prove, which is
+    exactly what the two is.gd links reported on 2026-10-21 were: they resolved
+    to untagged Amazon pages and earned nothing while looking perfectly fine.
+    """
+    totals = {"cached": 0, "owned": 0, "foreign_tag": 0, "earns_nothing": 0,
+              "unattributed": 0, "unproven_hops": 0}
+    out = {"available": False, "converted_pct": None, "hop_examples": [], **totals}
+    if conn is None:
+        return out
+    if not table_columns(conn, "link_cache"):
+        out["why"] = "this database has no link_cache table yet"
+        return out
+    links = link_index(conn)
+    try:
+        rows = conn.execute(
+            "SELECT affiliate_url, resolved_url, created_at FROM link_cache "
+            "ORDER BY created_at DESC LIMIT 5000").fetchall()
+    except sqlite3.OperationalError as exc:
+        out["why"] = f"link_cache unreadable: {exc}"
+        return out
+    hops: list[dict] = []
+    for affiliate_url, resolved_url, created_at in rows:
+        affiliate = str(affiliate_url or "").strip()
+        if not affiliate:
+            continue
+        bucket, _route = url_money(affiliate, links, our_tags)
+        totals["cached"] += 1
+        if bucket in totals:
+            totals[bucket] += 1
+        if bucket != "owned" and is_tokenless_host(affiliate):
+            totals["unproven_hops"] += 1
+            if len(hops) < max(1, int(limit)):
+                hops.append({"url": affiliate, "host": host_of(affiliate),
+                             "bucket": bucket,
+                             "resolved_host": host_of(str(resolved_url or "")),
+                             "at": ist_text(created_at) if created_at else ""})
+    out.update(totals)
+    out["available"] = True
+    out["capped"] = len(rows) >= 5000
+    out["hop_examples"] = hops
+    out["converted_pct"] = (round(totals["owned"] * 100 / totals["cached"], 1)
+                            if totals["cached"] else None)
+    return out
+
+
 def conversion_trend(conn, our_tags: frozenset, days: int = 7) -> list[dict]:
     """Day by day, "converted ayyinda?" - from the converter's own book.
 

@@ -796,6 +796,9 @@ def api_link_conversion(request: web.Request):
         except (TypeError, ValueError):
             days = 7
         payload["trend"] = module.conversion_trend(conn, tags, days=days)
+        # The same verdicts, split finer: which published links are hops nobody
+        # can prove are ours. One classifier, so the card and the brief agree.
+        payload["hygiene"] = trends.link_hygiene(conn, module.link_hygiene, tags)
     except Exception as exc:
         return web.json_response({"error": f"conversion view failed: {exc}"}, status=503)
     finally:
@@ -1281,16 +1284,25 @@ def api_brief(request: web.Request):
                                pending_restart=pending_restart())
     conn = read_only_db()
     spike = {"last_hour": 0, "avg_hour": 0.0, "week": 0}
-    movement = {}
+    movement: dict = {}
+    links: dict = {"available": False}
     if conn is not None:
         try:
             spike = trends.safety_spike(conn)
             movement = trends.compare(conn, hours=hours, buckets=4)
+            try:
+                module = load_category_report()
+                read = module.our_amazon_tags()
+                tags = frozenset(read.get("bestgaa") or set()) | frozenset(
+                    read.get("bridge") or set())
+                links = trends.link_hygiene(conn, module.link_hygiene, tags)
+            except Exception as exc:  # noqa: BLE001 - a stat is never a broken brief
+                links = {"available": False, "error": str(exc)[:200]}
         finally:
             conn.close()
 
     brief = trends.attention(health=health_payload, drift=drift, safety=spike,
-                             trends=movement or None)
+                             trends=movement or None, links=links)
     try:
         max_posts = int(snap.get("max_posts") or 0)
     except (TypeError, ValueError):
@@ -1303,6 +1315,7 @@ def api_brief(request: web.Request):
         "movement": movement.get("verdict", "") if movement else "",
         "drift": drift,
         "safety": spike,
+        "links": links,
         "rules": {"installed": rules, "running": running, "max_posts": max_posts},
         "db_exists": db_path().exists(),
     }

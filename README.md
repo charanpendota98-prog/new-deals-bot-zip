@@ -109,6 +109,7 @@ compiled and linted there too):
 | `ci/offline-gate.yml` | The GitHub Actions workflow as shipped: the same `ops/test_all.sh`, plus the clean-checkout assertion, on push and pull request |
 | `doc_freshness.py` | Verify/refresh the documented SHA-256 hashes, the bot version label and the per-suite counts: `--check` fails on drift, `--write` repairs, `--json` for CI |
 | `quality_audit.py` | Read-only DB audit, `--check-url` single-URL verdict, `--strict` exits non-zero on findings, `--json` |
+| `link_doctor.py` | One link, one verdict: **is it valid, and is it OURS?** Follows the redirect chain by hand (loops, 404s, soft-404s, unreachable hosts all named), classifies the destination with the same `url_money()` the money report uses, prints a `use this` repaired link when it can (`amazon.in/dp/ASIN` → `?tag=mama086-21`), and with `--db` sweeps the links we actually published (`--recent N`, `--strict` exits 1 on any unprovable hop, `--offline`, `--json`, `--text`) |
 | `conversion_report.py` | Per-route status of what is actually converting, from the live DB + log (`--json`) |
 | `coverage_audit.py` | Source-vs-channel coverage report plus `--heal` re-queue of posts that never went out (`--json`) |
 | `category_report.py` | Category-wise truth per shelf: sends/skips/holds, pending backlog, routed vs withheld (with reasons), tag state, **whether the links it published pay us**, the IST-day trend, the Telegram-vs-WhatsApp surface, drill-down rows and actionable findings — the same engine the dashboard's Categories panel uses (`--json`, `--strict`, `--strict-errors`, `--rules`, `--hours`, `--days`, `--expand`) |
@@ -242,6 +243,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
+| `test_link_doctor.py` | `ops/link_doctor.py` against real redirect chains on a loopback server (healthy hop, 404, soft-404, loop, unreachable host), the repair rules, the published-links sweep (`--strict` exit code, `--json`, missing DB), and the bot's short-link policy: a tokenless hop is never minted or wrapped, the destination is tagged BEFORE the hop is minted (`with_our_attribution`), and an unprovable hop is refused at pre-send even with strict mode off |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
 | `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
 | `test_deploy_zip.py` | The bundle the operator actually uploads is the code in the tree: every shipped file matches `MANIFEST.sha256`, all Python compiles and the bot + every hard-imported helper import from the **unpacked** zip, the bridge loads its policy out of the bundle and blocks, and the reported post still prices at ₹60,000 and routes to electronics from inside the zip |
@@ -819,7 +821,7 @@ delta, and an unreadable database says so instead of drawing a flat line of zero
 
 | Endpoint | The question it answers |
 |---|---|
-| `GET /api/brief` | *What do I do now?* The health payload (returned once — the console renders the same object instead of asking twice), the installed vs running rules version, a refusal spike against the 7-day hourly average, the window movement, and a deduplicated severity-ranked `items[]` where every row carries `title`, `detail`, `fix` and the `anchor` of the panel that explains it. `?services=1` adds systemd. |
+| `GET /api/brief` | *What do I do now?* The health payload (returned once — the console renders the same object instead of asking twice), the installed vs running rules version, a refusal spike against the 7-day hourly average, the window movement, and a deduplicated severity-ranked `items[]` where every row carries `title`, `detail`, `fix` and the `anchor` of the panel that explains it — including the link-hygiene row: a `links` block counts how many **published** links are short hops nobody can prove are ours (see `ops/link_doctor.py`), memoised per database state so the 5 s tick does not rescan 5,000 cache rows. `?services=1` adds systemd. |
 | `GET /api/trends?hours=&buckets=` | *Better or worse?* For each metric: `current`, `previous`, `delta`, `pct` (or `null` with `baseline_thin`), `direction`, `sentiment` (`good`/`bad`/`flat` — more skips is bad, more sends is good), the bars, and the same bars for the window before. Plus `channels[]`, `skip_reasons[]` and one plain `verdict` sentence. |
 
 Measured on the demo database (21 MB, 40k posts, 8 days): `status 39 ms`, `pulse 28 ms`,
@@ -1755,13 +1757,13 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `e32b42d0e20b876881cdef92532fd4450cf26eb23eaf8826af68f5ec7d863050` |
+| `bestgaa/main_bot_new.py` (v19.0) | `85ff368d6d0e35c1424cbb61246d46a89d5266868e2b3ad2bee5f282c434567b` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
-| `tg-wa-bridge/bridge.js` | `40cc06023b67410dfaa21cdd3108a1c3231ff968ff8449a16de414c5b59e8b41` |
+| `tg-wa-bridge/bridge.js` | `57d6c115ca943c9c04b5a04d21ba718b4c4a3e697892d9665f5633821e38a2c1` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
 | `tg-wa-bridge/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
@@ -1771,18 +1773,18 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `7f7e8dacb2b2482fcb6443a6aea3b6c490d1aa699e0083ed247b913e11ca385b` |
+| `dashboard/app.py` | `6d6de1de2f60cfe0c8d52e8d9be39cde0807afb3f0502ead8c7747442f285bab` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
-| `dashboard/trends.py` | `bc79a66d5d8744e6ac1a4a6cc6dd5b644d84a5e4fee45f133863311c11e4da1a` |
+| `dashboard/trends.py` | `547124f8e6c22f3b89b676d8c4e97b28394bcad7fc3c2359f559adecae91b2ba` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
 | `ops/build_deploy_zip.py` | `8a4f980c0ecfcd6e6aea51b4c7e76413b0cf7465a0d131ae976a8a5a95f3292f` |
-| `ops/category_report.py` | `aa1092bb60152bbee49ede2bd720925bc713923973f6cc237c7487b2568a913b` |
+| `ops/category_report.py` | `e85b0e7bf47ee97d090d2ee77b37bfcd091c102461480d875638685d6b9db53c` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `8a8ea38ef279d0ff8e64558c20783f4dcfda371b7a97abebc00ec824b1f6a7e6` |
@@ -1800,13 +1802,14 @@ source snapshot:
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
+| `ops/link_doctor.py` | `a9c8a379b5d0cbbbbef8c9cb70543608b8f2048d24f5b6e7e4855d853d945ee3` |
 | `ops/quality_audit.py` | `6b9d1533353495f83e0ca5159150d72f399b766b18c03177a23a01522e766afa` |
 | `ops/repack_bundles.sh` | `b7970b1af18e85071aac011773ff953b59fb493eeab1e1f3eb10bb3d18c335fb` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `51183b7ac70f50c0edd994713d8147ab4ebc4fa4b659244c8e62eb47906c3cf4` |
+| `ops/test_all.sh` | `2c792c0b1aa2d4d5bf0773da97cfc49cab93859609b85136f1d10e5f4f25a82b` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1816,7 +1819,7 @@ source snapshot:
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
-| `test_dashboard_ops.py` | `b8f97e11d07081862cc28c2b966b0e7f8ddba881e750723fe407ac1dc8fd9165` |
+| `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
@@ -1827,7 +1830,8 @@ source snapshot:
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
 | `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
-| `test_line_fidelity.py` | `1628c4130f9e2180d1b5289d8e9c66f0b155a8687931c237e3301a885e217e5a` |
+| `test_line_fidelity.py` | `29d223fb580eeebeb9ffeaea9b63fe76c89be7f4c5454164301c6cd088f41bf3` |
+| `test_link_doctor.py` | `e7357f845b5d9f6434b292dbd005a1194ba0a2e9c5a96ecf546c84eb189a5791` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |

@@ -213,6 +213,10 @@ run 'durable delivery fences and restart recovery' "$PYTHON" test_delivery_fence
 run 'WhatsApp durable send guard' node --test test_send_guard.mjs
 run 'post-deploy repeat guard' "$PYTHON" test_postdeploy_repeats.py
 run 'link category inspector' "$PYTHON" test_link_inspector.py
+# USER REPORT 2026-10-21: two is.gd links in a channel resolving to UNTAGGED
+# Amazon pages. The doctor answers "valid? ours?" per link and prints the
+# repaired link; the same suite pins that no unprovable hop is minted or posted.
+run 'link doctor (valid? ours? repaired link) + no unprovable hop' "$PYTHON" test_link_doctor.py
 run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
 run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py

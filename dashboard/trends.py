@@ -22,6 +22,9 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
 from dashboard.insight import age, ist, _cols, _tables
 
 # key -> (label, up-is-good?, one-line explanation)
@@ -291,6 +294,52 @@ def _verdict(by_key: dict, label: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+#  link hygiene - "is every published link provably ours?"
+# --------------------------------------------------------------------------- #
+# The classification itself lives in ops/category_report.py (url_money), the
+# same verdicts the money report and the conversion card use, so the brief can
+# never disagree with them. This module only remembers the answer: /api/brief
+# runs every five seconds and the scan reads 5,000 cache rows (~170 ms).
+_HYGIENE_MEMO: dict = {}
+_HYGIENE_TTL = 60.0
+
+
+def link_hygiene(conn: sqlite3.Connection, reader, our_tags, *,
+                 ttl: float = _HYGIENE_TTL, now: float | None = None,
+                 limit: int = 3) -> dict:
+    """Memoised `reader(conn, our_tags, limit=...)`.
+
+    Cached per database state (path, mtime, size), so a changed database never
+    serves a stale answer and an unchanged one costs nothing. `reader` is the
+    category-report function, injected because importing it here would drag the
+    whole report into every dashboard request.
+    """
+    now = time.time() if now is None else now
+    if conn is None or reader is None:
+        return {"available": False, "memo": False, "checked_age_s": 0.0,
+                "checked_at": now}
+    try:
+        db_path = Path(conn.execute("PRAGMA database_list").fetchone()[2])
+        key = (str(db_path), db_path.stat().st_mtime, db_path.stat().st_size)
+    except (sqlite3.Error, OSError, TypeError, IndexError):
+        key = ("", 0, 0)
+    # The tag set is part of the key: a newly added tag changes every verdict.
+    key = (key, tuple(sorted(str(t).lower() for t in (our_tags or ()))))
+    cached = _HYGIENE_MEMO.get("entry")
+    if cached and cached["key"] == key and now - cached["at"] < ttl:
+        return {**cached["value"], "memo": True,
+                "checked_age_s": round(now - cached["at"], 1)}
+    try:
+        value = dict(reader(conn, our_tags, limit=limit) or {})
+    except Exception as exc:  # noqa: BLE001 - never let the brief die for a stat
+        return {"available": False, "error": str(exc)[:200], "memo": False,
+                "checked_at": now, "checked_age_s": 0.0}
+    value.update({"memo": False, "checked_at": now, "checked_age_s": 0.0})
+    _HYGIENE_MEMO["entry"] = {"key": key, "at": now, "value": value}
+    return value
+
+
+# --------------------------------------------------------------------------- #
 #  attention - what a human has to do, ranked
 # --------------------------------------------------------------------------- #
 SEVERITY_RANK = {"error": 0, "warn": 1, "info": 2}
@@ -310,7 +359,8 @@ README_FIX = {
 def attention(*, health: dict | None = None, drift: dict | None = None,
               safety: dict | None = None, trends: dict | None = None,
               categories: list | None = None, conversion: dict | None = None,
-              limit: int = 12, now: float | None = None) -> dict:
+              links: dict | None = None, limit: int = 12,
+              now: float | None = None) -> dict:
     """Ranked "what needs you now" list, built only from facts already loaded.
 
     Nothing here queries anything: pass in the health payload, the rules drift,
@@ -403,6 +453,24 @@ def attention(*, health: dict | None = None, drift: dict | None = None,
             str(finding.get("detail") or ""),
             "Open Categories for the shelf, its channel and its last delivery.", "#categories")
 
+    if links and links.get("available", True):
+        hops = int(links.get("unproven_hops") or 0)
+        if hops:
+            example = (links.get("hop_examples") or [{}])[0].get("url", "")
+            add("error", "unproven_hops",
+                f"{hops:,} published link(s) are short hops we cannot prove are ours",
+                "A hop opens fine but says nothing about who minted it; the two is.gd links "
+                "reported on 2026-10-21 resolved to untagged Amazon pages and earned nothing."
+                + (f" Newest: {example}" if example else ""),
+                "python3 ops/link_doctor.py --recent 50 --strict", "#conversion")
+        nothing = int(links.get("earns_nothing") or 0)
+        cached = int(links.get("cached") or 0)
+        if not hops and cached and nothing >= max(10, cached * 0.5):
+            add("warn", "earns_nothing_links",
+                f"{nothing:,} of {cached:,} published links earn nothing",
+                "They carry no tag of ours and no stored proof, so every click pays nobody.",
+                "python3 ops/link_doctor.py --recent 50", "#conversion")
+
     if conversion:
         foreign = int(conversion.get("foreign_tag") or 0)
         nothing = int(conversion.get("earns_nothing") or 0)
@@ -452,7 +520,8 @@ def attention(*, health: dict | None = None, drift: dict | None = None,
         "items": unique,
         "sources": {"health": bool(health), "categories": categories is not None,
                     "trends": bool(trends), "conversion": bool(conversion),
-                    "safety": bool(safety), "drift": bool(drift)},
+                    "links": bool(links), "safety": bool(safety),
+                    "drift": bool(drift)},
     }
 
 

@@ -346,6 +346,18 @@ const PRODUCT_DEDUP_HOURS = 24 // STRICT 24h: asalu ravoddu same product 24h —
 // posting-as-is guarantees a deal is never lost.
 const BITLY_TOKENS = (process.env.WA_BITLY_TOKENS || '').split(',').map(x => x.trim()).filter(Boolean)
 const SHORTEN_MIN_LEN = Number(process.env.WA_SHORTEN_MIN_LEN || 65)
+// USER REPORT (2026-10-21): "ilaga invalid url link vasthunnai mana channels lo"
+// - two https://is.gd/xxxx links in a channel that resolved to UNTAGGED
+// amazon.in/dp pages. A tokenless hop proves nothing about who minted it, so it
+// is never published unless this host explicitly opts in; Bitly stays, because it
+// is minted with OUR token and can be bound to our account by a proof row.
+const TOKENLESS_FALLBACK = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.WA_TOKENLESS_FALLBACK || '0').trim().toLowerCase())
+// A hop is never wrapped in another hop, and an Amazon link without OUR tag is
+// never shortened: the destination would open fine and pay nobody.
+const TOKENLESS_HOSTS = new Set(['is.gd', 'v.gd', 'tinyurl.com', 'tiny.cc', 'rb.gy',
+  'cutt.ly', 't.ly', 'shorturl.at', 'spoo.me', 'da.gd', 'surl.li', 'shrtco.de',
+  'cli.re', 'v.ht', 'shorte.st', 'snip.ly'])
 const ALREADY_SHORT_HOSTS = new Set([
   'bit.ly', 'bitli.in', 'is.gd', 'clnk.in', 'clnk.app', 'ekaro.in', 'ekaro.app',
   'j.mp', 'cuelinks.com', 'l.ead.me', 'fktr.in', 'myntr.it', 'ajiio.in',
@@ -2704,17 +2716,47 @@ function needsShortening(url, isList = false) {
   if (SHORTEN_AMAZON_LINKS && isOurAmazonTagLink(url)) return true
   return url.length > SHORTEN_MIN_LEN
 }
+// A hop is only safe when its destination is provably ours, so the tag is applied
+// to the DESTINATION first (see withOurAttribution) and the shortener is pointed
+// at that. This is what the two reported links were missing (2026-10-21).
+function withOurAttribution(url) {
+  try {
+    const u = new URL(url)
+    if (!isAmazonHost(u.hostname.toLowerCase())) return url
+    u.searchParams.set('tag', AMAZON_TAG)
+    return u.toString()
+  } catch { return url }
+}
+// Can a hop be minted for this URL at all? Never for something that is already a
+// hop (a source's tinyurl inside our bit.ly hides both the store and its owner),
+// and never for an Amazon page when no tag can be applied.
+function mayMintShortLink(url) {
+  try {
+    const host = hostOf(url)
+    if (!host) return false
+    if ([...ALREADY_SHORT_HOSTS].some(domain => host === domain || host.endsWith('.' + domain))) return false
+    if (TOKENLESS_HOSTS.has(host) && !isOurHypdLink(url)) return false
+    if (isAmazonHost(host)) return Boolean(AMAZON_TAG)
+    return true
+  } catch { return false }
+}
 async function shortenLongUrl(url) {
   state.shortLinks ||= {}
   const cached = state.shortLinks[url]
   if (cached) return cached
+  if (!mayMintShortLink(url)) {
+    log.warn({ url: url.slice(0, 60) }, 'SHORTEN refused | not a link we could prove is ours')
+    return null
+  }
+  // Shorten the TAGGED destination, not the bare page we were handed.
+  const target = withOurAttribution(url)
   // Bitly first (when WA_BITLY_TOKENS is configured)...
   for (const token of BITLY_TOKENS) {
     try {
       const response = await fetch('https://api-ssl.bitly.com/v4/shorten', {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ long_url: url }),
+        body: JSON.stringify({ long_url: target }),
         signal: AbortSignal.timeout(12_000),
       })
       if (response.status === 429) continue
@@ -2730,10 +2772,15 @@ async function shortenLongUrl(url) {
       log.warn({ url: url.slice(0, 60), err: error.message }, 'Bitly shorten failed')
     }
   }
-  // ...then the tokenless is.gd fallback (the same one the bot uses), so long
-  // links get shortened even without a Bitly account.
+  // ...then the tokenless is.gd fallback, ONLY when this host opted in: nothing
+  // in an is.gd URL says it is ours. Default is to keep the native link, so a
+  // cosmetic hop can never cost us a commission.
+  if (!TOKENLESS_FALLBACK) {
+    log.warn({ url: url.slice(0, 60) }, 'SHORTEN unavailable (no Bitly); keeping the native link')
+    return null
+  }
   try {
-    const response = await fetch(`https://is.gd/create.php?format=simple&url=${encodeURIComponent(url)}`, {
+    const response = await fetch(`https://is.gd/create.php?format=simple&url=${encodeURIComponent(target)}`, {
       signal: AbortSignal.timeout(12_000),
     })
     if (response.status === 200) {
@@ -7208,6 +7255,36 @@ https://fktr.in/MANY${i}`,
       state = saved.state; allTargets = saved.allTargets
       sendNewsletterText = saved.sendNewsletterText; sendNewsletterMedia = saved.sendNewsletterMedia
       telegramFile = saved.telegramFile; shortenUntaggedCategoryCopy = saved.shortenUntaggedCategoryCopy
+    }
+  }
+  // ------------------------------------------------------------------ //
+  // SHORT-LINK POLICY (USER REPORT 2026-10-21). Two is.gd links reached a
+  // channel; both resolved to UNTAGGED Amazon pages, so they opened and earned
+  // nobody. A tokenless hop is off unless this host opts in, a hop is never
+  // wrapped in another hop, and an Amazon link without OUR tag is not shortened.
+  // ------------------------------------------------------------------ //
+  {
+    const assert = (await import('node:assert/strict')).default
+    assert.equal(TOKENLESS_FALLBACK, false,
+      'the tokenless is.gd fallback must be OFF unless WA_TOKENLESS_FALLBACK=1')
+    assert.equal(mayMintShortLink('https://is.gd/c3Gl9d'), false,
+      'a hop is never wrapped in another hop')
+    assert.equal(mayMintShortLink(`https://www.amazon.in/dp/B0HNPB6QBS?tag=${AMAZON_TAG}`), true)
+    assert.equal(withOurAttribution('https://www.amazon.in/dp/B0HNPB6QBS'),
+      `https://www.amazon.in/dp/B0HNPB6QBS?tag=${AMAZON_TAG}`,
+      'the destination gets OUR tag before a hop is minted')
+    assert.equal(withOurAttribution('https://www.amazon.in/dp/B0HNPB6QBS?tag=theirs-21'),
+      `https://www.amazon.in/dp/B0HNPB6QBS?tag=${AMAZON_TAG}`,
+      'a stranger tag on the destination is replaced, never carried along')
+    assert.equal(withOurAttribution('https://example.com/x'), 'https://example.com/x',
+      'a non-merchant URL is left exactly as it is')
+    const previousTokens = [...BITLY_TOKENS]
+    BITLY_TOKENS.length = 0                     // no Bitly on this host
+    try {
+      assert.equal(await shortenLongUrl('https://www.flipkart.com/a-very-long-product-page/p/itm1?pid=P1&lid=xyz'),
+        null, 'with no Bitly and no opt-in, the native link is kept instead of an is.gd hop')
+    } finally {
+      BITLY_TOKENS.push(...previousTokens)
     }
   }
   console.log('bridge self-test PASS')

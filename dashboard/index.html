@@ -905,11 +905,13 @@ async function loadConversion(){
   const t=data.totals||{};
   const stat=(label,value)=>'<div class="stat"><b>'+escapeHTML(value??'—')+'</b><span>'
     +escapeHTML(label)+'</span></div>';
+  const hyg=data.hygiene||{};
   stats.innerHTML=stat('cached links',t.cached??0)
     +stat('converted to us',(data.converted_pct==null?'—':data.converted_pct+'%'))
     +stat('foreign tag',t.foreign_tag??0)
     +stat('earn nothing',t.earns_nothing??0)
     +stat('unattributed',t.unattributed??0)
+    +stat('unproven hops',hyg.available?hyg.unproven_hops??0:'—')
     +stat('proof rows',t.proofs??0);
   const owned=t.owned??0, cached=t.cached??0;
   note.textContent=(cached
@@ -918,6 +920,16 @@ async function loadConversion(){
       +(t.earns_nothing??0)+' earn nothing.'
     : 'no cached links yet - the converter has not run in this database.')
     +(t.capped?' (totals capped at the newest 5000 rows)':'');
+  const hops=hyg.unproven_hops??0;
+  if(hyg.available && hops){
+    const ex=(hyg.hop_examples||[]).slice(0,3);
+    note.innerHTML+=`<div class="bad">${fmtNum(hops)} published link(s) are short hops nobody can `
+      +`prove are ours — a hop opens fine either way, so it is not evidence.</div>`
+      +ex.map(h=>`<div>· <code>${escapeHTML(h.url)}</code> → `
+        +`${escapeHTML(h.resolved_host||'?')} <span class="muted">(${escapeHTML(h.at||'')})</span></div>`).join('')
+      +`<div>Check any link in one command: <code>python3 ops/link_doctor.py ${escapeHTML(ex[0]?.url||'')}</code> `
+      +`<button class="ghost tiny" onclick="copyText(this.previousElementSibling.textContent.trim(), this)">copy</button></div>`;
+  }
   const trendBox=document.getElementById('convtrend');
   const trend=data.trend||[];
   if(trendBox){
