@@ -50,6 +50,18 @@ pinned on in both services and is not an environment opt-out):
 - Product-list items keep their name, price, and link together. If strict
   verification cannot provide our own link for an item, the affected post/list is
   skipped as a unit rather than leaving an orphaned name or price behind.
+- **Link repair before every send (2026-10-22).** A link that cannot prove it pays
+  us is REWRITTEN, not thrown away with the deal: a hop is unwrapped (from our own
+  `link_cache`/`owned_link_proofs` first, network only when no stored destination
+  exists), the destination is published in OUR form (`amazon.in/dp/ASIN?tag=OURS`
+  or a converter link bound to our publisher id), and the rewrite is remembered
+  so the next send needs no network call. This runs in the final tidy pass, again
+  at the final provenance recheck, and again on the exact per-target text at
+  pre-send - so a queue row rendered by an older build is fixed in place instead
+  of shipping a hop that opens and earns nobody. `SHORTENER` also refuses to wrap
+  a destination that carries no attribution of ours, and `replace_url_everywhere`
+  matches on a URL boundary so replacing a bare `.../dp/ASIN` next to its own
+  `?tag=` twin can never produce a doubled `?tag=OURS?tag=OURS`.
 
 Category mirrors use both product text and link-derived clues: readable URL path
 slugs and selected search/title query terms from incoming links and known resolved
@@ -243,6 +255,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_category_invariants.py` | Deterministic adversarial/metamorphic classifier invariants (no network, no bot import) |
 | `test_category_preview.py` | The saved-config category preview simulator (no network, no bot import) |
 | `test_link_inspector.py` | The easy-setup inspector never fetches a page, invents a title, or sends a post |
+| `test_link_commission.py` | "Commission asalu miss avvakunda", as an executable rule — **258 checks, 100 rounds**: 125 Amazon shapes (host × path × tag state) must come out with exactly ONE tag and it is ours; all 15 tokenless shortener hosts repaired from our own link book or unwrapped live into OUR tagged destination; a bare merchant page converted (never published free); family/service/share links untouched; the two reported `is.gd` links end to end through the bot's own final tidy pass and through the pre-send gate (refused as hops, accepted as repairs); repair is idempotent; and a bare link sitting beside its own tagged twin never produces a doubled `?tag=` |
 | `test_link_doctor.py` | `ops/link_doctor.py` against real redirect chains on a loopback server (healthy hop, 404, soft-404, loop, unreachable host), the repair rules, the published-links sweep (`--strict` exit code, `--json`, missing DB), and the bot's short-link policy: a tokenless hop is never minted or wrapped, the destination is tagged BEFORE the hop is minted (`with_our_attribution`), and an unprovable hop is refused at pre-send even with strict mode off |
 | `test_safety_diagnostics.py` | Read-only diagnostics never invent a send, a product identity, or link ownership |
 | `test_category_report.py` | Category-wise reporting end to end: config → shelf index, the real delivery ledger, pending backlog, the bot's `CATEGORY` log lines, the findings matrix, the CLI contract and `/api/categories`; plus link-money attribution (owned / earns-nothing / foreign-tag / unproven) with parity against `conversion_report.py`, IST-day trends, Telegram-vs-WhatsApp surfaces, the drill-down, the watchdog's speak-once behaviour, the per-channel source→target conversion fold, the pipe drill (one source→channel pipe opened to its posts), the per-day conversion trend, declared-vs-live WhatsApp intent with its pending-activation finding, and the served markup for all of it |
@@ -1757,13 +1770,13 @@ source snapshot:
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `85ff368d6d0e35c1424cbb61246d46a89d5266868e2b3ad2bee5f282c434567b` |
+| `bestgaa/main_bot_new.py` (v19.0) | `0e4116eef0b96f3565433da153bc0154524faf5e0e0931b09531169acf29f99a` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
-| `tg-wa-bridge/bridge.js` | `57d6c115ca943c9c04b5a04d21ba718b4c4a3e697892d9665f5633821e38a2c1` |
+| `tg-wa-bridge/bridge.js` | `3c9cd077b09f8dcc4f9b62445ae0a0f9ca399d3359ea5f18764c3cac28fbcd4f` |
 | `tg-wa-bridge/category_classifier.js` | `b1a0176643709d314280685dbc3e9e55f3177f6ccd7d6e0c3c4dc3b721f88cf5` |
 | `tg-wa-bridge/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `tg-wa-bridge/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
@@ -1809,7 +1822,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `2c792c0b1aa2d4d5bf0773da97cfc49cab93859609b85136f1d10e5f4f25a82b` |
+| `ops/test_all.sh` | `e362e645c5364c789094b8d6d031b04b13b43c17a8ccaf5be7f9cfa2dec2322a` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1831,6 +1844,7 @@ source snapshot:
 | `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
 | `test_line_fidelity.py` | `29d223fb580eeebeb9ffeaea9b63fe76c89be7f4c5454164301c6cd088f41bf3` |
+| `test_link_commission.py` | `f5554dbcdf4c69bed33e9d8c71972e79bf28c132f0b3b46c7e90794db8e5e0db` |
 | `test_link_doctor.py` | `e7357f845b5d9f6434b292dbd005a1194ba0a2e9c5a96ecf546c84eb189a5791` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
