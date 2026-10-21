@@ -453,6 +453,100 @@ def _systemctl_active(service: str) -> tuple[str, str]:
 EVENT_KINDS = ("intake", "send", "block", "link", "proof")
 
 
+def _window_facts(conn: sqlite3.Connection, *, tables: set[str], since: float,
+                  now: float, kind: str, source: str, target: str,
+                  buckets: int) -> tuple[dict, list[dict], dict]:
+    """Exact counts, equal-width buckets and last event per kind, from SQL.
+
+    One grouped query per kind: ``(bucket, count, newest)``. That is both exact
+    over any window and cheaper than reading rows to count them, because the
+    aggregate never leaves SQLite. The buckets split the window itself
+    (``(t - since) / width``), so the bars always add up to the totals - a
+    7-day view gets twenty-four 7-hour bars instead of twenty-four hours that
+    silently drop six days. A missing table or column yields zeros for that
+    kind instead of an exception: absent, never invented.
+    """
+    width = max(1.0, (now - since) / max(1, buckets))
+
+    def rows(sql: str, args=()) -> list:
+        try:
+            return conn.execute(sql, args).fetchall()
+        except sqlite3.OperationalError:
+            return []
+
+    per_bucket: dict[str, dict[int, int]] = {name: {} for name in EVENT_KINDS}
+    last_at: dict[str, float] = {}
+    counts = {name: 0 for name in EVENT_KINDS}
+    bucket_expr = "MIN(?-1, CAST(({col}-?)/? AS INTEGER))"
+
+    def record(name: str, found) -> None:
+        for index, count, newest in found:
+            if index is None:
+                continue
+            index = max(0, int(index))
+            per_bucket[name][index] = per_bucket[name].get(index, 0) + int(count or 0)
+            counts[name] += int(count or 0)
+            at = float(newest or 0)
+            if at > last_at.get(name, 0.0):
+                last_at[name] = at
+
+    def grab(name: str, col: str, table: str, extra: str, args: list, join: str = "") -> None:
+        sql = ("SELECT " + bucket_expr.format(col=col) + " AS b, COUNT(*), MAX(" + col + ") "
+               "FROM " + table + join + " WHERE " + col + ">=? AND " + col + "<=?"
+               + (" AND " + extra if extra else "") + " GROUP BY b")
+        record(name, rows(sql, [buckets - 1, since, width, since, now] + args))
+
+    wants = lambda name: kind in ("", name)  # noqa: E731 - one-line predicate
+    by_source = " AND source=?" if source else ""
+    src = [source] if source else []
+
+    if "queue" in tables and wants("intake") and not target:
+        grab("intake", "created_at", "queue", "1=1" + by_source, src)
+    if "send_attempts" in tables and wants("send"):
+        extra = "state IN ('sent','uncertain','started')"
+        args = []
+        join = ""
+        if source:
+            join = " JOIN queue q ON q.id=a.queue_id"
+            extra += " AND q.source=?"
+            args.append(source)
+        if target:
+            extra += " AND target=?"
+            args.append(target)
+        grab("send", "a.updated_at", "send_attempts a", extra, args, join=join)
+    if "blocked_content" in tables and wants("block"):
+        extra = "1=1" + by_source
+        args = list(src)
+        if target:
+            extra += " AND target=?"
+            args.append(target)
+        grab("block", "created_at", "blocked_content", extra, args)
+    # Conversions and proofs carry no source or target, so a filtered view must
+    # not claim them (the old add() dropped them for the same reason).
+    if "link_cache" in tables and wants("link") and not source and not target:
+        grab("link", "created_at", "link_cache", "", [])
+    if "owned_link_proofs" in tables and wants("proof") and not source and not target:
+        grab("proof", "created_at", "owned_link_proofs", "", [])
+
+    if width >= 86400:
+        stamp = "%d %b 00:00"
+    elif width >= 3600:
+        stamp = "%d %b %H:%M"
+    else:
+        stamp = "%H:%M"
+    hourly: list[dict] = []
+    for index in range(buckets):
+        start = since + index * width
+        row = {"at": start,
+               "hour_ist": time.strftime(stamp, time.gmtime(start + IST_OFFSET)),
+               "bucket_seconds": round(width)}
+        for name in EVENT_KINDS:
+            row[name] = per_bucket[name].get(index, 0)
+        hourly.append(row)
+    facts = {"bucket_seconds": round(width), "buckets": buckets}
+    return counts, hourly, last_at, facts
+
+
 def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
           source: str = "", target: str = "", limit: int = 200,
           now: float | None = None) -> dict:
@@ -531,30 +625,29 @@ def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
                 label=f"proof · {row[2]}", status=str(row[3] or ""),
                 detail=f"{_short(str(row[0]))} → {_short(str(row[1]))}", severity="ok")
 
-    # Hourly throughput for the chart: one bucket per IST hour, every kind, so
-    # a gap is a visible empty bar instead of something to guess about.
+    # Counts and the hourly chart come from SQL over the WHOLE window, never
+    # from the capped event list that is built above for reading. Counting the
+    # capped list is a real bug that shipped once: with 4,999 intakes and 6,813
+    # sends in 24 h, /api/pulse reported 500 of each (the list limit) and drew
+    # a chart that stopped at 500 bars. `events` stays capped; the numbers do
+    # not.
     buckets = max(1, min(24, int(round(float(hours)))))
-    hourly = []
-    for step in range(buckets - 1, -1, -1):
-        start = now - (step + 1) * 3600
-        row = {"at": start, "hour_ist": time.strftime("%H:00", time.gmtime(start + IST_OFFSET))}
-        for name in EVENT_KINDS:
-            row[name] = 0
-        hourly.append(row)
-    for event in events:
-        offset = int((now - event["at"]) // 3600)
-        if 0 <= offset < buckets:
-            hourly[buckets - 1 - offset][event["kind"]] += 1
+    counts, hourly, last_at, chart_facts = _window_facts(
+        conn, tables=tables, since=since, now=now, kind=kind, source=source,
+        target=target, buckets=buckets)
 
     events.sort(key=lambda e: (e["at"], e["kind"]), reverse=True)
     capped = len(events) > limit
-    counts = {k: sum(1 for e in events if e["kind"] == k) for k in EVENT_KINDS}
     last: dict = {}
     for name in EVENT_KINDS:
-        found = next((e for e in events if e["kind"] == name), None)
-        last[name] = ({"at": found["at"], "at_ist": ist(found["at"]),
-                       "label": found["label"], "age_s": max(0.0, now - found["at"]),
-                       "age": age(now - found["at"])} if found else None)
+        at = last_at.get(name)
+        if not at:
+            last[name] = None
+            continue
+        shown = next((e for e in events if e["kind"] == name), None)
+        last[name] = {"at": at, "at_ist": ist(at),
+                      "label": shown["label"] if shown else name,
+                      "age_s": max(0.0, now - at), "age": age(now - at)}
     silences = []
     for name in EVENT_KINDS:
         found = last.get(name)
@@ -571,7 +664,10 @@ def pulse(conn: sqlite3.Connection, *, hours: float = 6.0, kind: str = "",
         "last": last,
         "silences": silences,
         "hourly": hourly,
+        "chart": chart_facts,
+        "exact_counts": True,
         "capped": capped,
+        "events_capped": capped,
         "events": [{"at": e["at"], "at_ist": ist(e["at"]), "age": age(now - e["at"]),
                     **{k: v for k, v in e.items() if k != "at"}} for e in events[:limit]],
     }

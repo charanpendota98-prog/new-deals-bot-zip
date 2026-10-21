@@ -30,7 +30,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 sys.path.insert(0, str(ROOT))
 import main_bot_new as bot  # noqa: E402
 from dashboard import app as dash  # noqa: E402
-from dashboard import insight  # noqa: E402
+from dashboard import insight, trends  # noqa: E402
 from dashboard import source_target  # noqa: E402
 
 FAILS: list[str] = []
@@ -285,6 +285,266 @@ def test_engine():
             conn.close()
 
 
+def build_busy_db(path: Path, now: float) -> None:
+    """A database whose WINDOW is bigger than the event list this time.
+
+    The capped list is exactly what /api/pulse used to count: 4,999 intakes and
+    6,813 sends in 24 h were reported as "500", the list limit. These numbers
+    are small enough to assert exactly and still far above any list limit.
+    """
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+    CREATE TABLE queue (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER NOT NULL,
+      msg_id INTEGER NOT NULL, source TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0, next_at REAL NOT NULL DEFAULT 0,
+      rendered_text TEXT, targets_json TEXT, deal_keys_json TEXT, premium_score INTEGER,
+      last_error TEXT, created_at REAL NOT NULL);
+    CREATE TABLE deliveries (queue_id INTEGER NOT NULL, target TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
+      chunks_sent INTEGER NOT NULL DEFAULT 0, last_error TEXT, PRIMARY KEY(queue_id,target));
+    CREATE TABLE send_attempts (queue_id INTEGER NOT NULL, target TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL, payload_hash TEXT NOT NULL, state TEXT NOT NULL,
+      updated_at REAL NOT NULL, PRIMARY KEY(queue_id,target,chunk_index));
+    CREATE TABLE blocked_content (id INTEGER PRIMARY KEY AUTOINCREMENT, stage TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT '', msg_id INTEGER, queue_id INTEGER,
+      target TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+      label TEXT NOT NULL DEFAULT '', matched TEXT NOT NULL DEFAULT '',
+      excerpt TEXT NOT NULL DEFAULT '', severity TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT '', policy_version TEXT NOT NULL DEFAULT '',
+      created_at REAL NOT NULL);
+    CREATE TABLE link_cache (source_url TEXT PRIMARY KEY, affiliate_url TEXT NOT NULL,
+      resolved_url TEXT, deal_key TEXT, created_at REAL NOT NULL);
+    """)
+    qid = 0
+    queue_rows, delivery_rows, attempt_rows = [], [], []
+    # current window: 900 intakes, 800 delivered, 200 skipped, 30 refused, 500 links
+    for i in range(900):
+        qid += 1
+        at = now - 23 * 3600 + i * 60          # inside the last 24 h
+        status = "pending" if i >= 895 else ("failed" if i >= 888 else "done")
+        source = "DealSauce" if i % 2 else "TrickXpert"
+        queue_rows.append((qid, -1, qid, source, status, 1, 0, "deal " + str(i),
+                           None, None, 50, "FloodWait" if status == "failed" else "", at))
+        if i < 800:
+            target = "LootZoneIndia11" if i % 2 else "PowerLoots1"
+            delivery_rows.append((qid, target, "sent", 1, 1, ""))
+            attempt_rows.append((qid, target, 0, f"h{qid}", "sent", at + 5))
+        elif i < 1000:
+            target = "LootZoneIndia11" if i % 2 else "PowerLoots1"
+            delivery_rows.append((qid, target, "skipped", 1, 0,
+                                  "duplicate deal_key" if i % 3 else "budget: 30/day"))
+    # previous window (24-48 h): 400 intakes, 300 delivered, 100 skipped, 200 refused
+    for i in range(400):
+        qid += 1
+        at = now - 47 * 3600 + i * 60
+        queue_rows.append((qid, -1, qid, "DealSauce", "done", 1, 0, "old deal " + str(i),
+                           None, None, 50, "", at))
+        if i < 340:
+            delivery_rows.append((qid, "LootZoneIndia11", "sent", 1, 1, ""))
+            attempt_rows.append((qid, "LootZoneIndia11", 0, f"o{qid}", "sent", at + 5))
+        else:
+            delivery_rows.append((qid, "LootZoneIndia11", "skipped", 1, 0,
+                                  "duplicate deal_key"))
+    conn.executemany("INSERT INTO queue VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", queue_rows)
+    conn.executemany("INSERT INTO deliveries VALUES (?,?,?,?,?,?)", delivery_rows)
+    conn.executemany("INSERT INTO send_attempts VALUES (?,?,?,?,?,?)", attempt_rows)
+    conn.executemany(
+        "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,label,"
+        "matched,excerpt,severity,reason,policy_version,created_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        [("intake", "TrickXpert", 1000 + i, None, "", "gambling_betting", "Gambling",
+          "1xbet", "***", "block", "not a deal", "5", now - 20 * 3600 + i * 60)
+         for i in range(30)]
+        + [("intake", "TrickXpert", 2000 + i, None, "", "gambling_betting", "Gambling",
+            "1xbet", "***", "block", "not a deal", "5", now - 40 * 3600 + i * 60)
+           for i in range(200)])
+    conn.executemany("INSERT INTO link_cache VALUES (?,?,?,?,?)",
+                     [(f"https://s/{i}", f"https://bitli.in/{i}", "https://www.amazon.in/dp/X",
+                       f"k{i}", now - 22 * 3600 + i * 60) for i in range(500)])
+    conn.commit()
+    conn.close()
+
+
+def test_counts_and_trends():
+    print("\n== exact counts + trends: this window against the one before ==")
+    now = time.time()
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "busy.sqlite3"
+        build_busy_db(db, now)
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            # ---- the count bug: a capped list is not a count --------------
+            flow = insight.pulse(conn, hours=24, limit=50, now=now)
+            truth = {
+                "intake": conn.execute("SELECT COUNT(*) FROM queue WHERE created_at>=?",
+                                       (now - 86400,)).fetchone()[0],
+                "send": conn.execute("SELECT COUNT(*) FROM send_attempts WHERE updated_at>=?",
+                                     (now - 86400,)).fetchone()[0],
+                "block": conn.execute("SELECT COUNT(*) FROM blocked_content WHERE created_at>=?",
+                                      (now - 86400,)).fetchone()[0],
+                "link": conn.execute("SELECT COUNT(*) FROM link_cache WHERE created_at>=?",
+                                     (now - 86400,)).fetchone()[0],
+            }
+            check("pulse counts the whole window, not the 50 rows it shows",
+                  len(flow["events"]) == 50
+                  and all(flow["counts"][key] == value for key, value in truth.items()),
+                  f"{flow['counts']} vs {truth}")
+            check("an exact count is bigger than the visible list",
+                  flow["counts"]["intake"] > len(flow["events"]))
+            check("the chart adds up to the totals it is drawn from",
+                  sum(b["intake"] for b in flow["hourly"]) == truth["intake"]
+                  and sum(b["send"] for b in flow["hourly"]) == truth["send"],
+                  f'{sum(b["intake"] for b in flow["hourly"])} vs {truth["intake"]}')
+            check("the payload says the counts are exact and only the list is capped",
+                  flow.get("exact_counts") is True and flow["capped"] is True)
+            check("a filtered view counts only what it shows",
+                  insight.pulse(conn, hours=24, kind="block", now=now)["counts"]["send"] == 0)
+            seven = insight.pulse(conn, hours=168, now=now)
+            check("a 7-day window keeps 24 bars that split the whole window",
+                  len(seven["hourly"]) == 24
+                  and sum(b["intake"] for b in seven["hourly"]) == seven["counts"]["intake"],
+                  str(seven["chart"]))
+            check("a 7-day bar is seven hours wide, not one",
+                  seven["chart"]["bucket_seconds"] == 7 * 3600, str(seven["chart"]))
+
+            # ---- trends ---------------------------------------------------
+            window = trends.compare(conn, hours=24, now=now)
+            by_key = window["by_metric"]
+            check("trends: delivered count", by_key["sent"]["current"] == 800,
+                  str(by_key["sent"]))
+            check("trends: the window before", by_key["sent"]["previous"] == 340)
+            check("trends: exact delta and percentage",
+                  by_key["sent"]["delta"] == 460 and by_key["sent"]["pct"] == 135.3,
+                  f"{by_key['sent']['delta']} {by_key['sent']['pct']}")
+            check("trends: more sends is a good movement",
+                  by_key["sent"]["sentiment"] == "good" and by_key["sent"]["direction"] == "up")
+            check("trends: more skips is a bad movement",
+                  by_key["skipped"]["current"] == 100 and by_key["skipped"]["previous"] == 60
+                  and by_key["skipped"]["sentiment"] == "bad", str(by_key["skipped"]))
+            check("trends: refusals fell",
+                  by_key["refused"]["current"] == 30 and by_key["refused"]["previous"] == 200
+                  and by_key["refused"]["sentiment"] == "good", str(by_key["refused"]))
+            check("trends: every bar list adds up to its own total",
+                  all(sum(m["series"]) == m["current"] for m in window["metrics"]
+                      if m["series"]), str([(m["key"], sum(m["series"]), m["current"])
+                                            for m in window["metrics"] if m["series"]]))
+            check("trends: a metric with no history gets no fake percentage",
+                  by_key["converted"]["previous"] == 0
+                  and by_key["converted"]["pct"] is None
+                  and by_key["converted"]["baseline_thin"] is True,
+                  str(by_key["converted"]))
+            check("trends: the backlog is a snapshot without a delta",
+                  by_key["backlog"]["current"] == 5 and by_key["backlog"]["pct"] is None,
+                  str(by_key["backlog"]))
+            check("trends: the failed queue rows are counted",
+                  by_key["failed"]["current"] == 7, str(by_key["failed"]))
+            check("trends: per channel, both directions",
+                  {row["target"] for row in window["channels"]}
+                  == {"LootZoneIndia11", "PowerLoots1"}
+                  and any(row["sentiment"] == "good" for row in window["channels"]),
+                  str(window["channels"]))
+            check("trends: skip reasons ranked by how often they happen now",
+                  window["skip_reasons"][0]["current"] >= window["skip_reasons"][-1]["current"])
+            check("trends: one plain sentence with both numbers",
+                  "800 sent" in window["verdict"] and "before" in window["verdict"],
+                  window["verdict"])
+            week = trends.compare(conn, hours=168, now=now)
+            check("trends: the window label follows the window",
+                  week["window_label"] == "7d" and "7d" in week["verdict"], week["verdict"])
+            check("trends: summary is the cheap subset used by the brief",
+                  trends.summary(conn, hours=24, now=now)["sent"]["current"] == 800)
+            check("trends: safety spike reads the last hour and the week",
+                  trends.safety_spike(conn, now=now)["week"] == 230,
+                  str(trends.safety_spike(conn, now=now)))
+        finally:
+            conn.close()
+
+
+def test_attention():
+    print("\n== attention: one ranked list, every row with its fix ==")
+    health = {
+        "checks": [
+            {"key": "db_present", "title": "Bot database", "state": "ok", "detail": "ok", "fix": ""},
+            {"key": "queue_failures", "title": "Failed posts", "state": "fail",
+             "detail": "9 failed", "fix": "Open the trace."},
+            {"key": "disk", "title": "Disk space", "state": "warn",
+             "detail": "4% free", "fix": "Free space."},
+            {"key": "policy_parity", "title": "Safety policy", "state": "unknown",
+             "detail": "no bridge", "fix": "Set BRIDGE_DIR."},
+        ],
+        "overall": "fail",
+    }
+    brief = trends.attention(health=health)
+    check("only fail/warn become actions, not ok or unknown",
+          [item["title"] for item in brief["items"]] == ["Failed posts", "Disk space"],
+          str([i["title"] for i in brief["items"]]))
+    check("a fault sorts before a warning", brief["items"][0]["severity"] == "error")
+    check("each action carries a fix and the panel that explains it",
+          all(item["fix"] and item["anchor"] for item in brief["items"]))
+    check("the counts add up to the list",
+          sum(brief["counts"].values()) == len(brief["items"]))
+    check("the headline says how many need you", brief["headline"].startswith("2 things need you"),
+          brief["headline"])
+    check("an unknown check is not silently promoted or dropped", 
+          all("Safety policy" != item["title"] for item in brief["items"]))
+
+    clean = trends.attention(health={"checks": [{"key": "db_present", "title": "Bot database",
+                                                "state": "ok", "detail": "fine", "fix": ""}]})
+    check("nothing wrong says nothing needs you",
+          clean["healthy"] and clean["items"] == []
+          and clean["headline"].startswith("Nothing needs you"), clean["headline"])
+
+    drift = trends.attention(drift={"installed": 5, "running": 4, "pending_restart": True})
+    titles = [item["title"] for item in drift["items"]]
+    check("a rules drift is an error and names both versions",
+          any("v4" in t and "v5" in t for t in titles), str(titles))
+    check("a pending restart is a warning with the restart command",
+          any("restart" in (item["fix"] or "") for item in drift["items"]), str(drift["items"]))
+
+    spike = trends.attention(safety={"last_hour": 40, "avg_hour": 2.0})
+    check("a refusal spike is called out with both numbers",
+          "40 refusals" in spike["items"][0]["title"]
+          and "2.0" in spike["items"][0]["detail"], str(spike["items"]))
+    quiet = trends.attention(safety={"last_hour": 3, "avg_hour": 2.0})
+    check("a normal refusal rate is not a crisis", quiet["items"] == [])
+
+    stalled = trends.attention(trends={"window_label": "24h", "by_metric": {
+        "sent": {"current": 0, "previous": 400, "pct": None},
+        "skipped": {"current": 0, "previous": 0, "pct": None},
+        "refused": {"current": 0, "previous": 0, "pct": None}}})
+    check("nothing delivered is an error that names the window",
+          any(item["severity"] == "error" and "Nothing delivered" in item["title"]
+              for item in stalled["items"]), str(stalled["items"]))
+
+    foreign = trends.attention(conversion={"foreign_tag": 3, "earns_nothing": 10, "posts": 10})
+    check("a foreign affiliate tag is an error about whose money it is",
+          any("someone else's affiliate tag" in item["title"] for item in foreign["items"]),
+          str(foreign["items"]))
+    check("...and it tells the operator what to run",
+          any("conversion_report" in (item["fix"] or "") for item in foreign["items"]))
+
+    cats = trends.attention(categories=[
+        {"severity": "warn", "kind": "no_channel", "category": "beauty",
+         "detail": "no channel can receive it"}])
+    check("a category finding becomes an action pointing at Categories",
+          cats["items"][0]["anchor"] == "#categories"
+          and "beauty" in cats["items"][0]["title"], str(cats["items"]))
+
+    both = trends.attention(health=health, drift={"installed": 5, "running": 4},
+                            trends={"window_label": "1h", "by_metric": {
+                                "sent": {"current": 0, "previous": 0, "pct": None}}},
+                            limit=2)
+    check("the list is capped without losing the worst",
+          len(both["items"]) == 2 and both["items"][0]["severity"] == "error",
+          str([(i["severity"], i["title"]) for i in both["items"]]))
+    dupes = trends.attention(health={"checks": [
+        {"key": "a", "title": "Same thing", "state": "warn", "detail": "1", "fix": "f"},
+        {"key": "b", "title": "Same thing", "state": "warn", "detail": "2", "fix": "f"}]})
+    check("the same fault reported twice is read once", len(dupes["items"]) == 1,
+          str(dupes["items"]))
+
+
 def test_degenerate_states():
     """A dashboard that lies is worse than one that is down.
 
@@ -319,7 +579,8 @@ def test_degenerate_states():
                              "/api/health", "/api/pulse?hours=6", "/api/trace?queue_id=1",
                              "/api/search?q=ab", "/api/scorecard?days=7",
                              "/api/export?what=health", "/api/export?what=pulse",
-                             "/api/link-conversion?limit=5", "/api/channel-pipe?target=A&source=B"):
+                             "/api/link-conversion?limit=5", "/api/channel-pipe?target=A&source=B",
+                             "/api/trends?hours=24", "/api/brief", "/api/brief?services=1"):
                     async with sess.get(base + path,
                                         headers={"X-Dashboard-Token": "test-token-123"}) as resp:
                         text = await resp.text()
@@ -401,6 +662,15 @@ def test_degenerate_states():
         status, text = cases["old schema"]["/api/trace?queue_id=1"]
         check("trace still works on an old schema missing last_error",
               status == 200 and '"queue_id": 1' in text, f"{status} {text[:160]}")
+        status, text = cases["no database"]["/api/trends?hours=24"]
+        check("trends without a database says there is nothing to compare",
+              status == 200 and "no database yet" in text, f"{status} {text[:140]}")
+        status, text = cases["corrupt file"]["/api/trends?hours=24"]
+        check("trends on a corrupt file is a sentence, never a crash",
+              status == 200 and '"verdict"' in text or status == 503, f"{status} {text[:140]}")
+        status, text = cases["corrupt file"]["/api/brief"]
+        check("the brief still ranks what it can on a corrupt file",
+              status in (200, 503) and not text.startswith("<!"), f"{status} {text[:140]}")
         status, text = cases["garbage channels.json"]["/api/channels"]
         check("a garbage channels.json is tolerated, not fatal",
               status == 200 and '"whatsapp"' in text, f"{status} {text[:120]}")
@@ -463,6 +733,48 @@ def test_http():
                           {e["kind"] for e in body["events"]} == {"block"})
                     status, body = await call("/api/pulse?hours=nonsense")
                     check("a bad window falls back instead of 500", status == 200, str(status))
+
+                    # ---- trends + brief: the two new panels -----------------
+                    status, body = await call("/api/trends?hours=24", token=False)
+                    check("trends requires the token", status == 401, str(status))
+                    status, body = await call("/api/trends?hours=24")
+                    check("trends answers 200", status == 200, str(status))
+                    check("trends compares this window with the one before",
+                          all({"current", "previous", "delta", "sentiment"} <= set(m)
+                              for m in body.get("metrics", [])), str(body.get("metrics"))[:200])
+                    check("trends names the window in words",
+                          body.get("window_label") == "24h", str(body.get("window_label")))
+                    check("trends splits per channel and per skip reason",
+                          isinstance(body.get("channels"), list)
+                          and isinstance(body.get("skip_reasons"), list))
+                    check("trends carries a one-sentence verdict",
+                          str(body.get("verdict", "")).endswith("."), body.get("verdict"))
+                    status, body = await call("/api/trends?hours=nonsense&buckets=nonsense")
+                    check("a nonsense window falls back to 24h instead of 500",
+                          status == 200 and body.get("window_label") == "24h", str(status))
+                    status, body = await call("/api/trends?hours=99999")
+                    check("a huge window is clamped, not attempted",
+                          status == 200 and body.get("window_hours") == 168.0,
+                          str(body.get("window_hours")))
+
+                    status, body = await call("/api/brief", token=False)
+                    check("the brief requires the token", status == 401, str(status))
+                    status, body = await call("/api/brief")
+                    check("the brief answers 200", status == 200, str(status))
+                    check("the brief carries the health it used, once",
+                          body.get("health", {}).get("overall") in ("ok", "warn", "fail", "unknown"),
+                          str(body.get("health", {}).get("overall")))
+                    check("the brief says whether anything needs a human",
+                          isinstance(body.get("healthy"), bool) and "headline" in body,
+                          str(body.get("headline")))
+                    check("every item in the brief names its panel and its fix",
+                          all(item.get("anchor") for item in body.get("items", [])),
+                          str(body.get("items"))[:200])
+                    check("the brief reports the installed and running rules version",
+                          "installed" in body.get("rules", {}) and "running" in body.get("rules", {}),
+                          str(body.get("rules")))
+                    status, body = await call("/api/brief?services=1")
+                    check("the brief can ask systemd too", status == 200, str(status))
 
                     status, body = await call("/api/trace?queue_id=1")
                     check("trace answers 200", status == 200, str(status))
@@ -569,12 +881,15 @@ async def dash_started():
 
 def main() -> int:
     test_engine()
+    test_counts_and_trends()
+    test_attention()
     test_degenerate_states()
     test_http()
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: " + "; ".join(FAILS[:6]))
         return 1
-    print("\nops insight PASS: health, timeline, trace, search and scorecard, "
+    print("\nops insight PASS: health, timeline with exact counts, trace, search, "
+          "scorecard, window-over-window trends, the ranked attention list, "
           "engine and HTTP.")
     return 0
 

@@ -790,6 +790,49 @@ and `trace` distinguishes a missing post (404) from a database with no `queue` t
 file, zero bytes, an old schema, a corrupt file, and a `channels.json` that is not
 JSON — every endpoint must answer without a 500 and without a confident empty lie.
 
+## Overview: the page ranked by what needs you, and a window that adds up (2026-10-21)
+
+The dashboard used to open on a hero banner and a wall of panels; the first thing an
+operator had to do was read all of them to find out whether anything was wrong. It now
+opens on **one ranked list**: every non-green health check, a rules-version drift, a
+refusal spike and the biggest movement in the window, each in one sentence with the
+**fix in the same row** and a link to the panel that explains it. The list is built by
+`dashboard/trends.py: attention()` from facts the page already loaded, so it cannot
+invent a fault no panel shows, and it costs nothing extra to refresh.
+
+**A count bug this found and fixed.** `/api/pulse` counted the capped event list it was
+already returning for display. On a day with 4,999 intakes and 6,813 sends in 24 h it
+reported **500 of each** — the list limit — and drew a chart that stopped there. Counts,
+the hourly bars and "last of each kind" now come from one grouped SQL query per kind
+over the whole window (`insight._window_facts`), while the list stays capped for
+reading. `test_dashboard_ops.py` asserts the exact totals against `SELECT COUNT(*)`
+with a 50-row list on purpose: a capped list is not a count.
+
+**Trends: this window against the one before it.** `/api/trends?hours=` answers "is it
+getting better or worse" with an exact delta for sends, skips, refusals, conversions,
+intake and failures, plus the live backlog and a per-channel and per-skip-reason split.
+Bars split the window evenly (a 7-day view is twenty-four 7-hour bars), so **the bars
+always add up to the headline**. Three honesty rules are pinned by tests: a window with
+under a tenth of the current volume gets **no percentage** (it says "no baseline"
+rather than "+578%" off one day of history), the backlog is a snapshot with no invented
+delta, and an unreadable database says so instead of drawing a flat line of zeros.
+
+| Endpoint | The question it answers |
+|---|---|
+| `GET /api/brief` | *What do I do now?* The health payload (returned once — the console renders the same object instead of asking twice), the installed vs running rules version, a refusal spike against the 7-day hourly average, the window movement, and a deduplicated severity-ranked `items[]` where every row carries `title`, `detail`, `fix` and the `anchor` of the panel that explains it. `?services=1` adds systemd. |
+| `GET /api/trends?hours=&buckets=` | *Better or worse?* For each metric: `current`, `previous`, `delta`, `pct` (or `null` with `baseline_thin`), `direction`, `sentiment` (`good`/`bad`/`flat` — more skips is bad, more sends is good), the bars, and the same bars for the window before. Plus `channels[]`, `skip_reasons[]` and one plain `verdict` sentence. |
+
+Measured on the demo database (21 MB, 40k posts, 8 days): `status 39 ms`, `pulse 28 ms`,
+`brief 298 ms`, `trends 236 ms`, a **light 5 s tick 335 ms in total**, a full refresh
+1.6 s — and a second tab clicking during that refresh answers in **40–333 ms** (median
+67 ms). The overview's numbers still update every 5 s because the brief also carries the
+health result the console needs; only the trend bars and the heavy books ride the 20 s
+tick.
+
+In the page: five tiles with a sparkline whose **dashed line is the window before**,
+seven metric rows, per-channel and per-reason tables, a copy button on every fix, and a
+tab that stops polling while hidden and catches up the moment it is visible again.
+
 ## Ops console: health, timeline, trace, search, scorecard (2026-10-20)
 
 The dashboard stopped being a scoreboard you read and became the thing you open
@@ -803,6 +846,8 @@ all read-only — a panel can never post, queue or restart anything.
 | `GET /api/trace?queue_id=` | *What happened to this post?* The stored post, the planner's prediction (same engine as Source → Target), the readers' price/shelf, the safety verdict, every target with **predicted vs actual** (`delivered`, `skipped` + the exact error, `held`, or **`not_attempted`** when the planner expected it and the bot never wrote a delivery row), the send-attempt fence, the delivered link and any refusal row. |
 | `GET /api/search?q=` | *Where is that thing I remember?* Posts, targets and refusals in one answer, by text, source, `@channel`, `₹price` or queue id. Numeric ids match exactly as well as by text; `%`/`_` are stripped so a query cannot become a wildcard. |
 | `GET /api/export?what=scorecard\|pulse\|search\|health&format=csv\|json` | The rows a panel is showing, as a file: same engine, same rows, `attachment; filename=bestgaa-…-<IST stamp>.csv`. A CSV is quoted by the `csv` module, never by splitting on commas. |
+| `GET /api/brief` | *What needs me right now?* See the Overview section above. |
+| `GET /api/trends?hours=` | *Better or worse than the window before?* See the Overview section above. |
 | `GET /api/scorecard?days=` | *Who is actually receiving, and who earns its place?* Per channel: today, sends, skips, delivered share, average quality, best IST hour, last send (with a `SILENT` flag past 24h), top skip reason. Per source: intakes, posted share, failures, last intake. |
 
 **Category rules v5 (2026-10-20).** Five electronics aliases were added from a
@@ -1726,10 +1771,11 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `ef6e8c1feba764b0f9e2a01da92a9fe3b768848c013262a739f8313eaf4b5d6a` |
-| `dashboard/insight.py` | `1c088d8018d90084773b5923db571d7e6a7ddfd6712408f878231cd083aa1919` |
+| `dashboard/app.py` | `7f7e8dacb2b2482fcb6443a6aea3b6c490d1aa699e0083ed247b913e11ca385b` |
+| `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
+| `dashboard/trends.py` | `bc79a66d5d8744e6ac1a4a6cc6dd5b644d84a5e4fee45f133863311c11e4da1a` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
@@ -1769,8 +1815,8 @@ source snapshot:
 | `test_dashboard.py` | `572a5e5994e96c88cf1d83c34e6f166ac5ae1460464003067aacd20ef71715da` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
-| `test_dashboard_ops.cjs` | `3f2dff066e44492db20114eef2a95833390e8bbd64a3a46c5d4dd10202f73e10` |
-| `test_dashboard_ops.py` | `5d7581f19b519b5b12d3c49ecaa665d92fa47af627c3773062a3e5275477c925` |
+| `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
+| `test_dashboard_ops.py` | `b8f97e11d07081862cc28c2b966b0e7f8ddba881e750723fe407ac1dc8fd9165` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
