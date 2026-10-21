@@ -26,6 +26,8 @@ Usage
     python3 ops/link_doctor.py --recent 50          # the last 50 published links
     python3 ops/link_doctor.py --text post.txt      # every link in a post
     python3 ops/link_doctor.py --recent 200 --json --strict
+    python3 ops/link_doctor.py --repair-db              # what the bot's own book would replay
+    python3 ops/link_doctor.py --repair-db --apply      # fix those rows (.bak taken first)
 
 `--offline` skips the network entirely and judges the URL shape plus the stored
 proofs, which is what the test suite uses (and what a firewalled host can still
@@ -333,6 +335,155 @@ def recent_links(conn: sqlite3.Connection, limit: int) -> tuple[list[dict], str]
 
 
 # --------------------------------------------------------------------------- #
+# fixing the book: rows the bot must not replay
+# --------------------------------------------------------------------------- #
+def _our_amazon(url: str, tag: str) -> bool:
+    try:
+        parsed = urlparse(clean(url))
+    except ValueError:
+        return False
+    if not AMAZON_HOST.match((parsed.hostname or "").lower()):
+        return False
+    tags = [v for k, v in parse_qsl(parsed.query) if k.lower() == "tag"]
+    return bool(tag) and bool(tags) and all(v.strip() == tag for v in tags)
+
+
+def _row_verdict(affiliate: str, resolved: str, *, tag: str, publisher: str,
+                 minted: set[str]) -> dict:
+    """What to do with ONE link_cache row: keep, retag the page, or retire the row.
+
+    A row is kept when the published URL proves it pays us. It is RETAGGED when it
+    is a merchant page we can simply stamp with our own attribution (same page,
+    same product) - that is a real repair. It is RETIRED when the published URL is
+    a tokenless hop: the redirect behind `is.gd/xyz` lives at is.gd, so rewriting
+    our row would only make the bot *claim* a destination the hop does not serve -
+    the next send must convert the source link again and mint OUR link.
+    """
+    affiliate, resolved = clean(affiliate), clean(resolved)
+    row = {"url": affiliate, "destination": resolved, "action": "keep", "after": "",
+           "after_destination": "", "why": ""}
+    if not affiliate:
+        return row
+    if _our_amazon(affiliate, tag) or clean(affiliate) in minted:
+        return row
+    if publisher and "affextparam2=" in affiliate.lower() and publisher in affiliate:
+        return row
+    host = host_of(affiliate)
+    if host and in_domains(host, TOKENLESS_HOSTS):
+        row.update(action="retire",
+                   why="a tokenless hop cannot be re-pointed by us; re-convert instead")
+        return row
+    if AMAZON_HOST.match(host):
+        stamped = repair(affiliate, tag, publisher)
+        if stamped:
+            row.update(action="retag", after=stamped,
+                       after_destination=(repair(resolved, tag, publisher)
+                                          if AMAZON_HOST.match(host_of(resolved)) else ""),
+                       why="the page is right, the tag is not (or missing)")
+            return row
+    if AMAZON_HOST.match(host_of(resolved)) and repair(resolved, tag, publisher):
+        row.update(action="retag-destination", after=repair(resolved, tag, publisher),
+                   why="the stored destination is the right page without our tag")
+        return row
+    return row
+
+
+def repair_db(path: Path, *, tag: str, publisher: str, minted: set[str],
+              apply: bool = False, limit: int = 0) -> dict:
+    """Find (and with `apply`, fix) the rows that would replay a link that is not ours."""
+    out: dict = {"db": str(path), "applied": False, "rows": [], "counts": {},
+                 "backup": "", "error": ""}
+    if not path.exists():
+        out["error"] = f"no database at {path}"
+        return out
+    try:
+        conn = sqlite3.connect(str(path), timeout=15)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.OperationalError as exc:
+        out["error"] = f"cannot open: {exc}"
+        return out
+    try:
+        try:
+            rows = conn.execute(
+                "SELECT rowid, affiliate_url, resolved_url, deal_key, created_at "
+                "FROM link_cache ORDER BY created_at DESC" + (f" LIMIT {int(limit)}" if limit else "")
+            ).fetchall()
+        except sqlite3.OperationalError as exc:
+            out["error"] = f"link_cache unreadable: {exc}"
+            return out
+        for row in rows:
+            verdict = _row_verdict(str(row["affiliate_url"] or ""), str(row["resolved_url"] or ""),
+                                   tag=tag, publisher=publisher, minted=minted)
+            if verdict["action"] == "keep":
+                continue
+            verdict["at"] = float(row["created_at"] or 0)
+            out["rows"].append(verdict)
+            out["counts"][verdict["action"]] = out["counts"].get(verdict["action"], 0) + 1
+        if apply and out["rows"]:
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            backup = path.with_suffix(path.suffix + f".bak-{stamp}")
+            try:
+                dest = sqlite3.connect(str(backup))
+                with dest:
+                    conn.backup(dest)
+                dest.close()
+                out["backup"] = str(backup)
+            except sqlite3.Error as exc:
+                out["error"] = f"refusing to write without a backup: {exc}"
+                return out
+            with conn:
+                for verdict in out["rows"]:
+                    if verdict["action"] == "retire":
+                        conn.execute("DELETE FROM link_cache WHERE affiliate_url=?",
+                                     (verdict["url"],))
+                    elif verdict["action"] == "retag":
+                        conn.execute("UPDATE link_cache SET affiliate_url=? WHERE affiliate_url=?",
+                                     (verdict["after"], verdict["url"]))
+                        if verdict.get("after_destination"):
+                            conn.execute("UPDATE link_cache SET resolved_url=? WHERE affiliate_url=?",
+                                         (verdict["after_destination"], verdict["after"]))
+                    elif verdict["action"] == "retag-destination":
+                        conn.execute("UPDATE link_cache SET resolved_url=? WHERE affiliate_url=?",
+                                     (verdict["after"], verdict["url"]))
+            out["applied"] = True
+        return out
+    finally:
+        conn.close()
+
+
+def render_repairs(payload: dict) -> str:
+    lines = []
+    for row in payload.get("rows", []):
+        lines.append(f"{row['action'].upper():<17} {row['url'][:96]}")
+        if row.get("destination"):
+            lines.append(f"                  lands on  {row['destination'][:96]}")
+        if row.get("why"):
+            lines.append(f"                  why       {row['why']}")
+        if row.get("after"):
+            lines.append(f"                  becomes   {row['after'][:96]}")
+        lines.append("")
+    counts = payload.get("counts") or {}
+    total = sum(counts.values())
+    head = (f"{total} row(s) would replay a link that is not ours: "
+            + " · ".join(f"{n} {action}" for action, n in sorted(counts.items()))
+            if total else "every stored row proves it pays us - nothing to repair")
+    lines.append(head)
+    if payload.get("backup"):
+        lines.append(f"backup: {payload['backup']}")
+    if total and not payload.get("applied"):
+        lines.append("VERDICT: dry run - nothing was written. Re-run with --apply to fix "
+                     "these rows (a timestamped .bak copy is taken first).")
+    elif total:
+        lines.append("VERDICT: repaired. A retired hop is re-converted on the next send, "
+                     "so the post carries OUR link instead of the hop.")
+    else:
+        lines.append("VERDICT: clean.")
+    if payload.get("error"):
+        lines.append(f"error: {payload['error']}")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # output
 # --------------------------------------------------------------------------- #
 BAD = {"DEAD", "UNREACHABLE", "LOOP", "UNPROVEN-HOP", "NOT-OURS"}
@@ -404,6 +555,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any link is dead or not ours")
+    parser.add_argument("--repair-db", action="store_true",
+                        help="audit the bot's OWN link book (link_cache) for rows that would "
+                             "replay a link that is not ours; dry run unless --apply")
+    parser.add_argument("--apply", action="store_true",
+                        help="with --repair-db: write the repair (a timestamped .bak is kept)")
+    parser.add_argument("--limit", type=int, default=0,
+                        help="with --repair-db: only the N newest rows")
     args = parser.parse_args(argv)
 
     audit = load_audit()
@@ -411,6 +569,21 @@ def main(argv: list[str] | None = None) -> int:
     db = Path(args.db) if args.db else default_db
     conn = read_db(db)
     minted = minted_links(conn, audit, args.tag, args.publisher)
+
+    if args.repair_db:
+        payload = repair_db(db, tag=args.tag, publisher=args.publisher, minted=minted,
+                            apply=args.apply, limit=args.limit)
+        if args.json:
+            print(json.dumps({"repair_db": payload}, indent=2, ensure_ascii=False))
+        else:
+            print(render_repairs(payload))
+        if conn is not None:
+            conn.close()
+        if payload.get("error"):
+            return 2
+        if args.strict and payload.get("rows") and not payload.get("applied"):
+            return 1
+        return 0
 
     urls: list[str] = [clean(u) for u in args.urls if clean(u)]
     scanned, source = 0, "command line"
