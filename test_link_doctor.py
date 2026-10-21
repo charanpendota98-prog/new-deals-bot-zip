@@ -298,6 +298,113 @@ def test_sweep():
 
 
 # --------------------------------------------------------------------------- #
+# 2b. the book itself: rows that would replay a link that is not ours
+# --------------------------------------------------------------------------- #
+def build_book(path: Path, now: float) -> None:
+    store = bot.Store(path)
+    store.conn.executemany(
+        "INSERT INTO link_cache(source_url,affiliate_url,resolved_url,deal_key,created_at) "
+        "VALUES(?,?,?,?,?)",
+        [("https://www.amazon.in/dp/B0HNPB6QBS", "https://is.gd/c3Gl9d",
+          "https://www.amazon.in/dp/B0HNPB6QBS", "ASIN:B0HNPB6QBS", now - 60),
+         ("https://www.amazon.in/dp/B0BARE00001", "https://www.amazon.in/dp/B0BARE00001",
+          "https://www.amazon.in/dp/B0BARE00001", "ASIN:B0BARE00001", now - 50),
+         ("https://www.amazon.in/dp/B0FOREIGN01",
+          "https://www.amazon.in/dp/B0FOREIGN01?tag=theirs-21",
+          "https://www.amazon.in/dp/B0FOREIGN01?tag=theirs-21", "ASIN:B0FOREIGN01", now - 40),
+         ("https://www.amazon.in/dp/B0OURS00001",
+          f"https://www.amazon.in/dp/B0OURS00001?tag={TAG}",
+          f"https://www.amazon.in/dp/B0OURS00001?tag={TAG}", "ASIN:B0OURS00001", now - 30),
+         ("https://www.amazon.in/dp/B0PROOF0001", "https://bitli.in/proof1",
+          "https://www.amazon.in/dp/B0PROOF0001", "ASIN:B0PROOF0001", now - 20)])
+    store.conn.execute(
+        "INSERT INTO owned_link_proofs(affiliate_url,destination_url,proof_type,publisher_id,"
+        "created_at) VALUES(?,?,?,?,?)",
+        ("https://bitli.in/proof1", f"https://www.amazon.in/dp/B0PROOF0001?tag={TAG}",
+         "amazon_native", TAG, now - 20))
+    store.conn.commit()
+    store.conn.close()
+
+
+def book_rows(path: Path) -> dict[str, str]:
+    import sqlite3
+    conn = sqlite3.connect(path)
+    try:
+        return {str(row[0]): str(row[1] or "")
+                for row in conn.execute("SELECT affiliate_url, resolved_url FROM link_cache")}
+    finally:
+        conn.close()
+
+
+def test_repair_db():
+    print("\n== link doctor: the bot's own book (--repair-db) ==")
+    import io
+    import shutil
+    from contextlib import redirect_stdout
+    now = time.time()
+    with tempfile.TemporaryDirectory() as td:
+        db = Path(td) / "book.sqlite3"
+        build_book(db, now)
+        before = book_rows(db)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            dry = doctor.main(["--db", str(db), "--repair-db", "--strict"])
+        text = buffer.getvalue()
+        check("a dry run exits 1 under --strict when rows need fixing", dry == 1, str(dry))
+        check("...and says nothing was written", "dry run" in text, text[-160:])
+        check("...and the database is untouched", book_rows(db) == before)
+        check("the unprovable hop is called out for retirement", "RETIRE" in text, text[:200])
+        check("the bare page is offered a retag", "RETAG" in text and "B0BARE00001?tag=" in text)
+        check("a foreign tag is replaced, never kept", "tag=theirs-21" in text
+              and "tag=mama086-21" in text)
+
+        backup_db = Path(str(db) + ".bak-probe")
+        shutil.copy(db, backup_db)
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            applied = doctor.main(["--db", str(db), "--repair-db", "--apply", "--strict"])
+        after = book_rows(db)
+        check("--apply exits 0 once the book is fixed", applied == 0, str(applied))
+        check("the tokenless hop row is retired, not repointed",
+              "https://is.gd/c3Gl9d" not in after, str(list(after)))
+        bare_stamped = f"https://www.amazon.in/dp/B0BARE00001?tag={TAG}"
+        check("the bare page now carries OUR tag, as its published URL",
+              bare_stamped in after, str(list(after)))
+        check("...and its stored destination was retagged too",
+              after.get(bare_stamped) == bare_stamped, str(after.get(bare_stamped)))
+        check("...and the old bare key is gone (one row per link, not two)",
+              "https://www.amazon.in/dp/B0BARE00001" not in after, str(list(after)))
+        check("the foreign-tagged row is ours on BOTH columns",
+              all("tag=theirs-21" not in value for value in after.values()), str(after))
+        check("our own tagged row is untouched",
+              f"https://www.amazon.in/dp/B0OURS00001?tag={TAG}" in after, str(list(after)))
+        check("a proven shortener row is untouched",
+              after.get("https://bitli.in/proof1") == "https://www.amazon.in/dp/B0PROOF0001",
+              str(after.get("https://bitli.in/proof1")))
+        check("a timestamped backup of the book was taken",
+              any(Path(td).glob("book.sqlite3.bak-*")), str(list(Path(td).iterdir())))
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            second = doctor.main(["--db", str(db), "--repair-db", "--strict"])
+        check("running it again is a clean no-op", second == 0, str(second))
+        check("...and says so", "nothing to repair" in buffer.getvalue().lower(),
+              buffer.getvalue()[-120:])
+
+        # machine form + a missing file
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            doctor.main(["--db", str(db), "--repair-db", "--json"])
+        payload = json.loads(buffer.getvalue())
+        check("--json carries the counts and the applied flag",
+              "counts" in payload["repair_db"] and "applied" in payload["repair_db"])
+        check("a missing book is a sentence with exit 2",
+              doctor.main(["--db", str(Path(td) / "nope.sqlite3"), "--repair-db"]) == 2)
+
+
+# --------------------------------------------------------------------------- #
 # 3. the bot no longer creates the class
 # --------------------------------------------------------------------------- #
 def test_policy():
@@ -417,6 +524,7 @@ def main() -> int:
     test_verdicts()
     test_network()
     test_sweep()
+    test_repair_db()
     test_policy()
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: " + "; ".join(FAILS[:6]))
