@@ -14,7 +14,7 @@ const html = execFileSync(process.env.PYTHON || 'python3',
 const EVIL = '<img src=x onerror="window.__pwned=1">';
 const calls = [];
 let healthStatus = 200, pulseStatus = 200, traceStatus = 200,
-  searchStatus = 200, scoreStatus = 200;
+  searchStatus = 200, scoreStatus = 200, briefStatus = 200, trendsStatus = 200;
 
 const healthPayload = {
   overall: 'warn',
@@ -59,6 +59,61 @@ const pulsePayload = {
      detail: 'Samsung neo qled 55” @ ₹60k', status: 'done', severity: 'info'},
   ],
 };
+
+const briefPayload = {
+  healthy: false,
+  headline: '2 things need you: Bot is classifying with v4, this checkout has v5; Failed posts.',
+  counts: {error: 1, warn: 1, info: 0},
+  items: [
+    {id: 'rules_drift:0', kind: 'rules_drift', severity: 'error',
+     title: 'Bot is classifying with v4, this checkout has v5',
+     detail: 'Category decisions since the last deploy may not match the rules the dashboard shows.',
+     fix: 'sudo systemctl restart bestgaa', anchor: '#categories', at: 1792506000},
+    {id: 'queue_failures:1', kind: 'queue_failures', severity: 'warn',
+     title: 'Failed posts', detail: '1 failed · FloodWait 30s ' + EVIL,
+     fix: 'Open the trace for one of them: the dashboard shows the exact error per target.',
+     anchor: '#console', at: 1792506000},
+  ],
+  health: healthPayload, movement: '257 sent, +8.5% vs the 1h before · 166 skipped.',
+  rules: {installed: 5, running: 4, max_posts: 30},
+  drift: {installed: 5, running: 4, pending_restart: false},
+  safety: {last_hour: 1, avg_hour: 2.0, week: 300},
+  db_exists: true,
+};
+
+const trendsPayload = {
+  window_label: '24h', window_hours: 24, since_ist: '2026-10-19 20:00 IST',
+  previous_since_ist: '2026-10-18 20:00 IST', buckets: 24, backlog: 12,
+  verdict: '6,800 sent, -0.9% vs the 24h before · 4,178 skipped · 240 refused by the content policy.',
+  metrics: [
+    {key: 'sent', label: 'Sent', current: 6800, previous: 6859, delta: -59, pct: -0.9,
+     direction: 'down', sentiment: 'bad', series: [1, 2, 3, 4], previous_series: [2, 2, 2, 2]},
+    {key: 'skipped', label: 'Skipped', current: 4178, previous: 4080, delta: 98, pct: 2.4,
+     direction: 'up', sentiment: 'bad', series: [1, 1, 1, 1], previous_series: [1, 1, 1, 1]},
+    {key: 'refused', label: 'Refused', current: 240, previous: 255, delta: -15, pct: -5.9,
+     direction: 'down', sentiment: 'good', series: [1, 2], previous_series: [2, 2]},
+    {key: 'converted', label: 'Links converted', current: 1523, previous: 1481, delta: 42, pct: 2.8,
+     direction: 'up', sentiment: 'good', series: [1, 2], previous_series: [1, 1]},
+    {key: 'intake', label: 'Intake', current: 4992, previous: 5000, delta: -8, pct: -0.2,
+     direction: 'down', sentiment: 'bad', series: [1], previous_series: [1]},
+    {key: 'failed', label: 'Failed', current: 123, previous: 129, delta: -6, pct: -4.7,
+     direction: 'down', sentiment: 'good', series: [0], previous_series: [0]},
+    {key: 'backlog', label: 'Queued now', current: 12, previous: null, delta: null, pct: null,
+     direction: 'flat', sentiment: 'flat', series: [], previous_series: []},
+  ],
+  by_metric: {},
+  channels: [
+    {target: 'LootZoneIndia11' + EVIL, sent: 1713, previous_sent: 1727, delta: -14, pct: -0.8,
+     skipped: 1046, previous_skipped: 999, sentiment: 'bad'},
+    {target: 'PowerLoots1', sent: 1721, previous_sent: 1706, delta: 15, pct: 0.9,
+     skipped: 1107, previous_skipped: 1001, sentiment: 'good'},
+  ],
+  skip_reasons: [
+    {reason: 'budget: 30 posts/day reached', current: 894, previous: 816, delta: 78, pct: 9.6},
+    {reason: 'duplicate deal_key', current: 866, previous: 840, delta: 26, pct: 3.1},
+  ],
+};
+trendsPayload.by_metric = Object.fromEntries(trendsPayload.metrics.map(m => [m.key, m]));
 
 const searchPayload = {
   query: 'qled', count: 2, kinds: {post: 1, refusal: 1}, capped: false,
@@ -156,6 +211,14 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
         categories: []}, totals: {today: 0, window: 0, all_time: 0, by_category: {},
         by_stage: {}, by_source: {}}, blocked: [], presend_skips: 0,
         presend_examples: [], window_days: 7, database: 'ok'};
+      if (path.startsWith('/api/brief')) {
+        status = briefStatus;
+        data = status === 200 ? briefPayload : {error: 'health check failed: boom'};
+      }
+      if (path.startsWith('/api/trends')) {
+        status = trendsStatus;
+        data = status === 200 ? trendsPayload : {error: 'trends failed'};
+      }
       if (path.startsWith('/api/health')) {
         status = healthStatus;
         data = status === 200 ? healthPayload : {error: 'health engine crashed'};
@@ -185,6 +248,28 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   w.eval("TOKEN='test'");
   await w.refresh();
   await new Promise(resolve => setTimeout(resolve, 30));
+
+  // ---- overview: one ranked list, every row with its fix -----------------
+  const headline = d.getElementById('ovheadline').textContent;
+  assert.match(headline, /2 things need you/, 'the brief says how much needs you');
+  assert.match(d.getElementById('ovpill').textContent, /FAULT/,
+    'one fault is enough for the pill to say FAULT');
+  const attention = [...d.querySelectorAll('#ovattention li.attn')];
+  assert.equal(attention.length, 2, 'one row per ranked item');
+  assert.equal(attention[0].className.includes('error'), true,
+    'the fault is first, whatever order the server sent');
+  assert.ok(attention[0].querySelector('.attnfix code'), 'the fix is in the row');
+  assert.equal(attention[0].querySelector('a').getAttribute('href'), '#categories',
+    'and it links to the panel that explains it');
+  assert.ok(!d.getElementById('ovattention').querySelector('img'),
+    'a check detail cannot inject markup into the brief either');
+  let fixCopied = '';
+  w.navigator.clipboard = {writeText: async text => { fixCopied = text; }};
+  d.querySelector('#ovattention .attnfix button').click();
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(fixCopied, /systemctl restart bestgaa/, 'the copy button copies the command');
+  assert.match(d.getElementById('ovsub').textContent, /rules v5 installed, bot running v4/,
+    'installed vs running rules are named, not guessed');
 
   // ---- health -----------------------------------------------------------
   const line = d.getElementById('healthline').textContent;
@@ -248,6 +333,35 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.equal(columns[0].querySelectorAll('i').length, 0, 'an empty hour is an empty bar');
   assert.match(columns[2].innerHTML, /title="send: 2"/);
   assert.match(d.getElementById('pulsechart').textContent, /19/, 'the hour is labelled');
+
+  // ---- the trend panel: this window against the one before --------------
+  await w.loadTrends();
+  const tiles = [...d.querySelectorAll('#ovtiles .ovtile')];
+  assert.equal(tiles.length, 5, 'five headline metrics');
+  assert.match(tiles[0].textContent, /Sent/, 'the first tile is sends');
+  assert.match(tiles[0].textContent, /6,800/, 'with the real number, grouped');
+  assert.match(tiles[0].querySelector('.chip').className, /bad/,
+    'sends down is a bad movement, coloured as such');
+  assert.match(tiles[0].querySelector('.chip').textContent, /▼ 0\.9%/,
+    'the delta is a percentage with its direction');
+  assert.equal(d.querySelectorAll('#ovtiles svg.spark').length, 4,
+    'every windowed tile draws its own sparkline (the backlog is a snapshot)');
+  assert.match(d.querySelectorAll('#ovtiles .ovtile')[4].textContent, /no bars|snapshot/,
+    'the snapshot tile does not pretend to have a trend');
+  assert.match(d.querySelectorAll('#ovtiles svg.spark')[0].innerHTML, /stroke-dasharray/,
+    'the window before is drawn as a dashed baseline');
+  const metricRows = d.querySelectorAll('#ovmetrics .mrow');
+  assert.equal(metricRows.length, 7, 'every metric, not just the tiles');
+  assert.match(metricRows[6].textContent, /Queued now/);
+  assert.match(metricRows[6].textContent, /snapshot/,
+    'the backlog is a snapshot and says so instead of inventing a delta');
+  assert.equal(d.querySelectorAll('#ovchannels tr').length, 2, 'per-channel split');
+  assert.ok(!d.getElementById('ovchannels').querySelector('img'),
+    'a channel name from the database cannot inject markup');
+  assert.equal(d.querySelectorAll('#ovreasons tr').length, 2, 'top skip reasons');
+  assert.match(d.getElementById('ovstamp').textContent, /whole window/,
+    'the panel says where the numbers come from');
+  assert.ok(!/NaN/.test(d.getElementById('overview').textContent), 'no NaN anywhere');
 
   // ---- exports are a URL to the same rows --------------------------------
   let opened = '';
@@ -343,6 +457,12 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.ok(light.includes('/api/status'), 'the light tick still refreshes status');
   assert.ok(light.some(p => p.startsWith('/api/pulse')),
     'the light tick still refreshes the timeline');
+  assert.ok(light.some(p => p.startsWith('/api/brief')),
+    'the light tick refreshes the attention list');
+  assert.ok(!light.some(p => p.startsWith('/api/health')),
+    'and does not ask for health twice: the brief already carries it');
+  assert.ok(!light.some(p => p.startsWith('/api/trends')),
+    'trends are too heavy for 5 s and stay on the slower tick');
   for (const heavy of ['/api/audit?limit=200', '/api/categories?hours=24',
     '/api/link-conversion?limit=5', '/api/scorecard?days=7']) {
     assert.ok(!light.some(p => p.startsWith(heavy.split('?')[0])),
@@ -353,9 +473,18 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   const full = calls.map(c => c.path);
   assert.ok(full.some(p => p.startsWith('/api/audit')), 'a full refresh still runs the audit');
   assert.ok(full.some(p => p.startsWith('/api/categories')), 'and the category books');
+  assert.ok(full.some(p => p.startsWith('/api/trends?hours=')),
+    'the full tick recomputes the window comparison');
 
   // ---- dead endpoints cannot take the page down -------------------------
   healthStatus = 500; pulseStatus = 500; scoreStatus = 500; searchStatus = 500;
+  briefStatus = 500; trendsStatus = 500;
+  await w.loadBrief();
+  assert.match(d.getElementById('ovheadline').textContent, /brief unavailable/,
+    'a dead brief says so instead of showing stale confidence');
+  await w.loadTrends();
+  assert.match(d.getElementById('ovmetrics').textContent, /trends unavailable/);
+  briefStatus = 200; trendsStatus = 200;
   await w.loadHealth();
   await w.loadPulse();
   await w.loadScorecard();
@@ -377,11 +506,13 @@ const dom = new JSDOM(html, {url: 'https://preview.example/', runScripts: 'dange
   assert.match(d.getElementById('traceerror').textContent, /trace failed/);
 
   assert.equal(w.__pwned, undefined, 'nothing executed');
-  console.log('Ops console DOM PASS: health tiles with fixes and UNKNOWN states, '
-    + 'a merged timeline with kinds and silences, trace-posting from an event, '
-    + 'predicted-vs-actual including not-attempted, search with local refusal, '
-    + 'per-channel and per-source scorecards, escaped source text, and four dead '
-    + 'endpoints that cannot blank the page.');
+  console.log('Ops console DOM PASS: a ranked attention list where every row carries '
+    + 'its fix, a trend panel comparing this window with the one before (dashed '
+    + 'baseline, per channel, per skip reason), health tiles with fixes and UNKNOWN '
+    + 'states rendered from the same brief, a merged timeline with kinds and '
+    + 'silences, trace-posting from an event, predicted-vs-actual including '
+    + 'not-attempted, search with local refusal, per-channel and per-source '
+    + 'scorecards, escaped source text, and dead endpoints that cannot blank the page.');
   process.exit(0);   // the page refreshes on a timer; the test is done
 })().catch(error => {
   console.error(error);

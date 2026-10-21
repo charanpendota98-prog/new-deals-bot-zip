@@ -75,11 +75,44 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 .meter{height:6px;border-radius:99px;background:#1d2b3f;overflow:hidden;min-width:60px}
 .meter i{display:block;height:100%;background:#80f0cf}
 .quick-workbench{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr);gap:28px;align-items:start}.quick-workbench .inspector-grid{grid-template-columns:1fr;gap:12px}.source-picker{border:1px solid #345146;border-radius:14px;padding:20px;background:linear-gradient(140deg,#122a28,#101b29)}.source-picker h3{margin:5px 0 10px}.source-tools{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.source-tools button{font-size:11px;padding:7px 10px}.source-list{max-height:310px;overflow:auto;display:grid;gap:6px;padding:5px 3px}.source-option{display:flex;align-items:center;gap:12px;padding:11px;border:1px solid #283e4b;border-radius:9px;margin:0;background:#0d1b26;cursor:pointer}.source-option:has(input:checked){border-color:#74dabb;background:#15332f}.source-option input{width:auto;flex-shrink:0;accent-color:#80f0cf}.source-option span{min-width:0;display:grid;gap:4px}.source-option strong{font-size:12px;overflow-wrap:anywhere}.source-option small{font-size:10px;color:#9dafc0;overflow-wrap:anywhere}.source-picker input[type=search],.source-picker textarea{width:100%;box-sizing:border-box}.source-selected{display:flex;gap:6px;flex-wrap:wrap;max-height:92px;overflow:auto;margin:10px 0}.source-selected button{font-size:10px;padding:5px 8px;background:#203d38;color:#b3efdb;border:1px solid #395c52}.source-count{font-size:12px;color:#8ce6cb;margin:10px 0}.source-picker details{border-top:1px solid #304652;margin-top:14px;padding-top:8px}.source-error{font-size:12px;color:#ffd49a}.setup-source-layout{display:grid;grid-template-columns:1fr 1.2fr;gap:24px}dialog{max-width:850px;width:calc(100% - 50px)}@media(max-width:760px){.quick-workbench,.setup-source-layout{grid-template-columns:1fr}.source-picker{padding:15px}.source-list{max-height:280px}}
+
+/* ops overview: the one screen that says what to do, and whether it improved */
+.ovtop{display:flex;gap:16px;justify-content:space-between;align-items:flex-start;flex-wrap:wrap}
+.ovhead{min-width:280px;flex:1}
+.ovhead h2{margin:8px 0 4px;font-size:22px;line-height:1.25}
+.ovsub{font-size:12.5px;color:#9dacc1}
+.ovtiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(155px,1fr));gap:10px;margin:16px 0 4px}
+.ovtile{border:1px solid #26364c;border-radius:12px;padding:11px 13px;background:#0d1521;min-width:0}
+.ovtile span{display:block;font-size:10px;letter-spacing:1.1px;color:#8fa2bb;text-transform:uppercase}
+.ovtile b{display:block;font-size:24px;line-height:1.25;margin:3px 0 1px;font-variant-numeric:tabular-nums}
+.ovtile .spark{width:100%;height:26px;display:block;margin-top:6px}
+.chip{display:inline-block;font-size:11px;font-weight:700;padding:2px 7px;border-radius:99px;background:#25364a;color:#c2d5e7;font-variant-numeric:tabular-nums}
+.chip.good{background:#14532d;color:#a6f3d2}.chip.bad{background:#5f1d1d;color:#ffc4c4}.chip.flat{background:#2b3340;color:#aab8ca}
+.ovsplit{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:22px;margin-top:18px;align-items:start}
+.ovpanel{min-width:0}
+.ovpanel h3{margin:2px 0 10px;font-size:14px;letter-spacing:.4px;color:#c9d8ea}
+ul.attn{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+li.attn{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:start;border:1px solid #26364c;border-left-width:3px;border-radius:10px;padding:9px 11px;background:#0d1521}
+li.attn.error{border-left-color:#f87171}li.attn.warn{border-left-color:#e2a33a}li.attn.info{border-left-color:#5b8def}li.attn.ok{border-left-color:#4ade80}
+.attnbody{min-width:0}.attnbody b{font-size:13px;display:block;overflow-wrap:anywhere}
+.attnbody p{margin:3px 0 0;font-size:12px;color:#a9b8cb;overflow-wrap:anywhere}
+.attnfix{display:flex;gap:6px;align-items:center;margin-top:7px;flex-wrap:wrap}
+.attnfix code{font-size:11px;background:#0b131f;border:1px solid #28394f;border-radius:6px;padding:3px 7px;color:#f6c98c;overflow-wrap:anywhere;max-width:100%}
+li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparent}
+.metrics{display:grid;gap:7px}
+.mrow{display:grid;grid-template-columns:minmax(92px,1fr) auto auto 96px;gap:10px;align-items:center;font-size:12.5px;padding:5px 0;border-bottom:1px solid #1b2739}
+.mrow .num{font-variant-numeric:tabular-nums;text-align:right;min-width:56px}
+.mrow .prev{color:#8fa2bb;font-size:11.5px;text-align:right;min-width:56px}
+.mrow .spark{width:96px;height:22px}
+.ovdetails{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:18px}
+.ovdetails table{font-size:12px}
+.ovdetails td,.ovdetails th{padding:6px 8px}
+@media(max-width:900px){.ovsplit,.ovdetails{grid-template-columns:1fr}.mrow{grid-template-columns:minmax(80px,1fr) auto auto}.mrow .prev{display:none}}
 </style>
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -91,6 +124,44 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <span class="muted">or run on the server: <span id="restartcmd">sudo systemctl restart bestgaa</span></span>
 <pre id="restartout"></pre>
 </div>
+<section class="card" id="overview">
+<div class="ovtop">
+  <div class="ovhead">
+    <span class="eyebrow">OPS OVERVIEW · LIVE</span>
+    <h2 id="ovheadline">connecting…</h2>
+    <div class="ovsub"><span id="ovpill" class="pill unknown">CHECKING</span> <span id="ovsub">reading the database, the config and the policy files beside it…</span></div>
+  </div>
+  <div class="ovactions">
+    <label class="muted" for="ovwindow">Window</label>
+    <select id="ovwindow" onchange="setTrendWindow(this.value)" style="width:auto">
+      <option value="1">last 1h</option><option value="6">last 6h</option>
+      <option value="24" selected>last 24h</option><option value="72">last 3d</option>
+      <option value="168">last 7d</option>
+    </select>
+    <button class="ghost" onclick="refresh(true);loadTrends()">refresh now</button>
+  </div>
+</div>
+<div class="ovtiles" id="ovtiles"><div class="ovtile"><span>loading</span><b>—</b></div></div>
+<div class="ovsplit">
+  <div class="ovpanel">
+    <h3>Needs attention <span id="ovcount" class="muted"></span></h3>
+    <ul class="attn" id="ovattention"><li class="attn info"><span class="pill info">…</span><div class="attnbody"><b>Reading the checks</b><p>Health, rules drift, refusal spike and the window movement are merged into one ranked list.</p></div></li></ul>
+  </div>
+  <div class="ovpanel">
+    <h3>This window vs the one before it</h3>
+    <div class="metrics" id="ovmetrics"><p class="muted">loading…</p></div>
+  </div>
+</div>
+<div class="ovdetails">
+  <div class="ovpanel"><h3>Channels in this window</h3>
+    <div class="tablewrap"><table><thead><tr><th>Channel</th><th>Sent</th><th>vs before</th><th>Skipped</th></tr></thead>
+    <tbody id="ovchannels"><tr><td colspan="4" class="muted">loading…</td></tr></tbody></table></div></div>
+  <div class="ovpanel"><h3>Why posts were skipped</h3>
+    <div class="tablewrap"><table><thead><tr><th>Reason</th><th>Now</th><th>vs before</th></tr></thead>
+    <tbody id="ovreasons"><tr><td colspan="3" class="muted">loading…</td></tr></tbody></table></div></div>
+</div>
+<p id="ovstamp" class="muted" role="status" aria-live="polite">never refreshed</p>
+</section>
 <section class="hero"><div><span class="eyebrow">CATEGORY CHANNEL STUDIO</span>
 <h1>Right deals.<br><span>Right channels.</span></h1><p>Paste a product link, choose its category, and configure your channel.<br>Simple setup. Strict category filtering. You stay in control.</p></div>
 <div class="hero-note"><span class="pulse"></span> CONFIGURE, THEN REVIEW<p>Existing routes stay intact.<br>New routes checked first.</p></div></section>
@@ -151,7 +222,7 @@ h2{font-size:20px;color:#edf4ff;margin:5px 0 10px}h3{font-size:16px;margin:8px 0
 <h3>What just happened</h3>
 <p class="muted">One merged timeline: intake, send attempts, refusals, link conversions and owned-link proofs — newest first. A gap is as informative as an event, so the last of each kind is shown with its age.</p>
 <div id="pulsechart" class="chart" aria-label="Hourly throughput"></div>
-<div class="legend"><span><b style="background:#5b8def"></b>intake</span><span><b style="background:#80f0cf"></b>send</span><span><b style="background:#e2a33a"></b>refusal</span><span><b style="background:#8b7cf6"></b>link conversion</span><span><b style="background:#4ade80"></b>owned-link proof</span><span class="muted">bar height = events in that IST hour</span></div>
+<div class="legend"><span><b style="background:#5b8def"></b>intake</span><span><b style="background:#80f0cf"></b>send</span><span><b style="background:#e2a33a"></b>refusal</span><span><b style="background:#8b7cf6"></b>link conversion</span><span><b style="background:#4ade80"></b>owned-link proof</span><span class="muted">bar height = events in that slice; the counts above cover the whole window, the list below is capped</span></div>
 <div id="pulselast" class="row"></div>
 <div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>Kind</th><th>What</th><th>Detail</th><th>Post</th></tr></thead>
 <tbody id="pulserows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
@@ -434,9 +505,10 @@ async function refresh(full=true){
       `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td>${escapeHTML(j.held||0)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
       || '<tr><td colspan="7" class="muted">queue is empty</td></tr>';
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
-    await loadHealth();       // self-diagnosis; never throws into the page
+    await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
+      await loadTrends();     // this window vs the one before it
       const a = await api('GET','/api/audit?limit=200');
       const d = a.delivery_summary||{}, l = a.link_summary||{};
       document.getElementById('audit').innerHTML =
@@ -451,6 +523,190 @@ async function refresh(full=true){
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
 }
+
+// ---------------------------------------------------------------- overview --
+// The overview answers two questions with numbers: "is anything wrong right
+// now" (one ranked list, every row with its fix) and "is it getting better"
+// (this window against the window immediately before it). The attention list
+// comes from /api/brief, which also hands back the health payload it used - so
+// the console panel below renders the same check results instead of asking a
+// second time.
+let briefData = null, trendsData = null;
+let trendWindow = Number(sessionStorage.getItem('trend_hours') || 24) || 24;
+const SEV = {error:['fail','FAULT'], warn:['warn','WATCH'], info:['info','NOTE']};
+
+function fmtNum(n){ const v = Number(n); return Number.isFinite(v) ? v.toLocaleString('en-IN') : '—'; }
+function setTrendWindow(hours){
+  trendWindow = Number(hours) || 24;
+  sessionStorage.setItem('trend_hours', String(trendWindow));
+  loadTrends();
+}
+function deltaChip(m){
+  if(!m || m.current === null || m.current === undefined) return '<span class="chip flat">—</span>';
+  if(m.pct === null || m.pct === undefined){
+    if(m.delta === null || m.delta === undefined) return '<span class="chip flat">snapshot</span>';
+    return `<span class="chip ${escapeHTML(m.sentiment||'flat')}">${m.delta>0?'+':''}${fmtNum(m.delta)}</span>`;
+  }
+  const arrow = m.direction === 'up' ? '▲' : m.direction === 'down' ? '▼' : '■';
+  const pct = Math.abs(Number(m.pct));
+  const digits = pct >= 10 || pct === 0 ? 0 : 1;
+  return `<span class="chip ${escapeHTML(m.sentiment||'flat')}" title="${fmtNum(m.current)} now vs ${fmtNum(m.previous)} in the window before">${arrow} ${pct.toFixed(digits)}%</span>`;
+}
+function rowChip(current, previous, delta, sentiment){
+  const pct = previous > 0 ? Math.round(((current - previous) / previous) * 1000) / 10 : null;
+  return deltaChip({current, previous, pct, delta,
+    direction: delta > 0 ? 'up' : delta < 0 ? 'down' : 'flat', sentiment});
+}
+function sparkPath(values, w, h, top){
+  return values.map((v, i) => {
+    const x = (w * i) / Math.max(1, values.length - 1);
+    const y = h - 1 - (Math.min(Math.max(0, v), top) / top) * (h - 3);
+    return `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+}
+function sparkSVG(current, previous, sentiment){
+  const cur = (Array.isArray(current) ? current : []).map(v => Math.max(0, Number(v) || 0));
+  if(!cur.length) return '<span class="muted">no bars</span>';
+  const prev = (Array.isArray(previous) ? previous : []).map(v => Math.max(0, Number(v) || 0));
+  const top = Math.max(1, ...cur, ...prev), w = 120, h = 30;
+  const line = sparkPath(cur, w, h, top);
+  const area = `M0,${h} ` + line.replace(/^M/, 'L') + ` L${w},${h} Z`;
+  const prevLine = prev.length ? sparkPath(prev, w, h, top) : '';
+  const color = sentiment === 'bad' ? '#f87171' : sentiment === 'good' ? '#80f0cf' : '#93a4bb';
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="trend">`
+    + `<path d="${area}" fill="${color}" opacity="0.16"></path>`
+    + (prevLine ? `<path d="${prevLine}" fill="none" stroke="#5a6b82" stroke-width="1" stroke-dasharray="3 3"></path>` : '')
+    + `<path d="${line}" fill="none" stroke="${color}" stroke-width="1.6"></path></svg>`;
+}
+function renderAttention(brief){
+  const ul = document.getElementById('ovattention');
+  const count = document.getElementById('ovcount');
+  if(!ul) return;
+  const items = (brief && brief.items) || [];
+  if(count) count.textContent = items.length ? '(' + items.length + ')' : '';
+  ul.innerHTML = items.map(item => {
+    const sev = SEV[item.severity] || SEV.info;
+    const fix = item.fix
+      ? `<div class="attnfix"><code>${escapeHTML(item.fix)}</code>`
+        + `<button class="ghost tiny" onclick="copyText(this.previousElementSibling.textContent, this)">copy</button></div>`
+      : '';
+    const open = item.anchor ? `<a class="ghost tiny" href="${escapeHTML(item.anchor)}">open</a>` : '';
+    return `<li class="attn ${escapeHTML(item.severity)}"><span class="pill ${sev[0]}">${sev[1]}</span>`
+      + `<div class="attnbody"><b>${escapeHTML(item.title)}</b><p>${escapeHTML(item.detail)}</p>${fix}</div>${open}</li>`;
+  }).join('') || '<li class="attn ok"><span class="pill ok">OK</span><div class="attnbody">'
+      + '<b>Nothing needs you</b><p>Every check is green and this window moved in the right direction.</p></div></li>';
+}
+function copyText(text, button){
+  const done = () => { if(button){ button.textContent = 'copied'; setTimeout(()=>{ button.textContent = 'copy'; }, 1400); } };
+  const fallback = () => {
+    try{
+      const area = document.createElement('textarea');
+      area.value = text; area.setAttribute('readonly',''); area.style.position='fixed'; area.style.opacity='0';
+      document.body.appendChild(area); area.select(); document.execCommand('copy'); document.body.removeChild(area);
+      done();
+    }catch(e){ if(button) button.textContent = 'select it'; }
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done).catch(fallback);
+  } else fallback();
+}
+function renderBrief(brief){
+  const pill = document.getElementById('ovpill'), head = document.getElementById('ovheadline'),
+    sub = document.getElementById('ovsub');
+  if(!pill || !head) return;
+  const counts = (brief && brief.counts) || {};
+  const worst = counts.error ? ['fail','FAULT'] : counts.warn ? ['warn','WATCH'] : ['ok','ALL GREEN'];
+  pill.className = 'pill ' + worst[0];
+  pill.textContent = worst[1] + (counts.error || counts.warn ? ` · ${counts.error||0} fault · ${counts.warn||0} watch` : '');
+  head.textContent = (brief && brief.headline) || 'no brief yet';
+  const health = (brief && brief.health) || {};
+  const facts = health.facts || {};
+  if(sub) sub.innerHTML = escapeHTML(brief?.movement || '')
+    + (brief?.rules ? ` · rules v${escapeHTML(String(brief.rules.installed))} installed`
+        + (brief.rules.running ? `, bot running v${escapeHTML(String(brief.rules.running))}` : ', bot has not reported yet') : '')
+    + (facts.queue ? ` · queued ${fmtNum(Object.values(facts.queue).reduce((a,b)=>a+Number(b||0),0))}` : '');
+  renderAttention(brief || {});
+  renderHealth(health);
+}
+function renderTrends(t){
+  trendsData = t;
+  const tiles = document.getElementById('ovtiles');
+  const wanted = ['sent','skipped','refused','converted','backlog'];
+  const byKey = t.by_metric || {};
+  if(tiles){
+    tiles.innerHTML = wanted.map(key => {
+      const m = byKey[key] || {label:key, current:0};
+      return `<div class="ovtile"><span>${escapeHTML(m.label || key)} · ${escapeHTML(t.window_label||'')}</span>`
+        + `<b>${fmtNum(m.current)}</b>${deltaChip(m)}`
+        + sparkSVG(m.series, m.previous_series, m.sentiment) + `</div>`;
+    }).join('');
+  }
+  const box = document.getElementById('ovmetrics');
+  if(box){
+    box.innerHTML = (t.metrics||[]).map(m =>
+      `<div class="mrow"><span>${escapeHTML(m.label)}</span>`
+      + `<span class="num">${fmtNum(m.current)}</span>`
+      + `<span class="prev">${m.previous===null||m.previous===undefined?'':fmtNum(m.previous)}</span>`
+      + `<span>${deltaChip(m)}</span>`
+      + sparkSVG(m.series, m.previous_series, m.sentiment)
+      + `</div>`).join('') || '<p class="muted">no metrics in this window</p>';
+  }
+  const chans = document.getElementById('ovchannels');
+  if(chans){
+    chans.innerHTML = (t.channels||[]).map(row =>
+      `<tr><td>@${escapeHTML(row.target)}</td><td>${fmtNum(row.sent)}</td>`
+      + `<td>${rowChip(row.sent, row.previous_sent, row.delta, row.sentiment)}</td>`
+      + `<td>${fmtNum(row.skipped)}</td></tr>`).join('')
+      || '<tr><td colspan="4" class="muted">no deliveries in this window</td></tr>';
+  }
+  const reasons = document.getElementById('ovreasons');
+  if(reasons){
+    reasons.innerHTML = (t.skip_reasons||[]).map(row =>
+      `<tr><td class="muted">${escapeHTML(row.reason)}</td><td>${fmtNum(row.current)}</td>`
+      + `<td>${rowChip(row.current, row.previous, row.delta, row.delta>0?'bad':row.delta<0?'good':'flat')}</td></tr>`).join('')
+      || '<tr><td colspan="3" class="muted">nothing was skipped</td></tr>';
+  }
+  stampOverview(t);
+}
+function stampOverview(t){
+  const stamp = document.getElementById('ovstamp'); if(!stamp) return;
+  const at = new Date().toLocaleTimeString('en-IN',{hour12:false});
+  stamp.textContent = 'check ran at ' + at + ' · auto-refresh every 5 s'
+    + (document.hidden ? ' (paused while this tab is hidden)' : '')
+    + ' · window ' + ((t && t.window_label) || trendWindow + 'h')
+    + ' · since ' + ((t && t.since_ist) || '—')
+    + ' · counts come from SQL over the whole window, not from the table rows shown';
+}
+async function loadTrends(){
+  const select = document.getElementById('ovwindow');
+  if(select && Number(select.value) !== trendWindow) select.value = String(trendWindow);
+  if(!TOKEN && !DEMO_MODE) return;
+  try{
+    renderTrends(await api('GET','/api/trends?hours=' + encodeURIComponent(trendWindow)));
+  }catch(e){
+    const box = document.getElementById('ovmetrics');
+    if(box) box.innerHTML = `<p class="bad">trends unavailable: ${escapeHTML(e.message)}</p>`;
+  }
+}
+async function loadBrief(){
+  if(!TOKEN && !DEMO_MODE){ 
+    const head = document.getElementById('ovheadline');
+    if(head) head.textContent = 'paste the token to begin';
+    return;
+  }
+  try{
+    const brief = await api('GET','/api/brief?hours=1' + (showServices ? '&services=1' : ''));
+    briefData = brief;
+    renderBrief(brief);
+    stampOverview(trendsData);
+  }catch(e){
+    const head = document.getElementById('ovheadline');
+    if(head) head.textContent = 'brief unavailable: ' + e.message;
+    const line = document.getElementById('healthline');
+    if(line) line.innerHTML = `<span class="bad">health unavailable: ${escapeHTML(e.message)}</span>`;
+  }
+}
+
 function stat(v,l){ return `<div class="stat"><b>${v}</b><span>${l}</span></div>`; }
 function catStateBadge(state){
   const map={ok:['ours','receiving'],silent:['warn','silent'],skipping:['warn','skipping more than sending'],
@@ -1611,12 +1867,14 @@ async function copyHealthReport(){
     if(out) out.textContent='incident summary copied ('+(h.checks||[]).length+' checks)';
   }catch(e){ if(out) out.textContent='could not copy: '+e.message; }
 }
-async function loadHealth(){
+function renderHealth(h){
+  // Rendered from the health payload /api/brief already computed, so a 5 s
+  // tick runs the checks once and both the overview and this panel show the
+  // same object - no second opinion, no second cost.
   const box=document.getElementById('healthrows'), line=document.getElementById('healthline');
   if(!box||!line) return;
   if(!TOKEN && !DEMO_MODE){ line.innerHTML='<span class="muted">paste the token to begin</span>'; return; }
-  try{
-    const h=await api('GET','/api/health'+(showServices?'?services=1':''));
+  {
     lastHealth=h;
     const stamp=document.getElementById('consoleupdated');
     if(stamp) stamp.textContent='checks ran at '+new Date().toLocaleTimeString('en-IN',{hour12:false});
@@ -1625,12 +1883,22 @@ async function loadHealth(){
       + `<span class="muted">${escapeHTML(String(c.ok||0))} ok · ${escapeHTML(String(c.warn||0))} watch · `
       + `${escapeHTML(String(c.fail||0))} fault · ${escapeHTML(String(c.unknown||0))} unknown</span>`
       + `<span class="muted" style="flex:1;min-width:220px">${escapeHTML(h.headline||'')}</span>`
-      + `<button class="ghost" onclick="showServices=!showServices;loadHealth()">${showServices?'hide systemd':'ask systemd'}</button>`;
+      + `<button class="ghost" onclick="showServices=!showServices;loadBrief()">${showServices?'hide systemd':'ask systemd'}</button>`;
     box.innerHTML = (h.checks||[]).map(item=>
       `<div class="check ${escapeHTML(item.state)}"><b>${statePill(item.state)} ${escapeHTML(item.title)}</b>`
       + `<span>${escapeHTML(item.detail)}</span>`
       + (item.fix && item.state!=='ok'?`<div class="fix">${escapeHTML(item.fix)}</div>`:'')
       + `</div>`).join('') || '<p class="muted">no checks ran (no database yet)</p>';
+  }
+}
+async function loadHealth(){
+  // Kept for the console's own refresh path (and the export button): one call
+  // to /api/health, rendered exactly like the brief renders it.
+  const box=document.getElementById('healthrows'), line=document.getElementById('healthline');
+  if(!box||!line) return;
+  if(!TOKEN && !DEMO_MODE){ line.innerHTML='<span class="muted">paste the token to begin</span>'; return; }
+  try{
+    renderHealth(await api('GET','/api/health'+(showServices?'?services=1':'')));
   }catch(e){
     line.innerHTML=`<span class="bad">health unavailable: ${escapeHTML(e.message)}</span>`;
     box.innerHTML='';
@@ -1686,7 +1954,7 @@ async function loadPulse(){
       + `<td>${escapeHTML(ev.label)}</td><td class="muted">${escapeHTML(ev.detail)}</td>`
       + `<td>${ev.queue_id?`<button class="ghost" onclick="tracePost(${Number(ev.queue_id)})">#${Number(ev.queue_id)}</button>`:'<span class="muted">—</span>'}</td></tr>`).join('')
       || '<tr><td colspan="5" class="muted">nothing in this window</td></tr>';
-    note.textContent=(p.capped?'capped at 120 events — widen nothing, narrow the window. ':'')
+    note.textContent=(p.capped?'the list is capped at 120 rows; the counts and bars above cover the whole window. ':'')
       + (p.since_ist?('since '+p.since_ist):'')
       + ((p.silences||[]).length?' · silence: '+p.silences.map(x=>x.kind+' '+x.age).join(', '):'');
   }catch(e){
@@ -1816,12 +2084,18 @@ async function loadScorecard(){
 if(TOKEN || DEMO_MODE) refresh();
 loadButtons();
 loadRecentForStudio();
-if(TOKEN || DEMO_MODE){ loadHealth(); loadPulse(); loadScorecard(); }
+if(TOKEN || DEMO_MODE){ loadBrief(); loadTrends(); loadPulse(); loadScorecard(); }
 setInterval(()=>{
   if(document.hidden || !(TOKEN||DEMO_MODE)) return;
   slowTick += 1;
   refresh(slowTick % 4 === 0);   // every 5 s light, every 20 s the full books
 },5000);
+document.addEventListener('visibilitychange', ()=>{
+  // Coming back to the tab must not show numbers from minutes ago: catch up
+  // once, then let the 5 s tick carry on.
+  if(document.hidden || !(TOKEN||DEMO_MODE)) return;
+  refresh(false); loadTrends();
+});
 </script>
 </body>
 </html>

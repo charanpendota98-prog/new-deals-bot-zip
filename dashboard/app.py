@@ -77,7 +77,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import insight, source_target  # noqa: E402
+from dashboard import insight, source_target, trends  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -1216,6 +1216,101 @@ def api_search(request: web.Request):
 
 @require_token
 @in_thread
+def api_trends(request: web.Request):
+    """"Getting better or worse?" - one window against the window before it.
+
+    Six metrics (sent, skipped, refused, converted, intake, failed) plus the
+    live backlog, each with the exact delta, the same figure for the preceding
+    window, a bar per equal slice of it, and a per-channel split with the top
+    skip reasons. Equal slices mean a 7-day view is twenty-four 7-hour bars
+    whose sum still equals the headline. Read-only, one connection, no writes.
+    """
+    try:
+        hours = max(0.25, min(168.0, float(request.query.get("hours", "24"))))
+    except (TypeError, ValueError):
+        hours = 24.0
+    try:
+        buckets = max(4, min(48, int(request.query.get("buckets", "24"))))
+    except (TypeError, ValueError):
+        buckets = 24
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"error": "no database yet", "database": "missing",
+                                  "metrics": [], "channels": [], "skip_reasons": [],
+                                  "verdict": "no bot database on this host yet - nothing to compare"},
+                                 status=200)
+    try:
+        payload = trends.compare(conn, hours=hours, buckets=buckets)
+    finally:
+        conn.close()
+    payload["pending_restart"] = pending_restart()
+    return web.json_response(payload)
+
+
+@require_token
+@in_thread
+def api_brief(request: web.Request):
+    """The one screen that says what to do now: health + drift + spike + move.
+
+    Returns the full health payload it just computed (so the console panel can
+    render the same object instead of asking twice), plus a ranked attention
+    list from `trends.attention()`: every non-green check, a rules-version
+    drift, a refusal spike and the biggest movement in the window, each with
+    its fix and the panel that can explain it. Cheap on purpose - it recomputes
+    nothing the caller already asked for. Read-only.
+    """
+    try:
+        hours = max(0.25, min(168.0, float(request.query.get("hours", "1"))))
+    except (TypeError, ValueError):
+        hours = 1.0
+    want_services = request.query.get("services", "") in ("1", "true", "yes")
+    try:
+        health_payload = insight.health(
+            db=db_path(), root=ROOT,
+            channels_json=channels_config.channels_json_path(),
+            snapshot=snapshot(), log_path=_dashboard_log_path(),
+            services=want_services)
+    except Exception as exc:  # noqa: BLE001 - a brief must never 500 the page
+        health_payload = {"overall": "unknown", "headline": f"health check failed: {exc}",
+                          "counts": {}, "checks": [], "facts": {}, "error": str(exc)}
+
+    snap = snapshot()
+    rules = load_rules().get("version", 0)
+    running = snap.get("category_rules_version")
+    drift = trends.drift_facts(installed=rules, running=running,
+                               pending_restart=pending_restart())
+    conn = read_only_db()
+    spike = {"last_hour": 0, "avg_hour": 0.0, "week": 0}
+    movement = {}
+    if conn is not None:
+        try:
+            spike = trends.safety_spike(conn)
+            movement = trends.compare(conn, hours=hours, buckets=4)
+        finally:
+            conn.close()
+
+    brief = trends.attention(health=health_payload, drift=drift, safety=spike,
+                             trends=movement or None)
+    try:
+        max_posts = int(snap.get("max_posts") or 0)
+    except (TypeError, ValueError):
+        max_posts = 0
+    payload = {
+        **brief,
+        "health": health_payload,
+        "pending_restart": pending_restart(),
+        "window_hours": hours,
+        "movement": movement.get("verdict", "") if movement else "",
+        "drift": drift,
+        "safety": spike,
+        "rules": {"installed": rules, "running": running, "max_posts": max_posts},
+        "db_exists": db_path().exists(),
+    }
+    return web.json_response(payload)
+
+
+@require_token
+@in_thread
 def api_scorecard(request: web.Request):
     """Per channel and per source: is it receiving, is it silent, is it worth it."""
     try:
@@ -1366,6 +1461,8 @@ def create_app() -> web.Application:
     app.router.add_get("/api/trace", api_trace)
     app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/scorecard", api_scorecard)
+    app.router.add_get("/api/trends", api_trends)
+    app.router.add_get("/api/brief", api_brief)
     app.router.add_get("/api/export", api_export)
     app.router.add_post("/api/restart", api_restart)
     return app
