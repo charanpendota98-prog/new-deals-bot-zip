@@ -15,7 +15,7 @@ h1{font-size:20px;margin:6px 0}h2{font-size:16px;margin:4px 0 10px;color:#93c5fd
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:8px;border-bottom:1px solid #334155}
 .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#334155}
-.badge.ours{background:#14532d}.badge.new{background:#713f12}.badge.warn{background:#7c2d12}
+.badge.ours{background:#14532d}.badge.ok{background:#14532d;color:#a6f3d2}.badge.new{background:#713f12}.badge.warn{background:#7c2d12}
 button,input,select,textarea{background:#0f172a;color:#e2e8f0;border:1px solid #475569;border-radius:8px;padding:8px 10px;font-size:14px}
 button{cursor:pointer;background:#2563eb;border-color:#2563eb}button.danger{background:#7f1d1d;border-color:#7f1d1d}
 button.ghost{background:transparent}button:disabled{opacity:.5}
@@ -112,7 +112,7 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -209,6 +209,26 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </div>
 <p id="addmsg" role="status" aria-live="polite"></p>
 </section>
+<div class="card" id="watchsource">
+<div class="section-heading"><div><span class="eyebrow">WATCH A SOURCE · CHANNEL LINK → POSTS</span><h2>Paste a channel link, and its deals start posting</h2></div><span class="badge" id="watchlive">checking</span></div>
+<p class="muted">Paste the link of a Telegram channel you want to <b>read</b> (not one of ours). The bot then takes each post exactly as the source wrote it, converts every link to <b>ours</b> (tagged Amazon page, or the converter's link bound to our publisher id), and posts it to the channels you pick here. Nothing is joined automatically, no old post is replayed, and a link that cannot be proven to pay us is repaired or dropped - never published as "probably ours".</p>
+<div class="setup-source-layout">
+<div>
+<label for="watchlink">Source channel link</label>
+<input id="watchlink" maxlength="200" placeholder="https://t.me/DealSourceChannel  ·  @DealSourceChannel  ·  https://t.me/+invite" autocomplete="off">
+<label for="watchtargets">Post its deals to <span class="muted">— Ctrl/⌘ click for several</span></label>
+<select id="watchtargets" multiple size="6" aria-label="Destination channels" disabled></select>
+<p class="muted" id="watchfeednote"></p>
+<label class="checkline"><input id="watchmain" type="checkbox" checked onchange="watchTargetsChanged()"> Use the main product feed (recommended)</label>
+<label for="watchnote">Note <span class="muted">— optional</span></label><input id="watchnote" maxlength="200" placeholder="e.g. added from WhatsApp group suggestion">
+<div class="step-actions"><button id="watchadd" onclick="addWatch()">Watch this channel</button><button class="ghost" onclick="loadWatch()">Refresh</button></div>
+<p id="watchmsg" role="status" aria-live="polite" class="muted"></p>
+</div>
+<aside class="inspect-result"><span class="eyebrow">WHAT HAPPENS NEXT</span><h3 id="watchnext">Paste a link to see the plan</h3><p id="watchplan" class="muted">The destination list comes from the bot's own routing snapshot, so this form cannot invent a channel that does not exist.</p><p class="muted">Every post is converted and verified at send time; a source that stops writing to a channel posts nothing, and the row below says so.</p></aside>
+</div>
+<div class="tablewrap"><table><thead><tr><th>Source</th><th>Posts to</th><th>State</th><th></th></tr></thead>
+<tbody id="watchrows"><tr><td colspan="4" class="muted">loading…</td></tr></tbody></table></div>
+</div>
 <div class="card"><h2>Status</h2><div class="row" id="stats"></div><div id="uptime" class="muted"></div></div>
 <div class="card" id="console">
 <div class="section-heading"><div><span class="eyebrow">OPS CONSOLE · SELF-DIAGNOSIS + LIVE TIMELINE</span><h2>Is everything actually working?</h2></div>
@@ -505,6 +525,7 @@ async function refresh(full=true){
       `<tr><td>${escapeHTML(j.id)}</td><td>${escapeHTML(j.source)}</td><td>${escapeHTML(j.status)}</td><td>${escapeHTML(j.sends)}</td><td>${escapeHTML(j.skips)}</td><td>${escapeHTML(j.held||0)}</td><td class="muted">${escapeHTML(j.error||'')}</td></tr>`).join('')
       || '<tr><td colspan="7" class="muted">queue is empty</td></tr>';
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
+    await loadWatch();                    // watched source channels + the bot's verdict
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -1777,6 +1798,102 @@ function useInspection(){
   for(const input of document.querySelectorAll('#fcats input')) input.checked=input.value===inspection.category;
   setupCategoriesChanged(); setupNext();
 }
+// ------------------------------------------------------- watch a SOURCE --
+// "channel link petti source add chesi post cheyali": the operator pastes a
+// channel link, picks where its deals should land, and the running bot proves
+// access with its own session before anything is routed. The rows below show the
+// bot's own verdict (watching / needs attention / disabled), never a guess.
+let watchCatalog = null;
+function watchTargetsChanged(){
+  const main = document.getElementById('watchmain');
+  const sel = document.getElementById('watchtargets');
+  if(!main || !sel) return;
+  sel.disabled = !!main.checked;
+  if(main.checked) [...sel.options].forEach(o=>{ o.selected = false; });
+  paintWatchPlan();
+}
+function paintWatchPlan(){
+  const link = (document.getElementById('watchlink')?.value || '').trim();
+  const head = document.getElementById('watchnext');
+  const plan = document.getElementById('watchplan');
+  const feed = watchCatalog?.main_feed || [];
+  const chosen = [...(document.getElementById('watchtargets')?.selectedOptions || [])].map(o=>o.value);
+  const main = document.getElementById('watchmain')?.checked;
+  const targets = main ? feed : chosen;
+  if(!link){ if(head) head.textContent = 'Paste a link to see the plan'; if(plan) plan.textContent = 'The destination list comes from the bot\'s own routing snapshot, so this form cannot invent a channel that does not exist.'; return; }
+  if(head) head.textContent = targets.length ? ('Its deals will post to ' + targets.join(', ')) : 'Pick at least one destination';
+  if(plan) plan.textContent = (main ? 'Main product feed = the bot\'s own default list' : 'Selected channels') +
+    ' · the bot checks that it is already a member of ' + link + ', then routes new posts through the same convert-and-verify pipeline as every other source.';
+}
+async function loadWatch(){
+  if(!TOKEN && !DEMO_MODE) return;
+  const badge = document.getElementById('watchlive');
+  const body = document.getElementById('watchrows');
+  let data;
+  try { data = await api('GET','/api/watch'); }
+  catch(e){ if(body) body.innerHTML = '<tr><td colspan="4" class="muted">watch list unavailable: '+escapeHTML(String(e.message||e))+'</td></tr>'; return; }
+  watchCatalog = data.catalog || {};
+  if(badge) badge.textContent = watchCatalog.watch_live ? 'bot can watch live' : 'restart to activate';
+  const sel = document.getElementById('watchtargets');
+  if(sel && !sel.options.length){
+    for(const name of (watchCatalog.targets || [])){
+      const option = document.createElement('option'); option.value = name; option.textContent = '@'+name; sel.append(option);
+    }
+  }
+  const note = document.getElementById('watchfeednote');
+  if(note) note.textContent = watchCatalog.main_feed && watchCatalog.main_feed.length
+    ? ('Main feed = ' + watchCatalog.main_feed.join(', ') + ' (the bot\'s own default list)')
+    : 'The bot has not reported its channel list yet; named destinations appear after it starts.';
+  const rows = data.watch || [];
+  if(body) body.innerHTML = rows.map(row => {
+    const state = String(row.state||'pending');
+    const cls = state === 'watching' ? 'ok' : state === 'disabled' ? '' : 'warn';
+    const targets = (row.targets||[]).includes('*') ? 'main feed' : (row.targets||[]).join(', ');
+    return '<tr><td>@'+escapeHTML(String(row.channel||'').replace(/^https:\/\/t\.me\//,''))+
+      (row.title?'<br><span class="muted">'+escapeHTML(row.title)+'</span>':'')+
+      '</td><td class="muted">'+escapeHTML(targets)+'</td>'+
+      '<td><span class="badge '+cls+'">'+escapeHTML(state)+'</span><br><span class="muted">'+escapeHTML(row.detail||'')+'</span></td>'+
+      '<td><button class="ghost" data-watch="toggle" data-channel="'+escapeHTML(row.channel)+'" data-enabled="'+(!row.enabled)+'">'+(row.enabled?'ON':'OFF')+'</button> '+
+      '<button class="danger" data-watch="remove" data-channel="'+escapeHTML(row.channel)+'">remove</button></td></tr>';
+  }).join('') || '<tr><td colspan="4" class="muted">no watched sources yet - paste a channel link above</td></tr>';
+  watchTargetsChanged();   // main feed checked => the named picker is off
+}
+async function addWatch(){
+  const msg = document.getElementById('watchmsg');
+  const link = (document.getElementById('watchlink')?.value || '').trim();
+  const main = document.getElementById('watchmain')?.checked;
+  const chosen = [...(document.getElementById('watchtargets')?.selectedOptions || [])].map(o=>o.value);
+  const note = (document.getElementById('watchnote')?.value || '').trim();
+  if(!link){ if(msg) msg.textContent = 'Paste the source channel link first.'; return; }
+  const targets = main ? ['*'] : chosen;
+  if(!targets.length){ if(msg) msg.textContent = 'Pick at least one destination channel.'; return; }
+  const button = document.getElementById('watchadd');
+  if(button) button.disabled = true;
+  try{
+    const out = await api('POST','/api/watch',{channel:link, targets, note, enabled:true}, configRevision);
+    if(msg) msg.textContent = 'Saved. ' + (out.next || '') + ((out.warnings||[]).length ? ' · ' + out.warnings.join(' · ') : '');
+    if(document.getElementById('watchlink')) document.getElementById('watchlink').value = '';
+    await loadWatch();
+    await refresh(false);
+  }catch(e){ if(msg) msg.textContent = 'Not saved: ' + String(e.message||e); }
+  finally{ if(button) button.disabled = false; }
+}
+async function watchAction(action, channel, enabled){
+  try{
+    if(action === 'remove') await api('DELETE','/api/watch/'+encodeURIComponent(channel), null, configRevision);
+    else await api('PATCH','/api/watch/'+encodeURIComponent(channel), {enabled}, configRevision);
+    await loadWatch();
+    await refresh(false);
+  }catch(e){ const msg = document.getElementById('watchmsg'); if(msg) msg.textContent = 'Failed: ' + String(e.message||e); }
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-watch]');
+  if(!button) return;
+  watchAction(button.dataset.watch, button.dataset.channel, button.dataset.enabled === 'true');
+});
+document.addEventListener('input', event => { if(event.target.id === 'watchlink') paintWatchPlan(); });
+document.addEventListener('change', event => { if(event.target.id === 'watchtargets') paintWatchPlan(); });
+
 async function addChannel(){
   if(setupSaving) return;
   const msg=document.getElementById('addmsg'); msg.className='';

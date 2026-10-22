@@ -101,7 +101,8 @@ def test_config_manager():
               and loaded["whatsapp"] == [], repr(loaded))
         (Path(td) / "bad.json").write_text("{nope", encoding="utf-8")
         check("a corrupt file loads as empty",
-              channels_config.load_channels(Path(td) / "bad.json") == {"version": 1, "channels": []})
+              channels_config.load_channels(Path(td) / "bad.json")
+              == {"version": 1, "channels": [], "whatsapp": [], "watch": []})
 
     routing = {"dealsvelocity": ["LootZoneIndia11"], "deals": ["LootZoneIndia11"],
                "TrickXpert": ["LootzoneTricks"]}

@@ -248,6 +248,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_runtime.py` | Runtime source membership and replay guards against fake Telegram responses |
 | `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
 | `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
+| `test_watch_source.py` | A pasted **source** channel end to end: `validate_watch` (public link / `@name` / `t.me/`, the invite-link warning, our-own-channel refusal, no `*`+named mixing, unknown destination, 40-target cap, note truncation), `apply_watch_to_routing` (`*` = the bot's own `NO_TRICKS_TARGETS`; disabled or invalid rows skipped with a reason; junk never raises), the `watch` block surviving `save_channels`/`load_channels`, `LiveChannels.sync_watch` (both chat-id conventions written into `source_map`, the route committed into `SOURCE_TO_TARGETS` with no awaits, idempotent second pass, non-member / duplicate-alias / self-destination / unreachable-destination refusals, named destinations resolved before the commit, `restart_required` on a build without a resolver, a removed row clearing its state) and `GET/POST/PATCH/DELETE /api/watch` over real HTTP (token, stale `If-Match`, duplicates, 404s) plus the served card's own markup |
 | `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
 | `test_post_link_guarantee.py` | The end-to-end guarantee: the bytes a channel receives are audited, and every published link is provably ours (a stranger's link, a bare page and "our number on it" are all refused) |
 | `test_hypd_links.py` | HYPD creator-store links: verified Meesho only, our store, Bitly-shortened |
@@ -270,6 +271,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_dashboard_watch.cjs` | jsdom: the watch-a-source card — paste a link → main feed (default) or named destinations, the exact `POST`/`PATCH`/`DELETE` bodies, the stale-form `If-Match` guard, the bot's own state + reason per row, a hostile channel title kept as text, refusals left in the field, and a dead endpoint that cannot blank the section |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
 | `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount, a pure price line is never the title, and the card keeps both numbers whole at lakhs-range prices |
 | `test_dashboard_card_studio.cjs` | jsdom: the Card studio panel — facts line, caption verbatim per surface, tokened PNG through a blob URL, plan rows with accept/skip reasons, hostile caption text kept as text, the two-button join row editor with one-click presets and a refused non-Telegram save, the cross-channel picker that loads a real post's caption and link, and a dead endpoint that cannot blank the dashboard |
@@ -1765,12 +1767,12 @@ source snapshot:
 |---|---|
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
-| `bestgaa/channels_config.py` | `077ebe2edf98aa6cbc4c35a4d2d850f610e2e35034ad019e779b5bbba5ba53e5` |
+| `bestgaa/channels_config.py` | `7628dc8590aede9b3f8c2a6f0844430b5238cca0005fadf3371cb35fd1fd3d63` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
-| `bestgaa/live_channels.py` | `bbc0df4d59b5d6dcfb99c80cde1ddb8852abad9a0d9019433b86dfd20305e994` |
-| `bestgaa/main_bot_new.py` (v19.0) | `0e4116eef0b96f3565433da153bc0154524faf5e0e0931b09531169acf29f99a` |
+| `bestgaa/live_channels.py` | `8e9eff02782afb83c20a6abe039cbacced62189bab0a4da6d6b500fe757ffe49` |
+| `bestgaa/main_bot_new.py` (v19.0) | `209ba9d8e6a0a3b1a78e9a7d50b2378872de8a5cd16b4a4c98ab90c7ced82363` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1786,7 +1788,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `6d6de1de2f60cfe0c8d52e8d9be39cde0807afb3f0502ead8c7747442f285bab` |
+| `dashboard/app.py` | `cb5080f62607f95cfbe6781b42b1140c9fda8cfb7b9bc5b09379ce2aba035290` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
@@ -1822,13 +1824,13 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `e362e645c5364c789094b8d6d031b04b13b43c17a8ccaf5be7f9cfa2dec2322a` |
+| `ops/test_all.sh` | `34df7acc08664eac72b50f4a29020ee59436e34b4b6d390ead92dc949390ecf2` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_dashboard.py` | `572a5e5994e96c88cf1d83c34e6f166ac5ae1460464003067aacd20ef71715da` |
+| `test_dashboard.py` | `14c7f513eb51d0b64fbb4a43d664a500b32e8b34f31875d4c8a4c8d6cb03d035` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
@@ -1837,6 +1839,7 @@ source snapshot:
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
+| `test_dashboard_watch.cjs` | `c714549e36c3a040ebe2ce6f75afb29f2b5292f2a9acc61e93e8489ef94f920c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
@@ -1861,6 +1864,7 @@ source snapshot:
 | `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
 | `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |
 | `test_source_to_target.py` | `436b5168537eb013f5bbee62e29eb269536867cdef1a9a71b8f2a6224493a6db` |
+| `test_watch_source.py` | `c9304685bb9b65b2650776a657d2166b6fb0a40a21cac200b5aba8fba9588d70` |
 
 **Offline verification on this source tree (2026-10-18):** `PYTHON=.venv/bin/python ./ops/test_all.sh` completed successfully. The gate covers category-taxonomy and HYPD-policy parity; the render/routing and pipeline-fix suites (per-suite check counts are published below, generated from the run's own log, not hand-copied); rescan/recovery, best-copy, duplicate, delivery-fence, post-deploy-repeat, link-inspector, category-preview, source-setup, source-runtime, live-channel, dashboard, EarnKaro, HYPD and line-fidelity suites; the three jsdom dashboard DOM suites (guided setup, source picker, category studio); the WhatsApp bridge self-test; `bash -n` on every shell script; Python compilation; pyflakes lint; a repo self-consistency suite; and finally README's own proof tables, checked against the bytes on disk and against the completed log. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
 
@@ -2526,6 +2530,52 @@ Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
 permission failures, preservation of existing routes, deferred edits/removals,
 malformed config, source/target aliases, backoff and configuration races. Production
 is not restarted or redeployed by development tests.
+
+### Watched source channels (2026-10-22)
+
+**The workflow the user described:** paste a channel link in the dashboard → that
+channel becomes a **source** → every post it publishes is taken exactly as written,
+converted through the normal pipeline (our Amazon tag / our EarnKaro publisher id,
+repaired or withheld when ownership cannot be proven) and posted to the channels you
+picked. No restart is needed for a new source, because the running bot proves access
+with its own session and attaches the route itself.
+
+- `channels.json` gains a `watch` array next to `channels` and `whatsapp`:
+  `{"channel": "DealSourceX", "targets": ["*"], "enabled": true, "note": "", "added_at": 1792...}`.
+  `"*"` means **this bot's own `NO_TRICKS_TARGETS`**, resolved at runtime, so a code
+  change to the main feed is respected instead of frozen into the config file. Named
+  targets must be channels the bot itself reported; `*` and named targets cannot be
+  mixed (that was an ambiguous config, now a validation error).
+- At boot, `channels_config.apply_watch_to_routing` merges every enabled row into
+  `SOURCE_TO_TARGETS` **before** `DASHBOARD_SCOPED_SOURCES` is computed, and logs
+  `DASHBOARD SOURCES | watching X -> Y`. That map is what `process_job` reads, so a
+  saved source delivers from the first post after the restart.
+- While running, `LiveChannels.sync_watch` (every 5 s) resolves each row with the bot
+  session: it must be a Telegram **broadcast** channel the session is already a
+  member of, it must not be one of our own destinations (a repost loop), it must not
+  already be watched under another name, and every destination must be a real
+  entity with Post Messages permission. Only then does it commit — with no awaits —
+  the route plus **both** chat-id conventions (`<id>` and `-100<id>`) into
+  `source_map`, which is exactly what the `NewMessage` handler reads. Failures
+  are per-row `needs_attention` with the reason, a Telegram `seconds` retry window is
+  honoured, and one bad source never touches another.
+- Safety is unchanged and stated in the UI: **nothing is joined automatically**
+  (a private `t.me/+` invite is accepted only as the name of a channel the session
+  already reads, and warns), **no history is replayed** (`SOURCE_ACTIVATED_AT` is
+  stamped at activation; ingestion and the rescan both ignore older messages), and
+  the existing category/owned-link/duplicate/delivery checks still run on every post.
+- Dashboard: `GET /api/watch` (saved rows + the bot's own `watch_states`, its
+  reported target list and `main_feed`), `POST /api/watch` (validate → save →
+  `mark_pending()`; `If-Match` protects a stale form), `PATCH /api/watch/{channel}`
+  (targets / enabled / note) and `DELETE /api/watch/{channel}`. The page shows a
+  **Watch source** card: paste the link, choose the main feed or named channels, and
+  a table where every row carries the bot's own verdict — `watching`, `checking_access`,
+  `needs_attention` (with the reason), `disabled`, `restart_required` — never a guess
+  made by the dashboard. Removing a watched source stops routing on the bot's next
+  sync; the already-queued posts of an existing queue are never rewritten.
+- Proof: `test_watch_source.py` (gate) and `test_dashboard_watch.cjs` (jsdom) cover
+  the whole path offline. Neither the bot nor any service is started, restarted or
+  redeployed by these tests.
 
 ### Source-selection verification (2026-10-14)
 

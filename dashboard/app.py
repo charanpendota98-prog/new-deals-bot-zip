@@ -470,6 +470,159 @@ async def api_add_channel(request: web.Request):
                               "activation": activation_status()})
 
 
+# --------------------------------------------------------------------------- #
+#  watched SOURCES - "channel link petti source add chesi post cheyali"
+# --------------------------------------------------------------------------- #
+def watch_catalog(snap=None, data=None):
+    """What a source can be routed to: our channels + the main-feed default."""
+    snap = snapshot() if snap is None else snap
+    data = channels_config.load_channels() if data is None else data
+    targets = list(snap.get("targets") or [])
+    main_feed = [str(t) for t in (snap.get("main_feed") or [])]
+    names = {str(c.get("name")) for c in data.get("channels", []) if c.get("name")}
+    return {"targets": sorted({*targets, *names}),
+            "main_feed": main_feed,
+            "reported": bool(targets),
+            "watch_live": bool(snap.get("live_sources")),
+            "main_available": bool(main_feed)}
+
+
+def watch_rows():
+    data = channels_config.load_channels()
+    snap = snapshot()
+    states = (snap.get("watch_states") or {}) if snap.get("live_reload") else {}
+    details = snap.get("source_details") or {}
+    rows = []
+    for entry in channels_config.watch_entries(data):
+        channel = entry["channel"]
+        state = states.get(channel) or {}
+        detail = details.get(channel) or {}
+        if not state:
+            state = ({"state": "restart_required",
+                      "detail": "Saved. The running bot applies it on its next sync "
+                                "or an approved restart."}
+                     if not snap else
+                     {"state": "pending", "detail": "Saved; waiting for the bot's next sync"})
+        rows.append({**entry,
+                     "state": state.get("state", "pending"),
+                     "detail": state.get("detail", ""),
+                     "title": detail.get("title", ""),
+                     "checked_at": detail.get("checked_at"),
+                     "activated_at": detail.get("activated_at")})
+    return rows
+
+
+@require_token
+@in_thread
+def api_watch_list(request: web.Request):
+    snap = snapshot()
+    return web.json_response({"watch": watch_rows(), "catalog": watch_catalog(snap),
+                              "activation": activation_status(snap),
+                              "revision": config_revision()})
+
+
+@require_token
+async def api_watch_add(request: web.Request):
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    snap = snapshot()
+    catalog = watch_catalog(snap)
+    cleaned, errors, warnings = channels_config.validate_watch(
+        body, set(catalog["targets"]) | set(catalog["main_feed"]))
+    if errors:
+        return web.json_response({"errors": errors, "warnings": warnings,
+                                  "catalog": catalog}, status=400)
+    data = channels_config.load_channels()
+    existing = {str(row.get("channel", "")).lower() for row in data.get("watch", [])}
+    if cleaned["channel"].lower() in existing:
+        return web.json_response({"errors": [f"{cleaned['channel']} is already watched"],
+                                  "warnings": warnings}, status=400)
+    data.setdefault("watch", []).append(cleaned)
+    channels_config.save_channels(data)
+    mark_pending()
+    # Say where it will post, using the bot's own report. With no report there is
+    # nothing honest to promise, so the plan is empty rather than invented.
+    routes_to: list[str] = []
+    if catalog["main_feed"]:
+        plan = channels_config.apply_watch_to_routing(
+            {str(k): list(v) for k, v in (snap.get("source_targets") or {}).items()},
+            {"watch": [cleaned]}, catalog["main_feed"])
+        if plan["watching"]:
+            routes_to = plan["watching"][0]["targets"]
+    return web.json_response({
+        "source": cleaned,
+        "warnings": warnings,
+        "revision": config_revision(),
+        "plan": {"routes_to": routes_to, "main_feed": catalog["main_feed"]},
+        "next": ("The bot will check access with its own session and start watching "
+                 "this channel; its next posts are converted and posted to "
+                 + (", ".join(routes_to) if routes_to else "the main feed once it reports its channels")
+                 + ". Nothing is joined automatically and old posts are not replayed."),
+        "activation": activation_status(snap),
+    })
+
+
+def _watch_entry(data: dict, channel: str):
+    key = str(channel or "").lower()
+    for index, row in enumerate(data.get("watch") or []):
+        if str(row.get("channel", "")).lower() == key:
+            return index, row
+    return None, None
+
+
+@require_token
+async def api_watch_edit(request: web.Request):
+    channel = request.match_info.get("channel", "")
+    try:
+        patch = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        patch = None
+    if not isinstance(patch, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    data = channels_config.load_channels()
+    index, entry = _watch_entry(data, channel)
+    if entry is None:
+        return web.json_response({"errors": ["no such watched source"]}, status=404)
+    catalog = watch_catalog()
+    merged = {**entry, **{k: v for k, v in patch.items()
+                          if k in ("targets", "enabled", "note")}}
+    cleaned, errors, warnings = channels_config.validate_watch(
+        merged, set(catalog["targets"]) | set(catalog["main_feed"]))
+    if errors:
+        return web.json_response({"errors": errors, "warnings": warnings}, status=400)
+    data["watch"][index] = cleaned
+    channels_config.save_channels(data)
+    mark_pending()
+    return web.json_response({"source": cleaned, "warnings": warnings,
+                              "revision": config_revision()})
+
+
+@require_token
+async def api_watch_delete(request: web.Request):
+    channel = request.match_info.get("channel", "")
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    data = channels_config.load_channels()
+    index, entry = _watch_entry(data, channel)
+    if entry is None:
+        return web.json_response({"errors": ["no such watched source"]}, status=404)
+    data["watch"].pop(index)
+    channels_config.save_channels(data)
+    mark_pending()
+    return web.json_response({"removed": entry["channel"], "revision": config_revision()})
+
+
 @require_token
 async def api_edit_channel(request: web.Request):
     name = channels_config.normalize_handle(request.match_info.get("name", "")).lower()
@@ -1455,6 +1608,10 @@ def create_app() -> web.Application:
     app.router.add_post("/api/category-batch", api_category_batch)
     app.router.add_post("/api/inspect-link", api_inspect_link)
     app.router.add_post("/api/source-to-target", api_source_to_target)
+    app.router.add_get("/api/watch", api_watch_list)
+    app.router.add_post("/api/watch", api_watch_add)
+    app.router.add_patch("/api/watch/{channel}", api_watch_edit)
+    app.router.add_delete("/api/watch/{channel}", api_watch_delete)
     app.router.add_post("/api/channels", api_add_channel)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_put("/api/channels/whatsapp", api_put_whatsapp)

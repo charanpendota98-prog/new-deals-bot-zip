@@ -51,14 +51,18 @@ class LiveChannels:
                  initial_channels, builtin_targets, known_categories, tricks_sources,
                  resolve_target, on_applied=lambda: None, path=None, snapshot_file=None,
                  resolve_source=None, on_source_added=lambda *args: None,
-                 builtin_sources=None, source_details=None):
+                 builtin_sources=None, source_details=None, main_feed=None):
         self.routing, self.tags, self.filters = routing, tag_targets, category_filters
         self.source_map, self.target_map = source_map, target_map
         self.builtin_sources = set(builtin_sources) if builtin_sources is not None else set(routing)
         self.resolve_source = resolve_source
         self.on_source_added = on_source_added
         self.source_details = source_details if source_details is not None else {}
+        # Where a watched source's posts go when the dashboard says "*": the bot's
+        # own main product feed, resolved at runtime (never frozen in config).
+        self.main_feed = [str(t) for t in (main_feed or [])]
         self.source_checks = {}
+        self.watch_states: dict[str, dict] = {}
         self.applied = {}
         for channel in initial_channels:
             if channel.get("enabled", True):
@@ -75,6 +79,7 @@ class LiveChannels:
         self.applied_revision = None
         self.started_at = time.time()
         self.last_observed = None
+        self.last_data: dict = {"channels": []}
 
     def publish(self, states, observed, error=""):
         try:
@@ -91,6 +96,10 @@ class LiveChannels:
                     main_sources=sorted(s for s in self.builtin_sources if s not in self.tricks),
                     source_details=self.source_details,
                     dashboard_added=sorted(c["name"] for c in self.applied.values()),
+                    watch_states=self.watch_states,
+                    watch_configured=sorted(row.get("channel", "")
+                                            for row in config.watch_entries(self.last_data)),
+                    main_feed=self.main_feed,
                     targets=sorted(self.builtins | {t for values in self.routing.values() for t in values}))
         atomic_snapshot(self.snapshot_file, base)
 
@@ -105,6 +114,7 @@ class LiveChannels:
         except (OSError, ValueError) as exc:
             self.publish({}, None, f"Invalid/unreadable config; existing routes unchanged: {type(exc).__name__}")
             return
+        self.last_data = data
         if observed != self.last_observed:
             self.source_checks.clear()
             self.retry_after.clear()
@@ -259,12 +269,135 @@ class LiveChannels:
                 self.retry_after[key] = time.time() + retry_seconds
                 if getattr(exc, "seconds", 0):
                     self.access_backoff_until = max(self.access_backoff_until, time.time() + retry_seconds)
+        await self.sync_watch(data, observed)
         for key, old in self.applied.items():
             if key not in processed:
                 states[old["name"]] = {"state": "restart_required", "detail": "Removed in saved config; existing route remains until an approved restart."}
         if all(s["state"] in {"active", "disabled"} for s in states.values()):
             self.applied_revision = observed
         self.publish(states, observed)
+
+    async def sync_watch(self, data, observed):
+        """Activate watched SOURCE channels - the "paste a link, watch it" flow.
+
+        Same rules as a destination: nothing is joined, nothing is replayed, and
+        a source that is not a broadcast channel the session is already in is
+        refused with the reason. Once access is proven the route is attached to
+        the live `source_map`, which is exactly what the message handler reads -
+        so the next post from that channel lands in our channels, converted.
+        """
+        rows = config.watch_entries(data)
+        seen: set[str] = set()
+        for row in rows:
+            channel = str(row.get("channel", "")).strip()
+            if not channel:
+                continue
+            key = channel.lower()
+            seen.add(key)
+            if not row.get("enabled", True):
+                self.watch_states[channel] = {"state": "disabled",
+                                              "detail": "Saved but not watched"}
+                continue
+            if self.resolve_source is None or self.on_source_added is None:
+                self.watch_states[channel] = {
+                    "state": "restart_required",
+                    "detail": "This bot build cannot watch new sources live; "
+                              "an approved restart applies it"}
+                continue
+            mapped = {str(entry[0]).lower() for entry in self.source_map.values()}
+            if key in mapped:
+                wanted = self._watch_targets(row)
+                current = list(self.routing.get(channel, []))
+                if all(any(str(t).lower() == w.lower() for t in current) for w in wanted):
+                    self.watch_states[channel] = {
+                        "state": "watching",
+                        "detail": f"Live: posts route to {', '.join(current) or 'nowhere'}"}
+                    continue
+            retry = self.retry_after.get(f"watch:{key}", 0)
+            if retry > time.time():
+                self.watch_states[channel] = self.cached_errors.get(
+                    f"watch:{key}", {"state": "needs_attention", "detail": "Retrying shortly"})
+                continue
+            self.watch_states[channel] = {"state": "checking_access",
+                                          "detail": "Checking access with the bot session; "
+                                                    "no message is sent"}
+            try:
+                # A name that is already one of OUR destinations is a repost loop,
+                # whatever the network says: catch it before spending a request.
+                if channel.lower() in {str(name).lower() for name in self.target_map} | {
+                        str(name).lower() for name in self.builtins}:
+                    raise ValueError("this is one of OUR posting channels - "
+                                     "a destination cannot be its own source")
+                entity = await asyncio.wait_for(self.resolve_source(channel), timeout=10)
+                if not entity or not getattr(entity, "broadcast", False):
+                    raise ValueError("not a Telegram broadcast channel (or not reachable)")
+                if getattr(entity, "left", False):
+                    raise ValueError("the bot session is not a member - join it first")
+                sid = abs(int(getattr(entity, "id", 0) or 0))
+                if not sid:
+                    raise ValueError("Telegram returned no channel id")
+                if any(getattr(e, "id", None) == sid for e in self.target_map.values()):
+                    raise ValueError("this is one of OUR posting channels - "
+                                     "a destination cannot be its own source")
+                # Two pasted links that lead to the same channel would fight over
+                # one route and double-post; keep the first and say so.
+                for other_id, (other_name, _others) in self.source_map.items():
+                    if abs(int(other_id)) in {sid, 1000000000000 + sid} \
+                            and str(other_name).lower() != channel.lower():
+                        raise ValueError(f"this channel is already watched as {other_name}")
+                wanted = self._watch_targets(row)
+                if not wanted:
+                    raise ValueError("no destination channels are configured for this source")
+                # Every destination must be a real entity in the live target map,
+                # otherwise the post is queued and then dropped at send time. A
+                # named destination that the bot has not resolved yet is checked
+                # here (before the commit) with the same session.
+                for target in wanted:
+                    if target in self.target_map:
+                        continue
+                    if self.resolve_target is None:
+                        raise ValueError(f"destination @{target} is not resolved by this bot build")
+                    target_entity = await asyncio.wait_for(self.resolve_target(target), timeout=8)
+                    if not target_entity or not getattr(target_entity, "broadcast", False):
+                        raise ValueError(f"destination @{target} is not a reachable broadcast channel")
+                    if not (getattr(target_entity, "creator", False) or
+                            getattr(getattr(target_entity, "admin_rights", None), "post_messages", False)):
+                        raise ValueError(f"destination @{target} is missing Post Messages permission")
+                    self.target_map[target] = target_entity
+                # Commit with no awaits: route + source_map in one step.
+                targets = self.routing.setdefault(channel, [])
+                for target in wanted:
+                    if all(str(t).lower() != target.lower() for t in targets):
+                        targets.append(target)
+                for source_id in (sid, -(1000000000000 + sid)):
+                    self.source_map[source_id] = (channel, list(targets))
+                self.source_details[channel] = {
+                    "title": str(getattr(entity, "title", "") or channel),
+                    "state": "ready", "checked_at": time.time(),
+                    "activated_at": time.time(), "watched": True}
+                self.on_source_added(channel, entity, time.time())
+                self.watch_states[channel] = {
+                    "state": "watching",
+                    "detail": f"Live: new posts from @{getattr(entity, 'username', channel)} "
+                              f"route to {', '.join(targets)}"}
+                log.info("DASHBOARD SOURCE WATCH | %s -> %s", channel, ", ".join(targets))
+            except Exception as exc:  # noqa: BLE001 - one bad source is one row
+                detail = str(exc)[:240] or type(exc).__name__
+                self.watch_states[channel] = {"state": "needs_attention", "detail": detail}
+                self.cached_errors[f"watch:{key}"] = self.watch_states[channel]
+                self.retry_after[f"watch:{key}"] = time.time() + max(
+                    30, int(getattr(exc, "seconds", 0) or 0))
+                log.warning("DASHBOARD SOURCE WATCH failed | %s: %s", channel, detail)
+        for channel in list(self.watch_states):
+            if channel.lower() not in seen:
+                self.watch_states.pop(channel, None)
+
+    def _watch_targets(self, row) -> list[str]:
+        """The destinations for one watched source ("*" = the main product feed)."""
+        configured = [str(t) for t in (row.get("targets") or ["*"])]
+        if configured == ["*"]:
+            return [t for t in self.main_feed if t]
+        return [t for t in configured if t]
 
     async def run(self, stop):
         while not stop.is_set():

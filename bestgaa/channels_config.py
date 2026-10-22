@@ -25,12 +25,27 @@ Schema (channels.json)::
     a list (e.g. ["electronics"]) keeps ONLY posts classified into those
     categories - a category shelf like an electronics-only channel.
 
+    **Watch a SOURCE (2026-10-22, "channel link petti source add chesi post cheyali")**::
+
+        {"watch": [{"channel": "DealSourceX",          # or https://t.me/+invite
+                    "targets": ["*"],                  # "*" = the main product feed
+                    "enabled": true,
+                    "note": "hinted by the operator",
+                    "added_at": 1792610000.0}]}
+
+    A watched source is a channel the bot READS. The dashboard stores the intent
+    (which channel, where its posts should go); the running bot resolves it with
+    its own session, refuses anything it has not joined, and only then adds it to
+    live routing - so a typo, a private channel it is not in, or a link that is
+    really one of our own destinations can never silently swallow posts.
+
 Stdlib only: importing this must never require telethon, aiohttp, or bot env.
 """
 import json
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -62,7 +77,7 @@ def pending_path() -> Path:
 
 
 def empty_config() -> dict:
-    return {"version": SCHEMA_VERSION, "channels": []}
+    return {"version": SCHEMA_VERSION, "channels": [], "whatsapp": [], "watch": []}
 
 
 def normalize_handle(name: str) -> str:
@@ -266,7 +281,27 @@ def load_channels(path: Path | None = None) -> dict:
                 "enabled": bool(entry.get("enabled", True)),
                 "note": str(entry.get("note", ""))[:200],
             })
-    return {"version": SCHEMA_VERSION, "channels": channels, "whatsapp": whatsapp}
+    watch: list[dict] = []
+    for entry in data.get("watch") or []:
+        if not isinstance(entry, dict):
+            continue
+        channel = str(entry.get("channel", "") or "").strip()
+        if not channel:
+            continue
+        raw_targets = entry.get("targets", ["*"])
+        if isinstance(raw_targets, str):
+            raw_targets = [raw_targets]
+        targets = [str(t).strip() for t in (raw_targets if isinstance(raw_targets, list) else [])
+                   if str(t).strip()]
+        watch.append({
+            "channel": channel,
+            "targets": targets or ["*"],
+            "enabled": bool(entry.get("enabled", True)),
+            "note": str(entry.get("note", ""))[:200],
+            "added_at": float(entry.get("added_at") or 0.0),
+        })
+    return {"version": SCHEMA_VERSION, "channels": channels, "whatsapp": whatsapp,
+            "watch": watch}
 
 
 def save_channels(data: dict, path: Path | None = None) -> Path:
@@ -275,7 +310,8 @@ def save_channels(data: dict, path: Path | None = None) -> Path:
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"version": SCHEMA_VERSION,
                           "channels": (data or {}).get("channels", []),
-                          "whatsapp": (data or {}).get("whatsapp", [])},
+                          "whatsapp": (data or {}).get("whatsapp", []),
+                          "watch": (data or {}).get("watch", [])},
                          ensure_ascii=False, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=".channels-", suffix=".tmp", dir=str(target.parent))
     try:
@@ -362,6 +398,147 @@ def validate_channel(entry: dict, known_sources: set[str],
         warnings.append("our Amazon tag rides ONLY on channels declared in Associates "
                         "Central - list this channel there first, or Amazon may flag it")
     return cleaned, errors, warnings
+
+
+WATCH_MAX = 100
+
+
+def validate_watch(entry: dict, existing_targets: set[str],
+                   known_targets: set[str] | None = None) -> tuple[dict, list[str], list[str]]:
+    """One dashboard-managed SOURCE channel. Returns (cleaned, errors, warnings).
+
+    `channel` is what the operator pasted - a public link, @username or invite.
+    `targets` is where its posts should go: ["*"] means the main product feed
+    (the bot resolves that to its own NO_TRICKS_TARGETS list, so a code change
+    there is respected instead of frozen into the config).
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(entry, dict):
+        return {}, ["watch entry must be a JSON object"], []
+    try:
+        channel = normalize_source(entry.get("channel", ""))
+    except ValueError as exc:
+        return {}, [f"channel: {exc}"], []
+    if not channel:
+        return {}, ["channel is required (paste the channel link)"], []
+    known = {str(t).lower() for t in (existing_targets or set())}
+    if channel.lower() in known:
+        errors.append(f"{channel} is one of OUR posting channels; a destination cannot "
+                      f"be its own source (that would repost our own posts)")
+    raw_targets = entry.get("targets", ["*"])
+    if isinstance(raw_targets, str):
+        raw_targets = [raw_targets]
+    if not isinstance(raw_targets, list) or len(raw_targets) > 40:
+        return {}, ['targets must be a list of up to 40 channel names (or ["*"])'], []
+    targets: list[str] = []
+    for value in raw_targets:
+        name = str(value or "").strip()
+        if not name:
+            continue
+        if name == "*":
+            targets.append("*")
+            continue
+        cleaned_name = normalize_handle(name)
+        if not cleaned_name:
+            errors.append(f"target {name[:40]!r} is not a channel name")
+            continue
+        if known and cleaned_name.lower() not in known:
+            errors.append(f"target {cleaned_name} is not one of our channels")
+            continue
+        if not known:
+            warnings.append(f"target {cleaned_name} cannot be confirmed until the bot "
+                            f"reports its channels")
+        if cleaned_name.lower() not in {t.lower() for t in targets}:
+            targets.append(cleaned_name)
+    if not targets:
+        errors.append("pick at least one destination channel (or \"*\" for the main feed)")
+    if "*" in targets and targets != ["*"]:
+        errors.append("choose either the main feed or named channels, not both")
+    if channel.lower() in {t.lower() for t in targets}:
+        errors.append("a channel cannot be its own destination")
+    if not errors:
+        if channel.startswith("https://t.me/+"):
+            warnings.append("private source: the bot session account must already be a "
+                            "member; nothing is joined automatically")
+        elif not (known_targets or known):
+            warnings.append("the bot must report its channels before this can activate")
+        else:
+            warnings.append("the bot checks access with its own session and activates "
+                            "this source live; nothing is joined automatically and no "
+                            "old posts are replayed")
+    cleaned = {
+        "channel": channel,
+        "targets": targets,
+        "enabled": bool(entry.get("enabled", True)),
+        "note": str(entry.get("note", ""))[:200],
+        "added_at": float(entry.get("added_at") or time.time()),
+    }
+    return cleaned, errors, warnings
+
+
+def watch_entries(data: dict | None) -> list[dict]:
+    """Enabled-intent view of the saved watch list (never raises)."""
+    rows = (data or {}).get("watch")
+    if not isinstance(rows, list):
+        return []
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, dict) and str(row.get("channel", "")).strip():
+            out.append(row)
+    return out
+
+
+def apply_watch_to_routing(source_to_targets: dict, data: dict,
+                           main_targets, tricks_sources=None,
+                           existing_targets: set[str] | None = None) -> dict:
+    """Merge watched SOURCES into the live routing map (mutates it).
+
+    A watched source with no route posts nowhere, so this is what makes "I
+    added the channel" actually deliver. Returns
+    {"watching": [...], "skipped": [...], "warnings": [...]}.
+    """
+    summary: dict = {"watching": [], "skipped": [], "warnings": []}
+    main = [str(t) for t in (main_targets or [])]
+    # `tricks_sources` are SOURCE names (as in apply_to_routing); they are kept in
+    # the signature so a caller cannot confuse the two, and they are NOT used to
+    # filter destination names — `main_targets` already is the no-tricks feed.
+    del tricks_sources
+    in_use = {str(t).lower() for targets in source_to_targets.values() for t in targets}
+    in_use |= {str(t).lower() for t in (existing_targets or set())}
+    in_use |= {t.lower() for t in main}
+    rows = watch_entries(data)
+    if len(rows) > WATCH_MAX:
+        summary["warnings"].append(f"only the first {WATCH_MAX} watched sources are used")
+        rows = rows[:WATCH_MAX]
+    for entry in rows:
+        try:
+            cleaned, errors, _ = validate_watch(entry, in_use)
+            if errors:
+                summary["skipped"].append(str(entry.get("channel", "?"))[:40])
+                summary["warnings"].append(
+                    f"skipped source {str(entry.get('channel', '?'))[:40]}: {errors[0]}")
+                continue
+            if not cleaned["enabled"]:
+                summary["skipped"].append(cleaned["channel"])
+                continue
+            wanted = main if cleaned["targets"] == ["*"] else cleaned["targets"]
+            wanted = [t for t in wanted if t]
+            if not wanted:
+                summary["skipped"].append(cleaned["channel"])
+                summary["warnings"].append(
+                    f"source {cleaned['channel']}: no destination left after the tricks filter")
+                continue
+            targets = source_to_targets.setdefault(cleaned["channel"], [])
+            for target in wanted:
+                if all(str(t).lower() != target.lower() for t in targets):
+                    targets.append(target)
+            summary["watching"].append({"channel": cleaned["channel"],
+                                        "targets": list(targets)})
+        except Exception as exc:  # noqa: BLE001 - one bad row never breaks boot
+            summary["skipped"].append(str((entry or {}).get("channel", "?"))[:40])
+            summary["warnings"].append(f"skipped a source: {exc}"[:160])
+    return summary
 
 
 def apply_to_routing(source_to_targets: dict, amazon_tag_targets: set, data: dict,
