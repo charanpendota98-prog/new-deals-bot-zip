@@ -1298,6 +1298,10 @@ DASHBOARD_SCOPED_SOURCES: set[str] = set()
 SOURCE_DETAILS: dict[str, dict] = {}
 SOURCE_ACTIVATED_AT: dict[str, float] = {}
 DASHBOARD_CATEGORY_FILTERS: dict[str, frozenset] = {}
+# A WATCHED SOURCE can carry its own category policy ("this channel is fashion
+# only"). Keyed by the source name exactly as it is routed, so a post is dropped
+# before any target is chosen - the source itself is limited, not one shelf.
+SOURCE_CATEGORY_FILTERS: dict[str, frozenset] = {}
 try:
     try:
         from bestgaa import channels_config as _dashboard_channels
@@ -1323,6 +1327,12 @@ try:
     _dashboard_watch = _dashboard_channels.apply_watch_to_routing(
         SOURCE_TO_TARGETS, _dashboard_data, NO_TRICKS_TARGETS,
         tricks_sources=TRICKS_SOURCES, existing_targets=_dashboard_targets)
+    for _watch_row in _dashboard_channels.watch_entries(_dashboard_data):
+        _watch_cats = [str(c).strip().lower() for c in (_watch_row.get("categories") or [])
+                       if str(c).strip()]
+        if _watch_cats:
+            SOURCE_CATEGORY_FILTERS[str(_watch_row.get("channel", "")).strip().lower()] = frozenset(
+                _watch_cats)
     DASHBOARD_SCOPED_SOURCES.update(set(SOURCE_TO_TARGETS) - BUILTIN_SOURCE_NAMES)
     AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
     DASHBOARD_CATEGORY_FILTERS = {
@@ -1340,6 +1350,9 @@ try:
                             _dashboard_cat_name, ", ".join(sorted(_dashboard_cat_keys)))
     for _dashboard_warning in _dashboard_summary.get("warnings", []):
         _dashboard_log.warning("DASHBOARD CHANNELS | %s", _dashboard_warning)
+    for _watch_source, _watch_cats in SOURCE_CATEGORY_FILTERS.items():
+        _dashboard_log.info("DASHBOARD SOURCES | %s keeps categories: %s",
+                            _watch_source, ", ".join(sorted(_watch_cats)))
     for _watched in _dashboard_watch.get("watching", []):
         _dashboard_log.info("DASHBOARD SOURCES | watching %s -> %s",
                             _watched["channel"], ", ".join(_watched["targets"]))
@@ -1361,6 +1374,8 @@ try:
             "watch": [{"channel": row["channel"], "targets": row["targets"]}
                       for row in _dashboard_watch.get("watching", [])],
             "watch_warnings": list(_dashboard_watch.get("warnings", [])),
+            "watch_categories": {str(name): sorted(cats)
+                                 for name, cats in SOURCE_CATEGORY_FILTERS.items()},
             "main_feed": list(NO_TRICKS_TARGETS),
             "category_rules_version": CATEGORY_RULES.get("version", 0),
             "categories": {str(key): str(item.get("label", key))
@@ -1387,6 +1402,26 @@ try:
         _dashboard_log.warning("DASHBOARD CHANNELS | snapshot not written: %s", exc)
 except Exception as exc:
     logging.getLogger("bestgaa").warning("DASHBOARD CHANNELS | config not applied: %s", exc)
+
+
+def source_category_blocked(source: str, deal_category: str) -> str:
+    """Why this post must not leave a category-limited SOURCE ("" = allowed).
+
+    A watched source can be limited to categories ("fashion only"). The check is
+    on the source, before any destination is chosen: the post is not a routing
+    detail for one shelf, it is simply not what that source is watched for. An
+    unclassified post (a service promo, or a caption the classifier would not
+    commit to) is never allowed through a limited source - silence is safer than
+    a mislabelled post on a category channel.
+    """
+    wanted = SOURCE_CATEGORY_FILTERS.get(str(source or "").strip().lower())
+    if not wanted:
+        return ""
+    category = str(deal_category or "").strip().lower()
+    if category and category in wanted:
+        return ""
+    return (f"source @{source} is limited to {', '.join(sorted(wanted))}"
+            f" (post classified as {category or 'unclassified'})")
 
 
 def dashboard_category_ok(target: str, deal_category: str) -> bool:
@@ -8564,6 +8599,19 @@ def dashboard_source_added(source, entity, activated):
         SOURCE_ACTIVATED_AT.setdefault(source, activated)
 
 
+def dashboard_source_categories(source, categories):
+    """Apply a watched source's own category policy while the bot is running."""
+    key = str(source or "").strip().lower()
+    cats = [str(c).strip().lower() for c in (categories or []) if str(c).strip()]
+    if cats:
+        SOURCE_CATEGORY_FILTERS[key] = frozenset(cats)
+    else:
+        SOURCE_CATEGORY_FILTERS.pop(key, None)
+    detail = SOURCE_DETAILS.get(source)
+    if isinstance(detail, dict):
+        detail["categories"] = cats
+
+
 def source_message_is_current(source, msg):
     cutoff = SOURCE_ACTIVATED_AT.get(source, 0)
     stamp = msg.date.timestamp() if getattr(msg, "date", None) else 0
@@ -9689,6 +9737,13 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                 base_targets.append(category_target)
             log.info("CATEGORY ROUTE | %s -> @%s | queue=%s",
                      CATEGORY_DEFINITIONS[category]["label"], category_target, row["id"])
+    # A source-level category policy is stronger than a shelf filter: if the
+    # watched source is for fashion only, a grocery post is not posted anywhere.
+    # Raised as PermanentSkip so it is recorded with its reason (never retried,
+    # never counted as a lost post).
+    _source_block = source_category_blocked(row["source"], deal_category)
+    if _source_block:
+        raise PermanentSkip(_source_block)
     # Dashboard category shelves (2026-10-13): a dashboard target with a
     # category filter keeps ONLY posts classified into its categories (an
     # electronics shelf never sees fashion, promos, or unclassified posts).
@@ -10511,10 +10566,59 @@ async def dashboard_live_loop(client, source_map, target_map, stop):
             lambda name: client.get_entity(name), refresh_dashboard_tag_keys,
             resolve_source=lambda source: resolve_dashboard_source(client, source),
             on_source_added=dashboard_source_added, builtin_sources=BUILTIN_SOURCE_NAMES,
-            source_details=SOURCE_DETAILS, main_feed=NO_TRICKS_TARGETS)
+            source_details=SOURCE_DETAILS, main_feed=NO_TRICKS_TARGETS,
+            on_source_categories=dashboard_source_categories)
         await live_channels.run(stop)
     except Exception:
         log.exception("DASHBOARD LIVE ADD unavailable; existing posting continues")
+
+
+async def channel_directory_publish(client, target_map=None) -> dict:
+    """One pass: ask Telegram what this session can read, write it for the dashboard.
+
+    Read-only: `iter_dialogs` lists what the account already has. Nothing is
+    joined, nothing is sent, and no message history is fetched. The payload is
+    written atomically so the dashboard can never read a half-written file.
+    """
+    try:
+        from .channel_directory import build as build_directory
+    except ImportError:
+        from channel_directory import build as build_directory
+    try:
+        from . import channels_config as _config
+    except ImportError:
+        import channels_config as _config
+    limit = int(os.getenv("CHANNEL_DIRECTORY_LIMIT", "1000"))
+    entities = []
+    async for dialog in client.iter_dialogs(limit=limit):
+        entities.append(dialog.entity)
+    payload = build_directory(entities, limit=limit)
+    payload["our_targets"] = sorted(str(t) for t in (target_map or {}))
+    payload["our_sources"] = sorted(str(s) for s in SOURCE_TO_TARGETS)
+    payload["watch_categories"] = {str(name): sorted(cats)
+                                   for name, cats in SOURCE_CATEGORY_FILTERS.items()}
+    path = _config.directory_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+    log.info("CHANNEL DIRECTORY | %s channel(s), %s addable, %s target(s) -> %s",
+             payload["count"], payload["addable"], len(payload["our_targets"]), path)
+    return payload
+
+
+async def channel_directory_loop(client, stop, target_map=None):
+    """Refresh the directory so the dashboard's picker is the account's truth."""
+    every = max(60, int(os.getenv("CHANNEL_DIRECTORY_SECONDS", "900")))
+    while not stop.is_set():
+        try:
+            await channel_directory_publish(client, target_map)
+        except Exception as exc:  # noqa: BLE001 - the picker is never worth a crash
+            log.warning("CHANNEL DIRECTORY | refresh failed (picker keeps the last copy): %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
 
 
 async def main() -> None:
@@ -10640,6 +10744,8 @@ async def main() -> None:
     workers = [asyncio.create_task(worker(i)) for i in range(QUEUE_WORKERS)]
     # Independent task; access/config failures never stop normal posting workers.
     dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
+    # The channel picker's source of truth: what this session can actually read.
+    directory_task = asyncio.create_task(channel_directory_loop(client, stop, target_map))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -10656,6 +10762,8 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await directory_task
     with contextlib.suppress(asyncio.CancelledError):
         await dashboard_reload_task
     await client.disconnect()

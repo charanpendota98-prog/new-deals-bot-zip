@@ -171,7 +171,12 @@ def test_http_api():
                 ("https://bit.ly/dash-owned-1", "https://ekaro.in/enkr-dash-1",
                  "earnkaro_api", "5478322", now))
             # The refusal ledger: one adult post blocked at intake today, one
-            # gambling post blocked by the pre-send gate yesterday.
+            # gambling post blocked by the pre-send gate yesterday. "Today" is
+            # IST (the operator's clock), so the rows are anchored to the IST day
+            # start instead of `now - 120` - that seed landed on yesterday
+            # whenever the suite ran between 18:30 and 24:00 UTC.
+            from dashboard.app import ist_day_start
+            day = ist_day_start(now)
             store.conn.execute(
                 "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,label,"
                 "matched,reason,policy_version,excerpt,created_at) "
@@ -179,14 +184,14 @@ def test_http_api():
                 ("intake", "deals", 77, None, "", "sexual_explicit", "Explicit sexual content",
                  "sex", "Our channels are public and read by everyone, including women and "
                  "families. Explicit sexual content is never posted.", "2026-10-19.3",
-                 "new **** video leaked", now - 120))
+                 "new **** video leaked", day + 60))
             store.conn.execute(
                 "INSERT INTO blocked_content(stage,source,msg_id,queue_id,target,category,label,"
                 "matched,reason,policy_version,excerpt,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 ("presend", "dealsvelocity", 78, 2, "LootZoneIndia11", "gambling_betting",
                  "Gambling / betting", "1xbet.com", "No betting on our channels.",
-                 "2026-10-19.3", "loot offer **** join now", now - 86400 - 600))
+                 "2026-10-19.3", "loot offer **** join now", day - 600))
             store.conn.commit()
             store.conn.close()
 

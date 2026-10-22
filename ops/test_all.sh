@@ -229,6 +229,9 @@ run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
 run 'watch a source channel' "$PYTHON" test_watch_source.py
+# "Telegram lo vunna channel anni chupinchi": the whole account's channels,
+# searchable + multi-select + categories, saved once and watched live.
+run 'channel directory + bulk source studio' "$PYTHON" test_channel_directory.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'pipeline integrity: nothing dropped' "$PYTHON" test_pipeline_integrity.py
 run 'dashboard link: tunnel, token, one-click' "$PYTHON" test_dashboard_link.py
@@ -250,6 +253,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: source -> target + safety' node test_dashboard_source_target.cjs
   run 'dashboard DOM: ops console' node test_dashboard_ops.cjs
   run 'dashboard DOM: watch a source' node test_dashboard_watch.cjs
+  run 'dashboard DOM: deals from any channel (bulk source studio)' node test_deals_dom.cjs
   run 'dashboard DOM: pipeline integrity' node test_dashboard_pipeline.cjs
   run 'dashboard DOM: tunnel link + token' node test_dashboard_link.cjs
 else

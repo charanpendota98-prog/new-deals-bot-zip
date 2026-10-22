@@ -133,9 +133,12 @@ def test_watch_config():
              "note": "from the group", "added_at": 123.0}]}, path)
         loaded = cfg.load_channels(path)
         row = (loaded.get("watch") or [{}])[0]
+        # v19 keeps the source's category policy on the row; an entry written
+        # without it loads with an empty list, which means "every category".
         check("save/load round-trips the watch block field by field",
               loaded.get("watch") == [{"channel": "DealSourceX", "targets": ["*"],
-                                       "enabled": True, "note": "from the group",
+                                       "categories": [], "enabled": True,
+                                       "note": "from the group",
                                        "added_at": 123.0}], loaded.get("watch"))
         check("a watch entry keeps the operator's note", row.get("note") == "from the group", row)
         cfg.save_channels({"channels": []}, path)

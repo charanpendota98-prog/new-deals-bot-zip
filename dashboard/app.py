@@ -504,12 +504,207 @@ def watch_rows():
                      if not snap else
                      {"state": "pending", "detail": "Saved; waiting for the bot's next sync"})
         rows.append({**entry,
+                     "categories": entry.get("categories") or [],
                      "state": state.get("state", "pending"),
                      "detail": state.get("detail", ""),
                      "title": detail.get("title", ""),
                      "checked_at": detail.get("checked_at"),
                      "activated_at": detail.get("activated_at")})
     return rows
+
+
+def directory_rows():
+    """The channels the bot's own session can read, as the last refresh left them.
+
+    The bot writes this file (bestgaa/channel_directory.py); the dashboard never
+    asks Telegram and never guesses. A missing or corrupt file is an empty
+    directory with a reason, not an error: the page must still work on a fresh
+    install before the bot has ever started.
+    """
+    path = channels_config.directory_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"available": False, "reason": "the bot has not published its channel list yet",
+                "channels": [], "generated_at": None, "age_s": None, "count": 0,
+                "addable": 0, "path": str(path)}
+    except (OSError, ValueError) as exc:
+        return {"available": False, "reason": f"channel list unreadable ({exc})",
+                "channels": [], "generated_at": None, "age_s": None, "count": 0,
+                "addable": 0, "path": str(path)}
+    if not isinstance(payload, dict) or not isinstance(payload.get("channels"), list):
+        return {"available": False, "reason": "channel list has an unexpected shape",
+                "channels": [], "generated_at": None, "age_s": None, "count": 0,
+                "addable": 0, "path": str(path)}
+    try:
+        generated = float(payload.get("generated_at") or 0) or None
+    except (TypeError, ValueError):
+        generated = None
+    age = (time.time() - generated) if generated else None
+    return {
+        "available": True,
+        "reason": "",
+        "channels": [row for row in payload["channels"] if isinstance(row, dict)],
+        "generated_at": generated,
+        "age_s": round(age, 1) if age is not None else None,
+        "stale": bool(age is not None and age > 3600),
+        "count": int(payload.get("count") or len(payload.get("channels") or [])),
+        "addable": int(payload.get("addable") or 0),
+        "our_targets": [str(t) for t in (payload.get("our_targets") or [])],
+        "our_sources": [str(t) for t in (payload.get("our_sources") or [])],
+        "path": str(path),
+    }
+
+
+def directory_view() -> dict:
+    """Directory + everything needed to decide, in one object the page renders."""
+    snap = snapshot()
+    data = channels_config.load_channels()
+    directory = directory_rows()
+    watched = {str(row.get("channel", "")).lower(): row
+               for row in channels_config.watch_entries(data)}
+    snap_watch = snap.get("watch_states") or {}
+    our_targets = {str(t).lower() for t in (snap.get("targets") or [])}
+    our_targets |= {str(t).lower() for t in (directory.get("our_targets") or [])}
+    channels = []
+    for row in directory.get("channels") or []:
+        username = str(row.get("username") or "")
+        key = username.lower()
+        state = (snap_watch.get(username) or snap_watch.get(str(row.get("title") or "")) or {})
+        watch_row = watched.get(key) or {}
+        channels.append({
+            "id": row.get("id"),
+            "title": str(row.get("title") or username or row.get("id")),
+            "username": username,
+            "kind": str(row.get("kind") or ""),
+            "addable": bool(row.get("addable")),
+            "private": bool(row.get("private")),
+            "members": int(row.get("members") or 0),
+            "last_message_at": row.get("last_message_at") or 0,
+            "last_message": (insight_ts(row.get("last_message_at"))),
+            "watched": bool(watch_row),
+            "watch_state": state.get("state", ""),
+            "watch_targets": watch_row.get("targets") or [],
+            "watch_categories": watch_row.get("categories") or [],
+            "is_our_target": bool(username) and key in our_targets,
+        })
+    channels.sort(key=lambda row: (row["watched"], not row["addable"], row["title"].lower()))
+    return {
+        "directory": {key: value for key, value in directory.items() if key != "channels"},
+        "channels": channels,
+        "watched": watch_rows(),
+        "catalog": watch_catalog(snap, data),
+        "categories": category_catalog(),
+        "revision": config_revision(),
+        "pending_restart": pending_restart(),
+    }
+
+
+def insight_ts(value) -> str:
+    """Small local formatter so this module does not depend on a panel helper."""
+    try:
+        stamp = float(value or 0)
+    except (TypeError, ValueError):
+        return "—"
+    if not stamp:
+        return "—"
+    return time.strftime("%Y-%m-%d %H:%M", time.gmtime(stamp + IST_OFFSET)) + " IST"
+
+
+@require_token
+@in_thread
+def api_directory(request: web.Request):
+    """Every channel this bot session can read - the source picker's truth."""
+    return web.json_response(directory_view())
+
+
+@require_token
+async def api_watch_bulk(request: web.Request):
+    """Add MANY sources in one save: pick from the directory, choose targets+categories.
+
+    Partial success is deliberate and explicit: one bad link must not throw away
+    the nineteen good ones, but every refusal comes back with its reason and the
+    count, so nothing is silently dropped from the operator's selection.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    raw = body.get("channels")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not raw:
+        return web.json_response({"errors": ["channels must be a non-empty list"]}, status=400)
+    if len(raw) > 50:
+        return web.json_response({"errors": ["select at most 50 channels per save"]}, status=400)
+    targets = body.get("targets", ["*"])
+    if isinstance(targets, str):
+        targets = [targets]
+    categories = body.get("categories", [])
+    if isinstance(categories, str):
+        categories = [categories]
+    if not isinstance(targets, list) or not isinstance(categories, list):
+        return web.json_response({"errors": ["targets and categories must be lists"]}, status=400)
+
+    catalog = watch_catalog()
+    known_targets = set(catalog["targets"]) | set(catalog["main_feed"])
+    known_categories = set(category_catalog())
+    data = channels_config.load_channels()
+    existing = {str(row.get("channel", "")).lower() for row in data.get("watch", [])}
+    if len(data.get("watch") or []) + len(raw) > channels_config.WATCH_MAX:
+        return web.json_response(
+            {"errors": [f"at most {channels_config.WATCH_MAX} watched sources "
+                        f"({len(data.get('watch') or [])} saved already)"]}, status=400)
+
+    added: list[dict] = []
+    skipped: list[dict] = []
+    warnings: list[str] = []
+    for value in raw:
+        entry = {"channel": value, "targets": targets, "categories": categories,
+                 "enabled": bool(body.get("enabled", True)),
+                 "note": str(body.get("note", ""))}
+        cleaned, errors, notes = channels_config.validate_watch(
+            entry, known_targets, known_targets=known_targets,
+            known_categories=known_categories)
+        warnings.extend(notes)
+        if errors:
+            skipped.append({"channel": str(value)[:80], "errors": errors})
+            continue
+        if cleaned["channel"].lower() in existing:
+            skipped.append({"channel": cleaned["channel"],
+                            "errors": ["already watched"]})
+            continue
+        existing.add(cleaned["channel"].lower())
+        added.append(cleaned)
+    if not added:
+        return web.json_response({"added": [], "skipped": skipped,
+                                  "warnings": sorted(set(warnings)),
+                                  "revision": config_revision()}, status=400)
+    data.setdefault("watch", []).extend(added)
+    channels_config.save_channels(data)
+    mark_pending()
+    plan_targets: list[str] = []
+    if catalog["main_feed"]:
+        plan = channels_config.apply_watch_to_routing(
+            {}, {"watch": added}, catalog["main_feed"])
+        if plan["watching"]:
+            plan_targets = plan["watching"][0]["targets"]
+    return web.json_response({
+        "added": [row["channel"] for row in added],
+        "skipped": skipped,
+        "warnings": sorted(set(warnings)),
+        "revision": config_revision(),
+        "plan": {"targets": plan_targets, "main_feed": catalog["main_feed"]},
+        "next": ("The bot checks access with its own session and activates each source "
+                 "on its next pass; every new post from them is converted and posted to "
+                 + (", ".join(plan_targets) if plan_targets else "the main feed once it reports")
+                 + ". Nothing is joined and no old post is replayed."),
+    })
 
 
 @require_token
@@ -535,7 +730,9 @@ async def api_watch_add(request: web.Request):
     snap = snapshot()
     catalog = watch_catalog(snap)
     cleaned, errors, warnings = channels_config.validate_watch(
-        body, set(catalog["targets"]) | set(catalog["main_feed"]))
+        body, set(catalog["targets"]) | set(catalog["main_feed"]),
+        known_targets=set(catalog["targets"]) | set(catalog["main_feed"]),
+        known_categories=set(category_catalog()))
     if errors:
         return web.json_response({"errors": errors, "warnings": warnings,
                                   "catalog": catalog}, status=400)
@@ -595,9 +792,11 @@ async def api_watch_edit(request: web.Request):
         return web.json_response({"errors": ["no such watched source"]}, status=404)
     catalog = watch_catalog()
     merged = {**entry, **{k: v for k, v in patch.items()
-                          if k in ("targets", "enabled", "note")}}
+                          if k in ("targets", "categories", "enabled", "note")}}
     cleaned, errors, warnings = channels_config.validate_watch(
-        merged, set(catalog["targets"]) | set(catalog["main_feed"]))
+        merged, set(catalog["targets"]) | set(catalog["main_feed"]),
+        known_targets=set(catalog["targets"]) | set(catalog["main_feed"]),
+        known_categories=set(category_catalog()))
     if errors:
         return web.json_response({"errors": errors, "warnings": warnings}, status=400)
     data["watch"][index] = cleaned
@@ -1742,6 +1941,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/category-batch", api_category_batch)
     app.router.add_post("/api/inspect-link", api_inspect_link)
     app.router.add_post("/api/source-to-target", api_source_to_target)
+    app.router.add_get("/api/directory", api_directory)
+    app.router.add_post("/api/watch/bulk", api_watch_bulk)
     app.router.add_get("/api/watch", api_watch_list)
     app.router.add_post("/api/watch", api_watch_add)
     app.router.add_patch("/api/watch/{channel}", api_watch_edit)
