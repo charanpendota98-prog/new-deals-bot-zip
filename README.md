@@ -248,6 +248,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_runtime.py` | Runtime source membership and replay guards against fake Telegram responses |
 | `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
 | `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
+| `test_dashboard_link.py` | Opening the dashboard: `ops/dashboard_link.sh` prints the exact SSH tunnel, the local link (with the panel anchor), the service state, the health code and the server-side token command while showing the token **masked only**; `--json` is valid JSON with no secret, `--paste` is one line, `--nginx` is an optional reverse proxy in front of `127.0.0.1` with its own password, `--help` works and an unknown flag is refused; plus the served page's one-click `?token=` (stored, stripped, never rendered) and the collapsed "how do I open this" card |
 | `test_pipeline_integrity.py` | The "nothing dropped" equation proved against a synthetic database with the bot's real schema: one state per intake (posted / withheld / dropped-with-reason / waiting / failed / UNACCOUNTED), the tiles summing exactly to the intake, a legacy `status='sent'`+error row counted as withheld, first-send latency taken from the send fence, per-source verdicts (delivering / withholding / failing / waiting / silent / overdue / unaccounted) with problem rows sorted first, per-destination states, declared-vs-real naming, `unaccounted_ids()` for a drill-down, an old/empty database answering `old` instead of raising, the `GET /api/pipeline` wire contract (token, window clamping, missing DB = unknown, unreadable DB = readable 503), the served panel's markup + JS, and `ops/pipeline_check.py` exit codes 0/1/2 incl. `--json` and `--strict` |
 | `test_watch_source.py` | A pasted **source** channel end to end: `validate_watch` (public link / `@name` / `t.me/`, the invite-link warning, our-own-channel refusal, no `*`+named mixing, unknown destination, 40-target cap, note truncation), `apply_watch_to_routing` (`*` = the bot's own `NO_TRICKS_TARGETS`; disabled or invalid rows skipped with a reason; junk never raises), the `watch` block surviving `save_channels`/`load_channels`, `LiveChannels.sync_watch` (both chat-id conventions written into `source_map`, the route committed into `SOURCE_TO_TARGETS` with no awaits, idempotent second pass, non-member / duplicate-alias / self-destination / unreachable-destination refusals, named destinations resolved before the commit, `restart_required` on a build without a resolver, a removed row clearing its state) and `GET/POST/PATCH/DELETE /api/watch` over real HTTP (token, stale `If-Match`, duplicates, 404s) plus the served card's own markup |
 | `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
@@ -272,6 +273,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_dashboard_link.cjs` | jsdom: `?token=` in the URL is used once and removed from the address bar, kept in `sessionStorage` for that tab, other query parameters survive, every API call carries the header, the token is never rendered, no request is invented when there is no token, and the tunnel/command help is present but collapsed |
 | `test_dashboard_pipeline.cjs` | jsdom: the integrity panel — seven tiles, the verdict in red only when a post is unaccounted, findings with their fix, per-source rows with withheld/dropped/unaccounted kept apart, the queue-id drill-down into Trace, configured-but-silent channels named in words, durations never `null`/`NaN`, a hostile source name kept as text, and a dead endpoint that cannot blank the panel |
 | `test_dashboard_watch.cjs` | jsdom: the watch-a-source card — paste a link → main feed (default) or named destinations, the exact `POST`/`PATCH`/`DELETE` bodies, the stale-form `If-Match` guard, the bot's own state + reason per row, a hostile channel title kept as text, refusals left in the field, and a dead endpoint that cannot blank the section |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
@@ -1807,6 +1809,7 @@ source snapshot:
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
 | `ops/conversion_report.py` | `8a8ea38ef279d0ff8e64558c20783f4dcfda371b7a97abebc00ec824b1f6a7e6` |
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
+| `ops/dashboard_link.sh` | `d10d9ebc7ab7df45aa4a86ee309c6989dfc9f73e55ac2beb5999fe9f4a322cc9` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
 | `ops/deploy_and_verify.sh` | `fba393a6468a81cf540c2f20c260c0ac84afbcec8e1b20143fd998aa64af31eb` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
@@ -1828,7 +1831,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `0317d6fbc38dc848db9ea8f129ba5253d21a9fa54aa1e471b91ff964d31d55da` |
+| `ops/test_all.sh` | `e9eeb790f290e901532d5b80d5bd99413594f32e1ef2ca1efe84a62a16c2ca15` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1837,6 +1840,8 @@ source snapshot:
 | `test_dashboard.py` | `14c7f513eb51d0b64fbb4a43d664a500b32e8b34f31875d4c8a4c8d6cb03d035` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
+| `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
+| `test_dashboard_link.py` | `44879bc992e7f1f3e3e4a883e4240ec48460ea7261caf2034f2432f6d6a430fa` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
 | `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
 | `test_dashboard_pipeline.cjs` | `ebf570e299bdc7c326983b883597a46d12c88fa8eacab9b93ffa22bad11320d6` |
@@ -2536,6 +2541,52 @@ Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
 permission failures, preservation of existing routes, deferred edits/removals,
 malformed config, source/target aliases, backoff and configuration races. Production
 is not restarted or redeployed by development tests.
+
+### Opening the dashboard on the server (the link) (2026-10-22)
+
+The dashboard binds **`127.0.0.1:8080` only, on purpose**: it can change routing
+and restart the bot, so it is never exposed to the internet and there is no
+public URL to hand out. The operator reaches it through an SSH tunnel, and one
+command tells you exactly what to open:
+
+```bash
+cd /home/ubuntu/bestgaa-latest && ./ops/dashboard_link.sh
+```
+
+It prints (read-only: it starts nothing, restarts nothing, writes nothing):
+
+```
+  service : bestgaa-dashboard (active, enabled)
+  address : http://127.0.0.1:8080  (localhost only, by design)
+  token   : present …1f4c  [/etc/bestgaa/dashboard.env]
+  health  : healthy
+
+  1) On YOUR laptop, open the tunnel (keep this window open):
+     ssh -N -L 8080:127.0.0.1:8080 ubuntu@<server-ip>
+
+  2) Then open the link. One click, token included:
+     http://127.0.0.1:8080/?token=<DASHBOARD_TOKEN>#pipeline
+```
+
+- **The token never appears in full.** The script masks it; `--json` omits it
+  entirely; `--paste` prints only the one-line tunnel command.
+- **One-click links.** `?token=…` is read once, kept in `sessionStorage` for
+  that tab, and removed from the address bar (`history.replaceState`), so it is
+  not left in history and not in a screenshot. Deep links work the same way:
+  `#pipeline` (integrity), `#watchsource` (paste a source link), `#console`,
+  `#scorecard`, `#trace`.
+- **Health is a fact, not a hope.** `health: healthy` means `GET /api/status`
+  answered `200` with that token; `rejecting-token` means the service is up and
+  the token is wrong; `not-answering` prints the exact `systemctl start` to run.
+  Exit code: `0` healthy, `1` not running, `2` could not check.
+- **The token itself** lives in `/etc/bestgaa/dashboard.env` (root:ubuntu, 640):
+  `sudo sed -n 's/^DASHBOARD_TOKEN=//p' /etc/bestgaa/dashboard.env`. Rotate by
+  editing that file and restarting `bestgaa-dashboard`; nothing is stored in Git.
+- **Public URL?** Only if you really need one: `./ops/dashboard_link.sh --nginx`
+  prints a TLS + `auth_basic` reverse-proxy config that still proxies to
+  `127.0.0.1:8080`, and says plainly that the page can restart the bot.
+- Proof of "nothing dropped" on the same host:
+  `python3 ops/pipeline_check.py --hours 24` (exit `0` clean, `1` unaccounted).
 
 ### Pipeline integrity - "edho okati miss avvakoodadu", as an equation (2026-10-22)
 
