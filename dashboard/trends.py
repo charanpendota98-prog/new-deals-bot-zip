@@ -23,7 +23,6 @@ from __future__ import annotations
 import sqlite3
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
 
 from dashboard.insight import age, ist, _cols, _tables
 
@@ -359,7 +358,8 @@ README_FIX = {
 def attention(*, health: dict | None = None, drift: dict | None = None,
               safety: dict | None = None, trends: dict | None = None,
               categories: list | None = None, conversion: dict | None = None,
-              links: dict | None = None, limit: int = 12,
+              links: dict | None = None, pipeline: dict | None = None,
+              limit: int = 12,
               now: float | None = None) -> dict:
     """Ranked "what needs you now" list, built only from facts already loaded.
 
@@ -443,6 +443,25 @@ def attention(*, health: dict | None = None, drift: dict | None = None,
                 f"Content refusals doubled: {int(refused.get('current') or 0):,}",
                 f"Up from {int(refused.get('previous') or 0):,} in the {label} before.",
                 "Open Safety: the source and category of every refusal are listed.", "#safety")
+
+    if pipeline:
+        lost = int(pipeline.get("unaccounted") or 0)
+        if lost:
+            ids = pipeline.get("unaccounted_ids") or []
+            add("error", "pipeline_unaccounted",
+                f"{lost} post(s) cannot be accounted for",
+                "Taken in, never posted, and no reason recorded"
+                + (" - queue " + ", ".join(str(i) for i in ids[:8]) if ids else "")
+                + ". This is the one finding that can mean a lost deal or a lost commission.",
+                "Open Integrity, then Trace for those queue ids.", "#pipeline")
+        elif str(pipeline.get("overall")) == "warn":
+            top = next((row for row in pipeline.get("findings", [])
+                        if row.get("state") == "warn"), None)
+            if top:
+                add("warn", "pipeline_" + str(top.get("key", "finding")),
+                    str(top.get("title") or "Pipeline warning"),
+                    str(top.get("detail") or ""),
+                    str(top.get("fix") or ""), "#pipeline")
 
     for finding in categories or []:
         severity = "error" if finding.get("severity") == "error" else (

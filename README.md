@@ -248,6 +248,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_source_runtime.py` | Runtime source membership and replay guards against fake Telegram responses |
 | `test_source_setup.py` | Channel-local source setup: normalization and staged live activation, no joins or replay |
 | `test_live_channels.py` | Live-add flow with fake Telegram entities over isolated config/snapshot state |
+| `test_pipeline_integrity.py` | The "nothing dropped" equation proved against a synthetic database with the bot's real schema: one state per intake (posted / withheld / dropped-with-reason / waiting / failed / UNACCOUNTED), the tiles summing exactly to the intake, a legacy `status='sent'`+error row counted as withheld, first-send latency taken from the send fence, per-source verdicts (delivering / withholding / failing / waiting / silent / overdue / unaccounted) with problem rows sorted first, per-destination states, declared-vs-real naming, `unaccounted_ids()` for a drill-down, an old/empty database answering `old` instead of raising, the `GET /api/pipeline` wire contract (token, window clamping, missing DB = unknown, unreadable DB = readable 503), the served panel's markup + JS, and `ops/pipeline_check.py` exit codes 0/1/2 incl. `--json` and `--strict` |
 | `test_watch_source.py` | A pasted **source** channel end to end: `validate_watch` (public link / `@name` / `t.me/`, the invite-link warning, our-own-channel refusal, no `*`+named mixing, unknown destination, 40-target cap, note truncation), `apply_watch_to_routing` (`*` = the bot's own `NO_TRICKS_TARGETS`; disabled or invalid rows skipped with a reason; junk never raises), the `watch` block surviving `save_channels`/`load_channels`, `LiveChannels.sync_watch` (both chat-id conventions written into `source_map`, the route committed into `SOURCE_TO_TARGETS` with no awaits, idempotent second pass, non-member / duplicate-alias / self-destination / unreachable-destination refusals, named destinations resolved before the commit, `restart_required` on a build without a resolver, a removed row clearing its state) and `GET/POST/PATCH/DELETE /api/watch` over real HTTP (token, stale `If-Match`, duplicates, 404s) plus the served card's own markup |
 | `test_earnkaro_conversion.py` | The EarnKaro/Affiliaters conversion contract and first-preference source ordering |
 | `test_post_link_guarantee.py` | The end-to-end guarantee: the bytes a channel receives are audited, and every published link is provably ours (a stranger's link, a bare page and "our number on it" are all refused) |
@@ -271,6 +272,7 @@ fails if one of them is added to the tree and left unwired.
 | `test_dashboard_ui.cjs` | jsdom: category studio, required selection, stale-save 409, safe text rendering |
 | `test_dashboard_setup.cjs` | jsdom: guided setup wizard, inspector, checklist, duplicate-save guard |
 | `test_dashboard_sources.cjs` | jsdom: source picker with 60 feeds, search, multi-select, per-form isolation |
+| `test_dashboard_pipeline.cjs` | jsdom: the integrity panel — seven tiles, the verdict in red only when a post is unaccounted, findings with their fix, per-source rows with withheld/dropped/unaccounted kept apart, the queue-id drill-down into Trace, configured-but-silent channels named in words, durations never `null`/`NaN`, a hostile source name kept as text, and a dead endpoint that cannot blank the panel |
 | `test_dashboard_watch.cjs` | jsdom: the watch-a-source card — paste a link → main feed (default) or named destinations, the exact `POST`/`PATCH`/`DELETE` bodies, the stale-form `If-Match` guard, the bot's own state + reason per row, a hostile channel title kept as text, refusals left in the field, and a dead endpoint that cannot blank the section |
 | `test_dashboard_categories.cjs` | jsdom: the Categories panel — per-shelf numbers, findings, window picker, the link-conversion book with proof marks and FOREIGN TAG verdicts, empty/unreadable/500 states, escaped labels and targets, the WhatsApp-manager card (live env view, pending badge, generated env lines, colliding save refused), per-channel conversion cells, the per-day trend bars, the click-to-open pipe drill with a dead endpoint that cannot show stale posts, and the rest of the dashboard surviving a dead endpoint |
 | `test_deal_card.py` | the deal-card studio end to end: the money pipeline and the card read a caption through the *same* function objects, coupon/MRP maths can never invent money, the PNG is a real PNG that draws the photo and never a missing-glyph rupee, a link the ledger cannot prove ours is withheld from every caption, the forward plan agrees with channels.json + the env shelves, every MRP spelling derives the same discount, a pure price line is never the title, and the card keeps both numbers whole at lakhs-range prices |
@@ -1788,11 +1790,12 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `cb5080f62607f95cfbe6781b42b1140c9fda8cfb7b9bc5b09379ce2aba035290` |
+| `dashboard/app.py` | `44a67bcdf7677d59ad78f9921b516c7a63f5ec95ad982207b425a7fa29cba5ca` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
+| `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
-| `dashboard/trends.py` | `547124f8e6c22f3b89b676d8c4e97b28394bcad7fc3c2359f559adecae91b2ba` |
+| `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
@@ -1818,13 +1821,14 @@ source snapshot:
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
+| `ops/pipeline_check.py` | `ac4c8ad61571f6f296090f453588e7f0051bba4a157465c6c7c7b05abed9fcd1` |
 | `ops/quality_audit.py` | `6b9d1533353495f83e0ca5159150d72f399b766b18c03177a23a01522e766afa` |
 | `ops/repack_bundles.sh` | `b7970b1af18e85071aac011773ff953b59fb493eeab1e1f3eb10bb3d18c335fb` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `34df7acc08664eac72b50f4a29020ee59436e34b4b6d390ead92dc949390ecf2` |
+| `ops/test_all.sh` | `0317d6fbc38dc848db9ea8f129ba5253d21a9fa54aa1e471b91ff964d31d55da` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1835,6 +1839,7 @@ source snapshot:
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
 | `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
+| `test_dashboard_pipeline.cjs` | `ebf570e299bdc7c326983b883597a46d12c88fa8eacab9b93ffa22bad11320d6` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
@@ -1852,6 +1857,7 @@ source snapshot:
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |
+| `test_pipeline_integrity.py` | `2892807d3b64e2d063b91a87f0881630630af01cbb72df9dacabe161cbc22431` |
 | `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
 | `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
@@ -2530,6 +2536,71 @@ Regression gate: `test_live_channels.py` covers atomic/idempotent additions,
 permission failures, preservation of existing routes, deferred edits/removals,
 malformed config, source/target aliases, backoff and configuration races. Production
 is not restarted or redeployed by development tests.
+
+### Pipeline integrity - "edho okati miss avvakoodadu", as an equation (2026-10-22)
+
+Most panels describe one stage: what the bot logged, what the ledger holds, what a
+channel received, which links pay us. None of them can answer the question the
+user actually asks, because a post can vanish *between* two panels. This one
+reconciles the whole intake against the delivery ledger:
+
+```
+intake = posted + withheld + dropped (reason recorded) + waiting + failed
+                                                        ^^^^^^^^^^^^^^^^^^^ must be ZERO
+```
+
+- `dashboard/pipeline.py` reads the queue table and the delivery ledger for the
+  same window and puts **every** intake into exactly one state. **Posted** means
+  at least one real send (a second target refusing it does not un-post it).
+  **Withheld** means a delivery row recorded a refusal — including rows an older
+  build wrote as `status='sent'` with an error, which are not sends.
+  **Dropped** means the queue closed the post with a reason (night window, stale
+  job, duplicate at intake): explained, therefore not a hole. **Waiting** is
+  still live. **Failed** carries its reason. A terminal row with no send, no
+  delivery row and no reason at all is **UNACCOUNTED** — the only state reported
+  as lost, listed by queue id, and it turns the panel **red**, never a warning.
+- First-send latency comes from the send fence (`send_attempts.state='sent'`),
+  so "how long from ingest to the first channel" is measured, not estimated.
+  Median and p95 are shown per source.
+- Per source: taken in, posted, withheld, dropped, waiting, failed, unaccounted,
+  latency p50/p95, last intake, **its own rhythm** (median gap between intakes)
+  and a verdict — `delivering`, `withholding`, `waiting`, `failing`, `silent`
+  (configured but nothing arrived), `overdue` (quiet for far longer than its own
+  rhythm), `unaccounted` — each with a one-line reason and its top withhold
+  reason. Problem sources sort above healthy ones.
+- Per channel: what it received, what was withheld, and `receiving` / `refusing`
+  / `silent` (configured, zero sends, zero refusals) / `unknown`.
+- Declared vs real: sources and channels from the bot's own snapshot + saved
+  config, so "you asked for this and nothing arrived" is named — and so is a
+  source that posted to us but is not in the config (normal for the built-in
+  feeds; a red flag for anything else).
+- `GET /api/pipeline?hours=1|24|72|168` returns the same object the panel
+  renders. Read-only, one connection, no writes; a missing database is
+  `unknown`, an unreadable one is a readable 503, never a stack trace.
+- **It outranks cosmetics.** The same scan feeds `/api/brief`, so a post that
+  cannot be accounted for opens the console's ranked attention list as an
+  `error` with the queue ids and an anchor to this panel - a lost deal can never
+  sit below a stale-rules warning.
+- **Silence has a baseline.** Each source's last intake is compared with its own
+  median gap ("quiet for 3.4x its usual gap"), not with a fixed number of hours,
+  so a slow feed and a dead feed are told apart.
+- **Cheap to poll.** One scan is memoised for 8 s, keyed by the database file,
+  its mtime and the window, so three open tabs and the 20 s full refresh share
+  one pass (a 50k-post window costs ~0.6 s, a normal 24 h window far less).
+- **Exportable.** `/api/export?what=pipeline&hours=24` returns exactly the rows
+  the table shows as CSV (per source and per channel), from the same engine.
+- `ops/pipeline_check.py` is the same engine from cron/systemd:
+  `python3 ops/pipeline_check.py --hours 24` → exit 0 clean, 1 if a post is
+  unaccounted for (or any warning under `--strict`), 2 if the check could not
+  run; `--json` for machines, `--no-config` to judge the database alone. It
+  opens the database `mode=ro`, writes nothing and restarts nothing.
+
+```
+*/30 * * * * cd /home/ubuntu/bestgaa-bot/bestgaa-bot && python3 ops/pipeline_check.py --hours 6 --strict || true
+```
+
+Proof: `test_pipeline_integrity.py` (engine, endpoint, CLI, markup) and
+`test_dashboard_pipeline.cjs` (jsdom) in the offline gate.
 
 ### Watched source channels (2026-10-22)
 

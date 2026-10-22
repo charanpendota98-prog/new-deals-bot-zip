@@ -12,6 +12,7 @@ h1{font-size:20px;margin:6px 0}h2{font-size:16px;margin:4px 0 10px;color:#93c5fd
 .row{display:flex;gap:10px;flex-wrap:wrap}
 .stat{flex:1;min-width:130px;background:#0f172a;border-radius:10px;padding:10px;text-align:center}
 .stat b{display:block;font-size:22px}.stat span{font-size:12px;color:#94a3b8}
+.stat strong{display:block;font-size:22px;margin-top:3px}.finding{display:grid;gap:3px;padding:10px 12px;border:1px solid #253146;border-left:3px solid #a16207;border-radius:8px;margin:8px 0;background:#0f172a;font-size:13px}.okbox{border-left:4px solid #16a34a}.warnbox{border-left:4px solid #d97706}.badbox{border-left:4px solid #dc2626}
 table{width:100%;border-collapse:collapse;font-size:14px}
 th,td{text-align:left;padding:8px;border-bottom:1px solid #334155}
 .badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#334155}
@@ -112,7 +113,7 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -276,6 +277,24 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <tbody id="scsources"><tr><td colspan="6" class="muted">loading…</td></tr></tbody></table></div>
 </div>
 
+<div class="card" id="pipeline">
+<div class="section-heading"><div><span class="eyebrow">PIPELINE INTEGRITY · NOTHING DROPPED</span><h2>Every post we took in — where did it go?</h2></div>
+<div><label class="muted" for="plhours">Window</label>
+<button class="ghost" onclick="downloadExport('pipeline',document.getElementById('plhours').value)">export .csv</button>
+<select id="plhours" onchange="loadPipeline()"><option value="1">1 hour</option><option value="24" selected>24 hours</option><option value="72">3 days</option><option value="168">7 days</option></select></div></div>
+<p class="muted">The one thing no single panel can prove: <b>intake = posted + withheld + dropped (with a reason) + waiting + failed</b>. Each post is read from the bot's own queue and delivery ledger and classified into exactly one of those states. A post with no send, no delivery row and no recorded reason is <span class="badge warn">unaccounted</span> — that is a possible lost deal or lost commission, and it turns this panel <b>red</b> instead of being averaged away. Every withheld or dropped post keeps its reason, every posted post shows when its first chunk actually left, and every configured source/channel that produced nothing is named.</p>
+<div class="row" id="plinetiles"><span class="muted">loading…</span></div>
+<div id="plineverdict"></div>
+<h3>Findings &amp; the fix</h3>
+<div id="plinefindings"></div>
+<h3>Per source — who delivers, who withholds, who went quiet</h3>
+<div class="tablewrap"><table><thead><tr><th>Source</th><th>Taken in</th><th>Posted</th><th>Withheld</th><th>Dropped</th><th>Waiting</th><th>Failed</th><th>Unaccounted</th><th>First send</th><th>Last intake</th><th>Its own rhythm</th><th>Verdict</th></tr></thead>
+<tbody id="plinesources"><tr><td colspan="12" class="muted">loading…</td></tr></tbody></table></div>
+<h3>Per channel — what it actually received</h3>
+<div class="tablewrap"><table><thead><tr><th>Channel</th><th>Configured</th><th>Received</th><th>Withheld</th><th>State</th></tr></thead>
+<tbody id="plinetargets"><tr><td colspan="5" class="muted">loading…</td></tr></tbody></table></div>
+<p class="muted" id="plinedeclared"></p>
+</div>
 <div class="card" id="channel-list"><h2>Your channels</h2><div class="tablewrap">
 <table><thead><tr><th>Channel</th><th>Type</th><th>Sources</th><th>Shelf</th><th>Tag</th><th>On</th><th>Activation</th><th></th></tr></thead>
 <tbody id="channels"></tbody></table></div>
@@ -540,6 +559,7 @@ async function refresh(full=true){
       await loadConversion();   // same guarantee for the link-conversion book
       await loadSafety();       // and for the refusal ledger
       await loadScorecard();    // per-channel + per-source truth
+      await loadPipeline();     // the intake -> delivery equation (nothing dropped)
     }
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
@@ -1798,6 +1818,109 @@ function useInspection(){
   for(const input of document.querySelectorAll('#fcats input')) input.checked=input.value===inspection.category;
   setupCategoriesChanged(); setupNext();
 }
+// ---------------------------------------------------- pipeline INTEGRITY --
+// "Edho okati miss avvakoodadu": one equation per window, straight from the
+// bot's queue + delivery ledger. Anything outside it is named, by queue id, and
+// turns the panel red - a lost post can never hide between two other panels.
+function plSecs(value){
+  if(value === null || value === undefined || isNaN(value)) return '—';
+  const n = Number(value);
+  if(n < 90) return n.toFixed(0)+'s';
+  if(n < 5400) return (n/60).toFixed(0)+'m';
+  if(n < 172800) return (n/3600).toFixed(1)+'h';
+  return (n/86400).toFixed(1)+'d';
+}
+async function loadPipeline(){
+  const hours = document.getElementById('plhours')?.value || '24';
+  const tiles = document.getElementById('plinetiles');
+  const verdict = document.getElementById('plineverdict');
+  let data;
+  try{ data = await api('GET','/api/pipeline?hours='+encodeURIComponent(hours)); }
+  catch(e){
+    if(tiles) tiles.innerHTML = '<span class="muted">pipeline view unavailable: '+escapeHTML(String(e.message||e))+'</span>';
+    return;
+  }
+  if(tiles){
+    tiles.innerHTML = (data.tiles||[]).map(tile => {
+      const state = String(tile.state||'ok');
+      const colour = state === 'fail' ? 'bad' : state === 'warn' ? 'warn' : state === 'info' ? 'muted' : 'ok';
+      return '<div class="stat"><span class="eyebrow">'+escapeHTML(String(tile.label||tile.key))+'</span>'
+        + '<strong class="'+colour+'">'+escapeHTML(String(tile.value))+'</strong></div>';
+    }).join('') || '<span class="muted">no intake in this window</span>';
+  }
+  if(verdict){
+    const overall = String(data.overall||'unknown');
+    verdict.className = 'review-box ' + (overall === 'fail' ? 'badbox' : overall === 'warn' ? 'warnbox' : 'okbox');
+    const ids = (data.unaccounted_ids||[]);
+    verdict.innerHTML = '<b>'+escapeHTML(String(data.verdict||''))+'</b>'
+      + (ids.length ? '<div class="muted">Open the exact post: '+ids.slice(0,12).map(id =>
+          '<button class="ghost" data-trace="'+escapeHTML(String(id))+'">#'+escapeHTML(String(id))+'</button>').join(' ')+'</div>' : '')
+      + ' <span class="muted">window: '+escapeHTML(String(data.window_hours||hours))+'h from '+escapeHTML(String(data.since_ist||'—'))+'</span>';
+  }
+  const findings = document.getElementById('plinefindings');
+  if(findings){
+    findings.innerHTML = (data.findings||[]).map(finding => {
+      const state = String(finding.state||'info');
+      const cls = state === 'fail' ? 'warn' : state === 'warn' ? 'warn' : 'ours';
+      return '<div class="finding"><div><span class="badge '+cls+'">'+escapeHTML(state)+'</span> <b>'+escapeHTML(String(finding.title||''))+'</b></div>'
+        + '<div class="muted">'+escapeHTML(String(finding.detail||''))+'</div>'
+        + (finding.fix ? '<div class="muted">fix: '+escapeHTML(String(finding.fix))+'</div>' : '')+'</div>';
+    }).join('') || '<p class="muted">no findings - every intake is accounted for and every configured channel received something.</p>';
+  }
+  const sources = document.getElementById('plinesources');
+  if(sources){
+    sources.innerHTML = (data.sources||[]).map(row => {
+      const verdictName = String(row.verdict||'');
+      const cls = ['withholding','failing','silent','overdue','unaccounted'].includes(verdictName) ? 'warn' : verdictName === 'delivering' ? 'ours' : '';
+      const holes = Number(row.unaccounted||0);
+      return '<tr><td>@'+escapeHTML(String(row.source||''))
+        + (row.watched ? ' <span class="badge new">watched</span>' : '')
+        + (row.declared ? '' : ' <span class="muted">(built-in / not in config)</span>')+'</td>'
+        + '<td>'+escapeHTML(String(row.intake||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.posted||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.withheld||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.dropped||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.waiting||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.failed||0))+'</td>'
+        + '<td'+(holes ? ' class="bad"' : '')+'>'+escapeHTML(String(holes))+'</td>'
+        + '<td class="muted">'+escapeHTML(plSecs(row.latency_p50))+' / '+escapeHTML(plSecs(row.latency_p95))+'</td>'
+        + '<td class="muted">'+escapeHTML(String(row.last_intake||'—'))+'</td>'
+        + '<td class="muted">every '+escapeHTML(String(row.typical_gap_human||'—'))
+        + (row.silence_ratio && row.silence_ratio >= 2 ? '<br><span class="bad">silent '+escapeHTML(String(row.silence_ratio))+'x</span>' : '')
+        + '</td>'
+        + '<td><span class="badge '+cls+'">'+escapeHTML(verdictName)+'</span><br><span class="muted">'+escapeHTML(String(row.why||''))+'</span>'
+        + (row.top_withhold_reason ? '<br><span class="muted">top reason: '+escapeHTML(String(row.top_withhold_reason))+'</span>' : '')+'</td></tr>';
+    }).join('') || '<tr><td colspan="12" class="muted">no source produced intake in this window</td></tr>';
+  }
+  const targets = document.getElementById('plinetargets');
+  if(targets){
+    targets.innerHTML = (data.targets||[]).map(row => {
+      const state = String(row.state||'');
+      const cls = state === 'receiving' ? 'ours' : state === 'refusing' ? 'warn' : state === 'silent' ? 'warn' : '';
+      return '<tr><td>@'+escapeHTML(String(row.target||''))+'</td>'
+        + '<td>'+(row.declared ? 'yes' : '<span class="muted">no</span>')+'</td>'
+        + '<td>'+escapeHTML(String(row.sends||0))+'</td>'
+        + '<td>'+escapeHTML(String(row.withheld||0))+'</td>'
+        + '<td><span class="badge '+cls+'">'+escapeHTML(state)+'</span></td></tr>';
+    }).join('') || '<tr><td colspan="5" class="muted">no deliveries in this window</td></tr>';
+  }
+  const footer = document.getElementById('plinedeclared');
+  const real = data.declared_and_real || {};
+  if(footer) footer.textContent = (real.declared || 0)+' source(s) in the saved config · '
+    + (real.watched || 0)+' watched live · '+(real.seen || 0)+' actually posted to us in this window'
+    + ((real.declared_but_silent||[]).length ? ' · quiet: '+(real.declared_but_silent||[]).join(', ') : '')
+    + ((real.seen_but_not_declared||[]).length ? ' · not in config: '+(real.seen_but_not_declared||[]).join(', ') : '');
+}
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-trace]');
+  if(!button) return;
+  const field = document.getElementById('traceid');
+  if(field) field.value = button.dataset.trace;
+  if(typeof tracePost === 'function') tracePost();
+  const card = document.getElementById('trace');
+  if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
+});
+
 // ------------------------------------------------------- watch a SOURCE --
 // "channel link petti source add chesi post cheyali": the operator pastes a
 // channel link, picks where its deals should land, and the running bot proves
@@ -2060,6 +2183,7 @@ function downloadExport(what, windowValue){
   let url='/api/export?what='+encodeURIComponent(what)+'&token='+encodeURIComponent(TOKEN);
   if(what==='pulse') url+='&hours='+encodeURIComponent(windowValue||6);
   if(what==='scorecard') url+='&days='+encodeURIComponent(windowValue||7);
+  if(what==='pipeline') url+='&hours='+encodeURIComponent(windowValue||24);
   if(what==='search') url+='&q='+encodeURIComponent(document.getElementById('qsearch')?.value||'');
   window.open(url,'_blank','noopener');
 }
