@@ -1315,6 +1315,14 @@ try:
         SOURCE_TO_TARGETS, AMAZON_TAG_TARGETS, _dashboard_data,
         existing_targets=_dashboard_targets, tricks_sources=TRICKS_SOURCES,
         main_sources=BUILTIN_SOURCE_NAMES)
+    # USER RULE (2026-10-22): "channel link petti source add chesthe perfect ga post
+    # cheyali". A watched SOURCE is stored by the dashboard with where its posts
+    # should go; attaching that route here (before DASHBOARD_SCOPED_SOURCES is
+    # computed) is what makes a brand-new source feed the channels instead of
+    # being a line in a JSON file.
+    _dashboard_watch = _dashboard_channels.apply_watch_to_routing(
+        SOURCE_TO_TARGETS, _dashboard_data, NO_TRICKS_TARGETS,
+        tricks_sources=TRICKS_SOURCES, existing_targets=_dashboard_targets)
     DASHBOARD_SCOPED_SOURCES.update(set(SOURCE_TO_TARGETS) - BUILTIN_SOURCE_NAMES)
     AMAZON_TAG_TARGET_KEYS = {normalize_channel_target_name(t) for t in AMAZON_TAG_TARGETS}
     DASHBOARD_CATEGORY_FILTERS = {
@@ -1332,6 +1340,11 @@ try:
                             _dashboard_cat_name, ", ".join(sorted(_dashboard_cat_keys)))
     for _dashboard_warning in _dashboard_summary.get("warnings", []):
         _dashboard_log.warning("DASHBOARD CHANNELS | %s", _dashboard_warning)
+    for _watched in _dashboard_watch.get("watching", []):
+        _dashboard_log.info("DASHBOARD SOURCES | watching %s -> %s",
+                            _watched["channel"], ", ".join(_watched["targets"]))
+    for _dashboard_warning in _dashboard_watch.get("warnings", []):
+        _dashboard_log.warning("DASHBOARD SOURCES | %s", _dashboard_warning)
     try:
         _snapshot_targets = set(_dashboard_targets)
         for _targets in SOURCE_TO_TARGETS.values():
@@ -1345,6 +1358,10 @@ try:
             "source_details": SOURCE_DETAILS,
             "targets": sorted(str(t) for t in _snapshot_targets),
             "dashboard_added": list(_dashboard_summary.get("added", [])),
+            "watch": [{"channel": row["channel"], "targets": row["targets"]}
+                      for row in _dashboard_watch.get("watching", [])],
+            "watch_warnings": list(_dashboard_watch.get("warnings", [])),
+            "main_feed": list(NO_TRICKS_TARGETS),
             "category_rules_version": CATEGORY_RULES.get("version", 0),
             "categories": {str(key): str(item.get("label", key))
                            for key, item in CATEGORY_DEFINITIONS.items()
@@ -10494,7 +10511,7 @@ async def dashboard_live_loop(client, source_map, target_map, stop):
             lambda name: client.get_entity(name), refresh_dashboard_tag_keys,
             resolve_source=lambda source: resolve_dashboard_source(client, source),
             on_source_added=dashboard_source_added, builtin_sources=BUILTIN_SOURCE_NAMES,
-            source_details=SOURCE_DETAILS)
+            source_details=SOURCE_DETAILS, main_feed=NO_TRICKS_TARGETS)
         await live_channels.run(stop)
     except Exception:
         log.exception("DASHBOARD LIVE ADD unavailable; existing posting continues")

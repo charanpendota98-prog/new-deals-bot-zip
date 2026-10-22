@@ -228,6 +228,7 @@ run 'post buttons (validation, atomic config, send-path no-op)' "$PYTHON" test_p
 run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
+run 'watch a source channel' "$PYTHON" test_watch_source.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'ops insight: health, timeline, trace, search, scorecard' "$PYTHON" test_dashboard_ops.py
 
@@ -246,6 +247,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: card studio' node test_dashboard_card_studio.cjs
   run 'dashboard DOM: source -> target + safety' node test_dashboard_source_target.cjs
   run 'dashboard DOM: ops console' node test_dashboard_ops.cjs
+  run 'dashboard DOM: watch a source' node test_dashboard_watch.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
   printf '  install once : npm install --prefix %s --no-package-lock jsdom\n' "$JSDOM_PREFIX"
