@@ -71,6 +71,19 @@ def snapshot_path() -> Path:
     return channels_json_path().parent / "routing_snapshot.json"
 
 
+def directory_path() -> Path:
+    """Where the bot publishes the channels its own session can read.
+
+    Same idea as the routing snapshot: the bot is the only process that can ask
+    Telegram, so it writes one small file and the dashboard reads it. Never
+    written by the dashboard.
+    """
+    env = os.getenv("CHANNEL_DIRECTORY_PATH", "").strip()
+    if env:
+        return Path(env)
+    return channels_json_path().parent / "telegram_channels.json"
+
+
 def pending_path() -> Path:
     """Sidecar the dashboard writes on every change; cleared once applied."""
     return channels_json_path().parent / ".channels_pending"
@@ -293,9 +306,15 @@ def load_channels(path: Path | None = None) -> dict:
             raw_targets = [raw_targets]
         targets = [str(t).strip() for t in (raw_targets if isinstance(raw_targets, list) else [])
                    if str(t).strip()]
+        try:
+            watch_cats = [str(c).strip().lower() for c in category_keys(entry.get("categories", []))
+                          if str(c).strip()][:20]
+        except ValueError:
+            watch_cats = []
         watch.append({
             "channel": channel,
             "targets": targets or ["*"],
+            "categories": watch_cats,
             "enabled": bool(entry.get("enabled", True)),
             "note": str(entry.get("note", ""))[:200],
             "added_at": float(entry.get("added_at") or 0.0),
@@ -404,7 +423,8 @@ WATCH_MAX = 100
 
 
 def validate_watch(entry: dict, existing_targets: set[str],
-                   known_targets: set[str] | None = None) -> tuple[dict, list[str], list[str]]:
+                   known_targets: set[str] | None = None,
+                   known_categories: set[str] | None = None) -> tuple[dict, list[str], list[str]]:
     """One dashboard-managed SOURCE channel. Returns (cleaned, errors, warnings).
 
     `channel` is what the operator pasted - a public link, @username or invite.
@@ -457,6 +477,25 @@ def validate_watch(entry: dict, existing_targets: set[str],
         errors.append("choose either the main feed or named channels, not both")
     if channel.lower() in {t.lower() for t in targets}:
         errors.append("a channel cannot be its own destination")
+    # Categories are a source-level policy ("this source is for fashion only"):
+    # the bot drops a post whose classified category is not in the list. An empty
+    # list means every category, which is the old behaviour.
+    try:
+        raw_cats = category_keys(entry.get("categories", []))
+    except ValueError as exc:
+        errors.append(str(exc))
+        raw_cats = []
+    categories: list[str] = []
+    known_cats = {str(c).lower() for c in (known_categories or set())}
+    for cat in raw_cats:
+        key = str(cat).strip().lower()
+        if not key or key in categories:
+            continue
+        if not CATEGORY_KEY_RE.match(key):
+            errors.append(f"category {str(cat)[:40]!r} is not a valid category key")
+        elif known_cats and key not in known_cats:
+            errors.append(f"unknown category {key!r} - pick from {sorted(known_cats)}")
+        categories.append(key)
     if not errors:
         if channel.startswith("https://t.me/+"):
             warnings.append("private source: the bot session account must already be a "
@@ -470,6 +509,7 @@ def validate_watch(entry: dict, existing_targets: set[str],
     cleaned = {
         "channel": channel,
         "targets": targets,
+        "categories": categories[:20],
         "enabled": bool(entry.get("enabled", True)),
         "note": str(entry.get("note", ""))[:200],
         "added_at": float(entry.get("added_at") or time.time()),

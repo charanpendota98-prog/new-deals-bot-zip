@@ -46,6 +46,7 @@ BOT_FILES = [
     "safety_rules.json",
     "category_classifier.py",
     "channels_config.py",
+    "channel_directory.py",
     "live_channels.py",
     "hypd_policy.py",
     "category_rules.json",

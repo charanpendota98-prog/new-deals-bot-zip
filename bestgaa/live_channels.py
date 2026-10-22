@@ -51,7 +51,8 @@ class LiveChannels:
                  initial_channels, builtin_targets, known_categories, tricks_sources,
                  resolve_target, on_applied=lambda: None, path=None, snapshot_file=None,
                  resolve_source=None, on_source_added=lambda *args: None,
-                 builtin_sources=None, source_details=None, main_feed=None):
+                 builtin_sources=None, source_details=None, main_feed=None,
+                 on_source_categories=None):
         self.routing, self.tags, self.filters = routing, tag_targets, category_filters
         self.source_map, self.target_map = source_map, target_map
         self.builtin_sources = set(builtin_sources) if builtin_sources is not None else set(routing)
@@ -61,6 +62,10 @@ class LiveChannels:
         # Where a watched source's posts go when the dashboard says "*": the bot's
         # own main product feed, resolved at runtime (never frozen in config).
         self.main_feed = [str(t) for t in (main_feed or [])]
+        # A watched source may be limited to categories; the bot owns the decision
+        # (main_bot_new.source_category_blocked), this only reports it.
+        self.on_source_categories = on_source_categories
+        self.source_categories: dict[str, list[str]] = {}
         self.source_checks = {}
         self.watch_states: dict[str, dict] = {}
         self.applied = {}
@@ -99,6 +104,8 @@ class LiveChannels:
                     watch_states=self.watch_states,
                     watch_configured=sorted(row.get("channel", "")
                                             for row in config.watch_entries(self.last_data)),
+                    watch_categories={str(name): list(cats)
+                                      for name, cats in self.source_categories.items()},
                     main_feed=self.main_feed,
                     targets=sorted(self.builtins | {t for values in self.routing.values() for t in values}))
         atomic_snapshot(self.snapshot_file, base)
@@ -304,6 +311,10 @@ class LiveChannels:
                     "detail": "This bot build cannot watch new sources live; "
                               "an approved restart applies it"}
                 continue
+            # The source's own category policy is applied on every pass, so an
+            # edit in the dashboard takes effect on the next post - even for a
+            # source that was already being watched before the edit.
+            self._apply_source_categories(channel, row)
             mapped = {str(entry[0]).lower() for entry in self.source_map.values()}
             if key in mapped:
                 wanted = self._watch_targets(row)
@@ -311,7 +322,9 @@ class LiveChannels:
                 if all(any(str(t).lower() == w.lower() for t in current) for w in wanted):
                     self.watch_states[channel] = {
                         "state": "watching",
-                        "detail": f"Live: posts route to {', '.join(current) or 'nowhere'}"}
+                        "detail": f"Live: posts route to {', '.join(current) or 'nowhere'}"
+                                  + (f" (categories: {', '.join(self.source_categories.get(channel, []))})"
+                                     if self.source_categories.get(channel) else "")}
                     continue
             retry = self.retry_after.get(f"watch:{key}", 0)
             if retry > time.time():
@@ -376,10 +389,12 @@ class LiveChannels:
                     "state": "ready", "checked_at": time.time(),
                     "activated_at": time.time(), "watched": True}
                 self.on_source_added(channel, entity, time.time())
+                cats = self.source_categories.get(channel) or []
                 self.watch_states[channel] = {
                     "state": "watching",
                     "detail": f"Live: new posts from @{getattr(entity, 'username', channel)} "
-                              f"route to {', '.join(targets)}"}
+                              f"route to {', '.join(targets)}"
+                              + (f" (categories: {', '.join(cats)})" if cats else "")}
                 log.info("DASHBOARD SOURCE WATCH | %s -> %s", channel, ", ".join(targets))
             except Exception as exc:  # noqa: BLE001 - one bad source is one row
                 detail = str(exc)[:240] or type(exc).__name__
@@ -391,6 +406,19 @@ class LiveChannels:
         for channel in list(self.watch_states):
             if channel.lower() not in seen:
                 self.watch_states.pop(channel, None)
+
+    def _apply_source_categories(self, channel: str, row: dict) -> None:
+        """Report this source's category policy to the bot (idempotent)."""
+        cats = [str(c).strip().lower() for c in (row.get("categories") or []) if str(c).strip()]
+        if cats:
+            self.source_categories[channel] = cats
+        else:
+            self.source_categories.pop(channel, None)
+        if self.on_source_categories is not None:
+            try:
+                self.on_source_categories(channel, cats)
+            except Exception:  # noqa: BLE001 - a policy push never breaks activation
+                log.exception("DASHBOARD SOURCE CATEGORIES failed | %s", channel)
 
     def _watch_targets(self, row) -> list[str]:
         """The destinations for one watched source ("*" = the main product feed)."""

@@ -1771,12 +1771,13 @@ source snapshot:
 |---|---|
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
-| `bestgaa/channels_config.py` | `7628dc8590aede9b3f8c2a6f0844430b5238cca0005fadf3371cb35fd1fd3d63` |
+| `bestgaa/channel_directory.py` | `88b9fc5664348919f8735e616f56da75acee2a9b180d38688991e2815b62007e` |
+| `bestgaa/channels_config.py` | `4df6dd69a2e67cc5751078cc199dce6cdbfbec6de5d6f4ed528c2b30c85d87df` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
 | `bestgaa/deploy_bestgaa.sh` | `8d6dfcd71e6bbcc18ee4b93df3e5f1906b041fc171bc03d24c09b412a2bc9f65` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
-| `bestgaa/live_channels.py` | `8e9eff02782afb83c20a6abe039cbacced62189bab0a4da6d6b500fe757ffe49` |
-| `bestgaa/main_bot_new.py` (v19.0) | `209ba9d8e6a0a3b1a78e9a7d50b2378872de8a5cd16b4a4c98ab90c7ced82363` |
+| `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
+| `bestgaa/main_bot_new.py` (v19.0) | `cd99cd37f0fc122bd6fc40d14e73fc552dd01a4e054aeae6fd5e9fc47225b60b` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1792,7 +1793,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `44a67bcdf7677d59ad78f9921b516c7a63f5ec95ad982207b425a7fa29cba5ca` |
+| `dashboard/app.py` | `eb5e8b680d6f2722d00c285951139cd6fd0e71a7757a65d9a3e217c2a66dcd01` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
@@ -1803,7 +1804,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `8a4f980c0ecfcd6e6aea51b4c7e76413b0cf7465a0d131ae976a8a5a95f3292f` |
+| `ops/build_deploy_zip.py` | `4b39d92a2a44a7e0b2b4ac8377941c1815ab1074b36db81d42e3766820beda07` |
 | `ops/category_report.py` | `e85b0e7bf47ee97d090d2ee77b37bfcd091c102461480d875638685d6b9db53c` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1831,13 +1832,14 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `e9eeb790f290e901532d5b80d5bd99413594f32e1ef2ca1efe84a62a16c2ca15` |
+| `ops/test_all.sh` | `254e13324fd9c4e5df6a552abe9c0f46f94930b00cbb0e605b5ccd223fe70168` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_dashboard.py` | `14c7f513eb51d0b64fbb4a43d664a500b32e8b34f31875d4c8a4c8d6cb03d035` |
+| `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
+| `test_dashboard.py` | `8555bfeaff6318e018fdacdd2e94fee25a98a48a98a2dcde006cf434867a05d5` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
@@ -1851,6 +1853,7 @@ source snapshot:
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_dashboard_watch.cjs` | `c714549e36c3a040ebe2ce6f75afb29f2b5292f2a9acc61e93e8489ef94f920c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
+| `test_deals_dom.cjs` | `55e8db89cb33a71c054f9fbc65ca27ba78e1f518830de6da22c6045ad4783081` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
@@ -1875,7 +1878,7 @@ source snapshot:
 | `test_source_runtime.py` | `a66b6701125c333dfc446ca5e78826e1a892dd7ddfa7dd2f5fd5f9e30f3dc124` |
 | `test_source_setup.py` | `03fac4e8dcdf8f2d554b9999d3eba18cf7f6f6fb7f1447a8260cbede1dfa68dc` |
 | `test_source_to_target.py` | `436b5168537eb013f5bbee62e29eb269536867cdef1a9a71b8f2a6224493a6db` |
-| `test_watch_source.py` | `c9304685bb9b65b2650776a657d2166b6fb0a40a21cac200b5aba8fba9588d70` |
+| `test_watch_source.py` | `4dd8fb9d3d951eda60de3d3a75946bb7249ff97688bc310065f43f0d72686997` |
 
 **Offline verification on this source tree (2026-10-18):** `PYTHON=.venv/bin/python ./ops/test_all.sh` completed successfully. The gate covers category-taxonomy and HYPD-policy parity; the render/routing and pipeline-fix suites (per-suite check counts are published below, generated from the run's own log, not hand-copied); rescan/recovery, best-copy, duplicate, delivery-fence, post-deploy-repeat, link-inspector, category-preview, source-setup, source-runtime, live-channel, dashboard, EarnKaro, HYPD and line-fidelity suites; the three jsdom dashboard DOM suites (guided setup, source picker, category studio); the WhatsApp bridge self-test; `bash -n` on every shell script; Python compilation; pyflakes lint; a repo self-consistency suite; and finally README's own proof tables, checked against the bytes on disk and against the completed log. Its private SQLite bridge fixture exercises account-bound converter proof, cache-only rejection, wrong-account proof, current/stale Amazon attribution, and HYPD-to-Meesho mapping. The run is offline: it does not validate live affiliate credentials, live channel access, or a deployed service. No deployment or service restart was performed.
 
@@ -2663,7 +2666,7 @@ picked. No restart is needed for a new source, because the running bot proves ac
 with its own session and attaches the route itself.
 
 - `channels.json` gains a `watch` array next to `channels` and `whatsapp`:
-  `{"channel": "DealSourceX", "targets": ["*"], "enabled": true, "note": "", "added_at": 1792...}`.
+  `{"channel": "DealSourceX", "targets": ["*"], "categories": [], "enabled": true, "note": "", "added_at": 1792...}`.
   `"*"` means **this bot's own `NO_TRICKS_TARGETS`**, resolved at runtime, so a code
   change to the main feed is respected instead of frozen into the config file. Named
   targets must be channels the bot itself reported; `*` and named targets cannot be
@@ -2698,6 +2701,65 @@ with its own session and attaches the route itself.
 - Proof: `test_watch_source.py` (gate) and `test_dashboard_watch.cjs` (jsdom) cover
   the whole path offline. Neither the bot nor any service is started, restarted or
   redeployed by these tests.
+
+#### Picking sources from the account itself — the source studio (2026-10-22)
+
+"Telegram lo vunna channel anni chupinchandi, search pettandi, multiple select
+cheyyandi, categories select cheyyandi, okesari add cheyyandi." The **Source
+studio** card does exactly that: it lists the channels **this bot session can
+already read**, lets you search and tick many at once, choose the destination and
+the categories, and saves them in a single action.
+
+- **Who writes the list.** The bot, not the dashboard. `channel_directory_loop`
+  calls `client.iter_dialogs(limit=CHANNEL_DIRECTORY_LIMIT)` (default 1000) and
+  writes `channels_config.directory_path()` — `telegram_channels.json` beside
+  `channels.json` unless `CHANNEL_DIRECTORY_PATH` says otherwise — atomically,
+  every `CHANNEL_DIRECTORY_SECONDS` (default 900, minimum 60) and once at start.
+  `iter_dialogs` is **read-only**: no channel is joined, no message is fetched, no
+  history is replayed, and the dashboard never asks Telegram anything.
+- **What is addable.** `addable` is exactly the rule live activation enforces:
+  a **broadcast** channel with a public `@username` that the session has not left.
+  Groups/supergroups and dialogs with no username are still listed (the operator
+  may be in them) with `addable: false`, `kind` and `private`, so the checkbox is
+  disabled and the row says *why* — never a silent omission.
+- **Payload** (`bestgaa/channel_directory.py`, pure): `{schema, generated_at,
+  count, addable, skipped, truncated, limit, note, channels[]}` with each row
+  `{id, title, username, kind, addable, private, members, last_message_at,
+  seen_at}`, deduplicated by id, addable rows first, bounded and hostile-title-safe.
+  The same file carries `our_targets`, `our_sources` and `watch_categories` so the
+  picker knows which rows are our own posting channels.
+- **One save, many sources.** `POST /api/watch/bulk` takes
+  `{channels: [...], targets: ["*"] | [names], categories: [...], note, enabled}`
+  (at most 50 channels per save), validates **each** row, and returns
+  `{added, skipped: [{channel, errors}], warnings, revision, plan, next}`.
+  Partial success is deliberate: one refused link must not throw away nineteen
+  good ones, but every refusal comes back with its reason and nothing is dropped
+  silently. `If-Match` still protects a stale form, and a refused save writes
+  nothing at all.
+- **Categories are a source-level policy.** `watch[].categories` (≤20 keys,
+  validated against the installed taxonomy) says "this source is for fashion
+  only". The bot seeds `SOURCE_CATEGORY_FILTERS` from `channels.json` at boot and
+  keeps it live through `LiveChannels._apply_source_categories`, so an edit applies
+  on the **next post** without a restart. `source_category_blocked()` raises
+  `PermanentSkip` **before any destination is chosen** — the post is recorded as
+  withheld with the reason, never retried, never counted as lost. An empty list
+  means every category; a post the classifier could not name **never** passes a
+  limited source (silence is not consent).
+- **Endpoints.** `GET /api/directory` (directory + every row annotated with
+  `watched`, the bot's `watch_state`, `watch_targets`, `watch_categories`,
+  `is_our_target`, plus the category keys and the config revision) and
+  `POST /api/watch/bulk`. The existing `GET/POST /api/watch`, `PATCH` and `DELETE
+  /api/watch/{channel}` are unchanged; `PATCH` now also accepts `categories`.
+- **The page.** Search on top filters by title or `@username`; *Select all shown*
+  can only tick addable rows; the destination is either the main product feed or
+  named channels (never both); categories are multi-select; the result panel shows
+  what was added and, per channel, why something was not. A fresh install with no
+  published directory explains itself instead of showing a blank list, and a dead
+  endpoint cannot blank the page.
+- **Proof.** `test_channel_directory.py` (builder, config, bulk API, live watch,
+  post-path policy) and `test_deals_dom.cjs` (jsdom: search, multi-select,
+  disabled reasons, one bulk POST, server refusal verbatim, empty directory).
+  Both are in the gate; nothing starts, restarts or redeploys a service.
 
 ### Source-selection verification (2026-10-14)
 

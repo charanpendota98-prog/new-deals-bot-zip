@@ -109,11 +109,29 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 .ovdetails table{font-size:12px}
 .ovdetails td,.ovdetails th{padding:6px 8px}
 @media(max-width:900px){.ovsplit,.ovdetails{grid-template-columns:1fr}.mrow{grid-template-columns:minmax(80px,1fr) auto auto}.mrow .prev{display:none}}
+.setup-source-layout{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:18px;align-items:start}
+.setup-source-layout aside{background:#0f1620;border:1px solid #223044;border-radius:12px;padding:14px}
+.setup-source-layout aside label:not(.checkline){margin-top:10px;display:block}
+.source-tools{display:flex;gap:8px;align-items:center;margin:8px 0}
+.source-count{color:#8ea3bb;font-size:.82rem}
+.source-list{max-height:420px;overflow:auto;border:1px solid #223044;border-radius:12px;background:#0f1620}
+.source-option{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border-bottom:1px solid #182334;cursor:pointer}
+.source-option:last-child{border-bottom:0}
+.source-option:hover{background:#14202e}
+.source-option input{margin-top:4px}
+.source-option span{flex:1;min-width:0}
+.source-option small{display:block;color:#8ea3bb;font-size:.78rem}
+.source-option .source-error{color:#ffb4a2}
+.source-option:has(input:disabled){opacity:.55;cursor:not-allowed}
+.checkline{display:flex;gap:8px;align-items:center;font-weight:normal;margin:6px 0}
+.source-list::-webkit-scrollbar{width:10px}
+.source-list::-webkit-scrollbar-thumb{background:#223044;border-radius:6px}
+@media(max-width:900px){.setup-source-layout{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -218,6 +236,31 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </div>
 <p id="addmsg" role="status" aria-live="polite"></p>
 </section>
+<div class="card" id="sourcestudio">
+<div class="section-heading"><div><span class="eyebrow">SOURCE STUDIO · EVERY CHANNEL IN YOUR TELEGRAM</span><h2>Pick channels from a list, not from memory</h2></div><span class="badge" id="dirstate">loading</span></div>
+<p class="muted">The list below is <b>published by the bot's own session</b> (<code>ops/…/telegram_channels.json</code>): every channel it can already read, refreshed in the background. Search it, tick one or many, choose where their deals should post and which categories to keep, then save once. A ticked channel becomes a <b>watched source</b>: each new post is taken exactly as written, every link converted to <b>ours</b>, and posted to the channels you pick. Nothing is joined, nothing is replayed, and a channel that is not public (no @username) or is one of our own posting channels stays disabled with the reason.</p>
+<div class="setup-source-layout">
+<div>
+<label for="dirsearch">Search channels <span class="muted">— title or @username</span></label>
+<input id="dirsearch" type="search" placeholder="type to filter, e.g. loot / fashion / @deals" autocomplete="off" oninput="dirFilterChanged()">
+<div class="source-tools"><button class="ghost" onclick="dirSelectShown()">Select all shown</button><button class="ghost" onclick="dirClear()">Clear</button><span class="source-count" id="dircount">loading…</span></div>
+<div class="source-list" id="dirlist"><p class="muted" style="padding:10px">loading the channel list…</p></div>
+<p id="direrror" class="bad" role="alert"></p>
+</div>
+<aside>
+<strong>Post their deals to</strong>
+<label class="checkline"><input id="dirmain" type="checkbox" checked onchange="dirTargetsChanged()"> The main product feed (recommended)</label>
+<select id="dirtargets" multiple size="5" aria-label="Destination channels" disabled></select>
+<p class="muted" id="dirfeednote"></p>
+<strong>Keep only these categories <span class="muted">— leave empty for every category</span></strong>
+<select id="dircats" multiple size="5" aria-label="Categories"></select>
+<label for="dirnote">Note <span class="muted">— optional</span></label><input id="dirnote" maxlength="200" placeholder="e.g. fashion source from the WhatsApp group">
+<div class="step-actions"><button id="dirsave" onclick="saveStudio()">Add selected sources</button><button class="ghost" onclick="loadDirectory()">Refresh list</button></div>
+<p id="dirmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="dirresults"></div>
+</aside>
+</div>
+</div>
 <div class="card" id="watchsource">
 <div class="section-heading"><div><span class="eyebrow">WATCH A SOURCE · CHANNEL LINK → POSTS</span><h2>Paste a channel link, and its deals start posting</h2></div><span class="badge" id="watchlive">checking</span></div>
 <p class="muted">Paste the link of a Telegram channel you want to <b>read</b> (not one of ours). The bot then takes each post exactly as the source wrote it, converts every link to <b>ours</b> (tagged Amazon page, or the converter's link bound to our publisher id), and posts it to the channels you pick here. Nothing is joined automatically, no old post is replayed, and a link that cannot be proven to pay us is repaired or dropped - never published as "probably ours".</p>
@@ -569,6 +612,7 @@ async function refresh(full=true){
       || '<tr><td colspan="7" class="muted">queue is empty</td></tr>';
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
     await loadWatch();                    // watched source channels + the bot's verdict
+    await loadDirectory();                // every channel the bot session can read
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -1945,6 +1989,149 @@ document.addEventListener('click', event => {
   if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
 });
 
+// ------------------------------------------------------- SOURCE STUDIO --
+// "ah telegram lo vunna channel anni chupisthe, bestga select cheskoni, multiple
+// gaa add cheskogalaru." The list is the bot's own published directory - the
+// dashboard never asks Telegram and never invents a channel. Selection survives
+// a refresh, the search filters instantly, and one save creates every ticked
+// source with its targets and categories.
+let dirRows = [];
+let dirPicked = new Set();
+let dirQuery = '';
+let dirMeta = {};
+function dirShown(){
+  const q = dirQuery.trim().toLowerCase();
+  if(!q) return dirRows;
+  return dirRows.filter(row =>
+    (row.title||'').toLowerCase().includes(q) || (row.username||'').toLowerCase().includes(q));
+}
+function dirFilterChanged(){
+  const box = document.getElementById('dirsearch');
+  dirQuery = box ? box.value : '';
+  renderDirList();
+}
+function renderDirList(){
+  const body = document.getElementById('dirlist');
+  const count = document.getElementById('dircount');
+  if(!body) return;
+  const shown = dirShown();
+  if(count){
+    count.textContent = shown.length + ' shown · ' + dirPicked.size + ' selected · '
+      + (dirMeta.addable || 0) + ' addable of ' + (dirMeta.count || dirRows.length);
+  }
+  body.innerHTML = shown.map(row => {
+    const name = escapeHTML(String(row.username || ''));
+    const disabled = !row.addable || row.is_our_target;
+    const why = row.is_our_target ? 'one of our posting channels'
+      : (row.kind !== 'channel' ? 'not a broadcast channel' : (row.private ? 'private channel - no public link to add' : ''));
+    const state = row.watched ? ('<span class="badge ok">watching</span>' + (row.watch_state && row.watch_state !== 'watching' ? ' <span class="badge warn">'+escapeHTML(row.watch_state)+'</span>' : '')) : '';
+    return '<label class="source-option"' + (disabled ? ' title="'+escapeHTML(why)+'"' : '') + '>'
+      + '<input type="checkbox" value="'+name+'" data-addable="'+(disabled?'0':'1')+'"'
+      + (disabled ? ' disabled' : '') + (dirPicked.has(name.toLowerCase()) ? ' checked' : '')
+      + ' onchange="dirToggle(this)">'
+      + '<span><strong>'+escapeHTML(String(row.title||name))+'</strong>'
+      + '<small>'+(name ? '@'+name : 'no public username')+' · '+(row.kind||'')+' · '
+      + (row.members ? row.members.toLocaleString('en-IN')+' members · ' : '')
+      + 'last post '+escapeHTML(String(row.last_message||'—'))+'</small>'
+      + (disabled && why ? '<small class="source-error">'+escapeHTML(why)+'</small>' : '')
+      + '</span>'+state+'</label>';
+  }).join('') || '<p class="muted" style="padding:10px">no channel matches that search</p>';
+}
+function dirToggle(input){
+  const key = String(input.value || '').toLowerCase();
+  if(!key) return;
+  if(input.checked) dirPicked.add(key); else dirPicked.delete(key);
+  renderDirList();
+}
+function dirSelectShown(){
+  for(const row of dirShown()){
+    if(row.addable && !row.is_our_target && row.username) dirPicked.add(row.username.toLowerCase());
+  }
+  renderDirList();
+}
+function dirClear(){ dirPicked.clear(); renderDirList(); }
+function dirTargetsChanged(){
+  const main = document.getElementById('dirmain');
+  const sel = document.getElementById('dirtargets');
+  if(!main || !sel) return;
+  sel.disabled = !!main.checked;
+  if(main.checked) [...sel.options].forEach(o=>{ o.selected = false; });
+}
+async function loadDirectory(){
+  const badge = document.getElementById('dirstate');
+  let data;
+  try{ data = await api('GET','/api/directory'); }
+  catch(e){
+    if(badge) badge.textContent = 'not available';
+    const body = document.getElementById('dirlist');
+    if(body) body.innerHTML = '<p class="muted" style="padding:10px">channel list unavailable: '+escapeHTML(String(e.message||e))+'</p>';
+    return;
+  }
+  dirRows = data.channels || [];
+  dirMeta = data.directory || {};
+  // The directory answer carries the same config revision as /api/channels, so
+  // the studio can save correctly even if that call failed on this load.
+  if(data.revision) configRevision = data.revision;
+  const sel = document.getElementById('dirtargets');
+  if(sel && !sel.options.length){
+    for(const name of ((data.catalog||{}).targets||[])){
+      const option = document.createElement('option'); option.value = name; option.textContent = '@'+name; sel.append(option);
+    }
+  }
+  const catSel = document.getElementById('dircats');
+  if(catSel && !catSel.options.length){
+    const labels = data.categories || categoryLabels || {};
+    for(const [key,label] of Object.entries(labels)){
+      const option = document.createElement('option'); option.value = key; option.textContent = label; catSel.append(option);
+    }
+  }
+  const feed = (data.catalog||{}).main_feed || [];
+  const note = document.getElementById('dirfeednote');
+  if(note) note.textContent = feed.length ? ('Main feed = '+feed.join(', ')) : 'The bot has not reported its channels yet.';
+  if(badge){
+    badge.textContent = dirMeta.available
+      ? ((dirMeta.count||0)+' channels · updated '+escapeHTML(String(dirMeta.age_s != null ? Math.round(dirMeta.age_s/60)+'m ago' : 'just now')) + (dirMeta.stale ? ' · STALE' : ''))
+      : 'not published yet';
+    badge.className = 'badge' + (dirMeta.available && !dirMeta.stale ? ' ok' : ' warn');
+  }
+  const err = document.getElementById('direrror');
+  if(err) err.textContent = dirMeta.available ? '' : (dirMeta.reason || '');
+  dirTargetsChanged();
+  renderDirList();
+}
+async function saveStudio(){
+  const msg = document.getElementById('dirmsg');
+  const results = document.getElementById('dirresults');
+  const channels = [...dirPicked];
+  if(!channels.length){ if(msg) msg.textContent = 'Tick at least one channel first.'; return; }
+  const main = document.getElementById('dirmain');
+  const targets = main && main.checked ? ['*']
+    : [...(document.getElementById('dirtargets')?.selectedOptions || [])].map(o=>o.value);
+  if(!targets.length){ if(msg) msg.textContent = 'Pick where their deals should post.'; return; }
+  const categories = [...(document.getElementById('dircats')?.selectedOptions || [])].map(o=>o.value);
+  const note = (document.getElementById('dirnote')?.value || '').trim();
+  const button = document.getElementById('dirsave');
+  if(button) button.disabled = true;
+  try{
+    const out = await api('POST','/api/watch/bulk',
+      {channels, targets, categories, note, enabled:true}, configRevision);
+    if(msg) msg.textContent = 'Saved '+(out.added||[]).length+' source(s). '+(out.next||'')
+      + ((out.warnings||[]).length ? ' · '+out.warnings.join(' · ') : '');
+    if(results){
+      results.innerHTML = '<h3>Result</h3>'
+        + ((out.added||[]).length ? '<p class="muted">added: '+out.added.map(n=>escapeHTML('@'+n)).join(', ')+'</p>' : '')
+        + ((out.skipped||[]).length ? '<p class="warn">skipped: '+out.skipped.map(row=>escapeHTML(row.channel)+' — '+escapeHTML((row.errors||[]).join('; '))).join('<br>')+'</p>' : '');
+    }
+    dirPicked.clear();
+    await loadDirectory();
+    await loadWatch();      // the new rows + the bot's own verdict, immediately
+  }catch(e){
+    const text = String(e.message||e);
+    if(msg) msg.textContent = 'Not saved: '+text;
+    if(results) results.innerHTML = '<p class="bad">'+escapeHTML(text)+'</p>';
+  }finally{ if(button) button.disabled = false; }
+}
+
 // ------------------------------------------------------- watch a SOURCE --
 // "channel link petti source add chesi post cheyali": the operator pastes a
 // channel link, picks where its deals should land, and the running bot proves
@@ -1996,9 +2183,10 @@ async function loadWatch(){
     const state = String(row.state||'pending');
     const cls = state === 'watching' ? 'ok' : state === 'disabled' ? '' : 'warn';
     const targets = (row.targets||[]).includes('*') ? 'main feed' : (row.targets||[]).join(', ');
+    const cats = (row.categories||[]).length ? (row.categories||[]).map(k=>categoryLabels[k]||k).join(', ') : 'every category';
     return '<tr><td>@'+escapeHTML(String(row.channel||'').replace(/^https:\/\/t\.me\//,''))+
       (row.title?'<br><span class="muted">'+escapeHTML(row.title)+'</span>':'')+
-      '</td><td class="muted">'+escapeHTML(targets)+'</td>'+
+      '</td><td class="muted">'+escapeHTML(targets)+'<br><span class="muted">'+escapeHTML(cats)+'</span></td>'+
       '<td><span class="badge '+cls+'">'+escapeHTML(state)+'</span><br><span class="muted">'+escapeHTML(row.detail||'')+'</span></td>'+
       '<td><button class="ghost" data-watch="toggle" data-channel="'+escapeHTML(row.channel)+'" data-enabled="'+(!row.enabled)+'">'+(row.enabled?'ON':'OFF')+'</button> '+
       '<button class="danger" data-watch="remove" data-channel="'+escapeHTML(row.channel)+'">remove</button></td></tr>';
