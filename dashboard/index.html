@@ -127,11 +127,14 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 .source-list::-webkit-scrollbar{width:10px}
 .source-list::-webkit-scrollbar-thumb{background:#223044;border-radius:6px}
 @media(max-width:900px){.setup-source-layout{grid-template-columns:1fr}}
+.dossiercols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.dossiercols pre,.dossiertext{background:#0f1620;border:1px solid #223044;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;font-size:.82rem}
+@media(max-width:900px){.dossiercols{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#dossier">Dossier</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -308,12 +311,27 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <div class="card" id="trace">
 <div class="section-heading"><div><span class="eyebrow">POST TRACE · PREDICTED VS ACTUAL</span><h2>What happened to this one post?</h2></div></div>
 <p class="muted">Give a queue id and see the whole chain for that post: what the routing planner <b>predicted</b>, what the safety gate and the readers made of it, which channels <b>actually received</b> it, which were skipped, the exact error on each, the delivered link, and any refusal recorded against it. A target the planner expected but that never got a delivery row is called out as <b>not attempted</b> instead of being hidden. Read-only.</p>
-<div class="row"><input id="traceid" aria-label="Queue id" inputmode="numeric" placeholder="queue id, e.g. 1" onkeydown="if(event.key==='Enter')tracePost()"><button onclick="tracePost()">Trace it</button><button class="ghost" onclick="traceNewest()">Newest failed post</button></div>
+<div class="row"><input id="traceid" aria-label="Queue id" inputmode="numeric" placeholder="queue id, e.g. 1" onkeydown="if(event.key==='Enter')tracePost()"><button onclick="tracePost()">Trace it</button><button class="ghost" onclick="traceNewest()">Newest failed post</button><button class="ghost" onclick="openDossier(document.getElementById('traceid').value)">Open dossier</button></div>
 <p id="traceerror" class="bad" role="alert"></p>
 <div id="tracehead"></div>
 <div class="row" id="tracefacts"></div>
 <div class="tablewrap"><table><thead><tr><th>Target</th><th>Predicted</th><th>Actual</th><th>Detail</th><th>Chunks</th></tr></thead><tbody id="tracerows"></tbody></table></div>
 <div id="traceextras"></div>
+</div>
+<div class="card" id="dossier">
+<div class="section-heading"><div><span class="eyebrow">DEAL DOSSIER · EVERY LINK, EVERY REWRITE, WITH PROOF</span><h2>"Is this post ours, and did anything get lost?"</h2></div></div>
+<p class="muted">Trace answers <i>which channels got it</i>. The dossier answers the expensive questions: <b>is every link that went out provably ours</b> (our Amazon tag, an owned-link proof, our conversion cache, our HYPD store — or the source's own link, republished, paying them), <b>what did the renderer change</b> (line diff, link rewrites, numbers that vanished), and <b>every stage in order</b> (intake → refusal → send attempt → delivery verdict). Anything the database cannot prove is shown as <b>unknown</b>, never assumed fine. Read-only.</p>
+<div class="row"><input id="dossierid" aria-label="Queue id" inputmode="numeric" placeholder="queue id, e.g. 1" onkeydown="if(event.key==='Enter')openDossier()"><button onclick="openDossier()">Open dossier</button><button class="ghost" onclick="openDossier('newest')">Newest refused post</button><button class="ghost" onclick="copyDossier()">copy JSON</button></div>
+<p id="dossiererror" class="bad" role="alert"></p>
+<div id="dossierhead"></div>
+<div class="row" id="dossierfacts"></div>
+<div id="dossierverdict"></div>
+<div id="dossierfindings"></div>
+<div id="dossierlinks"></div>
+<div id="dossiersource"></div>
+<div id="dossiertimeline"></div>
+<div id="dossierdiff"></div>
+<div id="dossiertext"></div>
 </div>
 <div class="card" id="scorecard">
 <div class="section-heading"><div><span class="eyebrow">SCORECARD · PER CHANNEL AND PER SOURCE</span><h2>Who is receiving, who is silent, who earns its place</h2></div>
@@ -2512,6 +2530,94 @@ async function tracePost(id){
     error.textContent='trace failed: '+e.message;
     body.innerHTML='';
     head.innerHTML=''; facts.innerHTML=''; extras.innerHTML='';
+  }
+}
+let lastDossier=null;
+function copyDossier(){
+  const out=document.getElementById('dossiererror');
+  if(!lastDossier){ if(out) out.textContent='open a dossier first'; return; }
+  const text=JSON.stringify(lastDossier,null,1);
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text)
+    .then(()=>{if(out) out.textContent='dossier JSON copied'});}
+  else if(out) out.textContent=text.slice(0,400);
+}
+function dossierPill(severity){
+  return severity==='error'?'fail':severity==='warn'?'warn':'ok';
+}
+async function openDossier(id){
+  const head=document.getElementById('dossierhead'), facts=document.getElementById('dossierfacts'),
+    verdict=document.getElementById('dossierverdict'), error=document.getElementById('dossiererror');
+  if(!head) return;
+  const value=String(id ?? document.getElementById('dossierid')?.value ?? '').trim();
+  if(error) error.textContent='';
+  if(!(value==='newest'||/^\d+$/.test(value))){
+    if(error) error.textContent='give a numeric queue id (or use "Newest refused post")';
+    return;
+  }
+  try{
+    const d=await api('GET','/api/forensics?queue_id='+encodeURIComponent(value));
+    lastDossier=d;
+    if(document.getElementById('dossierid')) document.getElementById('dossierid').value=d.post.queue_id;
+    const post=d.post||{}, links=d.links||{}, states=d.states||{};
+    head.innerHTML=`<div class="trace-box"><b>#${Number(post.queue_id)}</b> · ${escapeHTML(post.source||'')}`
+      + ` · <span class="pill ${post.status==='failed'?'fail':post.status==='done'?'ok':'info'}">${escapeHTML(post.status||'')}</span>`
+      + ` · ${escapeHTML(post.created_ist||'')} (${escapeHTML(post.age||'')} ago)`
+      + ` · <span class="pill ${states.state==='delivered'?'ok':states.state==='waiting'?'info':'fail'}">${escapeHTML(states.state||'')}</span>`
+      + (d.latency_seconds!=null?` · first send in ${Number(d.latency_seconds)}s`:'')
+      + (post.error?`<div class="bad">error: ${escapeHTML(post.error)}</div>`:'')+'</div>';
+    facts.innerHTML=[
+      ['links out', (links.published||[]).length],
+      ['proven ours', (links.proven||0)],
+      ['NOT ours', (links.unproven||0)],
+      ['source links', (links.source||[]).length],
+      ['words kept', `${Number((d.words||{}).rendered||0)} / ${Number((d.words||{}).source||0)}`],
+      ['delivered', (states.received||[]).length],
+      ['withheld', (states.withheld||[]).length],
+      ['targets routed', (post.targets||[]).length],
+    ].map(([label,value])=>`<div class="stat"><b style="font-size:15px">${escapeHTML(String(value))}</b><span>${escapeHTML(label)}</span></div>`).join('');
+    verdict.innerHTML=`<p class="${(links.unproven||0)>0?'bad':'ok'}"><b>${escapeHTML(d.verdict||'')}</b></p>`;
+    const findings=d.findings||[];
+    document.getElementById('dossierfindings').innerHTML=findings.length
+      ? `<h3>Findings</h3><div class="tablewrap"><table><thead><tr><th>Severity</th><th>What</th><th>Fix</th></tr></thead><tbody>`
+        + findings.map(f=>`<tr><td><span class="pill ${dossierPill(f.severity)}">${escapeHTML(f.severity)}</span></td>`
+        + `<td><b>${escapeHTML(f.code)}</b><br>${escapeHTML(f.detail||'')}</td><td class="muted">${escapeHTML(f.fix||'')}</td></tr>`).join('')
+        + `</tbody></table></div>`
+      : '<p class="ok">No findings: every link is proven ours, the numbers survived, and every routed target was attempted.</p>';
+    const published=links.published||[], sourceLinks=links.source||[];
+    document.getElementById('dossierlinks').innerHTML=published.length
+      ? `<h3>Links that went out</h3><div class="tablewrap"><table><thead><tr><th>Proof</th><th>Link</th><th>Detail</th><th>Resolves to</th></tr></thead><tbody>`
+        + published.map(l=>`<tr><td><span class="pill ${l.ours?'ok':'fail'}">${escapeHTML(l.kind)}</span></td>`
+        + `<td class="muted" style="word-break:break-all">${escapeHTML(l.url)}</td>`
+        + `<td>${escapeHTML(l.proof||'')}${l.risk?`<div class="bad">${escapeHTML(l.risk)}</div>`:''}`
+        + `${l.from_source?'<div class="muted">copied from the source post</div>':''}</td>`
+        + `<td class="muted" style="word-break:break-all">${escapeHTML(l.resolved||'—')}</td></tr>`).join('')
+        + `</tbody></table></div>`
+      : '<h3>Links that went out</h3><p class="warn">none — this post carried no link (link-free posts are deliberate: a dead shortener is posted as complete text).</p>';
+    document.getElementById('dossiersource').innerHTML=sourceLinks.length
+      ? `<h3>Links the source carried</h3><div class="tablewrap"><table><thead><tr><th>Source link</th><th>Published as</th><th>Verdict</th></tr></thead><tbody>`
+        + sourceLinks.map(l=>`<tr><td class="muted" style="word-break:break-all">${escapeHTML(l.url)}</td>`
+        + `<td style="word-break:break-all">${escapeHTML(l.published_as||'—')}</td>`
+        + `<td><span class="pill ${l.kept?'warn':l.rewritten?'ok':'info'}">`
+        + `${l.kept?'republished unchanged':l.rewritten?'rewritten to ours':l.dropped?'converted, not published':'not used'}</span></td></tr>`).join('')
+        + `</tbody></table></div>`:'';
+    const timeline=d.timeline||[];
+    document.getElementById('dossiertimeline').innerHTML=timeline.length
+      ? `<h3>Timeline (IST)</h3><div class="tablewrap"><table><thead><tr><th>When</th><th>Stage</th><th>Target</th><th>Detail</th></tr></thead><tbody>`
+        + timeline.map(e=>`<tr><td class="muted">${escapeHTML(e.at_ist)}</td><td><span class="pill info">${escapeHTML(e.kind)}</span></td>`
+        + `<td>${e.target?('@'+escapeHTML(e.target)):'<span class="muted">—</span>'}</td><td>${escapeHTML(e.detail||'')}</td></tr>`).join('')
+        + `</tbody></table></div>`:'';
+    const diff=d.diff||{};
+    document.getElementById('dossierdiff').innerHTML=diff.identical
+      ? '<h3>Text diff</h3><p class="muted">the published text is line-identical to the intake</p>'
+      : `<h3>Text diff <span class="muted">(${Number(diff.removed_count||0)} line(s) dropped, ${Number(diff.added_count||0)} added)</span></h3>`
+        + `<div class="dossiercols"><div><b>dropped</b><pre>${escapeHTML((diff.removed||[]).join('\n')||'(none)')}</pre></div>`
+        + `<div><b>added</b><pre>${escapeHTML((diff.added||[]).join('\n')||'(none)')}</pre></div></div>`;
+    document.getElementById('dossiertext').innerHTML=
+      `<h3>Published text</h3><pre class="dossiertext">${escapeHTML(post.rendered||'(the bot stored no rendered text)')}</pre>`
+      + (post.source_text?`<h3>Intake text</h3><pre class="dossiertext">${escapeHTML(post.source_text)}</pre>`:'');
+  }catch(e){
+    if(error) error.textContent='dossier failed: '+e.message;
+    lastDossier=null;
   }
 }
 async function loadScorecard(){

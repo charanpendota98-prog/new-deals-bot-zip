@@ -236,6 +236,9 @@ run 'operator dashboard' "$PYTHON" test_dashboard.py
 run 'pipeline integrity: nothing dropped' "$PYTHON" test_pipeline_integrity.py
 run 'dashboard link: tunnel, token, one-click' "$PYTHON" test_dashboard_link.py
 run 'ops insight: health, timeline, trace, search, scorecard' "$PYTHON" test_dashboard_ops.py
+# "commission asalu miss avvakunda": one queue id, every link and rewrite, with
+# proof - and a hole (no delivery row) is an error, never a quiet zero.
+run 'deal forensics: links, rewrites and proof per post' "$PYTHON" test_deal_forensics.py
 
 # jsdom DOM workflow suites: the only checks that drive the JavaScript the
 # operator actually clicks (guided setup, source picker, category studio) in a
@@ -254,6 +257,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: ops console' node test_dashboard_ops.cjs
   run 'dashboard DOM: watch a source' node test_dashboard_watch.cjs
   run 'dashboard DOM: deals from any channel (bulk source studio)' node test_deals_dom.cjs
+  run 'dashboard DOM: deal dossier (links + rewrites)' node test_deal_dossier.cjs
   run 'dashboard DOM: pipeline integrity' node test_dashboard_pipeline.cjs
   run 'dashboard DOM: tunnel link + token' node test_dashboard_link.cjs
 else

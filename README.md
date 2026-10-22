@@ -1793,7 +1793,8 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `eb5e8b680d6f2722d00c285951139cd6fd0e71a7757a65d9a3e217c2a66dcd01` |
+| `dashboard/app.py` | `ae87f454fdf442f2718bc93040949b6249838683ab6c7229259c62ef0ca5fd1a` |
+| `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
@@ -1832,7 +1833,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `254e13324fd9c4e5df6a552abe9c0f46f94930b00cbb0e605b5ccd223fe70168` |
+| `ops/test_all.sh` | `b20edde41452533a5580783527fda6dc5ad3326567429a13ca8f7f1c30819616` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -1853,6 +1854,8 @@ source snapshot:
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
 | `test_dashboard_watch.cjs` | `c714549e36c3a040ebe2ce6f75afb29f2b5292f2a9acc61e93e8489ef94f920c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
+| `test_deal_dossier.cjs` | `977c97cc36ca727de972c84675e78ab10f7760c54db070e1ec2e9f594a047420` |
+| `test_deal_forensics.py` | `c8edae9556350f42495e4208de6a76e82251265e30c55792a326cdc19c6ccd32` |
 | `test_deals_dom.cjs` | `55e8db89cb33a71c054f9fbc65ca27ba78e1f518830de6da22c6045ad4783081` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
@@ -2760,6 +2763,46 @@ the categories, and saves them in a single action.
   post-path policy) and `test_deals_dom.cjs` (jsdom: search, multi-select,
   disabled reasons, one bulk POST, server refusal verbatim, empty directory).
   Both are in the gate; nothing starts, restarts or redeploys a service.
+
+### Deal dossier: every link, every rewrite, with proof (2026-10-22)
+
+`trace` answers *which channel got it*. The dossier answers the questions that
+decide whether the post was worth posting: **is every link that went out provably
+ours**, and **what did the pipeline change on the way**.
+
+- `GET /api/forensics?queue_id=41` (or `?queue_id=newest`) returns one post's
+  complete story. `newest` opens the most recent post that was refused or never
+  attempted — the one an operator wants at 2 a.m. Read-only; a missing row is a
+  404, a database without a `queue` table is a 503, never a blank page.
+- **Per published link**, the proof and the risk: `amazon_tag` (the `?tag=` equals
+  ours), `conversion_cache` (we minted it, and what it resolves to),
+  `owned_link_proof` (a recorded proof row with its publisher), `hypd_store` (our
+  HYPD link). Anything else is reported as what it is: `foreign_tag` (someone
+  else's tag — it pays them), `untagged` (earns nothing), `unverified_tag` (no
+  `AMAZON_TAG` in this environment, so it cannot be proven) or `unproven`. A URL
+  copied verbatim from the source post is additionally marked `from_source`,
+  because republishing the source's own link is the expensive mistake.
+- **Per source link**: what the source wrote, what was published instead, and the
+  verdict — *rewritten to ours*, *republished unchanged*, *converted but not used*,
+  *not used*.
+- **What changed in the text**: a line diff between `queue.source_text` (intake)
+  and `queue.rendered_text` (what went out), and a number check — a ₹1,299 that
+  arrives as ₹129 is an **error finding**, not a cosmetic diff.
+- **Findings, each with a fix**: `no_attempt_recorded` (terminal post, no delivery
+  row — a hole, always an error), `delivery_failed`, `unproven_link`,
+  `republished_source_link`, `link_free_post`, `numbers_lost`,
+  `planned_not_attempted`, `zero_chunks`.
+- **Timeline**: intake → refusal rows (`blocked_content`, with stage and reason) →
+  every `send_attempts` write-before-send fence → every delivery verdict, in time
+  order; `latency_seconds` is the measured first-send delay, not an estimate.
+- The page's **Dossier** card renders all of it (verdict, tiles, findings with
+  severity pills, link table, source-link table, timeline, diff, published and
+  intake text) with a *Newest refused post* button and *copy JSON*. Stored text is
+  escaped, so a hostile post cannot run in the dashboard.
+- Proof: `test_deal_forensics.py` (synthetic database: clean post, republished
+  source link, foreign tag, withheld, never-attempted, lost number, old schema,
+  HTTP 200/400/404/503) and `test_deal_dossier.cjs` (jsdom: what the operator
+  sees). Both are in the gate; no service is started.
 
 ### Source-selection verification (2026-10-14)
 
