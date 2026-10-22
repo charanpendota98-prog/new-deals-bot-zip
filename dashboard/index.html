@@ -119,6 +119,14 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <button onclick="saveToken()">Use</button>
 <span id="authstate" class="muted"></span>
 </div>
+<div id="howtoconnect" class="card">
+<details><summary>How do I open this page on the server? (tunnel link, token)</summary>
+<p class="muted">The dashboard listens on <code>127.0.0.1:8080</code> only - by design, it is never exposed to the internet. From your laptop, open a tunnel and then use the local link:</p>
+<pre>ssh -N -L 8080:127.0.0.1:8080 ubuntu@&lt;server-ip&gt;
+# then open:  http://127.0.0.1:8080/?token=&lt;DASHBOARD_TOKEN&gt;#pipeline</pre>
+<p class="muted">On the server, <code>ops/dashboard_link.sh</code> prints that exact command, the service state and the link (the token stays masked). The token lives in <code>/etc/bestgaa/dashboard.env</code>: <code>sudo sed -n 's/^DASHBOARD_TOKEN=//p' /etc/bestgaa/dashboard.env</code>. The <code>?token=</code> form is stored in this tab and stripped from the address bar; without it, paste the token above.</p>
+</details>
+</div>
 <div id="pending" class="card" style="display:none;border:1px solid #f59e0b">
 <b>Saved channel changes are not fully applied yet.</b><p class="muted">New channels activate on a running, upgraded bot after access checks. Existing edits/removals require an approved restart.</p>
 <button onclick="doRestart()">Restart bot now</button>
@@ -463,6 +471,22 @@ const categoryDetails = {
  footwear:['FW','Shoes, sandals & slippers'], beauty:['BT','Skincare & personal care'], grocery:['GR','Food, staples & snacks'], accessories:['BA','Bags, wallets & jewellery']
 };
 let TOKEN = sessionStorage.getItem('dash_token') || '';
+// A tunnel link may carry the token once (?token=...), so the operator can open
+// one link instead of pasting a secret every time. It is stored in sessionStorage
+// and removed from the address bar immediately: no history entry, no referrer,
+// nothing to copy by accident when sharing a screenshot of the page.
+(function bootstrapToken(){
+  try{
+    const url = new URL(location.href);
+    const given = (url.searchParams.get('token') || '').trim();
+    if(!given) return;
+    sessionStorage.setItem('dash_token', given);
+    TOKEN = given;
+    url.searchParams.delete('token');
+    const rest = url.searchParams.toString();
+    history.replaceState(null, '', url.pathname + (rest ? '?' + rest : '') + url.hash);
+  }catch(error){ /* private mode: the paste box still works */ }
+})();
 function escapeHTML(value){ return String(value??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
 function headers(){ return {'Content-Type':'application/json','X-Dashboard-Token':TOKEN}; }
 function saveToken(){ TOKEN = document.getElementById('token').value.trim();
