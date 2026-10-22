@@ -77,7 +77,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import insight, pipeline as dashboard_pipeline, source_target, trends  # noqa: E402
+from dashboard import forensics, insight, pipeline as dashboard_pipeline, source_target, trends  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -1518,6 +1518,46 @@ def api_pulse(request: web.Request):
 
 @require_token
 @in_thread
+def api_forensics(request: web.Request):
+    """One queue id: every link, every rewrite, every stage - with the proof.
+
+    `?queue_id=newest` (or no id) opens the most recent post that was refused or
+    never attempted, which is the one an operator wants at 2 a.m.
+    """
+    raw = (request.query.get("queue_id") or "").strip()
+    conn = read_only_db()
+    if conn is None:
+        return web.json_response({"error": "no database yet"}, status=503)
+    try:
+        if raw in ("", "newest"):
+            queue_id = forensics.newest_refused(conn)
+            if queue_id is None:
+                return web.json_response(
+                    {"error": "nothing has been refused or left unattempted yet"}, status=404)
+        else:
+            try:
+                queue_id = int(raw)
+            except (TypeError, ValueError):
+                return web.json_response({"error": "queue_id must be a number or 'newest'"},
+                                         status=400)
+        payload = forensics.dossier(
+            conn, queue_id,
+            amazon_tag=(os.getenv("AMAZON_TAG", "") or "").strip(),
+            snapshot=snapshot(), channels=channels_config.load_channels())
+    except KeyError as exc:      # no queue table: the database, not the id
+        message = str(exc.args[0]) if exc.args else str(exc)
+        return web.json_response({"error": message, "database": "unreadable"}, status=503)
+    except LookupError as exc:   # no such queue row: the id
+        return web.json_response({"error": str(exc)}, status=404)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
+    finally:
+        conn.close()
+    return web.json_response(payload)
+
+
+@require_token
+@in_thread
 def api_trace(request: web.Request):
     """One post, the whole chain: predicted vs what really happened, per target."""
     try:
@@ -1964,6 +2004,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/health", api_health)
     app.router.add_get("/api/pulse", api_pulse)
     app.router.add_get("/api/trace", api_trace)
+    app.router.add_get("/api/forensics", api_forensics)
     app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/scorecard", api_scorecard)
     app.router.add_get("/api/pipeline", api_pipeline)
