@@ -230,6 +230,7 @@ run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
 run 'watch a source channel' "$PYTHON" test_watch_source.py
 run 'operator dashboard' "$PYTHON" test_dashboard.py
+run 'pipeline integrity: nothing dropped' "$PYTHON" test_pipeline_integrity.py
 run 'ops insight: health, timeline, trace, search, scorecard' "$PYTHON" test_dashboard_ops.py
 
 # jsdom DOM workflow suites: the only checks that drive the JavaScript the
@@ -248,6 +249,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: source -> target + safety' node test_dashboard_source_target.cjs
   run 'dashboard DOM: ops console' node test_dashboard_ops.cjs
   run 'dashboard DOM: watch a source' node test_dashboard_watch.cjs
+  run 'dashboard DOM: pipeline integrity' node test_dashboard_pipeline.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
   printf '  install once : npm install --prefix %s --no-package-lock jsdom\n' "$JSDOM_PREFIX"
@@ -273,7 +275,7 @@ run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'bridge safety gate syntax' node --check tg-wa-bridge/safety_filter.js
 run 'shell script syntax (bash -n)' shell_syntax_check
 run 'deploy bundle ships the tree (bot + bridge)' "$PYTHON" test_deploy_zip.py
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py dashboard/pipeline.py dashboard/trends.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
   run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi

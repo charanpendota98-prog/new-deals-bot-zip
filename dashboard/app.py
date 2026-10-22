@@ -77,7 +77,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import insight, source_target, trends  # noqa: E402
+from dashboard import insight, pipeline as dashboard_pipeline, source_target, trends  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -1454,8 +1454,23 @@ def api_brief(request: web.Request):
         finally:
             conn.close()
 
+    # A post that left the queue without a receipt outranks everything cosmetic:
+    # it is the only finding that can mean a lost deal or a lost commission, so
+    # the ranked attention list must know about it (the scan is memoised for a
+    # few seconds, so this costs nothing on the 20 s full refresh).
+    hole: dict = {}
+    try:
+        body = pipeline_report(24.0)
+        if body:
+            hole = {"overall": body.get("overall"),
+                    "unaccounted": next((tile["value"] for tile in body.get("tiles", [])
+                                         if tile.get("key") == "unaccounted"), 0),
+                    "unaccounted_ids": body.get("unaccounted_ids") or [],
+                    "findings": body.get("findings") or []}
+    except Exception as exc:  # noqa: BLE001 - a stat is never a broken brief
+        hole = {"overall": "unknown", "unaccounted": 0, "error": str(exc)[:160]}
     brief = trends.attention(health=health_payload, drift=drift, safety=spike,
-                             trends=movement or None, links=links)
+                             trends=movement or None, links=links, pipeline=hole)
     try:
         max_posts = int(snap.get("max_posts") or 0)
     except (TypeError, ValueError):
@@ -1469,6 +1484,7 @@ def api_brief(request: web.Request):
         "drift": drift,
         "safety": spike,
         "links": links,
+        "pipeline": hole,
         "rules": {"installed": rules, "running": running, "max_posts": max_posts},
         "db_exists": db_path().exists(),
     }
@@ -1499,6 +1515,112 @@ def api_scorecard(request: web.Request):
 
 
 
+# --------------------------------------------------------------------------- #
+#  pipeline integrity - "edho okati miss avvakoodadu"
+# --------------------------------------------------------------------------- #
+def declared_sources(snap=None, data=None) -> set[str]:
+    """Every source the operator asked for, from the bot's own report + config.
+
+    A `*` in a saved channel means "the bot's main feeds", which only the bot
+    knows; the snapshot carries them. Watch rows are sources in their own right.
+    """
+    snap = snapshot() if snap is None else snap
+    data = channels_config.load_channels() if data is None else data
+    names: set[str] = set()
+    main = [str(s) for s in (snap.get("main_sources") or [])]
+    if not main:
+        main = [str(s) for s in (snap.get("sources") or [])]
+    for channel in data.get("channels") or []:
+        if not isinstance(channel, dict):
+            continue
+        sources = [str(s) for s in (channel.get("sources") or [])]
+        if "*" in sources:
+            names.update(main)
+        else:
+            names.update(s for s in sources if s and not s.startswith("https://t.me/+"))
+    names.update(str(row.get("channel", "")) for row in channels_config.watch_entries(data))
+    names.update(str(s) for s in (snap.get("sources") or []))
+    return {name for name in names if name}
+
+
+# The integrity scan reads every receipt in the window (~0.6 s on a 50k-post
+# window, which is 50k queue rows + 85k delivery rows). Three open tabs and a
+# 5 s tick must not multiply that, so one computed report is reused for a few
+# seconds - keyed by the database file, its mtime and the window, so a new write
+# or a different window can never be served a stale answer.
+_PIPELINE_CACHE: dict[tuple, tuple[float, dict]] = {}
+PIPELINE_TTL = 8.0
+
+
+def pipeline_report(hours: float) -> dict:
+    path = db_path()
+    try:
+        stamp = path.stat().st_mtime
+    except OSError:
+        stamp = 0.0
+    key = (str(path), float(stamp), round(float(hours), 3))
+    hit = _PIPELINE_CACHE.get(key)
+    now_mono = time.monotonic()
+    if hit and now_mono - hit[0] < PIPELINE_TTL:
+        return hit[1]
+    conn = read_only_db()
+    if conn is None:
+        return {}
+    snap = snapshot()
+    data = channels_config.load_channels()
+    try:
+        payload = dashboard_pipeline.funnel(
+            conn, hours=hours,
+            declared_sources=declared_sources(snap, data),
+            declared_targets=[str(t) for t in (snap.get("targets") or [])],
+            watched=[str(row.get("channel", "")) for row in channels_config.watch_entries(data)])
+        payload["unaccounted_ids"] = dashboard_pipeline.unaccounted_ids(conn, hours=hours)
+    finally:
+        conn.close()
+    if len(_PIPELINE_CACHE) > 8:
+        _PIPELINE_CACHE.clear()
+    _PIPELINE_CACHE[key] = (now_mono, payload)
+    return payload
+
+
+@require_token
+@in_thread
+def api_pipeline(request: web.Request):
+    """"Did every post we took in come out somewhere?" - one equation, per source.
+
+    Distinct from every other panel: the health/brief panels describe symptoms,
+    the ledger panels describe one stage each, and this one reconciles the whole
+    intake against the delivery ledger so a hole cannot hide between two panels.
+    Read-only, one connection, no writes.
+    """
+    try:
+        hours = max(0.25, min(24 * 14, float(request.query.get("hours", "24"))))
+    except (TypeError, ValueError):
+        hours = 24.0
+    try:
+        payload = pipeline_report(hours)
+    except sqlite3.OperationalError as exc:
+        return web.json_response({"error": f"database not readable yet ({exc})",
+                                  "overall": "unknown", "findings": [], "sources": [],
+                                  "targets": [], "tiles": [], "intake": 0,
+                                  "verdict": "the database is not readable yet",
+                                  "equation": "", "database": "unreadable"}, status=503)
+    if not payload:
+        return web.json_response({
+            "database": "missing", "overall": "unknown", "findings": [], "sources": [],
+            "targets": [], "tiles": [], "intake": 0, "unaccounted_ids": [],
+            "verdict": "no bot database on this host yet - nothing to reconcile",
+            "equation": "0 in = 0 posted + 0 withheld + 0 dropped + 0 waiting + 0 failed",
+            "first_send_seconds": {"p50": None, "p95": None, "max": None},
+            "declared_and_real": {"declared": 0, "watched": 0, "seen": 0,
+                                  "declared_but_silent": [], "seen_but_not_declared": []},
+            "window_hours": hours, "pending_restart": pending_restart(),
+        }, status=200)
+    payload["pending_restart"] = pending_restart()
+    payload["database"] = "ok"
+    return web.json_response(payload)
+
+
 @require_token
 @in_thread
 def api_export(request: web.Request):
@@ -1506,7 +1628,7 @@ def api_export(request: web.Request):
 
     Same engine, same rows, no new query: an export can never disagree with the
     screen it came from. `what` is one of `scorecard`, `pulse`, `search`,
-    `health`; `format=csv` (default) or `json`.
+    `health`, `pipeline`; `format=csv` (default) or `json`.
     """
     what = request.query.get("what", "scorecard")
     wanted = request.query.get("format", "csv")
@@ -1551,6 +1673,17 @@ def api_export(request: web.Request):
             rows, payload = data["results"], data
             columns, name = ["at_ist", "kind", "queue_id", "source", "target", "status",
                              "snippet"], "search"
+        elif what == "pipeline":
+            data = pipeline_report(hours)
+            if not data:
+                return web.json_response({"error": "no database yet"}, status=503)
+            rows = ([{**row, "kind": "source"} for row in data.get("sources", [])]
+                    + [{**row, "kind": "channel"} for row in data.get("targets", [])])
+            payload, name = data, "pipeline"
+            columns = ["kind", "source", "target", "declared", "watched", "intake", "posted",
+                       "withheld", "dropped", "waiting", "failed", "unaccounted", "post_share",
+                       "latency_p50", "latency_p95", "last_intake", "typical_gap_human",
+                       "sends", "state", "verdict", "why"]
         elif what == "health":
             data = insight.health(db=db_path(), root=ROOT,
                                   channels_json=channels_config.channels_json_path(),
@@ -1558,8 +1691,9 @@ def api_export(request: web.Request):
             rows, payload = data["checks"], data
             columns, name = ["key", "title", "state", "detail", "fix"], "health"
         else:
-            return web.json_response({"error": "what must be scorecard, pulse, search or health"},
-                                     status=400)
+            return web.json_response(
+                {"error": "what must be scorecard, pulse, search, health or pipeline"},
+                status=400)
     except sqlite3.OperationalError as exc:
         return web.json_response({"error": f"database not readable yet ({exc})"}, status=503)
     finally:
@@ -1631,6 +1765,7 @@ def create_app() -> web.Application:
     app.router.add_get("/api/trace", api_trace)
     app.router.add_get("/api/search", api_search)
     app.router.add_get("/api/scorecard", api_scorecard)
+    app.router.add_get("/api/pipeline", api_pipeline)
     app.router.add_get("/api/trends", api_trends)
     app.router.add_get("/api/brief", api_brief)
     app.router.add_get("/api/export", api_export)
