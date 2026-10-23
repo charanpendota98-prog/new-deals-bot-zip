@@ -1793,14 +1793,14 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `be30385779f096078180c086ad7168c62c8aff2bed17dccbb0f943989509ff46` |
+| `dashboard/app.py` | `2dcf6ce3cc92602f86c433f435865df7c43238e106b0aa5c9410ed87576ca997` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
-| `dashboard/vault.py` | `a435728003e7eef0bd73616c55b00f863e959f287483b3f4de6dc5316c2b65b8` |
+| `dashboard/vault.py` | `1473fee1e3208a001a836121f1c7e27abde908020ec3c626b72ea34da67fdf9d` |
 | `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
@@ -1835,14 +1835,14 @@ source snapshot:
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
 | `ops/test_all.sh` | `9d3e76122c1631d5756191acf3609dad58fbe746bdcfbce73950f704da421f23` |
-| `test_api_vault.py` | `ab8ffb658929c043121e57c1f974137b753365fbebb07038b0515919c0f4d47e` |
+| `test_api_vault.py` | `181805e58ef09d8ef9a2ac3bf45c845b8887c67aa575c63e11bf9f92883c0494` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
-| `test_dashboard.py` | `8555bfeaff6318e018fdacdd2e94fee25a98a48a98a2dcde006cf434867a05d5` |
+| `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
@@ -1854,7 +1854,7 @@ source snapshot:
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
 | `test_dashboard_sources.cjs` | `52093105ab8514307ce9fcbca9cc8a18a93d842ce27ef4896d301b567b77c895` |
 | `test_dashboard_ui.cjs` | `c17a71bb33847825db5949f008927e67458e6e9550dca90f629c6d8dbf88713c` |
-| `test_dashboard_vault.cjs` | `5584f5afb5327737f9f9197ce4dbaa3072dd404d19746674f3f6ebc6b54a8f78` |
+| `test_dashboard_vault.cjs` | `211da525c196874d94bd6df2bd333350feb1d4709efcc0b0250fe13a0b2e3739` |
 | `test_dashboard_watch.cjs` | `c714549e36c3a040ebe2ce6f75afb29f2b5292f2a9acc61e93e8489ef94f920c` |
 | `test_deal_card.py` | `9659d95fdcd7f11dc1bc5774bdaa03f73e62175974c8924444e352f32aa4f42e` |
 | `test_deal_dossier.cjs` | `977c97cc36ca727de972c84675e78ab10f7760c54db070e1ec2e9f594a047420` |
@@ -2807,6 +2807,17 @@ ours**, and **what did the pipeline change on the way**.
   HTTP 200/400/404/503) and `test_deal_dossier.cjs` (jsdom: what the operator
   sees). Both are in the gate; no service is started.
 
+### A full-replacement PUT must not replace with nothing (2026-10-23)
+
+`PUT /api/channels/whatsapp` and `PUT /api/post-buttons` replace a whole list, and
+`(body or {}).get("whatsapp")` made a missing key mean "empty list": a stray `{}`
+(an empty form, a truncated request) silently deleted every WhatsApp channel and
+the button row under every post. Both endpoints now require the key and answer
+`400` — *"send the whole list you want saved, or `[]` to clear it on purpose"* —
+and nothing is written. `PATCH` handlers were already safe: they merge only the
+fields that are present. `test_dashboard.py` pins both refusals and proves the
+saved list survives them.
+
 ### API keys from the dashboard, several per provider (2026-10-23)
 
 "Dashboard lo API key ichelaga vunchu, multiple ga" — keys are now edited in the
@@ -2841,8 +2852,15 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   failover; `AMAZON_TAG` must be in the tags we own; expired is an error, not a hint.
 - The **API keys** card shows the verdict first ("ready" / "needs attention" with
   the exact reasons), then each key grouped by provider with its stored values as
-  chips (`…4821`), an *Add* field (`type=password`) for a second value, and ✕ to
-  remove one. Preview = the server's dry run; Save sends `If-Match`; Reload re-reads
+  chips (`••••••4821 #a1eefb`), an *Add* field (`type=password`) for a second
+  value, and ✕ to remove one. The `#` tag is a six-character truncated SHA-256 of
+  the value: two keys for the same provider can share their last four characters,
+  and without it "remove the second token" was a guess. It is one-way, stable
+  across reloads, and withheld entirely for short/low-entropy values (a six-char
+  hash of a 7-digit id is a lookup table, not a mask). The preview names each
+  change for what it is — `add` when a second key is appended (it used to say
+  `replace`, which read as if the first key would be lost), `remove` when one is
+  dropped, `replace` only when a value actually changes. Preview = the server's dry run; Save sends `If-Match`; Reload re-reads
   the file; Restart runs the existing restart command and re-reads `bot_has_it` so
   "saved but not applied" is visible instead of assumed.
 - Proof: `test_api_vault.py` (catalog↔bot parity, env editing, masking, validation,

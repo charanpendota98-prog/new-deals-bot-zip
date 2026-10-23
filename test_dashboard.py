@@ -295,6 +295,10 @@ def test_http_api():
                           and body["buttons"][0]["url"] == "https://t.me/shpsyloots", str(body))
                     check("the bot's send path sees the saved row",
                           len(bot.post_inline_buttons()) == 2)
+                    status, body = await call("PUT", "/api/post-buttons", json={})
+                    check("a body with no buttons key cannot wipe the row",
+                          status == 400 and "buttons must be a list" in (body.get("errors") or [""])[0]
+                          and len(bot.post_inline_buttons()) == 2, str(body))
                     status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
                     check("clearing the row restores today's posts byte for byte",
                           status == 200 and bot.post_inline_buttons() == [], str(body))
@@ -320,6 +324,12 @@ def test_http_api():
                           status == 200 and body["whatsapp"]["pending"] == ["electronics"]
                           and body["whatsapp"]["file_rows"][0]["value"]
                           == "120363001@newsletter", str(body.get("whatsapp")))
+                    status, body = await call("PUT", "/api/channels/whatsapp", json={})
+                    check("a body with no whatsapp key cannot wipe the list", status == 400
+                          and "whatsapp must be a list" in (body.get("errors") or [""])[0],
+                          str(body))
+                    check("and the saved list is untouched after that refusal",
+                          channels_config.load_channels()["whatsapp"], "")
                     status, body = await call("PUT", "/api/channels/whatsapp",
                                               json={"whatsapp": []})
                     check("clearing the WA intent is a save too",

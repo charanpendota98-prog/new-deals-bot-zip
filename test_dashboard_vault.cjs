@@ -26,13 +26,14 @@ let state={
      values:[{masked:'1234567',tail:''}],errors:[],warnings:[],info:['format looks right']},
     {key:'EARNKARO_API_KEY',label:'EarnKaro / Affiliaters token',group:'earnkaro',
      help:'Affiliaters → API page.',hint:'eyJ…',secret:true,multi:true,required:true,set:true,
-     values:[{masked:'••••••4821',tail:'4821'}],errors:[],warnings:[],info:['pays publisher 5478322']},
+     values:[{masked:'••••••4821',tail:'4821',fp:'ee33ff'}],errors:[],warnings:[],info:['pays publisher 5478322']},
     {key:'AMAZON_TAG',label:'Amazon Associates tag',group:'amazon',help:'Only a tag we own.',
      hint:'…-21',secret:false,multi:false,required:true,set:true,
      values:[{masked:'mama086-21',tail:''}],errors:[],warnings:[],info:['this is our tag']},
     {key:'BITLY_TOKENS',label:'Bitly access tokens',group:'bitly',help:'Add several.',
      hint:'20+ characters',secret:true,multi:true,required:false,set:true,
-     values:[{masked:'••••••1111',tail:'1111'},{masked:'••••••2222',tail:'2222'}],
+     values:[{masked:'••••••1111',tail:'1111',fp:'aa11bb'},
+             {masked:'••••••2222',tail:'2222',fp:'cc22dd'}],
      errors:[],warnings:[],info:[]},
   ],
   leaks:{scanned:[{path:'/home/ubuntu/bestgaa-bot/bestgaa-bot/logs/bot.log',bytes:10}],hits:[],state:'clean'},
@@ -68,16 +69,19 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
         const changes=[];
         if(body.append&&body.append.BITLY_TOKENS)changes.push({key:'BITLY_TOKENS',
           label:'Bitly access tokens',before:['••••••1111','••••••2222'],
-          after:['••••••1111','••••••2222','••••••3333'],action:'add'});
+          after:['••••••1111','••••••2222','••••••3333'],
+          before_fp:['aa11bb','cc22dd'],after_fp:['aa11bb','cc22dd','3399aa'],action:'add'});
         if(body.remove_values)changes.push({key:'BITLY_TOKENS',label:'Bitly access tokens',
-          before:['••••••1111'],after:['••••••1111'],action:'replace'});
+          before:['••••••1111','••••••2222'],after:['••••••1111'],
+          before_fp:['aa11bb','cc22dd'],after_fp:['aa11bb'],action:'remove'});
         const written=!body.dry_run;
         if(written){
           if(body.append&&body.append.BITLY_TOKENS){
-            state.slots.find(s=>s.key==='BITLY_TOKENS').values.push({masked:'••••••3333',tail:'3333'});
+            state.slots.find(s=>s.key==='BITLY_TOKENS').values.push(
+              {masked:'••••••3333',tail:'3333',fp:'3399aa'});
           }
           if(body.remove_values){
-            state.slots.find(s=>s.key==='BITLY_TOKENS').values=[{masked:'••••••1111',tail:'1111'}];
+            state.slots.find(s=>s.key==='BITLY_TOKENS').values=[{masked:'••••••1111',tail:'1111',fp:'aa11bb'}];
           }
           revision+='x'; state={...state,revision,bot_has_it:false};
         }
@@ -115,12 +119,20 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
   assert.equal(d.querySelectorAll('#vaultslots .pill.fail').length>0,true,'required is marked');
   assert.match(d.getElementById('vaultslots').textContent,/several allowed/);
 
+  // Two keys that share a tail are still told apart: a one-way tag, never the key.
+  const bitlyChips=[...d.querySelectorAll('#vaultslots .key-chip')]
+    .filter(c=>/1111|2222/.test(c.textContent));
+  assert.equal(bitlyChips.length,2);
+  assert.match(bitlyChips[0].textContent,/#aa11bb/);
+  assert.match(bitlyChips[1].textContent,/#cc22dd/);
+  assert.equal(d.querySelectorAll('#vaultslots .key-chip small').length,0);
+
   // Add a SECOND Bitly token: it stages locally, typed into a password field.
   const input=d.getElementById('vaultin-BITLY_TOKENS');
   assert.equal(input.type,'password','the input does not echo a key on screen');
   input.value='bitlytokenthree0123456789';
   w.vaultAdd('BITLY_TOKENS');
-  assert.match(d.getElementById('vaultslots').textContent,/new …6789/);
+  assert.match(d.getElementById('vaultslots').textContent,/new #1 …6789/);
   assert.equal(input.value==='',true,'the field clears after staging');
   assert.equal(calls.filter(c=>c.method==='PUT').length,0,'staging writes nothing');
 
@@ -139,6 +151,10 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
   assert.match(d.getElementById('vaultmsg').textContent,/Dry run only/);
   assert.match(d.getElementById('vaultchanges').textContent,/Would change/);
   assert.match(d.getElementById('vaultchanges').textContent,/••••••3333/);
+  assert.match(d.getElementById('vaultchanges').textContent,/#3399aa/,
+    'the preview names the new value the same way the chip will');
+  assert.equal([...d.querySelectorAll('#vaultchanges tbody tr td')].pop().textContent,'add',
+    'adding a second key is an add, not a replace');
 
   // Save for real: append (not replace), masked answer, draft cleared, panel reloaded.
   await w.saveVault(false);
@@ -148,7 +164,7 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
   assert.match(d.getElementById('vaultmsg').textContent,/Saved\./);
   assert.match(d.getElementById('vaultmsg').textContent,/restart/i);
   assert.equal(d.getElementById('vaultin-BITLY_TOKENS').value,'');
-  assert.equal(d.getElementById('vaultslots').textContent.includes('new …6789'),false,
+  assert.equal(d.getElementById('vaultslots').textContent.includes('new #1 …6789'),false,
     'the staged chip becomes a stored value');
   assert.match(d.getElementById('vaultslots').textContent,/••••••3333/);
   assert.equal(d.querySelectorAll('#vaultslots').length,1);
@@ -205,7 +221,7 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
   await w.loadVault();
   assert.equal(d.querySelectorAll('#vaultslots img').length,0,'labels are escaped');
 
-  console.log('API keys DOM PASS: verdict + reasons, masked values only, staging a second key '
+  console.log('API keys DOM PASS: verdict + reasons, masked values only with one-way tags that tell two keys apart, staging a second key '
     +'in a password field, local whitespace refusal, dry run then save with If-Match, '
     +'remove-by-index, server refusal verbatim, no-op sends nothing, leak scan and masked journal.');
   dom.window.close();

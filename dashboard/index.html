@@ -137,6 +137,7 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 .key-chip{display:inline-flex;align-items:center;gap:6px;background:#16202e;border:1px solid #2a3a50;border-radius:999px;padding:3px 10px;font-family:ui-monospace,monospace;font-size:.8rem}
 .key-chip.new{border-color:#2f7d4f;color:#8ff0b5}
 .key-chip.dropped{opacity:.5;text-decoration:line-through}
+.chip-fp{color:#6f8bab;font-size:.72rem;letter-spacing:.02em}
 .chip-x{background:none;border:0;color:#8ea3bb;cursor:pointer;font-size:.85rem;padding:0 0 0 2px}
 .chip-x:hover{color:#ff9b86}
 #vault input[type=password]{flex:1;min-width:220px}
@@ -2077,12 +2078,15 @@ function renderVault(){
     const rows=(vaultData.slots||[]).filter(s=>s.group===group).map(slot=>{
       const dropped=slot.key in vaultDraft.dropIdx ? new Set(vaultDraft.dropIdx[slot.key]) : new Set();
       const pending=(vaultDraft.append[slot.key]||[]);
+      const tag=(value,index,label)=> value.fp
+        ? `<span class="chip-fp" title="a one-way tag of this value, so two keys with the same tail stay distinguishable">#${escapeHTML(value.fp)}</span>`
+        : (value.masked && (slot.values||[]).length>1 ? `<span class="chip-fp">#${index+1}</span>` : '');
       const chips=(slot.values||[]).map((value,index)=>
         dropped.has(index)
-          ? `<span class="key-chip dropped" title="will be removed">${escapeHTML(value.masked)}</span>`
-          : `<span class="key-chip">${escapeHTML(value.masked)}<button class="chip-x" title="remove this value" onclick="vaultDropIndex('${slot.key}',${index})">✕</button></span>`).join('');
+          ? `<span class="key-chip dropped" title="will be removed">${escapeHTML(value.masked)}${tag(value,index)}</span>`
+          : `<span class="key-chip">${escapeHTML(value.masked)}${tag(value,index)}<button class="chip-x" title="remove this value" onclick="vaultDropIndex('${slot.key}',${index})">✕</button></span>`).join('');
       const newChips=pending.map((value,index)=>
-        `<span class="key-chip new">new …${escapeHTML(value.slice(-4))}<button class="chip-x" onclick="vaultDropNew('${slot.key}',${index})">✕</button></span>`).join('');
+        `<span class="key-chip new">new #${index+1} …${escapeHTML(value.slice(-4))}<button class="chip-x" onclick="vaultDropNew('${slot.key}',${index})">✕</button></span>`).join('');
       const bad=(slot.errors||[]).length;
       return `<div class="vault-slot${bad?' has-error':''}">`
         + `<div class="vault-head"><strong>${escapeHTML(slot.label)}</strong>`
@@ -2167,10 +2171,13 @@ async function saveVault(dryRun){
   if(msg) msg.textContent=dryRun?'checking…':'saving…';
   try{
     const out=await api('PUT','/api/vault',body,vaultData?vaultData.revision:null);
+    const listOf=(values,fps)=> (values||[]).length
+      ? values.map((v,i)=>escapeHTML(v)+((fps||[])[i]?` <span class="chip-fp">#${escapeHTML(fps[i])}</span>`:'')).join(', ')
+      : 'removed';
     const rows=(out.changes||[]).map(c=>
       `<tr><td>${escapeHTML(c.label)}<br><span class="muted">${escapeHTML(c.key)}</span></td>`
-      + `<td class="muted">${(c.before||[]).map(escapeHTML).join(', ')||'—'}</td>`
-      + `<td>${(c.after||[]).map(escapeHTML).join(', ')||'removed'}</td>`
+      + `<td class="muted">${listOf(c.before,c.before_fp)}</td>`
+      + `<td>${listOf(c.after,c.after_fp)}</td>`
       + `<td><span class="pill ${c.action==='remove'?'warn':'ok'}">${escapeHTML(c.action)}</span></td></tr>`).join('');
     if(changes){
       changes.innerHTML=(rows?`<h3>${out.dry_run?'Would change':'Changed'}</h3><div class="tablewrap"><table><thead><tr><th>Key</th><th>Before</th><th>After</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>`:'')
