@@ -1793,7 +1793,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `2dcf6ce3cc92602f86c433f435865df7c43238e106b0aa5c9410ed87576ca997` |
+| `dashboard/app.py` | `10a6e44b9ccfe060e6475c6ef599552c9d1544903eed4e05ee39b1e215c88c51` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
@@ -1835,7 +1835,7 @@ source snapshot:
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
 | `ops/test_all.sh` | `9d3e76122c1631d5756191acf3609dad58fbe746bdcfbce73950f704da421f23` |
-| `test_api_vault.py` | `181805e58ef09d8ef9a2ac3bf45c845b8887c67aa575c63e11bf9f92883c0494` |
+| `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
@@ -2856,6 +2856,11 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   newline, a placeholder like `REPLACE_WITH_NEW_TOKEN`, an EarnKaro token whose
   JWT pays a different publisher). Nothing is written unless every change passes;
   an unchanged save writes nothing at all.
+- **Never a half-file**: if the bot's `.env` is not at the path the dashboard
+  resolved, the save is refused (409, naming the path) instead of creating a new
+  file that holds one key and leaves the bot without its Telegram session. A
+  wrong `BESTGAA_DIR` looks exactly like a missing file, so "nothing was written"
+  is the safer answer.
 - **Atomic and reversible**: temp file + `os.replace`, mode `0600`, the previous
   file kept as `.env.bak.<stamp>`, and a journal entry recording key names and
   masked tails only. Comments and ordering in `.env` survive; a key that systemd
