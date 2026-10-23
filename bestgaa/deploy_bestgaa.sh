@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_DIR="/home/ubuntu/bestgaa-bot/bestgaa-bot"
+APP_DIR="${BESTGAA_APP_DIR:-/home/ubuntu/bestgaa-bot/bestgaa-bot}"
 SERVICE="bestgaa"
+# BESTGAA_DRY_RUN=1 installs + compiles + verifies and prints what it *would* do,
+# without pip, sudo, systemctl or a restart. That is what makes the install path
+# testable off-server: the offline gate runs this script against a throwaway app
+# directory and asserts the live file really became the checkout's bytes.
+DRY_RUN="${BESTGAA_DRY_RUN:-0}"
 # BESTGAA_KEEP_OFF=1: ship + verify the code but NEVER start/restart the service
 # (used by ops/deploy_r15_keep_off.sh so posting stays off until the operator
 # approves with ops/approve_posting.sh).
@@ -13,7 +18,47 @@ ENV_FILE="$APP_DIR/.env"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 BACKUP="$APP_DIR/main_bot.backup.$STAMP.py"
 
+# WHERE THE CODE COMES FROM
+# -------------------------
+# This script used to copy $APP_DIR/main_bot_new.py onto $APP_DIR/main_bot.py -
+# whatever happened to be in the app directory. Running it from a fresh checkout
+# therefore installed NOTHING and still printed "DEPLOY SUCCESS", because step
+# [8/9] compared the app directory with itself. On 2026-10-23 that shipped a
+# 4-hour-old build (cd99cd37…) while the operator believed the new one was live;
+# the only visible symptom was "JOIN failed" lines the fix had removed.
+#
+# Invoked from a checkout (bestgaa/deploy_bestgaa.sh in the repo), the files are
+# installed FROM that checkout, and the live file is verified against the
+# checkout's own bytes - so "success" can only mean the new code is on disk. The
+# bundled copy that ships inside bestgaa_final_bundle.zip lands in $APP_DIR, so
+# HERE == APP_DIR there and the old path is unchanged.
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="${BESTGAA_SOURCE_DIR:-$HERE}"
+[[ -f "$SOURCE_DIR/main_bot_new.py" ]] || SOURCE_DIR="$APP_DIR"
+
 cd "$APP_DIR"
+
+if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
+  echo "[0/9] Installing from the checkout this script was run from: $SOURCE_DIR"
+  INSTALL_FILES=(main_bot_new.py deal_facts.py safety_filter.py safety_rules.json
+                 category_classifier.py channels_config.py channel_directory.py
+                 live_channels.py hypd_policy.py category_rules.json source_catalog.json
+                 post_buttons.py migrate_legacy_env.py requirements.txt .env.example)
+  # Check EVERY file before copying ANY: copying as we went left a partly
+  # replaced app directory when the last helper was missing (found 2026-10-23).
+  MISSING=()
+  for name in "${INSTALL_FILES[@]}"; do
+    [[ -f "$SOURCE_DIR/$name" ]] || MISSING+=("$name")
+  done
+  if (( ${#MISSING[@]} )); then
+    echo "ERROR: $SOURCE_DIR is missing ${MISSING[*]} - refusing a half-install (nothing was copied)"
+    exit 1
+  fi
+  for name in "${INSTALL_FILES[@]}"; do
+    cp -a "$SOURCE_DIR/$name" "$APP_DIR/$name"
+  done
+  echo "      installed $(ls -1 "$SOURCE_DIR" | wc -l | tr -d ' ') candidate file(s); .env untouched"
+fi
 
 echo "[1/9] Checking uploaded files..."
 [[ -f "$NEW_FILE" ]] || { echo "ERROR: main_bot_new.py not found"; exit 1; }
@@ -73,12 +118,16 @@ echo "[3/9] Compiling new bot..."
 python3 -m py_compile "$NEW_FILE"
 # A half-uploaded helper used to surface as a runtime crash AFTER the restart;
 # compiling every Python helper here fails the deploy BEFORE anything is moved.
-for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py deal_facts.py post_buttons.py migrate_legacy_env.py; do
+for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py deal_facts.py post_buttons.py migrate_legacy_env.py; do
   python3 -m py_compile "$APP_DIR/$helper" || { echo "ERROR: $helper does not compile"; exit 1; }
 done
 
 echo "[4/9] Installing dependencies..."
-python3 -m pip install --user --quiet -r "$APP_DIR/requirements.txt"
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "      dry run: would install $APP_DIR/requirements.txt"
+else
+  python3 -m pip install --user --quiet -r "$APP_DIR/requirements.txt"
+fi
 
 echo "[5/9] Backing up current working bot..."
 if [[ -f "$LIVE_FILE" ]]; then
@@ -103,16 +152,20 @@ echo "[6/9] Activating new bot..."
 cp -a "$NEW_FILE" "$LIVE_FILE"
 python3 -m py_compile "$LIVE_FILE"
 
-if [[ -f "$APP_DIR/bestgaa.service" ]]; then
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo "[7/9] dry run: would install the unit and restart $SERVICE"
+elif [[ -f "$APP_DIR/bestgaa.service" ]]; then
   sudo cp "$APP_DIR/bestgaa.service" "/etc/systemd/system/$SERVICE.service"
 fi
-sudo systemctl daemon-reload
+[[ "$DRY_RUN" == "1" ]] || sudo systemctl daemon-reload
 if [[ "$KEEP_OFF" == "1" ]]; then
   # keep-off: unit is installed but the service is stopped + disabled so it
   # cannot post and cannot come back on a reboot until approved.
   sudo systemctl disable "$SERVICE" >/dev/null 2>&1 || true
   sudo systemctl stop "$SERVICE" 2>/dev/null || true
   echo "[7/9] keep-off mode: service left STOPPED + DISABLED (posting OFF)"
+elif [[ "$DRY_RUN" == "1" ]]; then
+  echo "      dry run: would enable + restart $SERVICE"
 else
   sudo systemctl enable "$SERVICE" >/dev/null
   sudo systemctl restart "$SERVICE"
@@ -123,7 +176,7 @@ else
   sudo systemctl is-active --quiet "$SERVICE"
 fi
 
-sleep 12
+[[ "$DRY_RUN" == "1" ]] || sleep 12
 
 echo "[8/9] Verifying installed code and startup marker..."
 # Verify the LIVE file really is the code we just shipped. A hash mismatch means
@@ -134,9 +187,41 @@ if ! cmp -s "$LIVE_FILE" "$NEW_FILE"; then
   echo "ERROR: live main_bot.py != bundled main_bot_new.py"
   exit 1
 fi
-if ! tail -n 300 "$APP_DIR/logs/bot.log" | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
+# The comparison above is necessary, not sufficient: when nothing was installed,
+# $NEW_FILE and $LIVE_FILE are the same stale file and it passes. So when this ran
+# from a checkout, the live file is ALSO compared with the checkout's bytes - and
+# with the committed blob, if the checkout is a git tree.
+if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
+  if ! cmp -s "$LIVE_FILE" "$SOURCE_DIR/main_bot_new.py"; then
+    echo "ERROR: live main_bot.py != $SOURCE_DIR/main_bot_new.py (the install did not take)"
+    exit 1
+  fi
+  REPO_ROOT="$(cd "$SOURCE_DIR/.." && pwd)"
+  if git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    WANT="$(git -C "$REPO_ROOT" show "HEAD:bestgaa/main_bot_new.py" 2>/dev/null | sha256sum | cut -d' ' -f1)"
+    GOT="$(sha256sum "$LIVE_FILE" | cut -d' ' -f1)"
+    DIRTY="$(git -C "$REPO_ROOT" status --porcelain -- bestgaa/main_bot_new.py 2>/dev/null || true)"
+    if [[ -n "$DIRTY" ]]; then
+      # Deploying a working tree is allowed (ops/deploy_fresh.sh --no-pull does
+      # it), but it must be SAID OUT LOUD: this file is not what HEAD holds.
+      echo "WARNING: bestgaa/main_bot_new.py has UNCOMMITTED changes - this deploy ships the"
+      echo "         working tree (live ${GOT:0:16}), not git HEAD (${WANT:0:16})."
+    elif [[ -n "$WANT" && "$WANT" != "$GOT" ]]; then
+      echo "ERROR: the live bot is not the committed code (live ${GOT:0:16} vs HEAD ${WANT:0:16})."
+      echo "       The install did not take; nothing else in this run can be trusted."
+      exit 1
+    else
+      echo "       live main_bot.py == git HEAD ($(git -C "$REPO_ROOT" rev-parse --short HEAD))"
+    fi
+  fi
+fi
+if [[ ! -f "$APP_DIR/logs/bot.log" ]] && [[ "$DRY_RUN" == "1" ]]; then
+  echo "NOTE: dry run - no bot log in this directory (never started here)."
+elif ! tail -n 300 "$APP_DIR/logs/bot.log" 2>/dev/null | grep -Eq "BestGAA Production Bot v1[0-9] starting|LIVE \| sources="; then
   if [[ "$KEEP_OFF" == "1" ]]; then
     echo "NOTE: no startup marker - expected in keep-off mode (service is OFF)."
+  elif [[ "$DRY_RUN" == "1" ]]; then
+    echo "NOTE: dry run - no service was started, so no startup marker is expected."
   else
     echo "WARNING: startup marker not yet visible in last 300 lines"
     echo "         (service may still be starting). Continuing but check logs below."
@@ -150,6 +235,8 @@ if [[ "$KEEP_OFF" == "1" ]]; then
   printf 'bestgaa: '; sudo systemctl is-active "$SERVICE" || true
   printf 'enabled : '; sudo systemctl is-enabled "$SERVICE" 2>/dev/null || echo disabled
   echo "        posting stays OFF until: sudo bash ops/approve_posting.sh --i-approve-posting"
+elif [[ "$DRY_RUN" == "1" ]]; then
+  echo "      dry run: the service was not touched"
 else
   sudo systemctl status "$SERVICE" --no-pager --lines=10
 fi

@@ -3047,8 +3047,30 @@ def test_no_operator_script_ships_a_strangers_tag():
           stranger not in bridge_install, "stranger tag still present")
 
     auditor = (ROOT / "ops" / "quality_audit.py").read_text(encoding="utf-8")
+
+    def auditor_default_tag(value):
+        """Ask the auditor itself, with $AMAZON_TAG set to `value` (None = unset)."""
+        import importlib.util as _ilu
+        spec = _ilu.spec_from_file_location("qa_default_tag", ROOT / "ops" / "quality_audit.py")
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        saved = os.environ.get("AMAZON_TAG")
+        try:
+            if value is None:
+                os.environ.pop("AMAZON_TAG", None)
+            else:
+                os.environ["AMAZON_TAG"] = value
+            return mod.default_tag()
+        finally:
+            if saved is None:
+                os.environ.pop("AMAZON_TAG", None)
+            else:
+                os.environ["AMAZON_TAG"] = saved
+
     check("the quality auditor masks against OUR tag by default",
-          'os.getenv("AMAZON_TAG", "mama086-21")' in auditor, "auditor default wrong")
+          auditor_default_tag(None) == "mama086-21", "auditor default wrong")
+    check("and the operator's .env still overrides it",
+          auditor_default_tag("ouraccount-21") == "ouraccount-21", "env ignored")
     check("the quality auditor never defaults to the stranger's tag",
           stranger not in auditor, "stranger tag still present")
 

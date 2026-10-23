@@ -55,8 +55,11 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          'AMAZON_VIA_EARNKARO':'true',
          # Night quiet 02:00-06:00 IST: posting pauses, deals queue, 06:00 flush.
          'POST_QUIET_START':'02:00','POST_QUIET_END':'06:00',
-         # User-supplied Bitly token: best shortening for long links.
-         'BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+         # BITLY_TOKENS is NOT here on purpose (2026-10-23). It used to be a
+         # hardcoded token in this file, and this block REWRITES every key it
+         # names: every deploy therefore trimmed the operator's key list (added
+         # in the dashboard's API keys panel) back to that one token, and the
+         # token itself sat in git. Keys the VAULT owns belong to the operator.
          # OUR HYPD creator store (USER RULE 2026-09-24): hypd.store share
          # links of this store ARE our monetized links - never unwrapped, never
          # parameter-stripped, ALWAYS Bitly-shortened - and verified Meesho
@@ -72,14 +75,27 @@ updates={'AMAZON_TAG':'mama086-21','PRICE_DEDUP_SECONDS':'0',
          # our own Associates tag) and AMAZON_VIA_EARNKARO (second chance),
          # both above.
          'AMAZON_EARNKARO_RATIO':'0.0'}
+# Keys the dashboard's API-keys panel owns. This script may SEED one that is
+# missing (so a fresh host boots) but must never rewrite one that is present:
+# "multiple keys per provider" is the whole point of the panel, and a deploy
+# that silently reduced it to a single value was the bug (2026-10-23).
+VAULT_OWNED = {'BITLY_TOKENS','WA_BITLY_TOKENS','EARNKARO_API_KEY','EARNKARO_PUBLISHER_ID',
+               'EARNKARO_API_URL','HYPD_API_TOKEN','HYPD_STORE_ID','HYPD_STORE_SLUG',
+               'TELEGRAM_API_ID','TELEGRAM_API_HASH','AMAZON_TAG'}
+kept = []
 for line in lines:
     key=line.split('=',1)[0] if '=' in line else ''
     if key in updates:
-        out.append(f'{key}={updates[key]}'); seen.add(key)
+        if key in VAULT_OWNED and line.split('=',1)[1].strip():
+            out.append(line); seen.add(key); kept.append(key)
+        else:
+            out.append(f'{key}={updates[key]}'); seen.add(key)
     else: out.append(line)
 for key,value in updates.items():
-    if key not in seen: out.append(f'{key}={value}')
+    if key not in seen and key not in VAULT_OWNED: out.append(f'{key}={value}')
 p.write_text('\n'.join(out)+'\n')
+if kept:
+    print('      kept the operator\'s own value(s) for: ' + ', '.join(sorted(set(kept))))
 PY
   # The EarnKaro token, when the operator has provided one: from the
   # environment, or from ops/.earnkaro_key (gitignored) so a local checkout can
@@ -93,12 +109,18 @@ PY
     # NOTE: the file is .env in $BESTGAA_DIR (this script cd's there above); an
     # earlier revision named an $ENV_FILE variable that was never defined, so
     # under `set -u` ANY deploy carrying a token died with "unbound variable".
-    if grep -qE '^EARNKARO_API_KEY=' .env; then
+    CURRENT_EK="$(grep -E '^EARNKARO_API_KEY=' .env | head -1 | cut -d= -f2-)"
+    if [[ "$CURRENT_EK" == *","* ]]; then
+      # Several keys are a deliberate failover (the bot rotates on 401/403).
+      # Replacing them with one token would silently undo the operator's setup.
+      echo "      EarnKaro API key: KEPT the $(( $(printf '%s' "$CURRENT_EK" | tr -cd ',' | wc -c) + 1 )) key(s) already configured (multi-key failover)"
+    elif grep -qE '^EARNKARO_API_KEY=' .env; then
       sed -i "s|^EARNKARO_API_KEY=.*|EARNKARO_API_KEY=$EK_TOKEN|" .env
+      echo "      EarnKaro API key: updated from the deploy environment"
     else
       echo "EARNKARO_API_KEY=$EK_TOKEN" >> .env
+      echo "      EarnKaro API key: set from the deploy environment"
     fi
-    echo "      EarnKaro API key: updated from the deploy environment"
   else
     echo "      EarnKaro API key: unchanged (not in the environment, no ops/.earnkaro_key)."
     echo "      If conversion is failing, run:  ./set_earnkaro_key.sh '<token>'"
@@ -130,12 +152,23 @@ sudo systemctl stop tg-wa-bridge || true
 unzip -o "$HERE/tg_wa_bridge_bundle.zip" -d "$BRIDGE_DIR" >/dev/null
 cd "$BRIDGE_DIR"
 chmod +x install_bridge.sh switch_whatsapp_number.sh
+# The bridge's shortener token is no longer hardcoded in this file. Seed it from
+# the bot's own configured tokens the first time, and never touch it after that.
+if [[ -f .env ]] && ! grep -qE '^WA_BITLY_TOKENS=' .env; then
+  BOT_TOKENS="$(grep -E '^BITLY_TOKENS=' /home/ubuntu/bestgaa-bot/bestgaa-bot/.env 2>/dev/null \
+                | head -1 | cut -d= -f2- || true)"
+  if [[ -n "$BOT_TOKENS" ]]; then
+    echo "WA_BITLY_TOKENS=$BOT_TOKENS" >> .env
+    echo "      seeded WA_BITLY_TOKENS from the bot's configured token(s)"
+  fi
+fi
+
 if [[ -f .env ]]; then
   cp .env ".env.before-schedule.$STAMP"
   python3 - <<'PY'
 from pathlib import Path
 p=Path('.env')
-updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'mama086-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45','WA_BITLY_TOKENS':'0cb6a376353a7a5ecd93ee07bf0149e2d3f3aa22',
+updates={'QUIET_START':'02:00','QUIET_END':'06:00','HYBRID_QUIET':'false','WA_DAY_CAP':'2000','WA_ORDINARY_MAX_AGE_MINUTES':'150','STRICT_SOURCE_ONLY':'true','CURATE_TOP_DEALS':'true','MAX_JOB_AGE_HOURS':'12','MIN_WA_MESSAGE_GAP_SECONDS':'60','TG_SOURCE_USERNAMES':'Under99Deals11,under499loots,LootZoneIndia11,SecretLootIndia1,PowerLoots1,Premiumlootsdeals','AMAZON_TAG':'mama086-21','WA_PRIMARY_SOURCE':'under499loots','WA_MEDIA_FIRST':'true','NEWSLETTER_MEDIA_FIX':'true','WA_WARMUP_DONE':'true','WA_PROMOTE_AFTER_MINUTES':'45',
  # OUR HYPD store ids/slugs (same rule as the bot side): a hypd.store link of
  # another store is somebody else's commission and is never republished as ours.
  'HYPD_STORES':'93944,smartdeals',
