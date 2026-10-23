@@ -2878,6 +2878,55 @@ def has_service_offer(text: str) -> bool:
     return bool(SERVICE_OFFER_RE.search(text or ""))
 
 
+# A price channel is a promise printed in its own name. Anything that lands in
+# one has to be checked against that promise, whoever added it.
+PRICE_BANDS = ((UNDER99_TARGET, 99), (UNDER499_TARGET, 499))
+
+
+def price_band_of(target: str) -> int | None:
+    for name, band in PRICE_BANDS:
+        if str(target or "").lower() == name.lower():
+            return band
+    return None
+
+
+def enforce_price_bands(targets, price: int | None, *, listy: bool = False,
+                        service: bool = False) -> tuple[list[str], list[tuple[str, int]]]:
+    """Drop a price channel the post does not belong in. Returns (kept, dropped).
+
+    USER REPORT (2026-10-23): a Dreame robot vacuum advertised at ₹39,699 was
+    DELIVERED to Under99Deals11 (queue 448354). No code "decided" that: the
+    ICICI bank-offer fan-out (`card_offer` -> ALL_OWNED_TARGETS) appends every
+    owned channel, and the price channels rode along without anyone asking
+    whether the item fits. The same hole sat under every other fan-out.
+
+    So the band is checked once, on the FINAL target list, for every route, and
+    an UNKNOWN price counts as a miss: "@39699" with no ₹ figure is not evidence
+    of an under-₹99 deal (a coupon line is not a price either - deal_facts masks
+    "Flat ₹300 Coupon Off" and "Upto ₹5000 Off" before anything reads a price).
+
+    Two documented exceptions keep the operator's own rules intact:
+      * a multi-product LIST roundup belongs in both price channels whatever the
+        item prices are - "under 99 channel lo under 99 products mariyu list of
+        products undali";
+      * a service offer (Zomato/Swiggy/movies/app promos) has no product price at
+        all and must reach every owned channel - "user must not miss them".
+    """
+    if listy or service:
+        return list(targets), []
+    kept: list[str] = []
+    dropped: list[tuple[str, int]] = []
+    for target in targets:
+        band = price_band_of(target)
+        if band is None:
+            kept.append(target)
+        elif price is not None and price <= band:
+            kept.append(target)
+        else:
+            dropped.append((target, band))
+    return kept, dropped
+
+
 def automatic_price_targets(price: int | None) -> list[str]:
     targets = []
     if price is not None and price <= 99:
@@ -9706,6 +9755,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # owned channel, force the premium channel, and rank them as premium.
     premium_rank = None
     if card_offer:
+        log.info("CARD FANOUT | queue=%s a bank/card offer fans out to every owned channel "
+                 "(the price channels in that list are still band-checked below)", row["id"])
         for target in ALL_OWNED_TARGETS:
             if target not in base_targets:
                 base_targets.append(target)
@@ -9835,6 +9886,17 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         base_targets.append(SHOPPING_TARGET)
     # Custom intake is channel-local: never fan it into built-in/global routes.
     base_targets = scope_dashboard_targets(row["source"], base_targets)
+    # Last word on the price channels: whatever route added them (card-offer
+    # fan-out, dashboard channel, watched source), a post that does not fit the
+    # band does not go there. The main feed is untouched by this - the deal is
+    # never lost, only kept out of the channel whose name it would break.
+    base_targets, band_drops = enforce_price_bands(
+        base_targets, routing_price, listy=multi_product_list, service=bool(service_pairs))
+    for dropped_target, dropped_band in band_drops:
+        log.info("PRICE BAND DROP | queue=%s target=@%s band=%s price=%s | the post does not "
+                 "fit that channel's promise (other channels unaffected)",
+                 row["id"], dropped_target, dropped_band,
+                 routing_price if routing_price is not None else "unknown")
     if not base_targets:
         raise PermanentSkip("no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any

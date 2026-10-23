@@ -294,6 +294,18 @@ if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
   run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
 
+# "idi manadenaa": the audit may only say what the database and the bot's own
+# source can prove - real product prices, MISROUTE from deliveries only,
+# "unverified" instead of "someone else's commission", and the bot's own skip
+# reasons read from its code rather than a hand-copied list.
+run 'audit truth: prices, routes, ownership, skip reasons' "$PYTHON" test_audit_truth.py
+# The 2026-10-23 deploy that printed SUCCESS while a four-hour-old build stayed
+# live: installing from the checkout, verifying against git HEAD, a bundle that
+# carries every hard-imported helper, and a hotfix that never trims the vault.
+run 'deploy truth: install from checkout, verify, bundle, vault' "$PYTHON" test_deploy_truth.py
+# "chala perfectga ravali": the price band is enforced where the fan-out happens,
+# so a Rs.39,699 product can never be queued to a Rs.99 channel.
+run 'price bands: a deal only goes where its price belongs' "$PYTHON" test_routing_bands.py
 run 'repo self-consistency (gate coverage + README proof tables)' "$PYTHON" test_repo_consistency.py
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

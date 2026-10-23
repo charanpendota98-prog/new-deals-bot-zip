@@ -283,7 +283,12 @@ AUDIT="$HERE/quality_audit.py"; [[ -f "$AUDIT" ]] || AUDIT="$BESTGAA_DIR/quality
 DB="${BOT_DB:-$BESTGAA_DIR/bestgaa.sqlite3}"
 [[ -f "$DB" ]] || DB="$BESTGAA_DIR/state/bot_state.sqlite3"
 if [[ -f "$AUDIT" && -f "$DB" ]]; then
-  if python3 "$AUDIT" --db "$DB" --limit 150 --strict; then
+  # The audit must judge with the bot's own facts. Without its .env it does not
+  # know our publisher id, so our own EarnKaro shorteners (bitli.in/fktr.in) look
+  # "unverifiable" - and before 2026-10-23 they were even reported as FOREIGN.
+  AUDIT_ENV=()
+  [[ -f "$BESTGAA_DIR/.env" ]] && AUDIT_ENV=(--env-file "$BESTGAA_DIR/.env")
+  if python3 "$AUDIT" --db "$DB" "${AUDIT_ENV[@]}" --limit 150 --strict; then
     ok "the last posts broke no guarantee"
   else
     warn "the audit found posts that broke a guarantee - fix before posting more"

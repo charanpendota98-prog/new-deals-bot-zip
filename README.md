@@ -1774,10 +1774,10 @@ source snapshot:
 | `bestgaa/channel_directory.py` | `17623cbb7f98b2c3bcf2a67ee806d2a21a78f3574f8f068acc0e00880660898d` |
 | `bestgaa/channels_config.py` | `4df6dd69a2e67cc5751078cc199dce6cdbfbec6de5d6f4ed528c2b30c85d87df` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `6d0c3323123723bd8c0438c4c08ba77b944aed26bde11ab4ede6cf1e292f3906` |
+| `bestgaa/deploy_bestgaa.sh` | `045ed6dde6de39d215aff727e68f2dca9c10131fb894070cad03f4d108fa0a6c` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `3df906ef180a1fe3982efffec4427464ea37445a3971fef914b7a4655d1aeb04` |
+| `bestgaa/main_bot_new.py` (v19.0) | `088a6e3e29958952fc0f21b67fb7ee0e030ebb7a133db17cc126f20fd71858f7` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1801,7 +1801,7 @@ source snapshot:
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
 | `dashboard/vault.py` | `1473fee1e3208a001a836121f1c7e27abde908020ec3c626b72ea34da67fdf9d` |
-| `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
+| `ops/apply_dual_hotfix.sh` | `05393508ce4c7bb6b296427b61f12d0420bfd2bfaec2356176c3ac1d1347c776` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
@@ -1814,7 +1814,7 @@ source snapshot:
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
 | `ops/dashboard_link.sh` | `360ddc15c38c03cdec757bfb702b58f720eb068f9d7c63bb721fde6623b2048c` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
-| `ops/deploy_and_verify.sh` | `83a2e3b216fe3a8cb223cef4297843f7d32f896ed1a495be5cc1088730668013` |
+| `ops/deploy_and_verify.sh` | `3994cccf510d4171dfca36fbfe3fa3b04e9d818b9d7bc01823941a8d33587d2e` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
@@ -1828,15 +1828,16 @@ source snapshot:
 | `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
-| `ops/quality_audit.py` | `6b9d1533353495f83e0ca5159150d72f399b766b18c03177a23a01522e766afa` |
-| `ops/repack_bundles.sh` | `b7970b1af18e85071aac011773ff953b59fb493eeab1e1f3eb10bb3d18c335fb` |
+| `ops/quality_audit.py` | `7af7cdd78b33fae16ac4474e31d14e15480c0d060ea3aa2022d854293e7e8499` |
+| `ops/repack_bundles.sh` | `ac4112e1e65c677a4e5ad198371a0f6c67b4e15c341ee380d3a7baec8bc0038d` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `9d3e76122c1631d5756191acf3609dad58fbe746bdcfbce73950f704da421f23` |
+| `ops/test_all.sh` | `9e362ba0d5089c27375bd0ebc41e8569e45e37f582b6be0ff404b85e116a8b44` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
-| `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
+| `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
+| `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
@@ -1861,11 +1862,12 @@ source snapshot:
 | `test_deal_forensics.py` | `c8edae9556350f42495e4208de6a76e82251265e30c55792a326cdc19c6ccd32` |
 | `test_deals_dom.cjs` | `55e8db89cb33a71c054f9fbc65ca27ba78e1f518830de6da22c6045ad4783081` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
+| `test_deploy_truth.py` | `abe3732ec4ff4d7d980add0b3cabb009c129060bcb7607e4956d9608d1de4a23` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
 | `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
-| `test_line_fidelity.py` | `29d223fb580eeebeb9ffeaea9b63fe76c89be7f4c5454164301c6cd088f41bf3` |
+| `test_line_fidelity.py` | `c56f7b5e8ed7399c8a1344faeb25cdd3a47a964318abe3368cc6114158efa087` |
 | `test_link_commission.py` | `f5554dbcdf4c69bed33e9d8c71972e79bf28c132f0b3b46c7e90794db8e5e0db` |
 | `test_link_doctor.py` | `f119c3c6defd9a64b2b4566fda92326076f3bb02b53d608c31682ac6d1b7226c` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
@@ -1878,6 +1880,7 @@ source snapshot:
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
 | `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
+| `test_routing_bands.py` | `ada1ea788fff0ea186e9b77a8f37adaca425912b7e41df795743216937040b62` |
 | `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
 | `test_safety_filter.py` | `781eef8c858c30f5987e7b537999d61b1f5dc428e02d4eba1b3fe716c383b04b` |
 | `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
@@ -2889,6 +2892,86 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   screen). Both are in the gate; no service is started and no real key is used.
 - After saving, apply with `sudo systemctl restart bestgaa` (the card has the
   button; the panel says when the running bot still has the old values).
+
+### A deploy that says SUCCESS must have installed the new code (2026-10-23)
+
+On 2026-10-23 `bash bestgaa/deploy_bestgaa.sh` printed
+
+```
+[8/9] Verifying installed code and startup marker...
+       live main_bot.py sha256 = cd99cd37...
+       bundled main_bot_new.py sha256 = cd99cd37...
+[9/9] DEPLOY SUCCESS (verified: live file == shipped code)
+```
+
+and the operator believed the multi-key failover and the "never join a channel by
+itself" fix were live. They were not: the script copied the app directory's own
+`main_bot_new.py` onto itself and then compared the app directory with itself, so
+a four-hour-old build stayed live and the log still printed the `JOIN failed` line
+the fix removed. Three things changed, and each has a failing case in the gate:
+
+- **Install from the checkout, verify against it.** Run from a clone,
+  `deploy_bestgaa.sh` copies that checkout's `bestgaa/` files into the app
+  directory (all files are checked first, so a missing helper refuses the run
+  *before* anything is copied), then compares the live `main_bot.py` with
+  `$SOURCE_DIR/main_bot_new.py` and with `git show HEAD:bestgaa/main_bot_new.py`.
+  Uncommitted edits still deploy, but the log says `UNCOMMITTED changes` loudly;
+  an install that did not take prints `ERROR` and exits non-zero.
+- **The bundle carries what the bot hard-imports.** `channel_directory.py` and
+  `post_buttons.py` were missing from `ops/repack_bundles.sh`, and the bot cannot
+  boot or send without them; both are now in the list, required by the deploy,
+  compiled before anything moves, and asserted to exist inside the built zip.
+- **The hotfix cannot trim the keys the dashboard owns.** `ops/apply_dual_hotfix.sh`
+  no longer rewrites a present `EARNKARO_API_KEY` (the vault keeps several for
+  failover), no longer commits a shortener token, and seeds `WA_BITLY_TOKENS` into
+  the bridge from the bot's own `.env`.
+
+- Proof: `test_deploy_truth.py` (stale app directory replaced by the checkout;
+  a dirty checkout announced and its bytes installed; a blocked install exits
+  non-zero and never prints `DEPLOY SUCCESS`; an incomplete checkout leaves the
+  running bot untouched; bundle list, deploy requirement and compile loop all
+  name both helpers; no vault key can be rewritten; the old Bitly token does not
+  appear anywhere in the tree).
+
+### The audit may only say what can be proven (2026-10-23)
+
+`ops/quality_audit.py` was reading the live post `Flat ₹300 Coupon Off ...
+Starting @39699` as "₹300 sent to the ₹99 channel". Four corrections, each
+pinned by a test:
+
+- **A coupon is not a price.** `deal_prices()` masks `flat/save/upto/coupon/
+  cashback/bank offer/card offer` before reading amounts, and reads `@39699`,
+  `₹`, `Rs.`, `INR` shapes; ASINs, percentages and per-unit figures are not prices.
+- **MISROUTE means "reached a channel", not "was planned".** Findings come from
+  `deliveries` (`sent_targets`) only; a queue row that never sent is not a
+  misroute, and the ₹-amount quoted is the product price, never the coupon.
+- **"Cannot verify" is not "somebody else's commission".** With no publisher id
+  configured, our own `ekaro.in`/HYPD short links are `unverified` (with an
+  honest hint to pass `--env-file`/`--publisher`), never `foreign`.
+- **The skip list is the bot's own.** `policy_skip_markers()` reads every
+  `PermanentSkip("...")` reason out of `bestgaa/main_bot_new.py` (33 of them),
+  so a policy skip is not reported as a lost deal and a hand-copied list cannot
+  drift. `--env-file` / `--$AMAZON_TAG` make the audit judge links with the same
+  facts the bot uses; `ops/deploy_and_verify.sh` passes the bot's `.env`.
+
+- Proof: `test_audit_truth.py` (prices vs coupon/bank/percentage/ASIN, MISROUTE
+  from deliveries, unverified vs foreign, skip reasons read from source, and the
+  deploy report's own audit command).
+
+### Price bands are enforced where the fan-out happens (2026-10-23)
+
+A ₹39,699 product was queued to `Under99Deals11` and `under499loots`. The band
+check existed only in the dashboard's planner; `enforce_price_bands()` now runs
+after `scope_dashboard_targets()` in the post path, drops only tiered channels
+whose ceiling is below the product's price, keeps the main feed and service
+channels, and logs `PRICE BAND DROP | ...` per target. A "list" is a post the bot
+itself treats as one — three or more distinct product links, the same rule as
+`multi_product_list = len(converted) >= 3` — not "three lines that carry a number",
+which is how a two-product post with a coupon header bought itself an exemption.
+
+- Proof: `test_routing_bands.py` (live post price 39,699 drops the ₹99 and ₹499
+  shelves and keeps the main feed; ₹79 reaches the ₹99 shelf; a roundup and a
+  service channel are exempt).
 
 ### Source-selection verification (2026-10-14)
 
