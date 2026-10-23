@@ -393,6 +393,17 @@ async def api_vault_save(request: web.Request):
     if not isinstance(body, dict):
         return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
     path = bot_env_path()
+    # Saving into a path that does not exist would CREATE an .env holding only the
+    # key in this form - and the bot would start without its Telegram session, its
+    # tag and everything else. A wrong app directory looks exactly like this, so
+    # refuse and name the path instead of writing a half-file.
+    if not path.exists():
+        return web.json_response(
+            {"errors": [f"the bot's .env was not found at {path}. Nothing was written: "
+                        f"creating a new file here would leave the bot without the keys "
+                        f"it already relies on. Check BESTGAA_DIR / BOT_DB_PATH (see the "
+                        f"API keys panel's 'env file' row) or place the file there first."],
+             "written": False, "path": str(path)}, status=409)
     text = vault.read_env_text(path)
     revision = vault.env_revision(text)
     expected = request.headers.get("If-Match")

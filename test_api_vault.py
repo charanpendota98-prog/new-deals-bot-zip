@@ -320,6 +320,29 @@ async def api_checks():
                       body["path"] == str(env_file), body["path"])
                 revision = body["revision"]
 
+                # --- a missing .env is never half-created --------------------- #
+                # A wrong BESTGAA_DIR (or a bot that was moved) makes the path look
+                # empty. Writing here would create an .env with one key and no
+                # Telegram session, so the save must refuse and say where it looked.
+                missing_env = base / "moved" / ".env"
+                saved_env = os.environ.get("BESTGAA_BOT_ENV")
+                os.environ["BESTGAA_BOT_ENV"] = str(missing_env)
+                try:
+                    response = await client.put("/api/vault", data=json.dumps(
+                        {"append": {"BITLY_TOKENS": ["bitlytokenfive0123456789"]}}),
+                        headers=dict(headers, **{"Content-Type": "application/json"}))
+                    payload = await response.json()
+                finally:
+                    if saved_env is None:
+                        os.environ.pop("BESTGAA_BOT_ENV", None)
+                    else:
+                        os.environ["BESTGAA_BOT_ENV"] = saved_env
+                check("a missing .env is refused, never created half-empty",
+                      response.status == 409 and not missing_env.exists(),
+                      str(response.status))
+                check("and the refusal names the path it looked at",
+                      str(missing_env) in json.dumps(payload), json.dumps(payload)[:200])
+
                 # --- a wrong key never reaches the disk ----------------------- #
                 before = env_file.read_text(encoding="utf-8")
                 bad = await client.put("/api/vault", headers=dict(
