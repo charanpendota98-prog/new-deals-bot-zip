@@ -68,6 +68,11 @@ def test_script():
               "DASHBOARD_TOKEN=//p" in out and str(env_file) in out, out)
         check("the proof command for 'nothing dropped' is included",
               "ops/pipeline_check.py --hours 24" in out, out)
+        check("it says which checkout is SERVING and where the bot's keys and DB are",
+              "runs from:" in out and "bot keys :" in out
+              and str(env_file.parent / "nothing.sqlite3") not in out, out)
+        check("those paths never include the token",
+              TOKEN not in out and "…1234" in out, out)
         check("a dashboard that is not running is exit 1, with the fix",
               proc.returncode == 1 and "systemctl start" in out, (proc.returncode, out))
 
@@ -81,6 +86,12 @@ def test_script():
         check("--json reports the service state instead of pretending",
               data["state"] in {"active", "inactive", "unknown", "not-installed", "failed"},
               data.get("state"))
+        check("--json names the checkout, the bot env and the bot db",
+              all(key in data for key in ("checkout", "bot_env", "bot_db"))
+              and data["checkout"].startswith("/"), data)
+        check("--json says nothing about being on the wrong server when the service exists",
+              data.get("wrong_host") in ("", None)
+              or data["state"] != "not-installed", data.get("wrong_host"))
         check("--json marks the token missing when there is no env file",
               json.loads(run("--json", env_file=Path(td) / "nope.env",
                              token=None).stdout)["token"] == "missing")

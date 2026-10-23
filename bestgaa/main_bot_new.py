@@ -117,9 +117,8 @@ from telethon.errors import (
     ChannelPrivateError,
     ChatAdminRequiredError,
     FloodWaitError,
-    UserAlreadyParticipantError,
 )
-from telethon.tl.functions.messages import ImportChatInviteRequest, CheckChatInviteRequest
+from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.functions.channels import GetParticipantRequest
 from telethon.tl.types import (
     MessageEntityTextUrl,
@@ -199,7 +198,13 @@ def env_required(name: str) -> str:
 
 API_ID = int(env_required("TELEGRAM_API_ID"))
 API_HASH = env_required("TELEGRAM_API_HASH")
-EK_KEY = env_required("EARNKARO_API_KEY")
+# MULTIPLE EarnKaro keys (comma-separated): tried in order, first = active, with
+# failover on an authentication refusal. A key that pays a DIFFERENT publisher is
+# dropped at startup - the publisher guard (OUR_EK_ID) exists precisely so that a
+# published link never pays somebody else, and a failover must still pay us.
+EK_KEYS = [x.strip() for x in env_required("EARNKARO_API_KEY").split(",") if x.strip()]
+EK_KEY = EK_KEYS[0]
+EK_ROTATION: dict[str, int] = {"index": 0, "rotations": 0}
 EK_API = os.getenv("EARNKARO_API_URL", "https://ekaro-api.affiliaters.in/api/converter/public")
 # A realistic desktop UA for outbound API/fetch calls. EarnKaro's endpoint sits
 # behind Cloudflare, which rejects default library UAs with "error code: 1010".
@@ -243,6 +248,41 @@ _env_ek_id = os.getenv("EARNKARO_PUBLISHER_ID", "").strip()
 # publisher id it carries is the one every generated link will pay. The .env
 # value is only a fallback (and a cross-check).
 OUR_EK_ID = EK_TOKEN_PUBLISHER or _env_ek_id
+
+if len(EK_KEYS) > 1:
+    _kept = [EK_KEYS[0]]
+    for _position, _candidate in enumerate(EK_KEYS[1:], 2):
+        _candidate_publisher = str(
+            earnkaro_token_claims(_candidate).get("earnkaro") or "").strip()
+        if OUR_EK_ID and _candidate_publisher and _candidate_publisher != OUR_EK_ID:
+            logging.getLogger("bestgaa").warning(
+                "EARNKARO_API_KEY key %s pays publisher %s, not %s - dropped: a failover "
+                "key must still pay OUR account", _position, _candidate_publisher, OUR_EK_ID)
+            continue
+        _kept.append(_candidate)
+    if len(_kept) != len(EK_KEYS):
+        EK_KEYS[:] = _kept
+    logging.getLogger("bestgaa").info(
+        "EarnKaro failover | %s key(s) for publisher %s; the bot rotates on an auth refusal",
+        len(EK_KEYS), OUR_EK_ID or "unknown")
+
+
+def ek_current_key() -> str:
+    """The EarnKaro key in use right now (index 0 until one is refused)."""
+    return EK_KEYS[EK_ROTATION["index"]]
+
+
+def ek_rotate(reason: str) -> bool:
+    """Move to the next key. True when a DIFFERENT key is now active."""
+    if len(EK_KEYS) < 2:
+        return False
+    previous = EK_ROTATION["index"]
+    EK_ROTATION["index"] = (previous + 1) % len(EK_KEYS)
+    EK_ROTATION["rotations"] += 1
+    logging.getLogger("bestgaa").warning(
+        "EK ROTATE | key %s/%s refused (%s); now using key %s/%s",
+        previous + 1, len(EK_KEYS), reason, EK_ROTATION["index"] + 1, len(EK_KEYS))
+    return EK_ROTATION["index"] != previous
 try:
     EK_TOKEN_ISSUED_AT = datetime.fromtimestamp(
         float(EK_TOKEN_CLAIMS.get("iat")), timezone.utc).strftime("%Y-%m-%d")
@@ -7892,7 +7932,9 @@ class AffiliateClient:
             raise RuntimeError("EarnKaro circuit open")
         async with EK_SEM:
             last = None
-            for attempt in range(3):
+            attempt = 0
+            refused: set[int] = set()
+            while attempt < 3:
                 try:
                     async with self.session.post(
                         EK_API,
@@ -7905,23 +7947,28 @@ class AffiliateClient:
                         # User-Agent with "error code: 1010" (403) - live probe
                         # 2026-10-04. The UA below is what the rest of this file
                         # already sends on every fetch.
-                        headers={"Authorization": f"Bearer {EK_KEY}",
+                        headers={"Authorization": f"Bearer {ek_current_key()}",
                                  "Content-Type": "application/json",
                                  "User-Agent": API_USER_AGENT},
                         timeout=aiohttp.ClientTimeout(total=max(8.0, HTTP_TOTAL_TIMEOUT_SECONDS * 2)),
                     ) as response:
                         body = await response.text()
                         if response.status in (401, 403):
-                            # The TOKEN is refused. Retrying cannot help, and a
-                            # fallback link earns nothing, so say exactly what is
-                            # wrong and where the fix is - a silent 401 is
-                            # indistinguishable from "this store has no campaign"
-                            # in the log, which is how "conversion is not working"
-                            # stayed invisible.
+                            # The TOKEN is refused. With more than one key this is
+                            # a failover, not a failure: the same request is retried
+                            # with the next key, which must pay the same publisher
+                            # (enforced at startup). A silent 401 is indistinguishable
+                            # from "this store has no campaign" in the log, so the
+                            # last key still says exactly where the fix is.
+                            refused.add(EK_ROTATION["index"])
+                            if (ek_rotate(f"HTTP {response.status}")
+                                    and EK_ROTATION["index"] not in refused):
+                                continue
                             log.error("EK AUTH | the EarnKaro API refused our token "
-                                      "(HTTP %s at %s). Regenerate EARNKARO_API_KEY and re-run "
-                                      "ops/set_earnkaro_key.sh - every link falls back to "
-                                      "unmonetized until then.", response.status, EK_API)
+                                      "(HTTP %s at %s, %s key(s) tried). Regenerate "
+                                      "EARNKARO_API_KEY and save it in the dashboard's API keys "
+                                      "panel - every link falls back to unmonetized until then.",
+                                      response.status, EK_API, len(refused))
                             EK_BREAKER.failure()
                             return None
                         if response.status in (429, 500, 502, 503, 504):
@@ -8052,6 +8099,7 @@ class AffiliateClient:
                     # Brief jitter, not a 8s sleep per attempt: an API blip must
                     # delay this deal by seconds, never by minutes.
                     await asyncio.sleep(min(2.5, 0.4 * (2 ** attempt) + random.random() * 0.3))
+                attempt += 1
             EK_BREAKER.failure()
             log.error("EK NETWORK | conversion API retries exhausted: %s", last)
             raise RuntimeError(f"EarnKaro failed: {last}")
@@ -8511,19 +8559,28 @@ def fetch_chat_id(entity: Any, fallback: Any = None) -> int:
 
 
 async def resolve_entity(client: TelegramClient, identifier: str):
+    """Resolve what the session can ALREADY reach. This function never joins.
+
+    USER RULE (standing, pinned): "nothing auto-joins channels, no history
+    replay". This used to call ImportChatInviteRequest for a t.me/+ invite, so
+    merely having an invite link in the source list made the bot JOIN that
+    channel - the live log showed "JOIN failed https://t.me/+-mv6..." on every
+    boot for exactly that reason. Joining is the operator's decision, so the
+    membership check is now read-only (`CheckChatInvite`: peeking does not join)
+    and only an ALREADY-joined chat is returned. Not a member -> None, with the
+    reason recorded for the dashboard.
+    """
     # Telegram uses both t.me/+hash and telegram.me/+hash invite forms.
     if identifier.startswith(("https://t.me/+", "https://telegram.me/+")):
         invite_hash = identifier.split("+", 1)[1]
-        canonical_invite = "https://t.me/+" + invite_hash
-        with contextlib.suppress(UserAlreadyParticipantError):
-            try:
-                await client(ImportChatInviteRequest(invite_hash))
-            except Exception as exc:
-                log.warning("JOIN failed %s: %s", identifier, exc)
         with contextlib.suppress(Exception):
-            return await client.get_entity(canonical_invite)
-        with contextlib.suppress(Exception):
-            return await client.get_entity(identifier)
+            invite = await client(CheckChatInviteRequest(invite_hash))
+            if (type(invite).__name__ == "ChatInviteAlready"
+                    and getattr(invite, "chat", None) is not None):
+                return invite.chat
+        log.warning("SOURCE NOT JOINED %s | the bot session is not a member of this "
+                    "channel; join it yourself once with that account - the bot never "
+                    "joins anything by itself", identifier)
         return None
     with contextlib.suppress(Exception):
         return await client.get_entity(identifier)
@@ -8636,6 +8693,13 @@ async def register_source(client: TelegramClient, source_map: dict, source: str,
     else:
         entity = await resolve_entity(client, source)
     if not entity:
+        # Never silent: "the source posted and we received nothing" has to be
+        # explainable in the dashboard, and the explanation is membership - not
+        # a bug the operator has to infer from an empty channel.
+        SOURCE_DETAILS.setdefault(source, {
+            "title": source, "state": "join_required",
+            "detail": "not reachable with the bot session: join it yourself once with "
+                      "that account (the bot never joins automatically)"})
         return False
     fetch_id = fetch_chat_id(entity, getattr(entity, "id", 0))
     if source in DASHBOARD_SCOPED_SOURCES:
@@ -10588,11 +10652,16 @@ async def channel_directory_publish(client, target_map=None) -> dict:
         from . import channels_config as _config
     except ImportError:
         import channels_config as _config
-    limit = int(os.getenv("CHANNEL_DIRECTORY_LIMIT", "1000"))
+    # 0 (the default) = every dialog Telegram will page through. A fixed 1000 was
+    # a silent cap: on the live account (1122 dialogs) the picker hid 122 channels
+    # and the counts still looked plausible. Set CHANNEL_DIRECTORY_LIMIT to a
+    # positive number only to bound a very large account on purpose.
+    limit = max(0, int(os.getenv("CHANNEL_DIRECTORY_LIMIT", "0")))
     entities = []
-    async for dialog in client.iter_dialogs(limit=limit):
+    async for dialog in client.iter_dialogs(**({"limit": limit} if limit else {})):
         entities.append(dialog.entity)
-    payload = build_directory(entities, limit=limit)
+    payload = build_directory(entities, limit=max(1, int(
+        os.getenv("CHANNEL_DIRECTORY_ROWS", "5000"))))
     payload["our_targets"] = sorted(str(t) for t in (target_map or {}))
     payload["our_sources"] = sorted(str(s) for s in SOURCE_TO_TARGETS)
     payload["watch_categories"] = {str(name): sorted(cats)

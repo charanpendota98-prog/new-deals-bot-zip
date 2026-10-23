@@ -17,14 +17,16 @@ Rules:
     the live activation enforces), so groups/supergroups are published with
     `kind: "group"` and `addable: false` - visible, never silently selectable;
   * bounded: at most `limit` rows, each field trimmed, so a 500-channel account
-    cannot produce a multi-megabyte snapshot every 15 minutes.
+    cannot produce a multi-megabyte snapshot every 15 minutes. The count that is
+    dropped is published as `truncated` - a cap must never look like "that is all
+    there is" (a fixed 1000 did exactly that on a 1122-dialog account).
 """
 from __future__ import annotations
 
 import time
 
 SCHEMA = 1
-DEFAULT_LIMIT = 1000
+DEFAULT_LIMIT = 5000
 TITLE_MAX = 120
 USERNAME_MAX = 64
 

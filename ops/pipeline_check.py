@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -47,9 +48,59 @@ except ImportError:  # pragma: no cover - script-style import
     import pipeline  # type: ignore # noqa: E402
 
 
+# Where the bot is actually installed on the server. The checkout and the app
+# directory are two different places, which is exactly how this tool came to say
+# "cannot read /home/ubuntu/bestgaa-latest/bestgaa/bestgaa.sqlite3" while the bot
+# was writing to /home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3.
+APP_DIR_DEFAULT = Path("/home/ubuntu/bestgaa-bot/bestgaa-bot")
+
+
+def bot_app_dir() -> Path:
+    """The running bot's directory: BESTGAA_DIR, else the deployed install."""
+    explicit = os.getenv("BESTGAA_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    if (APP_DIR_DEFAULT / "bestgaa.sqlite3").exists() or (APP_DIR_DEFAULT / ".env").exists():
+        return APP_DIR_DEFAULT
+    return ROOT
+
+
+def load_env_file(path: Path) -> None:
+    """Read KEY=value lines (comments ignored) without overriding the real env."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def db_candidates() -> list[Path]:
+    app = bot_app_dir()
+    found: list[Path] = []
+    env_value = os.getenv("BOT_DB_PATH", "").strip()
+    if env_value:
+        found.append(Path(env_value))
+    load_env_file(app / ".env")
+    env_value = os.getenv("BOT_DB_PATH", "").strip()
+    if env_value and Path(env_value) not in found:
+        found.append(Path(env_value))
+    for candidate in (app / "bestgaa.sqlite3", ROOT / "bestgaa" / "bestgaa.sqlite3"):
+        if candidate not in found:
+            found.append(candidate)
+    return found
+
+
 def default_db() -> Path:
-    from dashboard import app  # imported lazily: the app pulls in aiohttp
-    return app.db_path()
+    """The bot's real database - the same one the dashboard and the bot use."""
+    for candidate in db_candidates():
+        if candidate.exists():
+            return candidate
+    return db_candidates()[0]
 
 
 def declared() -> tuple[set[str], list[str], list[str]]:
@@ -138,9 +189,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"error": f"database not readable: {exc}", "db": str(path),
                               "verdict": "the check could not run"}, indent=1))
         else:
+            tried = "\n  ".join(str(candidate) for candidate in db_candidates())
             print(f"ERROR: cannot read {path} ({exc}).\n"
-                  "Point --db at the bot's real bestgaa.sqlite3; this tool never writes.",
-                  file=sys.stderr)
+                  f"Searched, in order:\n  {tried}\n"
+                  "Set BOT_DB_PATH in the bot's .env (or pass --db) and re-run; "
+                  "this tool never writes.", file=sys.stderr)
         return 2
     sources, targets, watched = (set(), [], []) if args.no_config else declared()
     try:

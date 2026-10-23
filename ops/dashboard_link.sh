@@ -75,6 +75,39 @@ if command -v systemctl >/dev/null 2>&1; then
   fi
 fi
 
+# ---- WHICH COPY is serving, and WHICH database it reads --------------------
+# The dashboard runs from a git checkout while the bot runs from its app
+# directory. When those two drift, every panel answers from the wrong place: on
+# 2026-10-22 the service was serving /home/ubuntu/new-deals-bot-zip while the
+# operator deployed /home/ubuntu/bestgaa-latest, and the source list looked empty
+# for an hour. Printing both, plus the bot's .env and DB, makes it one glance.
+CHECKOUT=""
+if command -v systemctl >/dev/null 2>&1; then
+  CHECKOUT="$(systemctl show -p WorkingDirectory --value "$SERVICE" 2>/dev/null || true)"
+fi
+[[ -z "$CHECKOUT" || "$CHECKOUT" == "-" ]] && CHECKOUT="$ROOT"
+BOT_ENV="${BESTGAA_BOT_ENV:-}"
+BOT_DB="${BOT_DB_PATH:-}"
+if [[ -z "$BOT_ENV" || -z "$BOT_DB" ]]; then
+  # The dashboard's own env file is the only place that knows; read it without
+  # ever printing anything but the two PATHS.
+  if [[ -r "$ENV_FILE" ]]; then
+    [[ -z "$BOT_DB" ]] && BOT_DB="$(sed -n 's/^[[:space:]]*BOT_DB_PATH=//p' "$ENV_FILE" | tail -n 1 | tr -d '\r"')"
+  fi
+  [[ -z "$BOT_ENV" && -n "$BOT_DB" ]] && BOT_ENV="$(dirname "$BOT_DB")/.env"
+  [[ -z "$BOT_ENV" ]] && BOT_ENV="/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"
+  # Always name the database we expect, even when it is missing: printing an
+  # empty field tells the operator nothing.
+  [[ -z "$BOT_DB" ]] && BOT_DB="$(dirname "$BOT_ENV")/bestgaa.sqlite3"
+fi
+
+# A host that has neither the service nor the env file is simply the WRONG
+# SERVER - say that instead of a wall of "could not be found".
+wrong_host=""
+if [[ "$state" == "not-installed" && ! -r "$ENV_FILE" && ! -d "$(dirname "$BOT_ENV")" ]]; then
+  wrong_host="$(hostname 2>/dev/null || echo unknown)"
+fi
+
 # ---- token: presence and last 4 characters, never the value ----------------
 token=""
 if [[ -r "$ENV_FILE" ]]; then
@@ -160,7 +193,7 @@ fi
 if [[ "$MODE" == "json" ]]; then
   # `http` is a string on purpose: curl's "000" is not a valid JSON number.
   cat <<EOF
-{"service":"${SERVICE}","state":"${state}","enabled":"${detail}","host":"${HOST}","port":${PORT},"health":"${health}","http":"${http:-000}","token":"${token_state}","tunnel":"${tunnel}","link":"${link}","link_without_token":"${link_plain}","token_command":"${token_cmd}","pipeline_command":"${pipeline_cmd}","env_file":"${ENV_FILE}"}
+{"service":"${SERVICE}","state":"${state}","enabled":"${detail}","host":"${HOST}","port":${PORT},"health":"${health}","http":"${http:-000}","token":"${token_state}","tunnel":"${tunnel}","link":"${link}","link_without_token":"${link_plain}","token_command":"${token_cmd}","pipeline_command":"${pipeline_cmd}","env_file":"${ENV_FILE}","checkout":"${CHECKOUT}","bot_env":"${BOT_ENV}","bot_db":"${BOT_DB}","wrong_host":"${wrong_host}"}
 EOF
   [[ "$health" == "healthy" ]] && exit 0
   [[ "$state" == "active" ]] && exit 1
@@ -170,8 +203,17 @@ fi
 printf '\n  BestGAA dashboard\n  ─────────────────────────────────────────────────────────────\n'
 printf '  service : %s (%s%s)\n' "$SERVICE" "$state" "${detail:+, $detail}"
 printf '  address : http://%s:%s  (localhost only, by design)\n' "$HOST" "$PORT"
+printf '  runs from: %s\n' "$CHECKOUT"
+printf '  bot keys : %s%s\n' "$BOT_ENV" "$([[ -r "$BOT_ENV" ]] && echo "" || echo "  (not found here)")"
+printf '  bot db   : %s%s\n' "$BOT_DB" "$([[ -r "$BOT_DB" ]] && echo "" || echo "  (not found here)")"
 printf '  token   : %s%s  [%s]\n' "$token_state" "${token_tail:+ $token_tail}" "$ENV_FILE"
 printf '  health  : %s\n\n' "$health"
+
+if [[ -n "$wrong_host" ]]; then
+  printf '  WRONG SERVER?  This is \x27%s\x27: no %s service and no %s.\n' \
+    "$wrong_host" "$SERVICE" "$ENV_FILE"
+  printf '  Nothing here is broken - reconnect to the machine that runs the bot.\n\n'
+fi
 
 case "$health" in
   healthy) printf '  The service is up and this token works.\n\n' ;;
