@@ -171,6 +171,23 @@ def validation():
                                    {"AMAZON_TAG": "mama086-21"})
     check("a no-op save is reported as unchanged", report["unchanged"] == ["AMAZON_TAG"]
           and not report["changed"])
+    # The preview must name the change it is about to make: appending a second key
+    # was labelled "replace", which reads as if the first key would be lost.
+    changed = vault.validate_update({"BITLY_TOKENS": ["a" * 24]}, {})["changed"][0]
+    check("appending a key is called an add, not a replace",
+          changed["action"] == "add" and changed["before"] == [], str(changed["action"]))
+    grown = vault.validate_update({"BITLY_TOKENS": ["a" * 24, "b" * 24]},
+                                  {"BITLY_TOKENS": "a" * 24})["changed"][0]
+    check("keeping the first key and adding a second is still an add",
+          grown["action"] == "add" and len(grown["after"]) == 2, str(grown["action"]))
+    shrunk = vault.validate_update({"BITLY_TOKENS": ["a" * 24]},
+                                   {"BITLY_TOKENS": "a" * 24 + "," + "b" * 24})["changed"][0]
+    check("dropping one of several is a remove", shrunk["action"] == "remove",
+          str(shrunk["action"]))
+    swapped = vault.validate_update({"BITLY_TOKENS": ["c" * 24]},
+                                    {"BITLY_TOKENS": "a" * 24})["changed"][0]
+    check("a different value in the same place is a replace",
+          swapped["action"] == "replace", str(swapped["action"]))
 
 
 def files():
@@ -211,6 +228,19 @@ def files():
               and GOOD_EK not in json.dumps(leaks), json.dumps(leaks)[:200])
         check("a short value is not scanned (no false alarms)",
               vault.leak_scan(["abc"], [Path(td) / "log"])["state"] == "nothing-to-scan")
+
+        # Two keys for the same provider can share a tail. Without a tag the page
+        # showed identical chips and "remove the second one" was a guess.
+        near_a = GOOD_EK[:-4] + "abcd"
+        near_b = "x" + GOOD_EK[:-4] + "abcd"
+        tag_a, tag_b = vault.fingerprint(near_a), vault.fingerprint(near_b)
+        check("a fingerprint tells two keys with the same tail apart",
+              tag_a != tag_b and len(tag_a) == 6, (tag_a, tag_b))
+        check("the fingerprint is stable and one-way",
+              vault.fingerprint(near_a) == tag_a and tag_a not in near_a
+              and vault.fingerprint("") == "")
+        check("a short or low-entropy value gets no fingerprint at all",
+              vault.fingerprint("1234567") == "" and vault.fingerprint("93944") == "")
 
 
 def bot_failover():
@@ -272,6 +302,11 @@ async def api_checks():
                 check("NOT ONE secret is in the response",
                       GOOD_EK not in text and "bitlytokenone0123456789" not in text,
                       text[:200])
+                tags = [(s["key"], value["fp"]) for s in body["slots"]
+                        for value in s["values"] if s["secret"]]
+                check("each stored secret carries a one-way tag, not the value",
+                      all(len(fp) == 6 and set(fp) <= set("0123456789abcdef") for _, fp in tags)
+                      and len({fp for _, fp in tags}) == len(tags), tags)
                 check("the values are shown as masks with a tail",
                       any(v["masked"].endswith(GOOD_EK[-4:]) for s in body["slots"]
                           if s["key"] == "EARNKARO_API_KEY" for v in s["values"]))

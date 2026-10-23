@@ -219,6 +219,25 @@ def mask(value: str, *, secret: bool = True) -> str:
     return "•" * 6 + value[-TAIL:]
 
 
+FINGERPRINT_MIN = 16
+
+
+def fingerprint(value: str) -> str:
+    """A short tag that tells two stored keys apart without revealing either.
+
+    Two keys for the same provider can share their last four characters (the
+    page then showed three identical chips and "remove the second one" was a
+    guess). Six characters of a truncated SHA-256 is not reversible, cannot be
+    brute-forced for a high-entropy token, and is stable across reloads. Short
+    or low-entropy values get no tag at all: a six-character hash of a 7-digit
+    number is a lookup table, not a mask.
+    """
+    value = str(value or "")
+    if len(value) < FINGERPRINT_MIN:
+        return ""
+    return hashlib.sha256(value.encode("utf-8", "ignore")).hexdigest()[:6]
+
+
 def tail(value: str) -> str:
     value = str(value or "")
     return value[-TAIL:] if len(value) > TAIL else ""
@@ -429,11 +448,26 @@ def validate_update(updates: dict[str, list[str]], current: dict[str, str]) -> d
         if before == values:
             report["unchanged"].append(key)
         else:
+            # Name the change honestly: appending a second key is an "add", not a
+            # "replace" - that word made the preview look like the first key was
+            # about to be overwritten.
+            if not values:
+                action = "remove"
+            elif not before:
+                action = "add"
+            elif before == values[:len(before)]:
+                action = "add"
+            elif values == before[:len(values)]:
+                action = "remove"
+            else:
+                action = "replace"
             report["changed"].append({
                 "key": key, "label": slot.label,
                 "before": [mask(value, secret=slot.secret) for value in before],
                 "after": [mask(value, secret=slot.secret) for value in values],
-                "action": "remove" if not values else ("replace" if before else "add"),
+                "before_fp": [fingerprint(value) for value in before],
+                "after_fp": [fingerprint(value) for value in values],
+                "action": action,
             })
     return report
 

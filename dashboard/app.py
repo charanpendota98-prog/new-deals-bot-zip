@@ -342,7 +342,8 @@ def vault_state() -> dict:
             "multi": slot.multi, "required": slot.required,
             "set": bool(found),
             "values": [{"masked": vault.mask(value, secret=slot.secret),
-                        "tail": "" if not slot.secret else vault.tail(value)}
+                        "tail": "" if not slot.secret else vault.tail(value),
+                        "fp": vault.fingerprint(value)}
                        for value in found],
             "errors": (verdict or {}).get("errors", []),
             "warnings": (verdict or {}).get("warnings", []),
@@ -1353,8 +1354,15 @@ async def api_put_whatsapp(request: web.Request):
         body = await request.json()
     except (json.JSONDecodeError, ValueError):
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    # A PUT replaces the whole list, so a body without the key must be refused:
+    # `{}` used to mean "empty list" and silently wiped every WhatsApp channel
+    # the operator had configured (same trap as the button row below).
+    if not isinstance(body, dict) or "whatsapp" not in body:
+        return web.json_response(
+            {"errors": ["whatsapp must be a list - send the whole list you want "
+                        "saved, or [] to clear it on purpose"]}, status=400)
     cleaned, errors = channels_config.validate_whatsapp_list(
-        (body or {}).get("whatsapp"), set(category_catalog()))
+        body.get("whatsapp"), set(category_catalog()))
     if errors:
         return web.json_response({"errors": errors}, status=400)
     data = channels_config.load_channels()
@@ -1388,7 +1396,13 @@ async def api_post_buttons_put(request: web.Request):
         body = await request.json()
     except ValueError:
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
-    target, errors = post_buttons.save_buttons((body or {}).get("buttons"))
+    # Replacing the row with nothing because the body had no "buttons" key is a
+    # silent wipe, not a save. Ask for the list explicitly.
+    if not isinstance(body, dict) or "buttons" not in body:
+        return web.json_response(
+            {"errors": ["buttons must be a list - send the whole row you want saved, "
+                        "or [] to remove it from every post"]}, status=400)
+    target, errors = post_buttons.save_buttons(body.get("buttons"))
     if errors:
         return web.json_response({"errors": errors}, status=400)
     return web.json_response({"saved": True, "buttons": post_buttons.load_buttons(target),
