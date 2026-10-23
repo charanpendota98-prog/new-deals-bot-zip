@@ -21,7 +21,7 @@ echo "[1/9] Checking uploaded files..."
 # and post_buttons.py is imported in the send path - a host missing either boots
 # into ImportError or fails every send, so the deploy refuses to start without
 # them (DEPLOY GAP found 2026-10-19 while preparing the perfect-deploy pass).
-for helper in category_classifier.py channels_config.py live_channels.py hypd_policy.py source_catalog.json deal_facts.py post_buttons.py; do
+for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py source_catalog.json deal_facts.py post_buttons.py; do
   [[ -f "$APP_DIR/$helper" ]] || { echo "ERROR: $helper missing; upload it beside main_bot_new.py"; exit 1; }
 done
 [[ -f "$APP_DIR/category_rules.json" ]] || { echo "ERROR: category_rules.json missing; upload it beside main_bot_new.py"; exit 1; }

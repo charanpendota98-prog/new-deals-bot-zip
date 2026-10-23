@@ -130,11 +130,21 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 .dossiercols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .dossiercols pre,.dossiertext{background:#0f1620;border:1px solid #223044;border-radius:10px;padding:10px;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto;font-size:.82rem}
 @media(max-width:900px){.dossiercols{grid-template-columns:1fr}}
+.vault-slot{border:1px solid #223044;border-radius:12px;padding:12px;margin:10px 0;background:#0f1620}
+.vault-slot.has-error{border-color:#b4442f}
+.vault-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px}
+.key-chips{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+.key-chip{display:inline-flex;align-items:center;gap:6px;background:#16202e;border:1px solid #2a3a50;border-radius:999px;padding:3px 10px;font-family:ui-monospace,monospace;font-size:.8rem}
+.key-chip.new{border-color:#2f7d4f;color:#8ff0b5}
+.key-chip.dropped{opacity:.5;text-decoration:line-through}
+.chip-x{background:none;border:0;color:#8ea3bb;cursor:pointer;font-size:.85rem;padding:0 0 0 2px}
+.chip-x:hover{color:#ff9b86}
+#vault input[type=password]{flex:1;min-width:220px}
 </style>
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#dossier">Dossier</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#vault">API keys</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#dossier">Dossier</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -239,6 +249,20 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </div>
 <p id="addmsg" role="status" aria-live="polite"></p>
 </section>
+<div class="card" id="vault">
+<div class="section-heading"><div><span class="eyebrow">API KEYS · ENTER THEM HERE, NOT ON THE SERVER</span><h2>Credentials, several per provider, validated before they are saved</h2></div><span class="badge" id="vaultstate">loading</span></div>
+<p class="muted">Every key the bot reads, in one place: Telegram, EarnKaro, Amazon, Bitly, HYPD. Each value is checked <b>before</b> anything is written — an EarnKaro token is decoded and its publisher id read (a token that pays a different account is refused), an Amazon tag that is not ours is refused, a key that pays the same publisher as an existing one becomes a <b>failover</b>. The file is written atomically, mode <code>0600</code>, the previous copy kept as a backup, and <b>only masked values ever come back</b> — a saved secret cannot be read out of this page. Nothing here starts, joins or posts.</p>
+<div id="vaultready"></div>
+<div class="tablewrap"><table><thead><tr><th>Where</th><th>File</th><th>Owner / mode</th><th>Saved</th><th>Running bot</th></tr></thead><tbody id="vaultwhere"></tbody></table></div>
+<div id="vaultslots"></div>
+<div class="row"><button onclick="previewVault()">Preview changes</button><button onclick="saveVault(false)">Save keys</button><button class="ghost" onclick="loadVault()">Reload</button><button class="ghost" onclick="doRestart()">Restart bot to apply</button></div>
+<p id="vaultmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="vaultchanges"></div>
+<h3>Leak scan <span class="muted">— is a stored key visible in a log or config file?</span></h3>
+<div id="vaultleaks"></div>
+<h3>Change journal <span class="muted">— key names and last four characters only</span></h3>
+<div id="vaultjournal"></div>
+</div>
 <div class="card" id="sourcestudio">
 <div class="section-heading"><div><span class="eyebrow">SOURCE STUDIO · EVERY CHANNEL IN YOUR TELEGRAM</span><h2>Pick channels from a list, not from memory</h2></div><span class="badge" id="dirstate">loading</span></div>
 <p class="muted">The list below is <b>published by the bot's own session</b> (<code>ops/…/telegram_channels.json</code>): every channel it can already read, refreshed in the background. Search it, tick one or many, choose where their deals should post and which categories to keep, then save once. A ticked channel becomes a <b>watched source</b>: each new post is taken exactly as written, every link converted to <b>ours</b>, and posted to the channels you pick. Nothing is joined, nothing is replayed, and a channel that is not public (no @username) or is one of our own posting channels stays disabled with the reason.</p>
@@ -631,6 +655,7 @@ async function refresh(full=true){
     loadSourceChoices(c.sources || []);   // datalist behind "source" in the planner
     await loadWatch();                    // watched source channels + the bot's verdict
     await loadDirectory();                // every channel the bot session can read
+    await loadVault();                    // the keys the bot actually reads
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -2006,6 +2031,170 @@ document.addEventListener('click', event => {
   const card = document.getElementById('trace');
   if(card) card.scrollIntoView({behavior:'smooth', block:'start'});
 });
+
+// ------------------------------------------------------------- API KEYS --
+// "dashboard lo API key ichelaga vunchu, multiple ga" - several keys per
+// provider, typed here, validated before the write. The browser only ever holds
+// what the operator just typed plus masked tails; a saved secret is never sent
+// back to this page.
+let vaultData = null;
+let vaultDraft = {append:{}, dropIdx:{}, dropKey:new Set()};
+function vaultDraftValue(key, index){
+  if(!vaultData) return '';
+  return (((vaultData.slots||[]).find(s=>s.key===key)||{}).values||[])[index]?.masked || '•';
+}
+function vaultGroupLabel(group){
+  return ((vaultData&&vaultData.groups)||[]).find(g=>g.key===group)?.label || group;
+}
+function renderVault(){
+  if(!vaultData) return;
+  const state=document.getElementById('vaultstate');
+  const ready=vaultData.readiness||{};
+  if(state){
+    state.textContent = {ready:'keys ready',attention:'needs attention',blocked:'BLOCKED'}[ready.state]||'unknown';
+    state.className='badge '+(ready.state==='ready'?'ok':ready.state==='blocked'?'bad':'warn');
+  }
+  document.getElementById('vaultready').innerHTML =
+    `<p class="${ready.state==='ready'?'ok':ready.state==='blocked'?'bad':'warn'}"><b>${escapeHTML(ready.headline||'')}</b></p>`
+    + `<div class="row">`+((ready.checks||[]).map(c=>
+        `<div class="stat"><b style="font-size:13px"><span class="pill ${c.state==='ok'?'ok':c.state==='fail'?'fail':'warn'}">${escapeHTML(c.state)}</span> ${escapeHTML(c.name)}</b>`
+        + `<span>${escapeHTML(c.detail||'')}</span></div>`).join(''))+`</div>`;
+  document.getElementById('vaultwhere').innerHTML =
+    `<tr><td>bot app dir</td><td class="muted" style="word-break:break-all">${escapeHTML(vaultData.app_dir||'')}</td>`
+    + `<td class="muted">${escapeHTML(vaultData.owner||'')} / ${escapeHTML(vaultData.mode||'')}</td>`
+    + `<td class="muted">${escapeHTML(vaultData.saved_ist||'—')}</td>`
+    + `<td>${vaultData.bot_has_it?'<span class="pill ok">the running bot has these keys</span>'
+        :'<span class="pill warn">saved after the bot started — restart to apply</span>'}</td></tr>`
+    + `<tr><td>env file</td><td class="muted" style="word-break:break-all">${escapeHTML(vaultData.path||'')}</td>`
+    + `<td class="muted">${vaultData.writable?'writable':'not writable by the dashboard'}</td>`
+    + `<td class="muted">${vaultData.exists?'present':'missing'}</td>`
+    + `<td class="muted">bot started ${escapeHTML(vaultData.bot_started_ist||'—')}</td></tr>`;
+  const groups=[];
+  for(const slot of (vaultData.slots||[])){
+    if(!groups.includes(slot.group)) groups.push(slot.group);
+  }
+  document.getElementById('vaultslots').innerHTML = groups.map(group=>{
+    const rows=(vaultData.slots||[]).filter(s=>s.group===group).map(slot=>{
+      const dropped=slot.key in vaultDraft.dropIdx ? new Set(vaultDraft.dropIdx[slot.key]) : new Set();
+      const pending=(vaultDraft.append[slot.key]||[]);
+      const chips=(slot.values||[]).map((value,index)=>
+        dropped.has(index)
+          ? `<span class="key-chip dropped" title="will be removed">${escapeHTML(value.masked)}</span>`
+          : `<span class="key-chip">${escapeHTML(value.masked)}<button class="chip-x" title="remove this value" onclick="vaultDropIndex('${slot.key}',${index})">✕</button></span>`).join('');
+      const newChips=pending.map((value,index)=>
+        `<span class="key-chip new">new …${escapeHTML(value.slice(-4))}<button class="chip-x" onclick="vaultDropNew('${slot.key}',${index})">✕</button></span>`).join('');
+      const bad=(slot.errors||[]).length;
+      return `<div class="vault-slot${bad?' has-error':''}">`
+        + `<div class="vault-head"><strong>${escapeHTML(slot.label)}</strong>`
+        + `<span class="muted">${escapeHTML(slot.key)}</span>`
+        + (slot.required?'<span class="pill fail">required</span>':'')
+        + (slot.multi?'<span class="pill info">several allowed</span>':'')
+        + (slot.set?'<span class="pill ok">set</span>':'<span class="pill warn">not set</span>')
+        + `</div>`
+        + `<div class="muted">${escapeHTML(slot.help||'')}</div>`
+        + `<div class="key-chips">${chips}${newChips||''}${(!chips&&!newChips)?'<span class="muted">no value yet</span>':''}</div>`
+        + ((slot.errors||[]).map(e=>`<div class="bad">✕ ${escapeHTML(e)}</div>`).join(''))
+        + ((slot.warnings||[]).map(w=>`<div class="warn">! ${escapeHTML(w)}</div>`).join(''))
+        + ((slot.info||[]).map(i=>`<div class="muted">${escapeHTML(i)}</div>`).join(''))
+        + `<div class="row"><input id="vaultin-${slot.key}" type="password" autocomplete="new-password" spellcheck="false"`
+        + ` placeholder="${escapeHTML(slot.hint||'paste the value')}" aria-label="${escapeHTML(slot.label)}"`
+        + ` onkeydown="if(event.key==='Enter')vaultAdd('${slot.key}')">`
+        + `<button class="ghost" onclick="vaultAdd('${slot.key}')">Add</button>`
+        + (slot.multi&&slot.values.length?`<span class="muted">${slot.values.length} value(s) already stored; Add appends, ✕ removes one</span>`:'')
+        + `</div></div>`;
+    }).join('');
+    return `<h3>${escapeHTML(vaultGroupLabel(group))}</h3>${rows}`;
+  }).join('') || '<p class="muted">no slots</p>';
+  const leaks=vaultData.leaks||{};
+  document.getElementById('vaultleaks').innerHTML =
+    (leaks.hits||[]).length
+      ? `<div class="bad"><b>${(leaks.hits||[]).length} file(s) contain a stored key.</b> A key that is visible in a log is compromised: rotate it (add the new value, remove the old).</div>`
+        + `<div class="tablewrap"><table><thead><tr><th>File</th><th>Key tail</th><th>Occurrences</th></tr></thead><tbody>`
+        + (leaks.hits||[]).map(h=>`<tr><td class="muted" style="word-break:break-all">${escapeHTML(h.path)}</td><td>…${escapeHTML(h.tail)}</td><td>${Number(h.count)}</td></tr>`).join('')
+        + `</tbody></table></div>`
+      : `<p class="ok">No stored key found in ${(leaks.scanned||[]).length} scanned file(s) (bot log tail, channels.json, snapshot, channel list).</p>`;
+  const journal=vaultData.journal||[];
+  document.getElementById('vaultjournal').innerHTML = journal.length
+    ? `<div class="tablewrap"><table><thead><tr><th>When (IST)</th><th>What</th></tr></thead><tbody>`
+      + journal.map(event=>`<tr><td class="muted">${escapeHTML(fmtTime(event.at))}</td><td>`
+        + escapeHTML((event.keys||[]).map(c=>`${c.key} ${c.action} [${(c.after||[]).join(', ')||'removed'}]`).join(' · ')||event.action||'')
+        + `</td></tr>`).join('')+`</tbody></table></div>`
+    : '<p class="muted">no changes saved from the dashboard yet</p>';
+}
+function vaultAdd(key){
+  const input=document.getElementById('vaultin-'+key);
+  if(!input) return;
+  const raw=input.value.trim();
+  const msg=document.getElementById('vaultmsg');
+  if(!raw){ if(msg) msg.textContent='Paste a value first.'; return; }
+  if(/\s/.test(raw)){ if(msg) msg.textContent='A key cannot contain spaces — check for a line wrap.'; return; }
+  const list=vaultDraft.append[key]||[];
+  if(!list.includes(raw)) list.push(raw);
+  vaultDraft.append[key]=list;
+  input.value='';
+  if(msg) msg.textContent='Added to the save. Nothing is written until you press Save keys.';
+  renderVault();
+  const again=document.getElementById('vaultin-'+key); if(again) again.focus();
+}
+function vaultDropNew(key,index){
+  const list=vaultDraft.append[key]||[]; list.splice(index,1);
+  if(list.length) vaultDraft.append[key]=list; else delete vaultDraft.append[key];
+  renderVault();
+}
+function vaultDropIndex(key,index){
+  const list=vaultDraft.dropIdx[key]||[];
+  const at=list.indexOf(index);
+  if(at>=0) list.splice(at,1); else list.push(index);
+  if(list.length) vaultDraft.dropIdx[key]=list; else delete vaultDraft.dropIdx[key];
+  renderVault();
+}
+function vaultBody(dryRun){
+  const body={dry_run:!!dryRun};
+  if(Object.keys(vaultDraft.append).length) body.append=vaultDraft.append;
+  if(Object.keys(vaultDraft.dropIdx).length) body.remove_values=vaultDraft.dropIdx;
+  if(vaultDraft.dropKey.size) body.remove=[...vaultDraft.dropKey];
+  return body;
+}
+async function previewVault(){ return saveVault(true); }
+async function saveVault(dryRun){
+  const msg=document.getElementById('vaultmsg'), changes=document.getElementById('vaultchanges');
+  const body=vaultBody(dryRun);
+  if(!body.append&&!body.remove_values&&!body.remove){
+    if(msg) msg.textContent='Nothing to save: add a value or remove one first.';
+    if(changes) changes.innerHTML='';
+    return;
+  }
+  if(msg) msg.textContent=dryRun?'checking…':'saving…';
+  try{
+    const out=await api('PUT','/api/vault',body,vaultData?vaultData.revision:null);
+    const rows=(out.changes||[]).map(c=>
+      `<tr><td>${escapeHTML(c.label)}<br><span class="muted">${escapeHTML(c.key)}</span></td>`
+      + `<td class="muted">${(c.before||[]).map(escapeHTML).join(', ')||'—'}</td>`
+      + `<td>${(c.after||[]).map(escapeHTML).join(', ')||'removed'}</td>`
+      + `<td><span class="pill ${c.action==='remove'?'warn':'ok'}">${escapeHTML(c.action)}</span></td></tr>`).join('');
+    if(changes){
+      changes.innerHTML=(rows?`<h3>${out.dry_run?'Would change':'Changed'}</h3><div class="tablewrap"><table><thead><tr><th>Key</th><th>Before</th><th>After</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table></div>`:'')
+        + ((out.warnings||[]).length?`<p class="warn">${out.warnings.map(escapeHTML).join('<br>')}</p>`:'');
+    }
+    if(msg) msg.textContent=out.next||(out.written?'saved':'');
+    if(out.written){
+      vaultDraft={append:{},dropIdx:{},dropKey:new Set()};
+      await loadVault();
+    }
+  }catch(e){
+    if(msg) msg.textContent='Not saved: '+e.message;
+    if(changes) changes.innerHTML=`<p class="bad">${escapeHTML(String(e.message||e))}</p>`;
+  }
+}
+async function loadVault(){
+  try{
+    vaultData=await api('GET','/api/vault');
+    renderVault();
+  }catch(e){
+    const msg=document.getElementById('vaultmsg');
+    if(msg) msg.textContent='API keys unavailable: '+e.message;
+  }
+}
 
 // ------------------------------------------------------- SOURCE STUDIO --
 // "ah telegram lo vunna channel anni chupisthe, bestga select cheskoni, multiple

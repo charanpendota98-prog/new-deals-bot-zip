@@ -46,6 +46,24 @@ async def run():
             try: await bot.resolve_dashboard_source(invalid,source)
             except ValueError: pass
             else: raise AssertionError('unjoined or non-channel source accepted')
+    # The plain (non-dashboard) resolver is the one that used to JOIN: an invite
+    # link in the source list made the bot call ImportChatInvite on every boot
+    # ("JOIN failed https://t.me/+..." in the live log). Membership is now only
+    # ever READ, and an unjoined invite yields None plus a reason for the panel.
+    invite='https://t.me/+SomePrivateInvite'
+    joined=Client()
+    assert (await bot.resolve_entity(joined,invite)).title=='Verified channel title'
+    assert 'CheckChatInviteRequest' in joined.requests
+    assert not any('Import' in str(request) or 'JoinChannel' in str(request)
+                   for request in joined.requests), 'resolve_entity must never join'
+    outsider=Client(joined=False)
+    assert await bot.resolve_entity(outsider,invite) is None
+    assert not any('Import' in str(request) or 'JoinChannel' in str(request)
+                   for request in outsider.requests), 'an unjoined invite must not be joined'
+    bot.SOURCE_DETAILS.pop(invite,None)
+    assert not await bot.register_source(outsider,{},invite,['SelectedShelf'],target_map={})
+    assert bot.SOURCE_DETAILS[invite]['state']=='join_required'
+    assert 'never joins automatically' in bot.SOURCE_DETAILS[invite]['detail']
     source='BrandNewFeed'
     bot.SOURCE_TO_TARGETS[source]=['SelectedShelf']
     bot.DASHBOARD_SCOPED_SOURCES.add(source)
@@ -68,7 +86,7 @@ async def run():
     aliases={client.entity.id:('OtherKnownFeed',['MainFeed'])}
     assert not await bot.register_source(client,aliases,source,['SelectedShelf'],target_map={})
     assert aliases[client.entity.id][0]=='OtherKnownFeed'
-    print('Runtime source checks PASS: catalog parity, already-joined access only, no join/history calls, local routing cap, activation cutoffs, target-loop and alias rejection.')
+    print('Runtime source checks PASS: catalog parity, already-joined access only (invite links are read, never joined), no join/history calls, unjoined sources explained, local routing cap, activation cutoffs, target-loop and alias rejection.')
 
 if __name__=='__main__':
     try: asyncio.run(run())

@@ -77,7 +77,7 @@ sys.path.insert(0, str(ROOT / "bestgaa"))
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import forensics, insight, pipeline as dashboard_pipeline, source_target, trends  # noqa: E402
+from dashboard import forensics, insight, pipeline as dashboard_pipeline, source_target, trends, vault  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -255,6 +255,278 @@ def api_status(request: web.Request):
         "pending_restart": pending_restart(),
         "insecure": not os.environ.get("DASHBOARD_TOKEN", ""),
     })
+
+
+def bot_app_dir() -> Path:
+    """Where the RUNNING bot lives - the directory that owns `.env`.
+
+    The dashboard often runs from a git checkout while the bot runs from its app
+    directory (that split caused a whole evening of "the dashboard shows an empty
+    list"). Resolving the app dir here, in one place, and SHOWING it in the vault
+    panel is what makes "which keys is the bot actually reading?" answerable
+    without SSH.
+    """
+    explicit = os.getenv("BESTGAA_DIR", "").strip()
+    if explicit:
+        return Path(explicit)
+    db = os.getenv("BOT_DB_PATH", "").strip()
+    if db:
+        return Path(db).parent
+    installed = Path("/home/ubuntu/bestgaa-bot/bestgaa-bot")
+    if installed.exists():
+        return installed
+    return ROOT
+
+
+def bot_env_path() -> Path:
+    """The bot's `.env`. Never the dashboard's own /etc/bestgaa/dashboard.env."""
+    explicit = os.getenv("BESTGAA_BOT_ENV", "").strip()
+    if explicit:
+        return Path(explicit)
+    return bot_app_dir() / ".env"
+
+
+def bot_log_paths() -> list[Path]:
+    app = bot_app_dir()
+    log_dir = Path(os.getenv("BOT_LOG_DIR", "").strip() or (app / "logs"))
+    # The app's own logs directory is scanned even when BOT_LOG_DIR points
+    # somewhere else: a key pasted into the deployed log is still a key on disk.
+    candidates = [log_dir / "bot.log", app / "logs" / "bot.log", app / "bot.log",
+                  channels_config.channels_json_path(),
+                  channels_config.snapshot_path(),
+                  channels_config.directory_path()]
+    seen: list[Path] = []
+    for path in candidates:
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
+def bot_started_at() -> float:
+    snap = snapshot()
+    for key in ("started_at", "heartbeat_at", "boot_at"):
+        try:
+            value = float(snap.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value:
+            return value
+    return 0.0
+
+
+def vault_state() -> dict:
+    """Everything the vault panel shows - masked, validated, and honest."""
+    path = bot_env_path()
+    text = vault.read_env_text(path)
+    state = vault.file_state(path)
+    values = vault.env_values(text)
+    started = bot_started_at()
+    bot_has_it = bool(started and state["mtime"] and state["mtime"] <= started + 1)
+    # Only REAL slots count as secrets; an unknown line is reported, not scanned.
+    secrets: list[str] = []
+    for key, raw in values.items():
+        slot = vault.SLOT_BY_KEY.get(key)
+        if slot is None or not slot.secret:
+            continue
+        secrets.extend(vault.split_values(slot, raw))
+    leaks = vault.leak_scan(secrets, bot_log_paths())
+    all_values = {key: vault.split_values(vault.SLOT_BY_KEY[key], raw)
+                  for key, raw in values.items() if key in vault.SLOT_BY_KEY}
+    slots = []
+    for slot in vault.SLOTS:
+        found = all_values.get(slot.key, [])
+        verdict = vault.validate_slot(slot, found, all_values=all_values) if found else None
+        slots.append({
+            "key": slot.key, "label": slot.label, "group": slot.group,
+            "help": slot.help, "hint": slot.hint, "secret": slot.secret,
+            "multi": slot.multi, "required": slot.required,
+            "set": bool(found),
+            "values": [{"masked": vault.mask(value, secret=slot.secret),
+                        "tail": "" if not slot.secret else vault.tail(value)}
+                       for value in found],
+            "errors": (verdict or {}).get("errors", []),
+            "warnings": (verdict or {}).get("warnings", []),
+            "info": (verdict or {}).get("info", []),
+        })
+    unknown = sorted(key for key in values
+                     if key not in vault.SLOT_BY_KEY
+                     and any(marker in key for marker in ("TOKEN", "KEY", "SECRET", "API")))
+    db = read_only_db()
+    if db is not None:
+        db.close()
+    return {
+        "path": str(path), "app_dir": str(bot_app_dir()),
+        "exists": state["exists"], "writable": state["writable"],
+        "mode": state["mode"], "owner": state["owner"], "bytes": state["bytes"],
+        "revision": state["revision"], "saved_at": state["mtime"],
+        "saved_ist": insight.ist(state["mtime"]) if state["mtime"] else "—",
+        "bot_started_at": started,
+        "bot_started_ist": insight.ist(started) if started else "—",
+        "bot_has_it": bot_has_it,
+        "groups": [{"key": key, "label": label, "help": help_} for key, label, help_ in vault.GROUPS],
+        "slots": slots,
+        "unknown_keys": unknown,
+        "leaks": leaks,
+        "journal": vault.journal_read(path, limit=20),
+        "readiness": vault.readiness(values, bot_running=bool(started and
+                                                             time.time() - started < 900),
+                                     bot_has_it=bot_has_it, db_ok=db is not None,
+                                     leaks=leaks),
+        "restart_command": "sudo systemctl restart bestgaa",
+    }
+
+
+@require_token
+@in_thread
+def api_vault(request: web.Request):
+    return web.json_response(vault_state())
+
+
+@require_token
+async def api_vault_save(request: web.Request):
+    """Save keys: validated first, written atomically, answered in masks only."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    path = bot_env_path()
+    text = vault.read_env_text(path)
+    revision = vault.env_revision(text)
+    expected = request.headers.get("If-Match")
+    if expected and expected != revision:
+        return web.json_response(
+            {"errors": [".env changed since you opened this form. Reload and review "
+                        "before saving."], "revision": revision}, status=409)
+    dry_run = bool(body.get("dry_run"))
+    current = vault.env_values(text)
+    current_values = {slot.key: vault.split_values(slot, current.get(slot.key, ""))
+                      for slot in vault.SLOTS}
+
+    def _bad(message: str) -> web.Response:
+        return web.json_response({"errors": [message], "revision": revision,
+                                  "written": False}, status=400)
+
+    updates: dict[str, list[str]] = {}
+    raw_set = body.get("set") or {}
+    if not isinstance(raw_set, dict):
+        return _bad("set must be an object of key -> value(s)")
+    for key, raw in raw_set.items():
+        slot = vault.SLOT_BY_KEY.get(str(key))
+        if slot is None:
+            continue  # reported as an unknown key by validate_update
+        try:
+            updates[slot.key] = vault.split_values(slot, raw)
+        except ValueError as exc:
+            return _bad(f"{key}: {exc}")
+
+    # "remove this one" is by INDEX, because the dashboard only ever held the
+    # masked form: an operator can drop the third Bitly token without ever sending
+    # the other two through the browser again.
+    raw_remove_values = body.get("remove_values") or {}
+    if not isinstance(raw_remove_values, dict):
+        return _bad("remove_values must be an object of key -> [index, ...]")
+    for key, indices in raw_remove_values.items():
+        slot = vault.SLOT_BY_KEY.get(str(key))
+        if slot is None or str(key) in raw_set:
+            continue
+        if not isinstance(indices, list):
+            return _bad(f"remove_values[{key}] must be a list of indices")
+        base = list(current_values[slot.key])
+        try:
+            wanted = sorted({int(index) for index in indices}, reverse=True)
+        except (TypeError, ValueError):
+            return _bad(f"remove_values[{key}] must be whole numbers")
+        for index in wanted:
+            if index < 0 or index >= len(base):
+                return _bad(f"{key}: no value at position {index + 1}")
+            base.pop(index)
+        updates[slot.key] = base
+
+    # "add another key" keeps the ones already there, which is what a second
+    # Bitly token or a second EarnKaro failover key actually means.
+    raw_append = body.get("append") or {}
+    if not isinstance(raw_append, dict):
+        return _bad("append must be an object of key -> value(s)")
+    for key, raw in raw_append.items():
+        slot = vault.SLOT_BY_KEY.get(str(key))
+        if slot is None:
+            continue
+        try:
+            additions = vault.split_values(slot, raw)
+        except ValueError as exc:
+            return _bad(f"{key}: {exc}")
+        base = list(updates.get(slot.key, current_values[slot.key]))
+        for value in additions:
+            if value not in base:
+                base.append(value)
+        updates[slot.key] = base
+
+    removals = body.get("remove") or []
+    if isinstance(removals, str):
+        removals = [removals]
+    if not isinstance(removals, list):
+        return _bad("remove must be a list of keys")
+    for key in removals:
+        if str(key) in vault.SLOT_BY_KEY:
+            updates[str(key)] = []
+    if not updates:
+        return _bad("nothing to save")
+
+    report = vault.validate_update(updates, current)
+    if report["errors"]:
+        return web.json_response({"errors": report["errors"], "warnings": report["warnings"],
+                                  "changes": report["changed"], "revision": revision,
+                                  "dry_run": dry_run, "written": False}, status=400)
+    rendered: dict[str, str | None] = {}
+    for key, values in updates.items():
+        slot = vault.SLOT_BY_KEY[key]
+        if not values:
+            rendered[key] = None
+        elif slot.multi:
+            rendered[key] = ",".join(values)
+        else:
+            rendered[key] = values[0]
+    new_text = vault.render_env(text, rendered)
+    new_revision = vault.env_revision(new_text)
+    payload = {
+        "dry_run": dry_run, "written": False,
+        "changes": report["changed"], "unchanged": report["unchanged"],
+        "warnings": report["warnings"], "revision": revision,
+        "new_revision": new_revision, "path": str(path),
+    }
+    if new_revision == revision:
+        payload.update(next="Nothing changed: the file already holds these values.",
+                       bot_has_it=vault_state()["bot_has_it"])
+        return web.json_response(payload)
+    if dry_run:
+        payload.update(next="Dry run only - nothing was written. Review the changes, "
+                            "then save for real.")
+        return web.json_response(payload)
+    try:
+        result = vault.write_env(path, new_text)
+    except PermissionError as exc:
+        return web.json_response(
+            {"errors": [f"the dashboard cannot write {path} ({exc.strerror or exc}). "
+                        f"Run the same save on the server as the owner, or make the file "
+                        f"writable by the dashboard user."],
+             "changes": report["changed"], "revision": revision}, status=409)
+    except OSError as exc:
+        return web.json_response({"errors": [f"could not write {path}: {exc}"]},
+                                 status=500)
+    vault.journal_append(path, {
+        "action": "save", "keys": report["changed"],
+        "unchanged": report["unchanged"],
+        "backup": result["backup"], "revision_before": revision[:12],
+        "revision_after": new_revision[:12],
+    })
+    payload.update(written=True, backup=result["backup"], saved_at=result["written_at"],
+                   saved_ist=insight.ist(result["written_at"]),
+                   bot_has_it=False,
+                   next=("Saved. The running bot reads .env at start, so restart it to "
+                         "apply - or use the restart button below."))
+    return web.json_response(payload)
 
 
 def config_revision() -> str:
@@ -1981,6 +2253,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/category-batch", api_category_batch)
     app.router.add_post("/api/inspect-link", api_inspect_link)
     app.router.add_post("/api/source-to-target", api_source_to_target)
+    app.router.add_get("/api/vault", api_vault)
+    app.router.add_put("/api/vault", api_vault_save)
     app.router.add_get("/api/directory", api_directory)
     app.router.add_post("/api/watch/bulk", api_watch_bulk)
     app.router.add_get("/api/watch", api_watch_list)
