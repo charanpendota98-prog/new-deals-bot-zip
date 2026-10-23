@@ -321,6 +321,65 @@ else
 fi
 
 echo ""
+echo "==== 7. DASHBOARD (the page that edits keys and routing) ===="
+# The bot being correct is not enough: the dashboard can be serving a DIFFERENT
+# checkout than the one just deployed (2026-10-22: bestgaa-dashboard ran
+# /home/ubuntu/new-deals-bot-zip while the operator deployed bestgaa-latest, and
+# the source list looked empty for an hour). Prove the page, its endpoints and
+# the vault answer - and never print the token.
+DASH_SERVICE="${DASHBOARD_SERVICE:-bestgaa-dashboard}"
+DASH_ENV_FILE="${DASHBOARD_ENV_FILE:-/etc/bestgaa/dashboard.env}"
+DASH_PORT="${DASHBOARD_PORT:-8080}"
+if command -v systemctl >/dev/null 2>&1 && systemctl cat "$DASH_SERVICE" >/dev/null 2>&1; then
+  DASH_STATE="$(systemctl is-active "$DASH_SERVICE" 2>/dev/null || true)"
+  DASH_CWD="$(systemctl show -p WorkingDirectory --value "$DASH_SERVICE" 2>/dev/null || true)"
+  [[ "$DASH_STATE" == "active" ]] && ok "dashboard service is active" \
+    || warn "dashboard service is '$DASH_STATE' - sudo systemctl start $DASH_SERVICE"
+  if [[ -n "$DASH_CWD" && "$DASH_CWD" != "-" ]]; then
+    if [[ "$DASH_CWD" == "$REPO" ]]; then
+      ok "the dashboard serves the checkout that was just deployed ($DASH_CWD)"
+    else
+      warn "the dashboard serves $DASH_CWD, not $REPO - deploy or restart it there"
+    fi
+  fi
+  TOKEN=""
+  [[ -r "$DASH_ENV_FILE" ]] && TOKEN="$(sed -n 's/^[[:space:]]*DASHBOARD_TOKEN=//p' \
+    "$DASH_ENV_FILE" | tail -n 1 | tr -d '\r' | sed 's/^"//; s/"$//')"
+  if [[ -z "$TOKEN" ]]; then
+    warn "no DASHBOARD_TOKEN in $DASH_ENV_FILE - the page cannot be proven (and no operator can log in)"
+  else
+    for probe in /api/status /api/vault /api/health; do
+      code="$(curl -s -o /dev/null -m 8 -w '%{http_code}' -H "X-Dashboard-Token: $TOKEN" \
+              "http://127.0.0.1:${DASH_PORT}${probe}" 2>/dev/null || true)"
+      [[ "$code" == "200" ]] && ok "GET $probe -> 200" || warn "GET $probe -> ${code:-none}"
+    done
+    # The vault answers with the operator's readiness verdict, masked values only.
+    VAULT="$(curl -s -m 8 -H "X-Dashboard-Token: $TOKEN" \
+             "http://127.0.0.1:${DASH_PORT}/api/vault" 2>/dev/null || true)"
+    VERDICT="$(printf '%s' "$VAULT" | python3 -c \
+      "import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('unreadable'); raise SystemExit
+print(d.get('readiness',{}).get('state','?') + ' | ' + d.get('readiness',{}).get('headline','')[:90])
+print('bot_has_it=' + str(d.get('bot_has_it')) + ' leaks=' + d.get('leaks',{}).get('state','?'))" 2>/dev/null || echo "unreadable")"
+    first="$(printf '%s' "$VERDICT" | head -n 1)"
+    case "$first" in
+      ready*) ok "API keys: $first" ;;
+      unreadable*) warn "API keys: the vault did not answer with JSON" ;;
+      *) warn "API keys: $first" ;;
+    esac
+    # A trailing newline matters: `tail -n +2` silently drops a last line that
+    # has none, so the second line of the verdict never appeared.
+    printf '%s\n' "$VERDICT" | tail -n +2 | while IFS= read -r line; do info "$line"; done
+    case "$VAULT" in *"$TOKEN"*) warn "the vault response echoes the dashboard token - do not paste that output" ;; esac
+  fi
+else
+  info "skipped (no $DASH_SERVICE on this host) - run ops/dashboard_link.sh to see where the page lives"
+fi
+
+echo ""
 if ((${#FAILED[@]})); then
   echo "DEPLOY VERIFY: ${#FAILED[@]} problem(s):"
   for f in "${FAILED[@]}"; do echo "  - $f"; done

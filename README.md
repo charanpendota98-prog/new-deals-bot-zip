@@ -1814,7 +1814,7 @@ source snapshot:
 | `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
 | `ops/dashboard_link.sh` | `360ddc15c38c03cdec757bfb702b58f720eb068f9d7c63bb721fde6623b2048c` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
-| `ops/deploy_and_verify.sh` | `fba393a6468a81cf540c2f20c260c0ac84afbcec8e1b20143fd998aa64af31eb` |
+| `ops/deploy_and_verify.sh` | `83a2e3b216fe3a8cb223cef4297843f7d32f896ed1a495be5cc1088730668013` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
@@ -1846,7 +1846,7 @@ source snapshot:
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
-| `test_dashboard_link.py` | `00659903bf67cd8efbb1683e02f9ba3b2cd7bc82ffb06cbf5d7f64dee3001bdf` |
+| `test_dashboard_link.py` | `32c854e3be2997663c7c8b07ed2ae619f5d2d75d376f57a4f0122cfd33083142` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
 | `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
 | `test_dashboard_pipeline.cjs` | `ebf570e299bdc7c326983b883597a46d12c88fa8eacab9b93ffa22bad11320d6` |
@@ -2806,6 +2806,20 @@ ours**, and **what did the pipeline change on the way**.
   source link, foreign tag, withheld, never-attempted, lost number, old schema,
   HTTP 200/400/404/503) and `test_deal_dossier.cjs` (jsdom: what the operator
   sees). Both are in the gate; no service is started.
+
+### The deploy report proves the dashboard, not just the bot (2026-10-23)
+
+`ops/deploy_and_verify.sh` used to finish green while `bestgaa-dashboard` served a
+different checkout than the one just deployed (the 2026-10-22 incident: the page
+looked empty for an hour). Section 7 now checks, without ever printing the token:
+the service is active, its `WorkingDirectory` **is the repo just deployed** (a
+different one is a problem, not a pass), `/api/status`, `/api/vault` and
+`/api/health` answer 200, and the API-keys verdict is printed with `bot_has_it`
+and the leak state. `test_dashboard_link.py` runs that section against a stub
+server with a fake `systemctl`: healthy → `problems: 0`, a foreign checkout →
+reported. (Writing it turned up a classic shell bug worth naming: `tail -n +2` on
+a stream whose last line has no trailing newline silently drops that line, so the
+second half of the verdict never printed. The test pins it.)
 
 ### A full-replacement PUT must not replace with nothing (2026-10-23)
 

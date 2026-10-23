@@ -130,6 +130,95 @@ def test_page():
           "#pipeline" in html and "dashboard_link.sh" in html)
 
 
+VERIFY = ROOT / "ops" / "deploy_and_verify.sh"
+
+
+def _section_7() -> str:
+    """The deploy report's dashboard block, lifted out so it can be run alone."""
+    text = VERIFY.read_text(encoding="utf-8")
+    start = text.index('echo "==== 7. DASHBOARD')
+    end = text.index('echo ""\nif ((${#FAILED[@]})); then')
+    body = text[start:end].replace('echo ""\n', "", 1)
+    return ("set -Eeuo pipefail\nREPO='" + str(ROOT) + "'\nFAILED=()\n"
+            "ok(){ printf '  OK    %s\\n' \"$*\"; }\n"
+            "warn(){ printf '  CHECK %s\\n' \"$*\"; FAILED+=(\"$*\"); }\n"
+            "info(){ printf '  ----  %s\\n' \"$*\"; }\n" + body)
+
+
+def _fake_server(payload: str, port: int):
+    import http.server
+    import threading
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server's name
+            body = payload.encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", port), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+def test_deploy_report_proves_the_dashboard():
+    print("\n== the deploy report proves the dashboard too, and never leaks the token ==")
+    check("the deploy report has a dashboard section", "==== 7. DASHBOARD" in
+          VERIFY.read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory() as td:
+        env_file = Path(td) / "dashboard.env"
+        env_file.write_text(f"DASHBOARD_TOKEN={TOKEN}\n", encoding="utf-8")
+        bin_dir = Path(td) / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "systemctl").write_text(
+            "#!/bin/bash\n"
+            'case "$1 $2" in\n'
+            "  cat*) exit 0 ;;\n"
+            '  "is-active"*) echo active ;;\n'
+            '  "show -p"*) echo "$FAKE_CWD" ;;\n'
+            "  *) exit 1 ;;\n"
+            "esac\n", encoding="utf-8")
+        (bin_dir / "systemctl").chmod(0o755)
+
+        ready = json.dumps({"readiness": {"state": "ready", "headline": "Everything the bot needs is set."},
+                            "bot_has_it": True, "leaks": {"state": "clean"}})
+        server = _fake_server(ready, 8199)
+        try:
+            env = dict(os.environ)
+            env.update(PATH=f"{bin_dir}:{env.get('PATH', '')}",
+                       FAKE_CWD=str(ROOT), DASHBOARD_PORT="8199",
+                       DASHBOARD_ENV_FILE=str(env_file))
+            script = Path(td) / "section7.sh"
+            script.write_text(_section_7() + '\nprintf "problems: %s\\n" "${#FAILED[@]}"\n',
+                              encoding="utf-8")
+            good = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+            out = good.stdout + good.stderr
+            check("a healthy dashboard is reported as the checkout that is serving",
+                  "serves the checkout that was just deployed" in out, out[:400])
+            check("the page, the keys panel and the health panel are each proven",
+                  "GET /api/status -> 200" in out and "GET /api/vault -> 200" in out
+                  and "GET /api/health -> 200" in out, out[:400])
+            check("the API-keys verdict is printed with its second line",
+                  "API keys: ready" in out and "bot_has_it=True leaks=clean" in out, out[-300:])
+            check("the report never prints the token",
+                  TOKEN not in out and "…1234" not in out, out[-200:])
+            check("a healthy run reports no problem", "problems: 0" in out, out[-100:])
+
+            env["FAKE_CWD"] = "/home/ubuntu/bestgaa-latest"
+            wrong = subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
+            out2 = wrong.stdout + wrong.stderr
+            check("a dashboard serving another checkout is a CHECK, not a silent OK",
+                  "not " in out2 and "the dashboard serves /home/ubuntu/bestgaa-latest" in out2,
+                  out2[:400])
+        finally:
+            server.shutdown()
+
+
 def test_gate_wiring():
     print("\n== gate wiring ==")
     gate = (ROOT / "ops" / "test_all.sh").read_text(encoding="utf-8")
@@ -141,6 +230,7 @@ def test_gate_wiring():
 if __name__ == "__main__":
     test_script()
     test_page()
+    test_deploy_report_proves_the_dashboard()
     test_gate_wiring()
     print("\n" + ("DASHBOARD ACCESS TESTS: FAILURES: " + ", ".join(FAILS) if FAILS
                   else "test_dashboard_link: all checks PASS"))
