@@ -44,6 +44,14 @@ Rules, enforced here and re-enforced by the dashboard endpoint:
   channel it is posted in (`exclude_self`) - a self-join button is noise and an
   auto row that included it would be a copy of every post's own channel.
 
+**How OFTEN** (2026-10-25: *"every time ravoddu … every 10th post ki ilaga,
+5th post ki kuda set cheskogalagam"*). A row under every single post is noise, so
+each channel (and the default) also carries `every`: `1` = every post (the old
+behaviour), `10` = every 10th, `5` = every 5th, up to 100. The bot counts in its
+own database (`bestgaa/button_cadence.py`) so the schedule survives restarts and
+a retry can never count a post twice. `cadence()` answers "which N applies here",
+`preview()` says what the next posts will do.
+
 Empty or unreadable config means NO buttons, which is exactly the old behaviour:
 the send path asks `resolve()` and passes nothing when the list is empty, so this
 feature cannot change a single byte of what goes out until an operator configures
@@ -199,7 +207,25 @@ def preset_buttons() -> list[dict]:
 # --------------------------------------------------------------------------- #
 def empty_config() -> dict:
     return {"version": SCHEMA_VERSION, "buttons": [], "per_channel": {},
-            "auto_label": DEFAULT_AUTO_LABEL, "auto_limit": MAX_BUTTONS}
+            "auto_label": DEFAULT_AUTO_LABEL, "auto_limit": MAX_BUTTONS,
+            "every": 1}
+
+
+def _cadence():
+    try:
+        from . import button_cadence
+    except ImportError:  # pragma: no cover - flat imports on the server
+        import button_cadence
+    return button_cadence
+
+
+def every_of(value, default: int = 1) -> int:
+    """The 'show on every Nth post' number, clamped to 1..100."""
+    return _cadence().clamp(value if value is not None else default)
+
+
+def preview(every=1, count: int = 12) -> list[bool]:
+    return _cadence().preview(every, count)
 
 
 def _read_json(path: Path) -> dict:
@@ -222,6 +248,7 @@ def _channel_entry(name, entry) -> dict | None:
         mode = "default"
     buttons, _errors = validate_buttons(entry.get("buttons"))
     return {"name": handle, "mode": mode,
+            "every": every_of(entry.get("every"), 0) if entry.get("every") not in (None, "") else 0,
             "buttons": _without_self(buttons, handle) if mode == "custom" else []}
 
 
@@ -242,7 +269,8 @@ def load_config(path: Path | None = None) -> dict:
         auto_limit = MAX_BUTTONS
     return {"version": SCHEMA_VERSION, "buttons": buttons, "per_channel": per_channel,
             "auto_label": auto_label or DEFAULT_AUTO_LABEL,
-            "auto_limit": max(1, min(MAX_BUTTONS, auto_limit))}
+            "auto_limit": max(1, min(MAX_BUTTONS, auto_limit)),
+            "every": every_of(raw.get("every"), 1)}
 
 
 def validate_config(data: dict) -> tuple[dict, list[str]]:
@@ -266,6 +294,12 @@ def validate_config(data: dict) -> tuple[dict, list[str]]:
         auto_limit = MAX_BUTTONS
         errors.append("auto_limit must be a number")
     auto_limit = max(1, min(MAX_BUTTONS, auto_limit))
+    try:
+        every = int(data.get("every") if data.get("every") not in (None, "") else 1)
+    except (TypeError, ValueError):
+        every = 1
+        errors.append("every must be a number (1 = every post, 10 = every 10th post)")
+    every = every_of(every)
     raw_per = data.get("per_channel") or {}
     if not isinstance(raw_per, dict):
         return empty_config(), errors + ["per_channel must be an object of channel -> entry"]
@@ -291,11 +325,19 @@ def validate_config(data: dict) -> tuple[dict, list[str]]:
         if self_links:
             errors.append(f"@{handle}: a button cannot link the channel it is posted in "
                           f"({self_links[0]})")
-        per_channel[handle] = {"name": handle, "mode": mode,
+        raw_every = entry.get("every")
+        channel_every = 0
+        if raw_every not in (None, ""):
+            try:
+                channel_every = every_of(int(raw_every))
+            except (TypeError, ValueError):
+                errors.append(f"@{handle}: every must be a number (1..100)")
+                channel_every = 0
+        per_channel[handle] = {"name": handle, "mode": mode, "every": channel_every,
                                "buttons": rows if mode == "custom" else []}
     return ({"version": SCHEMA_VERSION, "buttons": buttons, "per_channel": per_channel,
-             "auto_label": auto_label or DEFAULT_AUTO_LABEL, "auto_limit": auto_limit},
-            errors)
+             "auto_label": auto_label or DEFAULT_AUTO_LABEL, "auto_limit": auto_limit,
+             "every": every}, errors)
 
 
 def save_config(data: dict, path: Path | None = None) -> tuple[Path, list[str], dict]:
@@ -372,6 +414,16 @@ def resolve(target, *, ours=(), titles=None, path: Path | None = None) -> list[d
     return _without_self(config["buttons"], key)
 
 
+def cadence(target, *, path: Path | None = None) -> int:
+    """Which N applies to this channel: its own override, else the global one."""
+    config = load_config(path)
+    key = handle_of(target)
+    entry = config["per_channel"].get(key) if key else None
+    if entry and entry.get("every"):
+        return every_of(entry.get("every"))
+    return every_of(config.get("every"))
+
+
 def effective_row(target, *, ours=(), titles=None, path: Path | None = None) -> dict:
     """What the page shows for one channel: mode, where it comes from, the row."""
     config = load_config(path)
@@ -382,8 +434,12 @@ def effective_row(target, *, ours=(), titles=None, path: Path | None = None) -> 
     where = {"none": "no buttons in this channel", "custom": "this channel's own row",
              "auto": "built from your other channels",
              "default": "the default row" if config["buttons"] else "no default row"}[mode]
+    every = every_of(entry.get("every")) if entry and entry.get("every") \
+        else every_of(config.get("every"))
     return {"name": handle_of(target), "mode": mode, "buttons": rows, "where": where,
-            "configured": bool(entry), "would_be_empty": not rows}
+            "configured": bool(entry), "would_be_empty": not rows, "every": every,
+            "every_own": bool(entry and entry.get("every")),
+            "first_of": every if every > 1 else 1}
 
 
 def our_channels(path: Path | None = None) -> list[dict]:

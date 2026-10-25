@@ -9234,6 +9234,53 @@ def _our_channels_for_buttons() -> tuple[list[str], dict[str, str]]:
     return names, titles
 
 
+def button_row_for(target, queue_id=None, conn=None):
+    """The button row this post should carry, honouring "every Nth post".
+
+    Two questions, in order: WHICH row (post_buttons.resolve - default/auto/
+    custom/none) and HOW OFTEN (post_buttons.cadence + button_cadence). The
+    counter lives in the bot's own database and remembers the decision per
+    `(target, queue_id)`, so a retry or a resume asks the same question and gets
+    the same answer - a post is never counted twice. Without a database handle
+    (an old caller, a dry run) the schedule cannot be advanced, and the honest
+    answer is "no row on this pass" rather than double counting.
+    """
+    rows = post_inline_buttons(target)
+    if not rows:
+        return []
+    try:
+        try:
+            from . import button_cadence as _cadence
+        except ImportError:
+            import button_cadence as _cadence
+        try:
+            from . import post_buttons as _buttons
+        except ImportError:
+            import post_buttons as _buttons
+        every = _buttons.cadence(target)
+    except Exception as exc:  # noqa: BLE001 - a button must never cost a post
+        log.warning("POST BUTTONS | could not read the cadence for %s (%s) - showing the row",
+                    target, exc)
+        return rows
+    if every <= 1:
+        return rows
+    if conn is None:
+        # No ledger to count in: do not guess a position in the schedule.
+        log.info("POST BUTTONS | @%s set to every %sth post but no counter is available - "
+                 "this post goes without the row", target, every)
+        return []
+    try:
+        show = _cadence.should_show(conn, target, queue_id, every)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("POST BUTTONS | cadence failed for %s (%s) - showing the row", target, exc)
+        return rows
+    if not show:
+        log.info("POST BUTTONS | @%s is on every %sth post - this one goes without the row",
+                 target, every)
+        return []
+    return rows
+
+
 def post_inline_buttons(target=None):
     """The dashboard-configured URL button row for ONE channel, or [].
 
@@ -9313,7 +9360,7 @@ class AmbiguousDelivery(Exception):
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
                   media_refs: list | None = None, attempt_callback=None,
-                  target: str | None = None) -> tuple[bool, str]:
+                  target: str | None = None, button_rows=None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
@@ -9329,8 +9376,14 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
     # (which is the photo when there is one). A resumed job puts it on the message
     # that resumes, so a post never shows zero rows because of a retry.
     # PER CHANNEL: the row is resolved for the channel this copy is going to, so
-    # a post in one shelf offers the others and never links itself.
-    button_row = post_inline_buttons(target) or None
+    # a post in one shelf offers the others and never links itself. `button_rows`
+    # is the caller's pre-computed answer (it may be [] because this post is not
+    # one of the "every Nth" ones) - passing it here keeps the counting in ONE
+    # place, next to the delivery ledger, instead of inside the send loop.
+    if button_rows is None:
+        button_row = post_inline_buttons(target) or None
+    else:
+        button_row = button_rows or None
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
         chunk_buttons = button_row if index == start_chunk else None
@@ -10743,11 +10796,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
 
             chunks_before_target = confirmed_chunks
             try:
+                # One decision per (post, channel), taken here under the store's
+                # lock so the counter is never raced by two workers.
+                async with store.lock:
+                    chunk_button_rows = button_row_for(target, row["id"], store.conn)
                 ok, error = await deliver(
                     client, entity, target_text, target_media,
                     start_chunk=start_chunk, progress_callback=checkpoint,
                     link_preview=allow_preview, media_refs=media_refs,
                     attempt_callback=send_attempt, target=target,
+                    button_rows=chunk_button_rows,
                 )
             except AmbiguousDelivery as exc:
                 held_targets += 1

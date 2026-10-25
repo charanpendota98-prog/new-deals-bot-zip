@@ -12,18 +12,26 @@ let view={
   per_channel:[],
   auto_label:'Join {title} ❤️',
   auto_limit:2,
+  every:10,
+  schedule:[true,false,false,false,false,false,false,false,false,false,true,false],
   max_buttons:2,
   max_label:40,
   path:'/bot/post_buttons.json',
   channels:[
     {name:'LootZoneIndia11', title:'Loot Zone India', url:'https://t.me/LootZoneIndia11',
      from:'dashboard', mode:'auto', where:'built from your other channels',
+     every:10, every_own:false,
+     schedule:[true,false,false,false,false,false,false,false,false,false,true,false],
      buttons:[{label:'Join Under 99 Shelf ❤️', url:'https://t.me/under99deals11'}]},
     {name:'under99deals11', title:'Under 99 Shelf', url:'https://t.me/under99deals11',
      from:'directory', mode:'custom', where:"this channel's own row",
+     every:5, every_own:true,
+     schedule:[true,false,false,false,false,true,false,false,false,false,true,false],
      buttons:[{label:'<img src=x onerror=alert(1)>', url:'https://t.me/LootZoneIndia11'}]},
     {name:'DailyStealsHub', title:'Daily Steals Hub', url:'https://t.me/DailyStealsHub',
      from:'dashboard', mode:'default', where:'the default row',
+     every:10, every_own:false,
+     schedule:[true,false,false,false,false,false,false,false,false,false,true,false],
      buttons:[{label:'Join Shopsy Loots ❤️', url:'https://t.me/shpsyloots'}]}
   ]
 };
@@ -40,11 +48,15 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
       // Save exactly like the endpoint: only what the body carries changes.
       const next=JSON.parse(JSON.stringify(view));
       if(body.buttons) next.buttons=body.buttons;
+      if(typeof body.every==='number') next.every=body.every;
       if(body.per_channel){
         for(const entry of body.per_channel){
           const row=next.channels.find(channel=>channel.name===entry.name);
           if(!row) continue;
           row.mode=entry.mode;
+          if(typeof entry.every==='number' && entry.every>0){
+            row.every=entry.every; row.every_own=true;
+          }
           if(entry.mode==='custom') row.buttons=entry.buttons;
           if(entry.mode==='none') row.buttons=[];
           if(entry.mode==='auto') row.buttons=[{label:'Join Under 99 Shelf ❤️',
@@ -119,7 +131,34 @@ const dom=new JSDOM(html,{url:'https://preview.example/',runScripts:'dangerously
   assert.equal(calls.length,empty);
   assert.match(d.getElementById('pballstate').textContent,/at least one button/);
 
+  // ---- how often --------------------------------------------------------- //
+  assert.equal(d.getElementById('pbevery').value,'10','the global "every Nth" is loaded');
+  assert.match(d.getElementById('pbschedule').textContent,/every|next 12/);
+  assert.equal(d.getElementById('pbschedule').innerHTML.includes('●'),true,
+    'the schedule is drawn as dots, not just a number');
+  // every 5th, one press
+  await w.pbPickEvery(5);
+  let cadencePut=calls.filter(call=>call.method==='PUT').pop();
+  assert.deepEqual(cadencePut.body,{every:5});
+  assert.match(d.getElementById('pbeverystate').textContent,/every 5 post/);
+  // a channel's own number - the mode it already has is carried, not reset
+  const modeBefore=w.pbRows().find(row=>row.name==='DailyStealsHub').mode;
+  await w.pbSetEvery('DailyStealsHub','7');
+  cadencePut=calls.filter(call=>call.method==='PUT').pop();
+  assert.equal(cadencePut.body.per_channel[0].name,'DailyStealsHub');
+  assert.equal(cadencePut.body.per_channel[0].every,7);
+  assert.equal(cadencePut.body.per_channel[0].mode,modeBefore,
+    'the mode is not lost by a cadence edit');
+  assert.match(d.getElementById('pballstate').textContent,/every 7 post/);
+  // the per-channel boxes show what each channel is set to
+  const everyBoxes=Array.from(d.querySelectorAll('#pbchannels input[type=number]'))
+    .map(input=>input.value);
+  assert.deepEqual(everyBoxes,['10','5','7']);
+  assert.match(d.getElementById('pbchannels').textContent,/every 10 post/);
+  assert.match(d.getElementById('pbchannels').textContent,/next 12:/);
+
   console.log('  PASS  dashboard DOM: per-channel button rows (modes, preview, links)');
+  console.log('  PASS  dashboard DOM: how often (every 5th, every 10th, per channel, schedule)');
   console.log('  PASS  dashboard DOM: one channel, every channel, and a custom row');
   console.log('  PASS  dashboard DOM: a half-filled row never reaches the server');
   dom.window.close();

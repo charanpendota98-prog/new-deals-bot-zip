@@ -1956,8 +1956,12 @@ def buttons_view(config: dict | None = None) -> dict:
     for row in ours:
         preview = post_buttons.effective_row(row["name"], ours=names, titles=titles)
         channels.append({**row, **{key: preview[key] for key in
-                                   ("mode", "buttons", "where", "configured")},
-                         "is_self_excluded": True})
+                                   ("mode", "buttons", "where", "configured", "every",
+                                    "every_own")},
+                         "is_self_excluded": True,
+                         # What the next posts will do, so "every 10th" is visible
+                         # as a schedule instead of a number.
+                         "schedule": post_buttons.preview(preview["every"], 12)})
     return {
         "buttons": config["buttons"],
         "per_channel": [{"name": row["name"], "mode": row["mode"],
@@ -1965,6 +1969,8 @@ def buttons_view(config: dict | None = None) -> dict:
                         for row in config["per_channel"].values()],
         "auto_label": config["auto_label"],
         "auto_limit": config["auto_limit"],
+        "every": config["every"],
+        "schedule": post_buttons.preview(config["every"], 12),
         "channels": channels,
         "presets": post_buttons.preset_buttons(),
         "max_buttons": post_buttons.MAX_BUTTONS,
@@ -2001,7 +2007,8 @@ async def api_post_buttons_put(request: web.Request):
     except ValueError:
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
     if not isinstance(body, dict) or not any(
-            key in body for key in ("buttons", "per_channel", "auto_label", "auto_limit")):
+            key in body for key in ("buttons", "per_channel", "auto_label", "auto_limit",
+                                    "every")):
         return web.json_response(
             {"errors": ["send buttons (the default row), per_channel, auto_label or "
                         "auto_limit - an empty body would wipe the configuration"]},
@@ -2026,16 +2033,27 @@ async def api_post_buttons_put(request: web.Request):
                 return web.json_response({"errors": ["every per_channel entry needs a "
                                                      "channel name"]}, status=400)
             mode = str(entry.get("mode") or "default").strip().lower()
+            every = entry.get("every")
+            if every not in (None, ""):
+                try:
+                    every = post_buttons.every_of(int(every))
+                except (TypeError, ValueError):
+                    return web.json_response(
+                        {"errors": [f"@{name}: every must be a number (1 = every post, "
+                                    "10 = every 10th)"]}, status=400)
+            else:
+                every = (per_channel.get(name) or {}).get("every") or 0
             if mode == "default":
                 per_channel.pop(name, None)        # back to the shared row
             else:
-                per_channel[name] = {"mode": mode,
+                per_channel[name] = {"mode": mode, "every": every,
                                      "buttons": entry.get("buttons") or []}
     payload = {
         "buttons": body.get("buttons", current["buttons"]),
         "per_channel": per_channel,
         "auto_label": body.get("auto_label", current["auto_label"]),
         "auto_limit": body.get("auto_limit", current["auto_limit"]),
+        "every": body.get("every", current["every"]),
     }
     target, errors, cleaned = post_buttons.save_config(payload)
     if errors:

@@ -52,6 +52,7 @@ BOT_FILES = [
     "category_rules.json",
     "source_catalog.json",
     "post_buttons.py",
+    "button_cadence.py",
     # The ONE resolver for "where is the bot": the dashboard, the ops reports and
     # the bot all read their DB / channels.json / .env through it. A bundle
     # without it does not boot (channels_config imports it).

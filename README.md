@@ -1770,6 +1770,7 @@ source snapshot:
 | File | SHA-256 |
 |---|---|
 | `bestgaa/bot_paths.py` | `18f587627a06ae4068b999dcd984f5dfa27ab79aa8b343b96f609eb696b7c788` |
+| `bestgaa/button_cadence.py` | `3eda47fc672e7de5b8bd23d1c58a2ffa0a506925f718e6d8f6a3afcd7864080a` |
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `bestgaa/channel_directory.py` | `8cd6c69c273d0d3700c066fbb09defa0561c9c924352f2c7dda3fdfb79835963` |
@@ -1777,13 +1778,13 @@ source snapshot:
 | `bestgaa/channels_attach.py` | `99fef9da78f8446087cf1f7eac6203f64f60d0a4010b3f018f06b02070d4ac81` |
 | `bestgaa/channels_config.py` | `31662f12640915998058f4bc3375a1830626875efb4c0dfe6d11a0100f62b505` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `b0dd350a3af0ab10ddd281deb48ce1095390f495d5a8f6b1f75ea0d568289a03` |
+| `bestgaa/deploy_bestgaa.sh` | `2e396757d93f500c9def033328ae8773b785129b54dcefc1bd49700b5582c1c3` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `ff74719c953ce3346222a6b4b1d5abb4cc1b290ccad170f4b87d5a6b0f214c57` |
+| `bestgaa/main_bot_new.py` (v19.0) | `9e7e8e66e5a7e4a81579e257dc727b556f51195f6611855020117186c29a538a` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
-| `bestgaa/post_buttons.py` | `b5f7d8aaf8a189806448914d9b9f1afeeaa0a3eb4ee2bb620037658ac5a7bc11` |
+| `bestgaa/post_buttons.py` | `ef6ac04b26141cfe45acac24b1965329955bd89aa0ca73191a5bb9487a42b521` |
 | `bestgaa/posts.py` | `212f965c28dce1cf005565a3d3c55c34c1ca231ef2e0d6af8988dbcdaee0fbae` |
 | `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1799,7 +1800,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `7fd8ccd1d11e8dea09b926385ede1d70b70df57bcf290c07861c06369ffa0c1e` |
+| `dashboard/app.py` | `83dff6c800107ff15fef63b42391d23509a6d174e5b23ff558faa473e1c45e16` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
@@ -1812,7 +1813,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `844294b9be0d0138175535576e9910812ff357b7686af4c3645203f3e72b6046` |
+| `ops/build_deploy_zip.py` | `20f72191ebc21de50ab64209d1608b201603fd9e18209306dd670487ccb3dbd1` |
 | `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1835,12 +1836,12 @@ source snapshot:
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
 | `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
-| `ops/repack_bundles.sh` | `b90965e5ccab854c4a4c804681888317d616b5dc15fb8a94cc678ff60c7b0415` |
+| `ops/repack_bundles.sh` | `932790a158f891c52105d6d444329e1516bc79ad70fd75fa101a1cf0fca29603` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `e52f1ee48147a89bda5599fe96431e6e2f829bde782b30093df7d397e2fe982f` |
+| `ops/test_all.sh` | `dceed3029be453c291fa4109e127f6ea56306d91cecfdef5defa3079fd9613d6` |
 | `test_api_vault.py` | `21aa05514d31a3ad84b000c73d4152ae69cad8f58cac89f6f2cfe76931f4750b` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
@@ -1850,11 +1851,11 @@ source snapshot:
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
 | `test_channel_attach.py` | `f51f87b34bc954ba43ddebf379beffed6ee1c84985c6915f4a9e10f92945d1ae` |
-| `test_channel_buttons.py` | `37f71766c0afa2f61f91369f13aff14777d5000c22d61d557123416bfbddabea` |
+| `test_channel_buttons.py` | `34f66791899d49cb17674dad2246012fe005a99fd54031c153ea90f98ea044c8` |
 | `test_channel_control.py` | `fc8237d38c63f79282284a164a227ad56507910c66cf75644285222be9ec1ec2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `ca8bca83340c6744039dba0d0cf7855087e6526c512dd7867962c1f8ddd2bf1d` |
-| `test_dashboard_buttons.cjs` | `96ff57979063568ecf064636f10a0d44b670d7e921012582f194531c01a20c93` |
+| `test_dashboard_buttons.cjs` | `71fb347649cf445d79d4884dadf1f6f1cdaa6c5546f31e7aa44ec9645663380f` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
@@ -1886,7 +1887,7 @@ source snapshot:
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |
 | `test_pipeline_integrity.py` | `2892807d3b64e2d063b91a87f0881630630af01cbb72df9dacabe161cbc22431` |
-| `test_post_buttons.py` | `926df2751b860eda6c2b6a92dfd24e9e97b349594047df190686a464072a3815` |
+| `test_post_buttons.py` | `b078d0cb092a3650108234b05b6c43dd5cdc8928f890c2a5ac0b81c281bb6135` |
 | `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
@@ -2979,6 +2980,20 @@ Bot side: `deliver()` now takes the `target` it is posting to and resolves
 `channels.json` and the published directory, so a button reads "Join Under 99
 Shelf" instead of "Join under99deals11". WhatsApp still has no inline buttons.
 
+**How often — not under every post.** *"every time ravoddu … every 10th post ki
+ilaga, 5th post ki kuda set cheskogalagam"*: each channel (and the default) also
+carries `every` — `1` = every post, `10` = every 10th, `5` = every 5th, up to 100.
+`bestgaa/button_cadence.py` counts in the bot's own SQLite database
+(`button_cadence` + `button_cadence_decisions`), so the schedule survives
+restarts, and the decision is stored per `(channel, post)`: a retry, a resume or a
+manual re-send of an older post asks the same question again and gets the **same
+answer** — a post is never counted twice and a retry can never conjure a button
+row. The stride is *first post, then every Nth after it* (so a channel you just
+configured shows the row on its next post instead of ten posts later); a send that
+fails still consumes its slot, because it did reach the API. The dashboard shows
+the schedule as dots (`●·········●·`) for the next twelve posts, and the same
+number is written per channel or globally, one press for 5th / 10th / every post.
+
 - Proof: `test_channel_buttons.py` — handle normalisation; the old global row
   (including dropping a self-link, not the row); auto (self excluded, titles,
   dedupe, two-button limit, `auto_limit`, invite values skipped); custom and
@@ -2991,7 +3006,12 @@ Shelf" instead of "Join under99deals11". WhatsApp still has no inline buttons.
   body refusal, default-row save preserving modes, `none`).
   `test_dashboard_buttons.cjs` drives the editor in jsdom: three rows, the mode
   selector, auto-for-everyone, a custom row, a hostile label staying text, and a
-  half-filled row that never reaches the server.
+  half-filled row that never reaches the server. The cadence is pinned the same
+  way: the stride (`●·········●·`), a retry of an *older* post staying the same
+  answer (the first version only remembered the last post, so out-of-order
+  retries drifted the count), per-channel independence, `every=1` needing no
+  state, clamping, resume/forget, config inheritance vs override, the bot's real
+  `button_row_for`, and the "no counter available → no row" answer.
 
 ### Attach what already runs, and get told what to add next (2026-10-25)
 

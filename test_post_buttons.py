@@ -20,9 +20,17 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Importing the bot opens (and on first write creates) its database. Point it at a
+# throwaway path: a stray `bestgaa/bestgaa.sqlite3` left in the checkout makes
+# bot_paths treat the CHECKOUT as the bot directory (see test_bot_paths.py).
+_SCRATCH = Path(tempfile.mkdtemp(prefix="buttons-bot-"))
 os.environ.update(
     TELEGRAM_API_ID="1", TELEGRAM_API_HASH="x",
     EARNKARO_API_KEY="k", AMAZON_TAG="",
+    BOT_DB_PATH=str(_SCRATCH / "bot.sqlite3"),
+    BOT_LOG_DIR=str(_SCRATCH / "logs"),
+    BOT_MEDIA_DIR=str(_SCRATCH / "media"),
+    CHANNELS_JSON_PATH=str(_SCRATCH / "channels.json"),
 )
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT / "bestgaa"))

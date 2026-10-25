@@ -572,6 +572,17 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <button class="ghost" onclick="loadButtons()">Reload rows</button>
 <span id="pballstate" class="muted"></span>
 </div>
+<h3>How often <span class="muted">— not under every post</span></h3>
+<p class="muted">Buttons under <b>every</b> post is noise. Choose how often the row appears: <b>every 10th post</b>, every 5th, or any number (1 = every post). The bot counts in its own database, so the schedule survives restarts and a retry never counts a post twice. The first post after you change this carries the row, so you can see it working.</p>
+<div class="row">
+<label for="pbevery">Show buttons on every … post <span class="muted">(1–100, default 10)</span></label>
+<input id="pbevery" type="number" min="1" max="100" step="1" value="10" onchange="pbSaveEvery()">
+<button class="ghost" onclick="pbPickEvery(5)">every 5th</button>
+<button class="ghost" onclick="pbPickEvery(10)">every 10th</button>
+<button class="ghost" onclick="pbPickEvery(1)">every post</button>
+<span id="pbeverystate" class="muted"></span>
+</div>
+<p class="muted" id="pbschedule"></p>
 <div class="source-list" id="pbchannels"><p class="muted" style="padding:10px">loading our channels…</p></div>
 <p class="muted" id="pbnote"></p>
 <h3>Where this deal would land</h3>
@@ -1857,6 +1868,13 @@ function pbRowHtml(row){
       + '<input id="pbc-' + escapeHTML(name) + '-1u" placeholder="https://t.me/… (optional)" value="' + escapeHTML(String(two.url||'')) + '">'
       + '<button onclick="pbSaveCustom(\'' + escapeHTML(name) + '\')">Save this row</button></div>';
   }
+  const every = Number(row.every || 1);
+  const schedule = (row.schedule || []).map(flag => flag ? '●' : '·').join(' ');
+  const cadence = '<small class="muted">every ' + every + ' post' + (row.every_own ? ' (own)' : '')
+    + ' · next 12: ' + schedule + '</small>';
+  const everyBox = '<input type="number" min="1" max="100" step="1" style="max-width:80px"'
+    + ' aria-label="how often buttons appear in ' + escapeHTML(name) + '"'
+    + ' value="' + every + '" onchange="pbSetEvery(\'' + escapeHTML(name) + '\', this.value)">';
   return '<div class="source-option" style="display:block">'
     + '<div class="row" style="align-items:center">'
     + '<strong style="min-width:190px">' + (row.url
@@ -1866,7 +1884,9 @@ function pbRowHtml(row){
       + escapeHTML(name) + '\', this.value)">' + options + '</select>'
     + '<small>' + preview + '</small>'
     + '<small class="muted">' + escapeHTML(String(row.where || '')) + '</small>'
-    + '</div>' + custom + '</div>';
+    + '</div>'
+    + '<div class="row" style="align-items:center;gap:8px">' + everyBox + cadence + '</div>'
+    + custom + '</div>';
 }
 function pbRender(){
   const box = document.getElementById('pbchannels');
@@ -1874,6 +1894,16 @@ function pbRender(){
   const rows = pbRows();
   box.innerHTML = rows.map(pbRowHtml).join('')
     || '<p class="muted" style="padding:10px">no channels yet - attach or add a channel first</p>';
+  const globalEvery = document.getElementById('pbevery');
+  if(globalEvery) globalEvery.value = Number(pbConfig.every || 1);
+  const schedule = document.getElementById('pbschedule');
+  if(schedule){
+    const flags = (pbConfig.schedule || []);
+    schedule.innerHTML = flags.length
+      ? 'default schedule (next ' + flags.length + ' posts): <b>'
+        + flags.map(flag => flag ? '●' : '·').join(' ') + '</b> — ● = buttons, · = without'
+      : '';
+  }
   const note = document.getElementById('pbnote');
   if(note){
     note.textContent = rows.length
@@ -1901,6 +1931,26 @@ async function pbSetMode(name, mode){
   return pbPut({per_channel:[{name, mode, buttons: mode === 'custom'
     ? ((pbRows().find(row => row.name === name) || {}).buttons || []) : []}]},
     'pballstate');
+}
+async function pbSaveEvery(){
+  const box = document.getElementById('pbevery');
+  const state = document.getElementById('pbeverystate');
+  const value = Number(box ? box.value : 1);
+  const data = await pbPut({every: value}, 'pbeverystate');
+  if(data && state) state.textContent = 'default: buttons on every ' + Number(data.every || 1)
+    + ' post(s)';
+}
+function pbPickEvery(value){
+  const box = document.getElementById('pbevery');
+  if(box) box.value = value;
+  return pbSaveEvery();
+}
+async function pbSetEvery(name, value){
+  const row = pbRows().find(item => item.name === name) || {};
+  const data = await pbPut({per_channel:[{name, mode: row.mode || 'default',
+    buttons: row.buttons || [], every: Number(value)}]}, 'pballstate');
+  if(data) document.getElementById('pballstate').textContent =
+    '@' + name + ': buttons on every ' + Number(value) + ' post(s)';
 }
 async function pbAutoAll(){
   const rows = pbRows().map(row => ({name: row.name, mode: 'auto', buttons: []}));

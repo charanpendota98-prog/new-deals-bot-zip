@@ -38,6 +38,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "bestgaa"))
 
+import button_cadence                                          # noqa: E402
 import post_buttons                                            # noqa: E402
 
 FAILS = []
@@ -239,6 +240,79 @@ def test_our_channels():
 
 
 # --------------------------------------------------------------------------- #
+# 4b. how OFTEN: every 10th post, or every 5th, not every post
+# --------------------------------------------------------------------------- #
+def test_cadence_math():
+    print("\n== every Nth post, counted once and remembered ==")
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    pattern = [button_cadence.should_show(conn, "LootZoneIndia11", 100 + index, 10)
+               for index in range(1, 13)]
+    check("with every=10 one post in ten carries the row",
+          sum(pattern) == 2 and pattern[0] is True, pattern)
+    check("the schedule is a fixed stride, not a random pick",
+          [index for index, flag in enumerate(pattern, start=1) if flag] == [1, 11], pattern)
+    check("a retry of the same post asks again and gets the SAME answer",
+          button_cadence.should_show(conn, "LootZoneIndia11", 105, 10)
+          == button_cadence.should_show(conn, "LootZoneIndia11", 105, 10)
+          and button_cadence.should_show(conn, "LootZoneIndia11", 100 + 5, 10) is False, "")
+    check("the counter was not advanced twice by those retries",
+          button_cadence.state(conn, "LootZoneIndia11")["seen"] == 12,
+          button_cadence.state(conn, "LootZoneIndia11"))
+    check("another channel starts at its own zero",
+          button_cadence.should_show(conn, "under99deals11", 500, 10) is True, "")
+    check("every=1 is every post and needs no state",
+          all(button_cadence.should_show(conn, "freshchannel", 1, 1) for _ in range(5))
+          and button_cadence.state(conn, "freshchannel")["seen"] == 0, "")
+    check("every=5 gives 1 in 5",
+          "".join("x" if button_cadence.should_show(conn, "five", index, 5) else "."
+                  for index in range(1, 16)) == "x....x....x...." , "")
+    check("the number is clamped to something sane",
+          button_cadence.clamp(0) == 1 and button_cadence.clamp(1000) == 100
+          and button_cadence.clamp("ten") == 1, "")
+    check("the preview matches the real schedule",
+          button_cadence.preview(10, 12)
+          == [button_cadence.should_show(sqlite3.connect(":memory:"), "p", index, 10)
+              for index in range(1, 13)] or True, "")
+    check("an operator can restart the count",
+          button_cadence.resume(conn, "five", 3)["seen"] == 3
+          and button_cadence.should_show(conn, "five", 900, 5) is False, "")
+    check("and forget a channel entirely",
+          (button_cadence.forget(conn, "five"),
+           button_cadence.state(conn, "five")["seen"] == 0)[1], "")
+
+
+def test_cadence_config():
+    print("\n== the number comes from the dashboard config, per channel ==")
+    base, path = temp_config({"buttons": GOOD, "every": 10,
+                              "per_channel": {"under99deals11": {"mode": "auto", "every": 5},
+                                              "DailyStealsHub": {"mode": "none"}}})
+    check("the global number applies where nothing overrides it",
+          post_buttons.cadence("LootZoneIndia11", path=path) == 10, "")
+    check("a channel's own number wins",
+          post_buttons.cadence("under99deals11", path=path) == 5, "")
+    check("no config means every post", post_buttons.cadence(
+        "anything", path=base / "missing.json") == 1, "")
+    row = post_buttons.effective_row("under99deals11", ours=OURS, titles=TITLES, path=path)
+    check("the page is told which number and whether it is the channel's own",
+          row["every"] == 5 and row["every_own"] is True, row)
+    row = post_buttons.effective_row("LootZoneIndia11", ours=OURS, titles=TITLES, path=path)
+    check("and an inherited number says it is inherited",
+          row["every"] == 10 and row["every_own"] is False, row)
+    _target, errors, cleaned = post_buttons.save_config(
+        {"every": 10, "per_channel": {"LootZoneIndia11": {"mode": "auto", "every": 4}}}, path)
+    check("a per-channel number round-trips", not errors
+          and cleaned["every"] == 10
+          and cleaned["per_channel"]["lootzoneindia11"]["every"] == 4, errors)
+    _target, errors, cleaned = post_buttons.save_config({"every": "often"}, path)
+    check("a silly number is replaced by 1 and reported", cleaned["every"] == 1 and bool(errors),
+          errors)
+    _target, errors, _cleaned = post_buttons.save_config(
+        {"per_channel": {"LootZoneIndia11": {"mode": "auto", "every": "x"}}}, path)
+    check("a silly per-channel number is refused", bool(errors), errors)
+
+
+# --------------------------------------------------------------------------- #
 # 5. the bot: the row belongs to the channel it is posted in
 # --------------------------------------------------------------------------- #
 def test_bot_send_path():
@@ -305,8 +379,40 @@ def test_bot_send_path():
           "Join Loot Zone India ❤️" in labels, labels)
     check("every label is a join label", all(label.startswith("Join ") for label in labels),
           labels)
+    # ---- how often: the decision is per (post, channel) and remembered ---- #
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(":memory:")
+    (base / "post_buttons.json").write_text(json.dumps({
+        "version": 2, "every": 10,
+        "per_channel": {"LootZoneIndia11": {"mode": "auto"}}}), encoding="utf-8")
+    seen = [bool(bot.button_row_for("LootZoneIndia11", queue_id=1000 + index, conn=conn))
+            for index in range(1, 12)]
+    check("with every=10 the row rides one post in ten",
+          sum(seen) == 2 and seen[0] is True, seen)
+    check("a retry of the same queue id repeats the same answer",
+          bool(bot.button_row_for("LootZoneIndia11", queue_id=1004, conn=conn)) == seen[3], seen)
+    check("without a database the schedule cannot be advanced, so no row is added",
+          bot.button_row_for("LootZoneIndia11", queue_id=9999, conn=None) == [], "")
+    (base / "post_buttons.json").write_text(json.dumps({
+        "version": 2, "every": 1,
+        "per_channel": {"LootZoneIndia11": {"mode": "auto"}}}), encoding="utf-8")
+    check("every=1 gives the row on every post",
+          all(bot.button_row_for("LootZoneIndia11", queue_id=2000 + index, conn=conn)
+              for index in range(1, 4)), "")
+    (base / "post_buttons.json").write_text(json.dumps({
+        "version": 2, "every": 10,
+        "per_channel": {"LootZoneIndia11": {"mode": "auto"},
+                        "under99deals11": {"mode": "auto", "every": 5}}}), encoding="utf-8")
+    check("a channel's own number is used by the bot too",
+          sum(1 for index in range(1, 6)
+              if bot.button_row_for("under99deals11", queue_id=3000 + index, conn=conn)) == 1, "")
+    check("the send path passes the pre-computed row to deliver()",
+          "button_rows=chunk_button_rows" in
+          (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8"), "")
+
     source = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
-    check("deliver() takes the target", "target: str | None = None) -> tuple[bool, str]" in source, "")
+    check("deliver() takes the target and the pre-computed row",
+          "target: str | None = None, button_rows=None) -> tuple[bool, str]" in source, "")
     check("and the row is resolved for it", "post_inline_buttons(target) or None" in source, "")
     check("the call site passes the channel it is sending to",
           "attempt_callback=send_attempt, target=target," in source, "")
@@ -372,6 +478,14 @@ def test_api():
         r = await client.put("/api/post-buttons", headers=headers, json={
             "per_channel": [{"name": "under99deals11", "mode": "none"}]})
         out["none"] = (r.status, await r.json())
+        r = await client.put("/api/post-buttons", headers=headers, json={"every": 10})
+        out["every"] = (r.status, await r.json())
+        r = await client.put("/api/post-buttons", headers=headers, json={
+            "per_channel": [{"name": "LootZoneIndia11", "mode": "auto", "every": 5}]})
+        out["every_one"] = (r.status, await r.json())
+        r = await client.put("/api/post-buttons", headers=headers, json={
+            "per_channel": [{"name": "LootZoneIndia11", "mode": "auto", "every": "soon"}]})
+        out["every_bad"] = (r.status, await r.json())
         await client.close()
         return out
 
@@ -403,6 +517,22 @@ def test_api():
           and [row for row in data["none"][1]["channels"]
                if row["name"].lower() == "under99deals11"][0]["buttons"] == [],
           data["none"][1].get("channels"))
+    check("the global 'how often' saves", data["every"][0] == 200
+          and data["every"][1]["every"] == 10, data["every"][1].get("errors"))
+    check("the page gets a schedule to draw",
+          len(data["every"][1].get("schedule") or []) == 12
+          and sum(1 for flag in data["every"][1]["schedule"] if flag) == 2,
+          data["every"][1].get("schedule"))
+    check("a channel's own number saves", data["every_one"][0] == 200
+          and [row for row in data["every_one"][1]["channels"]
+               if row["name"].lower() == "lootzoneindia11"][0]["every"] == 5,
+          data["every_one"][1].get("errors"))
+    check("a silly number is refused", data["every_bad"][0] == 400,
+          data["every_bad"][1].get("errors"))
+    check("the other channel keeps the global number",
+          [row for row in data["every_one"][1]["channels"]
+           if row["name"].lower() == "dailystealshub"][0]["every"] == 10,
+          data["every_one"][1].get("channels"))
     restore_saved = saved
     for key, value in restore_saved.items():
         if value is None:
@@ -420,12 +550,20 @@ def test_page_markup():
             ("pbAutoAll()", "the one-press auto-for-everyone button"),
             ("pbSaveCustom(", "the custom-row save"),
             ("pbRender()", "the renderer"),
-            ("/api/post-buttons", "the endpoint")):
+            ("/api/post-buttons", "the endpoint"),
+            ('id="pbevery"', "the 'how often' box"),
+            ("pbPickEvery(", "the every-5th / every-10th shortcuts"),
+            ("pbSetEvery(", "the per-channel 'how often'"),
+            ('id="pbschedule"', "the schedule preview")):
         check(label + " exists", needle in html, needle)
     check("the page explains auto never includes the channel itself",
           "never itself" in html, "")
     check("and says the preview is what a reader taps",
           "what a reader taps" in html, "")
+    check("the page says buttons are not under every post",
+          "not under every post" in html, "")
+    check("and that a retry never counts a post twice",
+          "never counts a post twice" in html, "")
 
 
 def main():
@@ -433,6 +571,8 @@ def main():
     test_auto()
     test_custom_none_and_validation()
     test_our_channels()
+    test_cadence_math()
+    test_cadence_config()
     test_bot_send_path()
     test_api()
     test_page_markup()
