@@ -252,6 +252,29 @@ def wa_env_lines(rows: list[dict]) -> list[str]:
     return out
 
 
+# Keys this module owns. Everything ELSE in channels.json is preserved verbatim on
+# both read and write - a new section (auto-approval, a future feature) must not be
+# deleted by the next save. That is not hypothetical: `save_channels` used to write
+# a fixed four-key payload, so the first save after adding `join_requests` silently
+# threw the operator's auto-approval setting away.
+OWNED_KEYS = ("version", "channels", "whatsapp", "watch")
+
+
+def _extras(data: dict | None) -> dict:
+    """Unknown top-level sections, kept so a save never eats another feature."""
+    out: dict = {}
+    for key, value in (data or {}).items():
+        if key in OWNED_KEYS or value is None:
+            continue
+        try:
+            if len(json.dumps(value)) > 200_000:
+                continue
+            out[str(key)] = value
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def load_channels(path: Path | None = None) -> dict:
     """Read channels.json, tolerantly: missing/corrupt/legacy means empty."""
     target = Path(path) if path else channels_json_path()
@@ -322,7 +345,7 @@ def load_channels(path: Path | None = None) -> dict:
             "added_at": float(entry.get("added_at") or 0.0),
         })
     return {"version": SCHEMA_VERSION, "channels": channels, "whatsapp": whatsapp,
-            "watch": watch}
+            "watch": watch, **_extras(data)}
 
 
 def save_channels(data: dict, path: Path | None = None) -> Path:
@@ -332,7 +355,8 @@ def save_channels(data: dict, path: Path | None = None) -> Path:
     payload = json.dumps({"version": SCHEMA_VERSION,
                           "channels": (data or {}).get("channels", []),
                           "whatsapp": (data or {}).get("whatsapp", []),
-                          "watch": (data or {}).get("watch", [])},
+                          "watch": (data or {}).get("watch", []),
+                          **_extras(data)},
                          ensure_ascii=False, indent=2) + "\n"
     fd, tmp_name = tempfile.mkstemp(prefix=".channels-", suffix=".tmp", dir=str(target.parent))
     try:

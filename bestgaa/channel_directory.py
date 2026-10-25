@@ -48,6 +48,38 @@ def _clean(text, limit: int) -> str:
     return " ".join(str(text or "").split())[:limit]
 
 
+def _rights(entity) -> dict:
+    """What THIS account may do in that channel, as far as the dialog says.
+
+    The operator's request (2026-10-25): "manam admin ga vunna channel anni
+    chupinchali" - show every channel where we are admin. A dialog carries
+    `creator` and (for channels) `admin_rights`, which is enough to answer
+    "can this account post here", "can it approve join requests" and "is it just
+    a member" without a single extra request.
+    """
+    rights = _field(entity, "admin_rights", default=None)
+    creator = bool(_field(entity, "creator", default=False))
+    participant = _field(entity, "participant", default=None)
+    if rights is None and participant is not None:
+        rights = _field(participant, "admin_rights", default=None)
+        creator = creator or bool(_field(participant, "creator", default=False))
+    admin = creator or rights is not None
+    can_post = bool(_field(rights, "post_messages", default=False)) if rights is not None else False
+    can_invite = bool(_field(rights, "invite_users", default=False)) if rights is not None else False
+    # A creator may do everything; an admin gets what its rights say.
+    if creator:
+        can_post = can_invite = True
+    return {
+        "role": "creator" if creator else ("admin" if admin else "member"),
+        "admin": admin,
+        "creator": creator,
+        "can_post": can_post,
+        # Approving join requests needs the "invite users" right - this is the
+        # flag the dashboard uses to offer auto-approval for a channel.
+        "can_invite": can_invite,
+    }
+
+
 def entry(entity, *, now: float | None = None) -> dict | None:
     """One channel as the dashboard needs it, or None when it must be hidden."""
     now = time.time() if now is None else now
@@ -72,6 +104,7 @@ def entry(entity, *, now: float | None = None) -> dict | None:
         last_at = 0.0
     if not title and not username:
         return None  # nothing an operator could recognise
+    rights = _rights(entity)
     return {
         "id": int(channel_id),
         "title": title or username,
@@ -84,6 +117,7 @@ def entry(entity, *, now: float | None = None) -> dict | None:
         "members": members,
         "last_message_at": last_at,
         "seen_at": now,
+        **rights,
     }
 
 
@@ -106,16 +140,27 @@ def build(entities, *, now: float | None = None, limit: int = DEFAULT_LIMIT) -> 
             truncated += 1
             continue
         rows[row["id"]] = row
-    channels = sorted(rows.values(), key=lambda row: (not row["addable"], row["title"].lower()))
+    channels = sorted(rows.values(), key=lambda row: (not row["admin"], not row["addable"],
+                                                      row["title"].lower()))
     return {
         "schema": SCHEMA,
         "generated_at": now,
         "count": len(channels),
         "addable": sum(1 for row in channels if row["addable"]),
+        # The operator's own inventory: where this account is admin, and where it
+        # may approve join requests. Counts, so the panel can say "12 admin, 5
+        # with join requests" without the page re-counting 500 rows.
+        "admin_count": sum(1 for row in channels if row["admin"]),
+        "creator_count": sum(1 for row in channels if row["creator"]),
+        "invite_count": sum(1 for row in channels if row["can_invite"]),
+        # Every row here is a dialog this session can already read, so a channel
+        # where we may post is a destination the dashboard can offer.
+        "target_count": sum(1 for row in channels if row["can_post"]),
         "skipped": skipped,
         "truncated": truncated,
         "limit": cap,
-        "note": ("Channels this bot session can read. Nothing here was joined or "
+        "note": ("Channels this bot session can read, with the rights this account "
+                 "holds in each (creator/admin/member). Nothing here was joined or "
                  "messaged; only public broadcast channels can become a source."),
         "channels": channels,
     }

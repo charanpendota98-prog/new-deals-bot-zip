@@ -112,6 +112,10 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
 from telethon import TelegramClient, events, utils as tl_utils
+try:  # the join-request update: optional, so an older Telethon cannot break boot
+    from telethon.tl.types import UpdatePendingJoinRequests as _UpdatePendingJoinRequests
+except ImportError:  # pragma: no cover - only on a Telethon without join requests
+    _UpdatePendingJoinRequests = None
 from telethon.helpers import add_surrogate, del_surrogate
 from telethon.errors import (
     ChannelPrivateError,
@@ -10752,6 +10756,186 @@ async def channel_directory_loop(client, stop, target_map=None):
             continue
 
 
+# --------------------------------------------------------------------------- #
+# "Official ga anipisthadi": approve join requests to OUR channels in ~2.5s
+# --------------------------------------------------------------------------- #
+# The bot is a USER session, so Telegram does not hand it a "join request" event:
+# it sends UpdatePendingJoinRequests to the channel's admins. That update names
+# the peer and its recent requesters - enough to approve without polling - and a
+# slow poll covers anything the update missed (a restart, a flood-wait). Every
+# decision goes through bestgaa/join_gate.py, which is pure and tested offline,
+# and nothing here touches our OWN membership: no channel is ever joined.
+_JOIN_GATE = None
+_JOIN_SEEN: "set[tuple[str, int]]" = set()
+
+
+def join_gate():
+    global _JOIN_GATE
+    if _JOIN_GATE is None:
+        try:
+            from . import join_gate as _module
+        except ImportError:
+            import join_gate as _module
+        _JOIN_GATE = _module.JoinGate(
+            log_path=_dashboard_channels.pending_path().parent / "join_requests_log.json",
+            data_provider=lambda: _dashboard_channels.load_channels())
+    return _JOIN_GATE
+
+
+def join_channel_name(entity) -> str:
+    """Our channel as the operator named it: @username, else the title."""
+    username = str(getattr(entity, "username", "") or "").strip()
+    title = str(getattr(entity, "title", "") or getattr(entity, "name", "") or "").strip()
+    return username or title
+
+
+async def approve_join_request(client, entity, user_id: int) -> dict:
+    """One request, through the gate (delay, cap, log)."""
+    from telethon.tl.functions.messages import HideChatJoinRequestRequest
+    gate = join_gate()
+    name = join_channel_name(entity)
+    key = (name.lower(), int(user_id))
+    # One decision path only: the gate (which is the tested module). A channel that
+    # is not on the list, a paused channel or a hit cap all come back as "skip"
+    # with a reason that is written to the log the dashboard shows.
+    if key in _JOIN_SEEN:
+        return {"action": "skip", "reason": "already handled in this run"}
+
+    async def approve():
+        await client(HideChatJoinRequestRequest(peer=entity, user_id=user_id, approved=True))
+
+    outcome = await gate.handle(name, user_id, approve, sleep=asyncio.sleep, name=name)
+    if outcome.get("action") in ("approved", "failed"):
+        # Bounded: a busy channel must not grow this set for the life of the bot.
+        if len(_JOIN_SEEN) > 5000:
+            _JOIN_SEEN.clear()
+        _JOIN_SEEN.add(key)
+        log.info("JOIN APPROVE | channel=%s user=%s -> %s (%s)", name, user_id,
+                 outcome.get("action"), outcome.get("reason"))
+    else:
+        log.info("JOIN SKIP | channel=%s user=%s -> %s", name, user_id, outcome.get("reason"))
+    return outcome
+
+
+async def join_request_poll_loop(client, stop) -> None:
+    """Safety net: every JOIN_POLL_SECONDS, approve pending requests we missed.
+
+    The raw update below is the fast path (~2.5s). This loop exists because a
+    missed update (restart, flood wait, a channel added while the bot was down)
+    would otherwise leave people waiting forever - the one thing the operator
+    asked not to happen. It asks Telegram only for channels that actually have
+    auto-approval enabled, and only for their PENDING (not yet approved) list.
+    """
+    try:
+        from telethon.tl.functions.messages import GetChatInviteImportersRequest
+    except Exception:
+        return
+    every = max(20, int(os.getenv("JOIN_POLL_SECONDS", "60")))
+    while not stop.is_set():
+        try:
+            gate = join_gate()
+            setting = gate.setting()
+            if setting.get("enabled"):
+                for name, entry in (setting.get("channels") or {}).items():
+                    if not entry.get("enabled", True):
+                        continue
+                    try:
+                        entity = await client.get_entity(entry.get("name") or name)
+                    except Exception:
+                        continue
+                    try:
+                        importers = await client(GetChatInviteImportersRequest(
+                            peer=entity, offset_date=None, offset_user=None,
+                            limit=50, requested=True))
+                    except Exception as exc:  # noqa: BLE001 - one channel, not the loop
+                        log.warning("JOIN POLL | %s: %s", name, exc)
+                        continue
+                    for importer in getattr(importers, "importers", []) or []:
+                        user_id = int(getattr(importer, "user_id", 0) or 0)
+                        if user_id:
+                            await approve_join_request(client, entity, user_id)
+        except Exception as exc:  # noqa: BLE001 - never take the bot down
+            log.warning("JOIN POLL | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def repost_loop(client, stop, target_map) -> None:
+    """Drain the dashboard's repost queue: OUR post -> our other channels.
+
+    The dashboard appends one JSON line per button press; this forwards it once
+    and writes the outcome. Re-validated here because the file is on disk.
+    """
+    try:
+        from . import repost as _repost
+    except ImportError:
+        import repost as _repost
+    every = max(3, int(os.getenv("REPOST_POLL_SECONDS", "5")))
+    while not stop.is_set():
+        try:
+            queue = _repost.request_path()
+            if queue.exists():
+                ours = list(target_map) or [str(t) for t in _dashboard_targets]
+                done = _repost.done_ids()
+                for row in _repost.queued(queue, done)[:5]:
+                    clean, errors = _repost.validate(row, ours)
+                    if errors:
+                        _repost.record({"id": row.get("id"), "action": "failed",
+                                        "reason": "; ".join(errors)[:300],
+                                        "at": time.time()}, None)
+                        log.warning("REPOST FAIL | id=%s %s", row.get("id"), errors)
+                        continue
+                    source = target_map.get(_original_target_name(clean["from"], target_map))
+                    if source is None:
+                        try:
+                            source = await client.get_entity(clean["from"])
+                        except Exception as exc:  # noqa: BLE001
+                            _repost.record({"id": clean["id"], "action": "failed",
+                                            "reason": f"cannot resolve {clean['from']}: {exc}"[:300],
+                                            "at": time.time()}, None)
+                            log.warning("REPOST FAIL | %s: %s", clean["from"], exc)
+                            continue
+                    sent, failed = [], []
+                    for target in clean["targets"]:
+                        entity = target_map.get(_original_target_name(target, target_map))
+                        if entity is None:
+                            try:
+                                entity = await client.get_entity(target)
+                            except Exception:
+                                failed.append(target)
+                                continue
+                        try:
+                            await client.forward_messages(entity, clean["message_id"],
+                                                          from_peer=source)
+                            sent.append(target)
+                        except Exception as exc:  # noqa: BLE001
+                            failed.append(f"{target}: {exc}"[:120])
+                        await asyncio.sleep(0.6)
+                    _repost.record({"id": clean["id"], "action": "sent" if sent else "failed",
+                                    "from": clean["from"], "message_id": clean["message_id"],
+                                    "sent": sent, "failed": failed,
+                                    "at": time.time()}, None)
+                    log.info("REPOST | %s/%s -> %s%s", clean["from"], clean["message_id"],
+                             ",".join(sent) or "-",
+                             f" (failed: {failed})" if failed else "")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("REPOST | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+def _original_target_name(name: str, target_map) -> str:
+    """target_map keys keep the operator's spelling; match case-insensitively."""
+    for key in target_map:
+        if str(key).lower() == str(name or "").lower():
+            return key
+    return str(name or "")
+
+
 async def main() -> None:
     global QUEUE_WAKE
     log.info("BestGAA Production Bot v19.0 starting "
@@ -10809,6 +10993,28 @@ async def main() -> None:
                       entry[0], event.chat_id,
                       event.message.id if event.message is not None else "?", exc)
 
+    async def on_pending_join_requests(update):
+        """A request just arrived in a channel we run - approve it in ~2.5s.
+
+        `events.ChatJoinRequest` is not available to a USER session, so the raw
+        update is the signal. `recent_requesters` names the users; if Telegram
+        sends none, the poll below picks them up within a minute.
+        """
+        try:
+            peer = getattr(update, "peer", None)
+            entity = None
+            if peer is not None:
+                try:
+                    entity = await client.get_entity(peer)
+                except Exception:
+                    entity = None
+            if entity is None:
+                return
+            for user_id in list(getattr(update, "recent_requesters", []) or [])[:20]:
+                await approve_join_request(client, entity, int(user_id))
+        except Exception as exc:  # noqa: BLE001 - one request, never the loop
+            log.warning("JOIN | update handling failed: %s", exc)
+
     @client.on(events.MessageEdited())
     async def on_message_edited(event):
         """An edit of a source post must not be lost (see revive_edited_job)."""
@@ -10823,6 +11029,12 @@ async def main() -> None:
         except Exception as exc:
             log.error("EDIT FAIL source=%s chat=%s msg=%s: %s", entry[0], event.chat_id,
                       event.message.id if event.message is not None else "?", exc)
+
+    if _UpdatePendingJoinRequests is not None:
+        # Registered by hand (not with @client.on) so a Telethon without the
+        # update type can never stop the bot from booting.
+        client.add_event_handler(on_pending_join_requests,
+                                 events.Raw(types=[_UpdatePendingJoinRequests]))
 
     async def worker(index: int):
         # NEVER-DIE worker: any unexpected error (SQLite busy, disk hiccup,
@@ -10877,6 +11089,11 @@ async def main() -> None:
     dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
     # The channel picker's source of truth: what this session can actually read.
     directory_task = asyncio.create_task(channel_directory_loop(client, stop, target_map))
+    # "official ga anipisthadi": join requests to our channels, and the dashboard's
+    # one-click repost queue. Both are independent tasks: a failure never stops
+    # posting, and neither ever joins a channel on our own account.
+    join_poll_task = asyncio.create_task(join_request_poll_loop(client, stop))
+    repost_task = asyncio.create_task(repost_loop(client, stop, target_map))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -10893,6 +11110,10 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await join_poll_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await repost_task
     with contextlib.suppress(asyncio.CancelledError):
         await directory_task
     with contextlib.suppress(asyncio.CancelledError):

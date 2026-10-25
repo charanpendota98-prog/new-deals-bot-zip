@@ -289,6 +289,51 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </aside>
 </div>
 </div>
+<div class="card" id="channelcontrol">
+<div class="section-heading"><div><span class="eyebrow">CHANNEL CONTROL · EVERY CHANNEL WHERE YOU ARE ADMIN</span><h2>Select many, act once — and see what the bot is doing in each</h2></div><span class="badge" id="ccstate">loading</span></div>
+<p class="muted">This list is the <b>bot's own inventory</b>: every channel where the session account is <b>creator or admin</b>, with the rights Telegram reported (<code>can post</code>, <code>can approve join requests</code>). Tick several rows and use the buttons — enable, disable, remove, add as a destination, or set the category — in ONE save. Nothing here joins a channel, and a destination the bot has not seen stays disabled with the reason.</p>
+<p class="muted" id="ccsummary"></p>
+<div class="source-tools">
+<button class="ghost" onclick="ccSelectAll()">Select all shown</button>
+<button class="ghost" onclick="ccClear()">Clear</button>
+<span class="source-count" id="cccount">loading…</span>
+</div>
+<label for="ccsearch">Search <span class="muted">— title or @username</span></label>
+<input id="ccsearch" type="search" placeholder="e.g. loot / shelf" autocomplete="off" oninput="ccFilterChanged()">
+<div class="source-list" id="cclist"><p class="muted" style="padding:10px">loading the channel list…</p></div>
+<div class="row">
+<button onclick="ccBulk('enable')">Enable selected</button>
+<button onclick="ccBulk('disable')">Disable selected</button>
+<button onclick="ccBulk('target')">Add selected as destination</button>
+<button class="ghost" onclick="ccBulk('category')">Set category on selected</button>
+<button class="danger" onclick="ccBulk('remove')">Remove selected</button>
+</div>
+<label for="cccats">Category for “Set category” <span class="muted">— leave empty to clear the filter</span></label>
+<select id="cccats" multiple size="3" aria-label="Categories"></select>
+<p id="ccmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="ccresults"></div>
+
+<h3>Join requests <span class="muted">— approved in ~2.5 s so the channel feels official</span></h3>
+<p class="muted">Off by default. Tick a channel and the bot approves requests to join it after the delay below (it stops at the per-minute cap and writes every decision to a log you can read here). The bot never joins a channel itself — this only admits people to <b>your</b> channels, where the account is admin.</p>
+<label class="checkline"><input id="jrenabled" type="checkbox" onchange="jrDirty=true"> Auto-approve join requests</label>
+<label for="jrdelay">Delay before approving (seconds) <span class="muted">— 1 to 60, default 2.5</span></label>
+<input id="jrdelay" type="number" min="1" max="60" step="0.5" value="2.5" onchange="jrDirty=true">
+<div class="source-tools"><button class="ghost" onclick="jrSelectAdmin()">Tick every admin channel</button><button class="ghost" onclick="jrClear()">Untick all</button><span class="source-count" id="jrcount"></span></div>
+<div class="source-list" id="jrlist"><p class="muted" style="padding:10px">loading…</p></div>
+<div class="row"><button onclick="saveJoinRequests()">Save auto-approval</button><button class="ghost" onclick="loadControl()">Reload</button></div>
+<p id="jrmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="jrrecent"></div>
+
+<h3>Repost one of OUR posts <span class="muted">— our channel → our other channels</span></h3>
+<p class="muted">Paste the link of a post <b>in one of your channels</b> (<code>https://t.me/YourChannel/1234</code>), pick where it should also appear, and press the button. The <b>bot</b> forwards it within a few seconds (it owns the Telegram session), each request exactly once, and the result appears below. This is a button, not a rule: nothing is forwarded automatically, so our channels can never feed each other in a loop.</p>
+<label for="repostlink">Post link</label>
+<input id="repostlink" maxlength="200" placeholder="https://t.me/YourChannel/1234" autocomplete="off">
+<label for="reposttargets">Forward to <span class="muted">— Ctrl/⌘ click for several</span></label>
+<select id="reposttargets" multiple size="5" aria-label="Repost destinations"></select>
+<div class="row"><button onclick="sendRepost()">Forward this post</button><button class="ghost" onclick="loadRepost()">Reload log</button></div>
+<p id="repostmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="repostlog"></div>
+</div>
 <div class="card" id="watchsource">
 <div class="section-heading"><div><span class="eyebrow">WATCH A SOURCE · CHANNEL LINK → POSTS</span><h2>Paste a channel link, and its deals start posting</h2></div><span class="badge" id="watchlive">checking</span></div>
 <p class="muted">Paste the link of a Telegram channel you want to <b>read</b> (not one of ours). The bot then takes each post exactly as the source wrote it, converts every link to <b>ours</b> (tagged Amazon page, or the converter's link bound to our publisher id), and posts it to the channels you pick here. Nothing is joined automatically, no old post is replayed, and a link that cannot be proven to pay us is repaired or dropped - never published as "probably ours".</p>
@@ -657,6 +702,7 @@ async function refresh(full=true){
     await loadWatch();                    // watched source channels + the bot's verdict
     await loadDirectory();                // every channel the bot session can read
     await loadVault();                    // the keys the bot actually reads
+    await loadControl();                  // admin inventory, bulk actions, join requests, repost
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -675,6 +721,224 @@ async function refresh(full=true){
     }
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
+}
+
+// ------------------------------------------------------- CHANNEL CONTROL --
+// "manam admin ga vunna channel anni chupinchali ... multiple buttons kuda
+// pettelaga ... oka channel nunchi inkoka channel ki easy ga button." One list
+// of the channels we RUN, ticked many, acted on once; join-request approval per
+// channel; and a one-press repost from our channel to our others.
+let ccRows = [], ccPicked = new Set(), ccQuery = '', jrRows = [];
+function ccShown(){
+  const q = ccQuery.trim().toLowerCase();
+  if(!q) return ccRows;
+  return ccRows.filter(row => (row.title||'').toLowerCase().includes(q)
+    || (row.username||'').toLowerCase().includes(q));
+}
+function ccFilterChanged(){
+  const box = document.getElementById('ccsearch');
+  ccQuery = box ? box.value : '';
+  renderCC();
+  renderJR();
+}
+function ccName(row){ return String(row.username || row.title || '').replace(/^@/,''); }
+function renderCC(){
+  const body = document.getElementById('cclist');
+  if(!body) return;
+  const shown = ccShown();
+  const count = document.getElementById('cccount');
+  if(count){
+    count.textContent = shown.length + ' shown · ' + ccPicked.size + ' selected · '
+      + (ccRows.length) + ' admin channel(s)';
+  }
+  body.innerHTML = shown.map(row => {
+    const name = ccName(row);
+    const role = row.role === 'creator' ? 'creator' : (row.admin ? 'admin' : 'member');
+    const badges = '<span class="badge ' + (row.admin ? 'ok' : '') + '">' + escapeHTML(role) + '</span>'
+      + (row.can_invite ? ' <span class="badge">join requests</span>' : '')
+      + (row.watched ? ' <span class="badge ok">watching</span>' : '')
+      + (row.is_our_target ? ' <span class="badge ok">our destination</span>' : '')
+      + (row.config_enabled === false ? ' <span class="badge warn">disabled</span>' : '');
+    return '<label class="source-option">'
+      + '<input type="checkbox" value="' + escapeHTML(name.toLowerCase()) + '"'
+      + (ccPicked.has(name.toLowerCase()) ? ' checked' : '') + ' onchange="ccToggle(this)">'
+      + '<span><strong>' + escapeHTML(String(row.title || name)) + '</strong>'
+      + '<small>' + (row.username ? '@' + escapeHTML(String(row.username)) : 'no public username')
+      + ' · ' + escapeHTML(String(row.kind || ''))
+      + (row.members ? ' · ' + Number(row.members).toLocaleString('en-IN') + ' members' : '')
+      + ' · last post ' + escapeHTML(String(row.last_message || '—')) + '</small></span>'
+      + badges + '</label>';
+  }).join('') || '<p class="muted" style="padding:10px">no admin channel matches that search</p>';
+}
+function renderJR(){
+  const body = document.getElementById('jrlist');
+  if(!body) return;
+  const shown = ccShown();
+  const saved = new Set((jrRows || []).map(row => String(row.name || '').toLowerCase().replace(/^@/,'')));
+  const count = document.getElementById('jrcount');
+  if(count) count.textContent = shown.filter(row => saved.has(ccName(row).toLowerCase())).length + ' ticked';
+  body.innerHTML = shown.map(row => {
+    const name = ccName(row);
+    const tickable = !!row.can_invite;
+    return '<label class="source-option"' + (tickable ? '' : ' title="this account has no invite right here"') + '>'
+      + '<input type="checkbox" class="jrtick" value="' + escapeHTML(name.toLowerCase()) + '"'
+      + ' data-name="' + escapeHTML(name) + '"' + (tickable ? '' : ' disabled')
+      + (saved.has(name.toLowerCase()) ? ' checked' : '') + '>'
+      + '<span><strong>' + escapeHTML(String(row.title || name)) + '</strong>'
+      + '<small>' + (tickable ? 'can approve join requests' : 'no invite right — Telegram would refuse')
+      + '</small></span></label>';
+  }).join('') || '<p class="muted" style="padding:10px">no channel to offer</p>';
+}
+function ccToggle(input){
+  const key = String(input.value || '').toLowerCase();
+  if(input.checked) ccPicked.add(key); else ccPicked.delete(key);
+  renderCC();
+}
+function ccSelectAll(){ for(const row of ccShown()) ccPicked.add(ccName(row).toLowerCase()); renderCC(); }
+function ccClear(){ ccPicked.clear(); renderCC(); }
+function jrSelectAdmin(){
+  for(const box of document.querySelectorAll('.jrtick')) if(!box.disabled) box.checked = true;
+  renderJR();
+}
+function jrClear(){ for(const box of document.querySelectorAll('.jrtick')) box.checked = false; renderJR(); }
+async function loadControl(){
+  const badge = document.getElementById('ccstate');
+  let data;
+  try{ data = await api('GET','/api/directory'); }
+  catch(e){
+    if(badge) badge.textContent = 'not available';
+    const body = document.getElementById('cclist');
+    if(body) body.innerHTML = '<p class="muted" style="padding:10px">channel list unavailable: '
+      + escapeHTML(String(e.message||e)) + '</p>';
+    return;
+  }
+  dirRows = data.channels || [];
+  dirMeta = data.directory || {};
+  if(data.revision) configRevision = data.revision;
+  // Only the channels we actually run: admin/creator, or a configured destination.
+  ccRows = (data.channels || []).filter(row => row.admin || row.is_our_target);
+  jrRows = ((data.join_requests || {}).channels) || [];
+  const admin = data.admin || {};
+  if(badge) badge.textContent = (admin.count || 0) + ' admin';
+  const summary = document.getElementById('ccsummary');
+  if(summary){
+    summary.innerHTML = '<b>' + (admin.count || 0) + '</b> channel(s) where this account is admin'
+      + (admin.creator ? ' (' + admin.creator + ' as creator)' : '')
+      + ' · <b>' + (admin.can_invite || 0) + '</b> can approve join requests'
+      + ' · ' + ((data.directory||{}).count || 0) + ' channel(s) readable in total'
+      + ' · list published ' + escapeHTML(String((data.directory||{}).age_s ?? '—')) + 's ago';
+  }
+  const cats = document.getElementById('cccats');
+  if(cats && !cats.options.length){
+    for(const [key,label] of Object.entries(data.categories || {})){
+      const option = document.createElement('option'); option.value = key;
+      option.textContent = label; cats.append(option);
+    }
+  }
+  const jr = data.join_requests || {};
+  const enabled = document.getElementById('jrenabled');
+  const delay = document.getElementById('jrdelay');
+  if(enabled) enabled.checked = !!jr.enabled;
+  if(delay && typeof jr.delay === 'number') delay.value = jr.delay;
+  renderCC(); renderJR();
+  const recent = document.getElementById('jrrecent');
+  if(recent){
+    recent.innerHTML = '<p class="muted">approved: <b>' + (jr.approved || 0) + '</b> · left for a human: <b>'
+      + (jr.refused || 0) + '</b> · log ' + escapeHTML(String(jr.log_path || '')) + '</p>'
+      + ((jr.last || []).length ? '<div class="tablewrap"><table><thead><tr><th>When</th><th>Channel</th><th>User</th><th>What</th><th>Why</th></tr></thead><tbody>'
+        + jr.last.map(row => '<tr><td>' + escapeHTML(String(row.at)) + '</td><td>@' + escapeHTML(String(row.channel))
+        + '</td><td>' + escapeHTML(String(row.user_id)) + '</td><td>' + escapeHTML(String(row.action))
+        + '</td><td class="muted">' + escapeHTML(String(row.reason)) + '</td></tr>').join('')
+        + '</tbody></table></div>' : '<p class="muted">no decision recorded yet</p>');
+  }
+  await loadRepost();
+}
+async function ccBulk(action){
+  const names = [...ccPicked];
+  const msg = document.getElementById('ccmsg');
+  const results = document.getElementById('ccresults');
+  if(!names.length){ if(msg) msg.textContent = 'tick at least one channel first'; return; }
+  const body = {action: action, channels: names};
+  if(action === 'category'){
+    const cats = document.getElementById('cccats');
+    body.categories = cats ? [...cats.selectedOptions].map(o => o.value) : [];
+  }
+  if(msg) msg.textContent = 'saving ' + names.length + ' channel(s)…';
+  try{
+    const out = await api('POST','/api/channels/bulk', body);
+    if(out.revision) configRevision = out.revision;
+    if(msg) msg.textContent = action + ': ' + (out.done||[]).length + ' done · '
+      + (out.skipped||[]).length + ' skipped (see below)';
+    if(results){
+      results.innerHTML = (out.skipped||[]).length
+        ? '<p class="bad">skipped: ' + out.skipped.map(row =>
+            escapeHTML(String(row.channel)) + ' — ' + escapeHTML((row.errors||[]).join('; '))).join(' · ') + '</p>'
+        : '';
+    }
+    ccPicked.clear();
+    await loadControl();
+    if(typeof loadChannels === 'function') loadChannels();
+  }catch(e){
+    if(msg) msg.textContent = 'not saved: ' + (e.message || e);
+  }
+}
+async function saveJoinRequests(){
+  const msg = document.getElementById('jrmsg');
+  const ticked = [...document.querySelectorAll('.jrtick:checked')]
+    .map(box => ({name: box.dataset.name, enabled: true}));
+  const body = {
+    enabled: !!(document.getElementById('jrenabled') || {}).checked,
+    delay: Number((document.getElementById('jrdelay') || {}).value || 2.5),
+    channels: ticked,
+  };
+  if(msg) msg.textContent = 'saving…';
+  try{
+    const out = await api('POST','/api/join-requests', body);
+    if(msg) msg.textContent = (out.enabled ? 'auto-approval ON' : 'auto-approval OFF')
+      + ' · ' + (out.channels||[]).length + ' channel(s) · delay '
+      + (out.delay || body.delay) + 's';
+    await loadControl();
+  }catch(e){
+    if(msg) msg.textContent = 'not saved: ' + (e.message || e);
+  }
+}
+async function loadRepost(){
+  let data;
+  try{ data = await api('GET','/api/repost'); }catch(e){ return; }
+  const sel = document.getElementById('reposttargets');
+  if(sel && !sel.options.length){
+    for(const name of (data.ours || [])){
+      const option = document.createElement('option'); option.value = name;
+      option.textContent = '@' + name; sel.append(option);
+    }
+  }
+  const log = document.getElementById('repostlog');
+  if(log){
+    const rows = (data.log || []);
+    log.innerHTML = rows.length ? '<div class="tablewrap"><table><thead><tr><th>Post</th><th>From</th><th>Sent to</th><th>Failed</th><th>When</th></tr></thead><tbody>'
+      + rows.map(row => '<tr><td>' + escapeHTML(String(row.action)) + '</td><td>@' + escapeHTML(String(row.from || ''))
+      + '/' + escapeHTML(String(row.message_id || '')) + '</td><td>' + escapeHTML(String((row.sent||[]).join(', ')))
+      + '</td><td class="muted">' + escapeHTML(String((row.failed||[]).join(', ')))
+      + '</td><td class="muted">' + escapeHTML(String(row.at ? new Date(row.at*1000).toLocaleString('en-IN') : ''))
+      + '</td></tr>').join('') + '</tbody></table></div>' : '<p class="muted">nothing forwarded yet</p>';
+  }
+}
+async function sendRepost(){
+  const msg = document.getElementById('repostmsg');
+  const link = ((document.getElementById('repostlink') || {}).value || '').trim();
+  const sel = document.getElementById('reposttargets');
+  const targets = sel ? [...sel.selectedOptions].map(o => o.value) : [];
+  if(!link){ if(msg) msg.textContent = 'paste the post link first'; return; }
+  if(!targets.length){ if(msg) msg.textContent = 'pick at least one destination'; return; }
+  if(msg) msg.textContent = 'queueing…';
+  try{
+    const out = await api('POST','/api/repost', {link: link, targets: targets});
+    if(msg) msg.textContent = 'queued — ' + (out.next || '');
+    document.getElementById('repostlink').value = '';
+    await loadRepost();
+  }catch(e){
+    if(msg) msg.textContent = 'not queued: ' + (e.message || e);
+  }
 }
 
 // ---------------------------------------------------------------- overview --

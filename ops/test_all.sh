@@ -289,7 +289,7 @@ run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'bridge safety gate syntax' node --check tg-wa-bridge/safety_filter.js
 run 'shell script syntax (bash -n)' shell_syntax_check
 run 'deploy bundle ships the tree (bot + bridge)' "$PYTHON" test_deploy_zip.py
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py dashboard/pipeline.py dashboard/trends.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/channel_directory.py bestgaa/bot_paths.py bestgaa/join_gate.py bestgaa/repost.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py dashboard/pipeline.py dashboard/trends.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
   run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
@@ -303,6 +303,12 @@ fi
 # channels.json and log through bestgaa/bot_paths.py, so the page cannot edit one
 # directory while the reports read another.
 run 'bot paths: one resolver for the dashboard, the reports and the bot' "$PYTHON" test_bot_paths.py
+# "manam admin ga vunna channel anni chupinchali ... multiple buttons ... oka
+# channel nunchi inkoka channel ki button ... 2-3 seconds lo accept cheyali": the
+# admin inventory, bulk actions, join-request approval (opt-in, capped, logged)
+# and the one-press repost between our own channels.
+run 'channel control: admin inventory, bulk actions, join requests, repost' "$PYTHON" test_channel_control.py
+
 run 'audit truth: prices, routes, ownership, skip reasons' "$PYTHON" test_audit_truth.py
 # The 2026-10-23 deploy that printed SUCCESS while a four-hour-old build stayed
 # live: installing from the checkout, verifying against git HEAD, a bundle that

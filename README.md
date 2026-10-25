@@ -1772,15 +1772,17 @@ source snapshot:
 | `bestgaa/bot_paths.py` | `18f587627a06ae4068b999dcd984f5dfa27ab79aa8b343b96f609eb696b7c788` |
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
-| `bestgaa/channel_directory.py` | `17623cbb7f98b2c3bcf2a67ee806d2a21a78f3574f8f068acc0e00880660898d` |
-| `bestgaa/channels_config.py` | `286a8f61e123e6e281092e238533f081e0e0a31819017cee2b46c8e0cc96e98e` |
+| `bestgaa/channel_directory.py` | `8cd6c69c273d0d3700c066fbb09defa0561c9c924352f2c7dda3fdfb79835963` |
+| `bestgaa/channels_config.py` | `31662f12640915998058f4bc3375a1830626875efb4c0dfe6d11a0100f62b505` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `8890b7aef3daeff4cd8729e729fb7c6cde6c7d677a07c0b01c01d84291bebfc5` |
+| `bestgaa/deploy_bestgaa.sh` | `e447019d5527528d1c064d4a356e8b8c11677e5f53dd312cc8d2f6192ab2c2e3` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `088a6e3e29958952fc0f21b67fb7ee0e030ebb7a133db17cc126f20fd71858f7` |
+| `bestgaa/main_bot_new.py` (v19.0) | `89c502f9d80dd2a731ca573943603b619fc8b444a044589f26800f53bee8c7c9` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1794,7 +1796,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `85b6f1d6a8b2e89eb468f916caf9db7e247326a13f9223228aa7e38577691bbf` |
+| `dashboard/app.py` | `f973c4edb1731cad93edd99ba439a5ec288f46f468ec70782b0ce4cca3a80f33` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
@@ -1807,7 +1809,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `6f7b689499498f7597c07e712b0a267d89fb35c5fcea318e3f66806d1762b083` |
+| `ops/build_deploy_zip.py` | `f6a1c7cbdf7958a617d002de5ddc54faeceadb34fdcf8c5ad056f93f91202130` |
 | `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1830,12 +1832,12 @@ source snapshot:
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
 | `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
-| `ops/repack_bundles.sh` | `8434ef25b7fb106cb6b644d815ace10847a1304eed80d41d0971019ef0626abe` |
+| `ops/repack_bundles.sh` | `8d981e648d9af36b431bbbe5cbc705aa74cb5a3d184b4b655137154a3a57a39d` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `54c41cabde1fb53790d6e68203c038b81a4baaac50758f64c05b67861563e469` |
+| `ops/test_all.sh` | `9f5a5fe46690fbbf4c271fd1eded9ba72de65fdb464d6ec6abdeceb45dd3c570` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
@@ -1844,6 +1846,7 @@ source snapshot:
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
+| `test_channel_control.py` | `760e6818045389195da8603387774f46d3d57318fc97b4ee30590fe0fe86f714` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
@@ -2894,6 +2897,70 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   screen). Both are in the gate; no service is started and no real key is used.
 - After saving, apply with `sudo systemctl restart bestgaa` (the card has the
   button; the panel says when the running bot still has the old values).
+
+### Channel control: every channel we run, many actions, one press (2026-10-25)
+
+The operator's request: *"manam admin ga vunna channel anni chupinchali …
+multiple buttons kuda pettelaga undali … oka channel nunchi inkoka channel ki
+easy ga button pettelaga undali … konni channel button nokkagane kakunda bot
+vallani accept cheyali oka 2-3 seconds lo, appudu vallaki official ga
+anipisthadi"*. One card answers all four.
+
+**The inventory is the bot's own.** `bestgaa/channel_directory.py` now reads the
+rights Telegram reports on each dialog (`creator`, `admin_rights`) and publishes
+`role` (`creator`/`admin`/`member`), `can_post` and `can_invite`, plus
+`admin_count`/`creator_count`/`invite_count`. Admin channels sort first, so "is
+this mine, and may I post here?" is answered by data instead of a guess. A group
+with rights is listed as admin but is still not addable as a *source* (only a
+public broadcast channel can be one).
+
+**Many channels, one save.** `POST /api/channels/bulk` takes
+`{action, channels[]}` with `enable`, `disable`, `remove`, `target` (add the
+ticked ones as destinations) or `category` (set/clear the shelf filter). One
+atomic `channels.json` write, one revision bump, and a per-channel refusal list —
+a bad name never throws away the nineteen good ones. The page's buttons are
+`Enable / Disable / Add as destination / Set category / Remove`.
+
+**Join requests, approved in ~2.5 s — off by default.**
+`bestgaa/join_gate.py` is the whole policy, pure and tested: off unless the
+channel is listed *and* the global switch is on (`JOIN_AUTO_APPROVE=0` in the
+environment stops it outright), delay clamped to 1–60 s (default 2.5), a
+per-channel per-minute cap, and every decision written to
+`join_requests_log.json` (who, which channel, what, why). The bot gets the signal
+from `UpdatePendingJoinRequests` — a **user** session has no
+`events.ChatJoinRequest` — and approves with `HideChatJoinRequestRequest`. A
+poll every `JOIN_POLL_SECONDS` (60 s) covers a missed update, and the handler is
+registered only if Telethon has that update type, so an older library cannot
+stop the bot from booting. **It never joins a channel on our own account** — the
+standing rule is unchanged; this only admits people into channels where we are
+already admin.
+
+**Repost, by a button.** `bestgaa/repost.py` owns the queue format and the
+refusals. Paste `https://t.me/OurChannel/1234`, tick destinations,
+press once. The dashboard **appends** to `repost_requests.jsonl` (one line, atomic
+`O_APPEND`); the bot **drains** it and calls `forward_messages`, then writes the
+outcome to `repost_log.json`. Each request id is forwarded exactly once. It is
+deliberately *not* a routing rule: automatic "our channel → our channel" routing
+is how these systems grow loops and duplicate posts, which is why
+`validate_watch` still refuses a destination as its own source. The bot
+re-validates every queued row because the file is on disk: source must be one of
+OUR channels, destinations must be ours, never itself, never a private
+`t.me/c/…` link, at most 10 per press and 50 queued.
+
+**A section is never eaten by the next save.** `channels_config.load_channels`
+and `save_channels` used to keep only `version/channels/whatsapp/watch`, so the
+first save after adding `join_requests` silently discarded the operator's
+auto-approval setting. Unknown top-level sections are now preserved verbatim on
+both read and write (bounded, JSON-serializable only).
+
+- Proof: `test_channel_control.py` — rights and counts from fake dialogs; the
+  config round-trip that used to lose a section; every join-gate rule (off,
+  unlisted, paused, cap, window expiry, delay clamp, env kill switch, the 2.5 s
+  sleep then exactly one approval, a Telegram refusal logged as failed, the
+  bot-never-joins invariant); the repost refusals (stranger, itself, private
+  link, too many destinations, exactly-once) and the bot wiring; and the HTTP
+  API driven through aiohttp's test client against a temporary bot directory
+  (bulk actions, join-request save/read, repost queue, every refusal).
 
 ### "Where is the bot?" is asked once (2026-10-23)
 

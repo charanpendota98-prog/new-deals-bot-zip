@@ -868,11 +868,27 @@ def directory_view() -> dict:
             "watch_targets": watch_row.get("targets") or [],
             "watch_categories": watch_row.get("categories") or [],
             "is_our_target": bool(username) and key in our_targets,
+            # "manam admin ga vunna channel anni chupinchali": the rights the bot
+            # read off the dialog, so the page can show (and filter) them.
+            "role": str(row.get("role") or "member"),
+            "admin": bool(row.get("admin")),
+            "creator": bool(row.get("creator")),
+            "can_post": bool(row.get("can_post")),
+            "can_invite": bool(row.get("can_invite")),
         })
-    channels.sort(key=lambda row: (row["watched"], not row["addable"], row["title"].lower()))
+    channels.sort(key=lambda row: (not row["admin"], row["watched"], not row["addable"],
+                                   row["title"].lower()))
+    admin_rows = [row for row in channels if row["admin"]]
     return {
         "directory": {key: value for key, value in directory.items() if key != "channels"},
         "channels": channels,
+        "admin": {
+            "count": len(admin_rows),
+            "creator": sum(1 for row in admin_rows if row["creator"]),
+            "can_invite": sum(1 for row in admin_rows if row["can_invite"]),
+            "names": [row["username"] or row["title"] for row in admin_rows],
+        },
+        "join_requests": join_request_rows(data),
         "watched": watch_rows(),
         "catalog": watch_catalog(snap, data),
         "categories": category_catalog(),
@@ -897,6 +913,276 @@ def insight_ts(value) -> str:
 def api_directory(request: web.Request):
     """Every channel this bot session can read - the source picker's truth."""
     return web.json_response(directory_view())
+
+
+# --------------------------------------------------------------------------- #
+#  the operator's own inventory: every channel where WE are admin
+# --------------------------------------------------------------------------- #
+def join_request_rows(data: dict | None = None) -> dict:
+    """Auto-approval settings + what the bot has actually done, for the page."""
+    try:
+        sys.path.insert(0, str(ROOT / "bestgaa"))
+        import join_gate  # noqa: PLC0415
+    except ImportError:  # pragma: no cover
+        join_gate = None
+    data = channels_config.load_channels() if data is None else data
+    setting = join_gate.section(data) if join_gate else {"enabled": False, "delay": 2.5,
+                                                         "channels": {}}
+    log_file = channels_config.pending_path().parent / "join_requests_log.json"
+    try:
+        log_rows = json.loads(log_file.read_text(encoding="utf-8"))
+        if not isinstance(log_rows, list):
+            log_rows = []
+    except (OSError, ValueError):
+        log_rows = []
+    approved = [row for row in log_rows if row.get("action") == "approved"]
+    return {
+        "enabled": setting["enabled"],
+        "delay": setting["delay"],
+        "channels": [{"name": row["name"], "enabled": row["enabled"],
+                      "delay": row["delay"], "per_minute": row["per_minute"]}
+                     for row in setting["channels"].values()],
+        "approved": len(approved),
+        "refused": sum(1 for row in log_rows if row.get("action") in ("skip", "hold", "failed")),
+        "last": [{"at": insight_ts(row.get("at")), "channel": row.get("channel"),
+                  "user_id": row.get("user_id"), "action": row.get("action"),
+                  "reason": str(row.get("reason") or "")[:160]}
+                 for row in log_rows[-8:]][::-1],
+        "log_path": str(log_file),
+        "note": ("Off by default. When a channel is ticked, the bot approves join "
+                 "requests to it after the chosen delay (2.5s by default), capped per "
+                 "minute and written to the log. It never joins anything itself."),
+    }
+
+
+@require_token
+async def api_join_requests(request: web.Request) -> web.Response:
+    """Read or change auto-approval. Body: {enabled?, delay?, channels?: [...]}."""
+    data = channels_config.load_channels()
+    if request.method == "GET":
+        return web.json_response({**join_request_rows(data),
+                                  "revision": config_revision(), "admin": (
+                                      directory_view().get("admin") or {})})
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    try:
+        sys.path.insert(0, str(ROOT / "bestgaa"))
+        import join_gate  # noqa: PLC0415
+    except ImportError:
+        return web.json_response({"errors": ["join_gate.py is not deployed yet"]}, status=409)
+
+    # Only channels where the bot reported admin rights may be offered: approving
+    # join requests without the "invite users" right fails at Telegram anyway, and
+    # a silent failure is what this whole page exists to avoid.
+    admin = {str(name).lower() for name in (directory_view().get("admin") or {}).get("names") or []}
+    known = admin | {str(row.get("name", "")).lower() for row in data.get("channels", [])}
+    raw = body.get("channels")
+    errors: list[str] = []
+    warnings: list[str] = []
+    if raw is None:
+        current = (data.get("join_requests") or {}).get("channels") or []
+        keep = []
+        for row in current:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or "")
+            if body.get("enabled") is not None or "delay" in body:
+                keep.append({**row, "name": name})
+            else:
+                keep.append(row)
+        channels = keep
+    else:
+        if not isinstance(raw, list):
+            return web.json_response({"errors": ["channels must be a list"]}, status=400)
+        if len(raw) > 200:
+            return web.json_response({"errors": ["at most 200 channels"]}, status=400)
+        channels = []
+        for value in raw:
+            if not isinstance(value, dict):
+                errors.append("each channel must be an object")
+                continue
+            clean, bad, notes = join_gate.validate(value.get("name") or value.get("channel"),
+                                                   value, known)
+            warnings.extend(notes)
+            if bad:
+                errors.extend(bad)
+                continue
+            channels.append(clean)
+    if errors:
+        return web.json_response({"errors": errors, "warnings": warnings}, status=400)
+    # ONE schema, two processes: the delay is judged by the bot's own module, so
+    # the bot can never read a shape the dashboard never validated.
+    current = data.get("join_requests") or {}
+    delay = body.get("delay", current.get("delay", 2.5))
+    try:
+        delay = float(delay)
+    except (TypeError, ValueError):
+        return web.json_response({"errors": ["delay must be a number of seconds"]}, status=400)
+    if not join_gate.MIN_DELAY <= delay <= join_gate.MAX_DELAY:
+        return web.json_response(
+            {"errors": [f"delay must be between {join_gate.MIN_DELAY} and "
+                        f"{join_gate.MAX_DELAY} seconds"]}, status=400)
+    data["join_requests"] = {"enabled": bool(body.get("enabled", current.get("enabled", False))),
+                             "delay": round(delay, 1),
+                             "channels": channels}
+    channels_config.save_channels(data)
+    mark_pending()
+    return web.json_response({**join_request_rows(channels_config.load_channels()),
+                              "saved": True, "revision": config_revision(),
+                              "warnings": sorted(set(warnings))})
+
+
+# --------------------------------------------------------------------------- #
+#  one click: OUR post -> our other channels
+# --------------------------------------------------------------------------- #
+@require_token
+async def api_repost(request: web.Request) -> web.Response:
+    """Queue a forward of one of our posts. The BOT does the forwarding."""
+    try:
+        sys.path.insert(0, str(ROOT / "bestgaa"))
+        import repost  # noqa: PLC0415
+    except ImportError:
+        return web.json_response({"errors": ["repost.py is not deployed yet"]}, status=409)
+    # "Our channels" = everything this account may post to: the bot's routing
+    # targets, the configured dashboard channels, and the admin inventory it
+    # published (a channel can be ours before it is ever configured).
+    try:
+        inventory = [row for row in directory_rows().get("channels") or []
+                     if row.get("can_post") or row.get("admin")]
+    except Exception:  # noqa: BLE001 - a missing directory must not block the button
+        inventory = []
+    ours = sorted({*(snapshot().get("targets") or []),
+                   *(row.get("name") for row in channels_config.load_channels().get(
+                       "channels", []) if row.get("name")),
+                   *(row.get("username") or row.get("title") for row in inventory
+                     if (row.get("username") or row.get("title")))})
+    ours = [name for name in ours if name]
+    if request.method == "GET":
+        return web.json_response({
+            "ours": ours,
+            "queued": repost.queued(repost.request_path(), repost.done_ids()),
+            "log": repost.read_log()[-10:][::-1],
+            "note": ("The bot forwards, not the dashboard: it owns the session. Each press "
+                     "is one request in the log, forwarded once."),
+        })
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    clean, errors = repost.submit(body, ours)
+    if errors:
+        return web.json_response({"errors": errors, "request": clean}, status=400)
+    return web.json_response({"queued": clean, "next": (
+        "The bot forwards it within a few seconds (REPOST_POLL_SECONDS, default 5) and "
+        "writes the result to the repost log. Nothing is re-sent: each request id is "
+        "forwarded once.")})
+
+
+@require_token
+async def api_channels_bulk(request: web.Request) -> web.Response:
+    """Several channels, one action, one atomic save - the "multiple buttons" bar.
+
+    Actions: enable, disable, remove, category (add/clear), target (add selected
+    as destinations with the same sources/categories). Partial success is explicit:
+    everything that worked is saved, everything refused comes back with a reason.
+    """
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    action = str(body.get("action") or "").strip().lower()
+    names = body.get("channels") or body.get("names") or []
+    if isinstance(names, str):
+        names = [names]
+    if not isinstance(names, list) or not names:
+        return web.json_response({"errors": ["select at least one channel"]}, status=400)
+    if len(names) > 100:
+        return web.json_response({"errors": ["at most 100 channels per action"]}, status=400)
+    if action not in ("enable", "disable", "remove", "category", "target"):
+        return web.json_response(
+            {"errors": [f"unknown action {action!r} - use enable/disable/remove/category/target"]},
+            status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    data = channels_config.load_channels()
+    rows = data.setdefault("channels", [])
+    by_name = {str(row.get("name", "")).lower(): row for row in rows}
+    done: list[str] = []
+    skipped: list[dict] = []
+    snap = snapshot()
+    known_targets = set(snap.get("targets", [])) if snap else set()
+    known_sources = {item["key"] for item in source_catalog(snap)}
+    known_categories = set(category_catalog())
+
+    for value in names:
+        key = str(value or "").strip().lstrip("@").lower()
+        if not key:
+            continue
+        if action == "target":
+            if key in by_name:
+                skipped.append({"channel": key, "errors": ["already a dashboard channel"]})
+                continue
+            entry = {"name": key,
+                     "sources": body.get("sources") or ["*"],
+                     "categories": body.get("categories") or [],
+                     "amazon_tag": bool(body.get("amazon_tag", False)),
+                     "enabled": True,
+                     "note": str(body.get("note", "added in bulk"))[:200]}
+            cleaned, errors, _warnings = channels_config.validate_channel(
+                entry, known_sources, known_targets, known_categories)
+            if errors:
+                skipped.append({"channel": key, "errors": errors})
+                continue
+            rows.append(cleaned)
+            by_name[cleaned["name"].lower()] = cleaned
+            done.append(cleaned["name"])
+            continue
+        row = by_name.get(key)
+        if row is None:
+            skipped.append({"channel": key, "errors": ["not a dashboard channel"]})
+            continue
+        if action == "enable":
+            row["enabled"] = True
+        elif action == "disable":
+            row["enabled"] = False
+        elif action == "remove":
+            rows.remove(row)
+            by_name.pop(key, None)
+        elif action == "category":
+            cats = body.get("categories")
+            if cats is None:
+                row["categories"] = []
+            else:
+                if isinstance(cats, str):
+                    cats = [cats]
+                bad = [c for c in cats
+                       if known_categories and str(c).strip().lower() not in
+                       {k.lower() for k in known_categories}]
+                if bad:
+                    skipped.append({"channel": key,
+                                    "errors": [f"unknown category {bad[0]!r}"]})
+                    continue
+                row["categories"] = [str(c).strip().lower() for c in cats if str(c).strip()]
+        done.append(key)
+    if not done:
+        return web.json_response({"done": [], "skipped": skipped,
+                                  "revision": config_revision()}, status=400)
+    channels_config.save_channels(data)
+    mark_pending()
+    return web.json_response({"action": action, "done": done, "skipped": skipped,
+                              "revision": config_revision(), "pending_restart": True})
 
 
 @require_token
@@ -2284,6 +2570,11 @@ def create_app() -> web.Application:
     app.router.add_patch("/api/watch/{channel}", api_watch_edit)
     app.router.add_delete("/api/watch/{channel}", api_watch_delete)
     app.router.add_post("/api/channels", api_add_channel)
+    app.router.add_post("/api/channels/bulk", api_channels_bulk)
+    app.router.add_get("/api/join-requests", api_join_requests)
+    app.router.add_post("/api/join-requests", api_join_requests)
+    app.router.add_get("/api/repost", api_repost)
+    app.router.add_post("/api/repost", api_repost)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)
     app.router.add_put("/api/channels/whatsapp", api_put_whatsapp)
     app.router.add_delete("/api/channels/{name}", api_delete_channel)

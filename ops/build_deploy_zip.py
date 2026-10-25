@@ -56,6 +56,8 @@ BOT_FILES = [
     # the bot all read their DB / channels.json / .env through it. A bundle
     # without it does not boot (channels_config imports it).
     "bot_paths.py",
+    "join_gate.py",
+    "repost.py",
     "deploy_bestgaa.sh",
     "migrate_legacy_env.py",
     "requirements.txt",
@@ -96,6 +98,8 @@ REQUIRED = {
     "category_rules.json",
     "channels_config.py",
     "bot_paths.py",
+    "join_gate.py",
+    "repost.py",
     "live_channels.py",
     "hypd_policy.py",
     "source_catalog.json",
