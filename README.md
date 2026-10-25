@@ -1781,9 +1781,9 @@ source snapshot:
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `5528adf7025027a3bfda3bbbe55528f0b1b01057e2f907bd28823008cac626f3` |
+| `bestgaa/main_bot_new.py` (v19.0) | `ff74719c953ce3346222a6b4b1d5abb4cc1b290ccad170f4b87d5a6b0f214c57` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
-| `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/post_buttons.py` | `b5f7d8aaf8a189806448914d9b9f1afeeaa0a3eb4ee2bb620037658ac5a7bc11` |
 | `bestgaa/posts.py` | `212f965c28dce1cf005565a3d3c55c34c1ca231ef2e0d6af8988dbcdaee0fbae` |
 | `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
@@ -1799,7 +1799,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `783d04d7a10d0c2f5c45bc3059899fd0033a80cee8c20e845efe7ef8f0de8726` |
+| `dashboard/app.py` | `7fd8ccd1d11e8dea09b926385ede1d70b70df57bcf290c07861c06369ffa0c1e` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
@@ -1840,8 +1840,8 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `0a6ccef8ae150f457ce03e757bbe8fcd414ea298b26f8a16ab501abde70a9bda` |
-| `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
+| `ops/test_all.sh` | `e52f1ee48147a89bda5599fe96431e6e2f829bde782b30093df7d397e2fe982f` |
+| `test_api_vault.py` | `21aa05514d31a3ad84b000c73d4152ae69cad8f58cac89f6f2cfe76931f4750b` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
 | `test_bot_paths.py` | `902e241aca4a1b76032b88df36daff5fb517021f4e40cf0d95e59068c9932f15` |
@@ -1850,9 +1850,11 @@ source snapshot:
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
 | `test_channel_attach.py` | `f51f87b34bc954ba43ddebf379beffed6ee1c84985c6915f4a9e10f92945d1ae` |
+| `test_channel_buttons.py` | `37f71766c0afa2f61f91369f13aff14777d5000c22d61d557123416bfbddabea` |
 | `test_channel_control.py` | `fc8237d38c63f79282284a164a227ad56507910c66cf75644285222be9ec1ec2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
-| `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
+| `test_dashboard.py` | `ca8bca83340c6744039dba0d0cf7855087e6526c512dd7867962c1f8ddd2bf1d` |
+| `test_dashboard_buttons.cjs` | `96ff57979063568ecf064636f10a0d44b670d7e921012582f194531c01a20c93` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
@@ -1884,7 +1886,7 @@ source snapshot:
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |
 | `test_pipeline_integrity.py` | `2892807d3b64e2d063b91a87f0881630630af01cbb72df9dacabe161cbc22431` |
-| `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
+| `test_post_buttons.py` | `926df2751b860eda6c2b6a92dfd24e9e97b349594047df190686a464072a3815` |
 | `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
@@ -2947,6 +2949,49 @@ flow. Nothing is joined and no history is replayed — unchanged.
   finished post becomes claimable again), the HTTP feed + press + refusals through
   aiohttp's test client, and the page markup (per-post buttons, `t.me` links, the
   one-line add-source box).
+
+### The "Join …" button under a post is now per channel (2026-10-25)
+
+*"mana existing and new ga chesе channels ki easy ga cheselaga undali dashboard …
+ah channel post inkoka channel buttons add cheyelaga"* — with a screenshot of a
+real post ending in a **Join Shopsy Loots ❤️ →** button.
+
+One global row was not enough: a post in **LootZone** must offer the *other*
+shelves, not LootZone itself. `bestgaa/post_buttons.py` (schema 2) therefore has
+a row **per channel**, with four modes:
+
+| mode | what a reader sees under that channel's post |
+|---|---|
+| `default` | the shared row every channel had before |
+| `auto` | built from **our other channels** (never the channel itself), labelled from the channel title via `auto_label` (`Join {title} ❤️`) |
+| `custom` | an explicit row for that channel |
+| `none` | no buttons there |
+
+The rules did not get looser: at most two buttons, https only, Telegram hosts
+only, 1–40 char labels without control characters, no repeated URL — and **a
+button may never link the channel it is posted in** (dropped on read, refused on
+save). "Auto for every channel" is one press in the dashboard; the page shows the
+**resolved row per channel** (built by the same `effective_row` the bot uses), so
+the preview cannot disagree with what goes out.
+
+Bot side: `deliver()` now takes the `target` it is posting to and resolves
+`post_inline_buttons(target)`; names and titles come from the code targets,
+`channels.json` and the published directory, so a button reads "Join Under 99
+Shelf" instead of "Join under99deals11". WhatsApp still has no inline buttons.
+
+- Proof: `test_channel_buttons.py` — handle normalisation; the old global row
+  (including dropping a self-link, not the row); auto (self excluded, titles,
+  dedupe, two-button limit, `auto_limit`, invite values skipped); custom and
+  `none`; every refusal (foreign host, self-link, empty custom, unknown mode,
+  non-public key, third button) with **nothing written**; the atomic round-trip;
+  the bug where saving the default row wiped the per-channel modes; which
+  channels a button may point at; the bot's real `post_inline_buttons(target)`
+  (LootZone's post links the other shelf and not itself, and the label is the
+  title); and the HTTP endpoints (preview, auto-all, self-link refusal, empty
+  body refusal, default-row save preserving modes, `none`).
+  `test_dashboard_buttons.cjs` drives the editor in jsdom: three rows, the mode
+  selector, auto-for-everyone, a custom row, a hostile label staying text, and a
+  half-filled row that never reaches the server.
 
 ### Attach what already runs, and get told what to add next (2026-10-25)
 

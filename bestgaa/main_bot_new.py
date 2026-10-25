@@ -9192,20 +9192,70 @@ async def send_media_item(client, entity, media, caption: str, refs: list | None
             await client.send_file(entity, extra, parse_mode=None)
 
 
-def post_inline_buttons():
-    """The dashboard-configured URL button row, ready for Telethon, or [].
+def _our_channels_for_buttons() -> tuple[list[str], dict[str, str]]:
+    """(names, titles) an AUTO button row may point at: everything we post to.
+
+    Code targets first (they are ours even before the dashboard has heard of
+    them), then the dashboard channels, then the directory the bot itself
+    published. Titles come from the directory, so a button reads "Join Under 99
+    Shelf" instead of "Join under99deals11" when Telegram knows the name.
+    """
+    names: list[str] = []
+    titles: dict[str, str] = {}
+    for name in sorted(str(item) for item in _dashboard_targets):
+        key = normalize_channel_target_name(name)
+        if key:
+            names.append(name)
+    try:
+        data = _dashboard_channels.load_channels()
+        for entry in data.get("channels") or []:
+            if isinstance(entry, dict) and entry.get("enabled") is not False:
+                name = str(entry.get("name") or "")
+                if name and normalize_channel_target_name(name) not in {
+                        normalize_channel_target_name(item) for item in names}:
+                    names.append(name)
+    except Exception:  # noqa: BLE001 - a broken config must not lose the row
+        pass
+    try:
+        payload = json.loads(_dashboard_channels.directory_path().read_text(encoding="utf-8"))
+        for entry in payload.get("channels") or []:
+            if not isinstance(entry, dict):
+                continue
+            handle = str(entry.get("username") or "")
+            if not handle:
+                continue
+            title = " ".join(str(entry.get("title") or handle).split())[:40]
+            titles[handle.lower()] = title or handle
+            if (entry.get("admin") or entry.get("creator")) and normalize_channel_target_name(
+                    handle) not in {normalize_channel_target_name(item) for item in names}:
+                names.append(handle)
+    except Exception:  # noqa: BLE001 - no directory yet is normal on a fresh install
+        pass
+    return names, titles
+
+
+def post_inline_buttons(target=None):
+    """The dashboard-configured URL button row for ONE channel, or [].
 
     Telegram draws inline URL buttons below the message - the "Join … ❤️" row a
-    big channel ends every post with. Empty config (the default, and every
-    deployment until an operator saves buttons) returns [], and `deliver` then
-    passes buttons=None, so nothing about today's posts changes. WhatsApp has no
-    inline buttons, so this is a Telegram-only surface.
+    big channel ends every post with. The dashboard configures it PER CHANNEL
+    (default row / auto row made of our other channels / a custom row / none), so
+    a post in one shelf offers the others and never itself. Empty config (the
+    default, and every deployment until an operator saves something) returns [],
+    and `deliver` then passes buttons=None, so nothing about today's posts
+    changes. WhatsApp has no inline buttons, so this is a Telegram-only surface.
     """
     try:
         import post_buttons
     except ImportError:  # imported as bestgaa.main_bot_new
         from bestgaa import post_buttons
-    rows = post_buttons.load_buttons()
+    try:
+        names, titles = _our_channels_for_buttons()
+        rows = post_buttons.resolve(target, ours=names, titles=titles)
+    except Exception as exc:  # noqa: BLE001 - a button must never cost a post
+        log.warning("POST BUTTONS | could not resolve the row for %s (%s) - posting without "
+                    "buttons", target, exc)
+        return []
     if not rows:
         return []
     from telethon import Button
@@ -9262,7 +9312,8 @@ class AmbiguousDelivery(Exception):
 
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
-                  media_refs: list | None = None, attempt_callback=None) -> tuple[bool, str]:
+                  media_refs: list | None = None, attempt_callback=None,
+                  target: str | None = None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
@@ -9277,7 +9328,9 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
     # The button row opens the post, exactly once: the first message actually sent
     # (which is the photo when there is one). A resumed job puts it on the message
     # that resumes, so a post never shows zero rows because of a retry.
-    button_row = post_inline_buttons() or None
+    # PER CHANNEL: the row is resolved for the channel this copy is going to, so
+    # a post in one shelf offers the others and never links itself.
+    button_row = post_inline_buttons(target) or None
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
         chunk_buttons = button_row if index == start_chunk else None
@@ -10694,7 +10747,7 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
                     client, entity, target_text, target_media,
                     start_chunk=start_chunk, progress_callback=checkpoint,
                     link_preview=allow_preview, media_refs=media_refs,
-                    attempt_callback=send_attempt,
+                    attempt_callback=send_attempt, target=target,
                 )
             except AmbiguousDelivery as exc:
                 held_targets += 1

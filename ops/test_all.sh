@@ -225,6 +225,9 @@ run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
 run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py
 run 'post buttons (validation, atomic config, send-path no-op)' "$PYTHON" test_post_buttons.py
+# "ah channel post inkoka channel buttons add cheyelaga": the row is per channel -
+# a post in one shelf offers the others and never itself.
+run 'per-channel post buttons (auto/custom/none, never itself)' "$PYTHON" test_channel_buttons.py
 run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
@@ -266,6 +269,7 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   # "existing running channel ki kuda ottu add cheyagalgali ... oka channel nunchi
   # inko channels suggest cheyali": the card the operator clicks, in a real DOM.
   run 'dashboard DOM: our channels + suggestions' node test_dashboard_own.cjs
+  run 'dashboard DOM: per-channel post buttons' node test_dashboard_buttons.cjs
   run 'dashboard DOM: tunnel link + token' node test_dashboard_link.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'

@@ -245,9 +245,17 @@ def files():
 
 def bot_failover():
     print("\n== several EarnKaro keys are a real failover for the bot ==")
+    # Importing the bot opens (and on first write creates) its database, so give it
+    # a throwaway one: a stray `bestgaa/bestgaa.sqlite3` in the checkout makes
+    # bot_paths treat the checkout as a bot directory.
+    scratch = Path(tempfile.mkdtemp(prefix="vault-bot-"))
     env = {"TELEGRAM_API_ID": "1", "TELEGRAM_API_HASH": "x",
            "EARNKARO_API_KEY": f"{GOOD_EK},{SECOND_EK},{FOREIGN_EK}",
-           "EARNKARO_PUBLISHER_ID": "5478322", "AMAZON_TAG": "mama086-21"}
+           "EARNKARO_PUBLISHER_ID": "5478322", "AMAZON_TAG": "mama086-21",
+           "BOT_DB_PATH": str(scratch / "bot.sqlite3"),
+           "BOT_LOG_DIR": str(scratch / "logs"),
+           "BOT_MEDIA_DIR": str(scratch / "media"),
+           "CHANNELS_JSON_PATH": str(scratch / "channels.json")}
     saved = {key: os.environ.get(key) for key in env}
     os.environ.update(env)
     try:

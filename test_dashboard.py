@@ -297,7 +297,8 @@ def test_http_api():
                           len(bot.post_inline_buttons()) == 2)
                     status, body = await call("PUT", "/api/post-buttons", json={})
                     check("a body with no buttons key cannot wipe the row",
-                          status == 400 and "buttons must be a list" in (body.get("errors") or [""])[0]
+                          status == 400 and "would wipe the configuration"
+                          in (body.get("errors") or [""])[0]
                           and len(bot.post_inline_buttons()) == 2, str(body))
                     status, body = await call("PUT", "/api/post-buttons", json={"buttons": []})
                     check("clearing the row restores today's posts byte for byte",

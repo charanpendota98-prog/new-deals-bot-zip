@@ -565,6 +565,15 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <button id="btnadd" onclick="addButtonRow()">+ add button</button>
 <button class="primary" id="btnsave" onclick="saveButtons()">Save buttons</button>
 <span id="btnstate" class="muted"></span></div>
+<h3>Per channel: who does each channel's post point at?</h3>
+<p class="muted">The row above is the <b>default</b>. Each of our channels can also point at <b>the others</b>: <b>auto</b> builds its row from your other channels (never itself), labelled from the channel title; <b>custom</b> is an explicit row for that channel; <b>none</b> posts without buttons. The bot resolves the same way this preview does, so what you see here is what a reader taps.</p>
+<div class="row">
+<button onclick="pbAutoAll()">Point every channel at the others (auto)</button>
+<button class="ghost" onclick="loadButtons()">Reload rows</button>
+<span id="pballstate" class="muted"></span>
+</div>
+<div class="source-list" id="pbchannels"><p class="muted" style="padding:10px">loading our channels…</p></div>
+<p class="muted" id="pbnote"></p>
 <h3>Where this deal would land</h3>
 <div class="tablewrap"><table><thead><tr><th>Surface</th><th>Destination</th><th>Format</th><th>Why</th></tr></thead>
 <tbody id="cardplan"><tr><td colspan="4" class="muted">render a caption to see the plan</td></tr></tbody></table></div>
@@ -1811,12 +1820,118 @@ async function loadButtons(){
       document.getElementById('btnstate').textContent=
         'added from presets - press Save buttons to publish';
     };
+    pbConfig = data;
+    pbRender();
     state.textContent=buttonRows.length?'configured: '+buttonRows.length+' button(s)'
       :'no buttons configured - posts go out exactly as today';
   }catch(error){
     state.textContent='buttons unavailable: '+escapeHTML(String(error&&error.message||error));
   }
 }
+// ------------------------------------------------- per-channel button rows --
+// "ah channel post inkoka channel buttons add cheyelaga": a post in one shelf
+// should offer the OTHER shelves - one press, and never a button that links the
+// channel it is posted in.
+let pbConfig = {channels: [], auto_label: 'Join {title} \u2764\ufe0f', max_buttons: 2};
+function pbRows(){ return pbConfig.channels || []; }
+function pbRowHtml(row){
+  const name = String(row.name || '');
+  const modes = ['default', 'auto', 'custom', 'none'];
+  const options = modes.map(mode => '<option value="' + mode + '"'
+    + ((row.mode || 'default') === mode ? ' selected' : '') + '>'
+    + (mode === 'default' ? 'default row' : (mode === 'auto' ? 'auto: my other channels' : mode))
+    + '</option>').join('');
+  const buttons = (row.buttons || []).map(entry => escapeHTML(String(entry.label)))
+    .join(' · ');
+  const preview = buttons
+    ? '→ ' + buttons
+    : '<span class="muted">no buttons in this channel</span>';
+  let custom = '';
+  if((row.mode || 'default') === 'custom'){
+    const one = (row.buttons || [])[0] || {label:'',url:''};
+    const two = (row.buttons || [])[1] || {label:'',url:''};
+    custom = '<div class="row" style="margin-top:6px">'
+      + '<input id="pbc-' + escapeHTML(name) + '-0l" maxlength="40" placeholder="label" value="' + escapeHTML(String(one.label||'')) + '">'
+      + '<input id="pbc-' + escapeHTML(name) + '-0u" placeholder="https://t.me/…" value="' + escapeHTML(String(one.url||'')) + '">'
+      + '<input id="pbc-' + escapeHTML(name) + '-1l" maxlength="40" placeholder="label (optional)" value="' + escapeHTML(String(two.label||'')) + '">'
+      + '<input id="pbc-' + escapeHTML(name) + '-1u" placeholder="https://t.me/… (optional)" value="' + escapeHTML(String(two.url||'')) + '">'
+      + '<button onclick="pbSaveCustom(\'' + escapeHTML(name) + '\')">Save this row</button></div>';
+  }
+  return '<div class="source-option" style="display:block">'
+    + '<div class="row" style="align-items:center">'
+    + '<strong style="min-width:190px">' + (row.url
+        ? '<a href="' + escapeHTML(String(row.url)) + '" target="_blank" rel="noopener">@'
+          + escapeHTML(name) + '</a>' : escapeHTML(name)) + '</strong>'
+    + '<select aria-label="button mode for ' + escapeHTML(name) + '" onchange="pbSetMode(\''
+      + escapeHTML(name) + '\', this.value)">' + options + '</select>'
+    + '<small>' + preview + '</small>'
+    + '<small class="muted">' + escapeHTML(String(row.where || '')) + '</small>'
+    + '</div>' + custom + '</div>';
+}
+function pbRender(){
+  const box = document.getElementById('pbchannels');
+  if(!box) return;
+  const rows = pbRows();
+  box.innerHTML = rows.map(pbRowHtml).join('')
+    || '<p class="muted" style="padding:10px">no channels yet - attach or add a channel first</p>';
+  const note = document.getElementById('pbnote');
+  if(note){
+    note.textContent = rows.length
+      ? 'auto label: ' + String(pbConfig.auto_label || '') + ' · max '
+        + Number(pbConfig.max_buttons || 2) + ' button(s) per post · '
+        + (pbConfig.path || '')
+      : '';
+  }
+}
+async function pbPut(body, stateId){
+  const state = document.getElementById(stateId);
+  try{
+    const data = await api('PUT','/api/post-buttons', body);
+    pbConfig = data;
+    pbRender();
+    renderMockButtons(data.buttons || []);
+    if(state) state.textContent = 'saved';
+    return data;
+  }catch(error){
+    if(state) state.textContent = 'NOT saved: ' + String(error.message || error);
+    return null;
+  }
+}
+async function pbSetMode(name, mode){
+  return pbPut({per_channel:[{name, mode, buttons: mode === 'custom'
+    ? ((pbRows().find(row => row.name === name) || {}).buttons || []) : []}]},
+    'pballstate');
+}
+async function pbAutoAll(){
+  const rows = pbRows().map(row => ({name: row.name, mode: 'auto', buttons: []}));
+  if(!rows.length){ document.getElementById('pballstate').textContent = 'no channels yet'; return; }
+  const data = await pbPut({per_channel: rows}, 'pballstate');
+  if(data) document.getElementById('pballstate').textContent =
+    'every channel now points at the others (' + rows.length + ' channel(s))';
+}
+async function pbSaveCustom(name){
+  const pick = (suffix) => {
+    const element = document.getElementById('pbc-' + name + '-' + suffix);
+    return element ? element.value.trim() : '';
+  };
+  const rows = [];
+  for(const index of [0, 1]){
+    const label = pick(index + 'l'), url = pick(index + 'u');
+    if(label && url) rows.push({label, url});
+    else if(label || url){
+      document.getElementById('pballstate').textContent =
+        'button ' + (index + 1) + ' needs BOTH a label and a url';
+      return null;
+    }
+  }
+  if(!rows.length){
+    document.getElementById('pballstate').textContent =
+      'a custom row needs at least one button (choose "none" for no buttons)';
+    return null;
+  }
+  return pbPut({per_channel:[{name, mode: 'custom', buttons: rows}]}, 'pballstate');
+}
+
 async function saveButtons(){
   const state=document.getElementById('btnstate');
   const rows=buttonRows.filter(r=>(r.label||'').trim()||(r.url||'').trim());

@@ -103,7 +103,8 @@ def main() -> int:
         check("and leaves no tmp litter",
               not list(Path(tmp).glob(".post-buttons-*")), list(Path(tmp).iterdir()))
         check("the saved shape is versioned JSON",
-              json.loads(path.read_text(encoding="utf-8"))["version"] == 1)
+              json.loads(path.read_text(encoding="utf-8"))["version"]
+              == post_buttons.SCHEMA_VERSION)
 
         print("presets come from our own channels, never from a typed URL")
         os.environ["CHANNELS_JSON_PATH"] = str(Path(tmp) / "channels.json")

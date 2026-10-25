@@ -1937,41 +1937,111 @@ async def api_put_whatsapp(request: web.Request):
                               "env_lines": channels_config.wa_env_lines(cleaned)})
 
 
-@require_token
-@in_thread
-def api_post_buttons_get(request: web.Request):
-    """The configured Telegram button row (join buttons under every post)."""
+def buttons_view(config: dict | None = None) -> dict:
+    """The button config AND what it will actually draw under each channel's posts.
+
+    "mana existing and new ga add chese channels ki easy ga cheselaga undali" -
+    the page must show the resolved row per channel, not just the config: a
+    channel on `auto` shows the buttons it will carry, built from our OTHER
+    channels, with the channel itself excluded. `effective_row` is the same
+    function the bot's send path uses, so the preview cannot disagree with what
+    goes out.
+    """
     import post_buttons
-    return web.json_response({
-        "buttons": post_buttons.load_buttons(),
+    config = post_buttons.load_config() if config is None else config
+    ours = post_buttons.our_channels()
+    titles = post_buttons.title_map(ours)
+    names = [row["name"] for row in ours]
+    channels = []
+    for row in ours:
+        preview = post_buttons.effective_row(row["name"], ours=names, titles=titles)
+        channels.append({**row, **{key: preview[key] for key in
+                                   ("mode", "buttons", "where", "configured")},
+                         "is_self_excluded": True})
+    return {
+        "buttons": config["buttons"],
+        "per_channel": [{"name": row["name"], "mode": row["mode"],
+                         "buttons": row["buttons"]}
+                        for row in config["per_channel"].values()],
+        "auto_label": config["auto_label"],
+        "auto_limit": config["auto_limit"],
+        "channels": channels,
         "presets": post_buttons.preset_buttons(),
         "max_buttons": post_buttons.MAX_BUTTONS,
         "max_label": post_buttons.MAX_LABEL,
         "allowed_hosts": list(post_buttons.ALLOWED_HOSTS),
         "path": str(post_buttons.config_path()),
-    })
+        "note": ("One row per channel: 'default' uses the shared row, 'auto' builds it from "
+                 "your other channels (never the channel itself), 'custom' is an explicit "
+                 "row, 'none' posts without buttons. The bot resolves the same way, so this "
+                 "preview is what a reader sees."),
+    }
+
+
+@require_token
+@in_thread
+def api_post_buttons_get(request: web.Request):
+    """The configured Telegram button rows - the default one and per channel."""
+    return web.json_response(buttons_view())
 
 
 @require_token
 async def api_post_buttons_put(request: web.Request):
-    """Save the button row. Validation lives in post_buttons, so the CLI, the bot
-    and this endpoint can never disagree about what a button is."""
+    """Save the button rows. Validation lives in post_buttons, so the CLI, the bot
+    and this endpoint can never disagree about what a button is.
+
+    A body may carry `buttons` (the default row) and/or `per_channel` (a list of
+    {name, mode, buttons}) and/or `auto_label` - whatever it does NOT carry is
+    kept, so the page can save one channel without wiping the others. Omitting
+    everything is refused: that is a silent wipe, not a save.
+    """
     import post_buttons
     try:
         body = await request.json()
     except ValueError:
         return web.json_response({"errors": ["body must be JSON"]}, status=400)
-    # Replacing the row with nothing because the body had no "buttons" key is a
-    # silent wipe, not a save. Ask for the list explicitly.
-    if not isinstance(body, dict) or "buttons" not in body:
+    if not isinstance(body, dict) or not any(
+            key in body for key in ("buttons", "per_channel", "auto_label", "auto_limit")):
         return web.json_response(
-            {"errors": ["buttons must be a list - send the whole row you want saved, "
-                        "or [] to remove it from every post"]}, status=400)
-    target, errors = post_buttons.save_buttons(body.get("buttons"))
+            {"errors": ["send buttons (the default row), per_channel, auto_label or "
+                        "auto_limit - an empty body would wipe the configuration"]},
+            status=400)
+    current = post_buttons.load_config()
+    per_channel = {row["name"]: {"mode": row["mode"], "buttons": row["buttons"]}
+                   for row in current["per_channel"].values()}
+    if "per_channel" in body:
+        raw = body.get("per_channel")
+        if isinstance(raw, dict):
+            entries = [{"name": name, **(entry if isinstance(entry, dict) else {})}
+                       for name, entry in raw.items()]
+        elif isinstance(raw, list):
+            entries = [entry for entry in raw if isinstance(entry, dict)]
+        else:
+            return web.json_response(
+                {"errors": ["per_channel must be a list of {name, mode, buttons} or an "
+                            "object of channel -> entry"]}, status=400)
+        for entry in entries:
+            name = post_buttons.handle_of(entry.get("name"))
+            if not name:
+                return web.json_response({"errors": ["every per_channel entry needs a "
+                                                     "channel name"]}, status=400)
+            mode = str(entry.get("mode") or "default").strip().lower()
+            if mode == "default":
+                per_channel.pop(name, None)        # back to the shared row
+            else:
+                per_channel[name] = {"mode": mode,
+                                     "buttons": entry.get("buttons") or []}
+    payload = {
+        "buttons": body.get("buttons", current["buttons"]),
+        "per_channel": per_channel,
+        "auto_label": body.get("auto_label", current["auto_label"]),
+        "auto_limit": body.get("auto_limit", current["auto_limit"]),
+    }
+    target, errors, cleaned = post_buttons.save_config(payload)
     if errors:
         return web.json_response({"errors": errors}, status=400)
-    return web.json_response({"saved": True, "buttons": post_buttons.load_buttons(target),
-                              "path": str(target)})
+    view = buttons_view(cleaned)
+    return web.json_response({"saved": True, "path": str(target), **view})
 
 
 @require_token
