@@ -351,6 +351,24 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <p id="repostmsg" role="status" aria-live="polite" class="muted"></p>
 <div id="repostlog"></div>
 </div>
+<div class="card" id="ownchannels">
+<div class="section-heading"><div><span class="eyebrow">OUR CHANNELS · ATTACH WHAT ALREADY RUNS</span><h2>One list — and a suggestion for the next channel, from one you already run</h2></div><span class="badge" id="ownstate">loading</span></div>
+<p class="muted">Every channel this account runs, in one place: the ones the bot was <b>built with</b>, the ones added <b>here</b>, and the ones <b>already running</b> that you have not attached yet. <b>Attach</b> registers an existing channel so you can pause it, note it, and ask for suggestions from it — a channel you admin but do not post to is added as a real destination. <b>Pause</b> stops NEW posts to one channel (no delivery row is written, nothing is replayed). Attaching never joins a channel and never posts anything.</p>
+<p class="muted" id="ownsummary"></p>
+<div class="row">
+<input id="owninput" maxlength="200" placeholder="https://t.me/YourChannel  ·  @YourChannel" autocomplete="off" aria-label="Channel to attach">
+<button onclick="ownAttachInput()">Attach this channel</button>
+<button class="ghost" onclick="loadOwn()">Reload</button>
+<span class="source-count" id="owncount">loading…</span>
+</div>
+<p id="ownmsg" role="status" aria-live="polite" class="muted"></p>
+<input id="ownsearch" type="search" maxlength="80" placeholder="filter: title or @username" autocomplete="off" oninput="ownRender()">
+<div class="source-list" id="ownlist"><p class="muted" style="padding:10px">loading our channels…</p></div>
+<h3>Suggest the next channel <span class="muted">— from one of ours</span></h3>
+<p class="muted">Press <b>Suggest</b> on a row above. The <b>bot</b> asks Telegram for that channel's similar channels and reads its <b>recent</b> posts for <code>t.me/…</code> and <code>@…</code> mentions, then lists candidates with <b>Add as source</b> or <b>Attach as ours</b>. Read-only: nothing is joined, nothing is forwarded, and every row says where the idea came from. Already-ours channels are never suggested.</p>
+<div id="sglist"><p class="muted">no suggestion requested yet</p></div>
+<p id="sgmsg" role="status" aria-live="polite" class="muted"></p>
+</div>
 <div class="card" id="watchsource">
 <div class="section-heading"><div><span class="eyebrow">WATCH A SOURCE · CHANNEL LINK → POSTS</span><h2>Paste a channel link, and its deals start posting</h2></div><span class="badge" id="watchlive">checking</span></div>
 <p class="muted">Paste the link of a Telegram channel you want to <b>read</b> (not one of ours). The bot then takes each post exactly as the source wrote it, converts every link to <b>ours</b> (tagged Amazon page, or the converter's link bound to our publisher id), and posts it to the channels you pick here. Nothing is joined automatically, no old post is replayed, and a link that cannot be proven to pay us is repaired or dropped - never published as "probably ours".</p>
@@ -721,6 +739,7 @@ async function refresh(full=true){
     await loadVault();                    // the keys the bot actually reads
     await loadControl();                  // admin inventory, bulk actions, join requests, repost
     await loadPosts();                    // every post: where it went + its buttons
+    await loadOwn();                      // our channels: attach, pause, suggest
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -843,6 +862,199 @@ async function loadPosts(){
     const msg = document.getElementById('pfmsg');
     if(msg && !msg.textContent) msg.textContent = 'last send: #' + (log[0].queue_id || '?')
       + ' → ' + String(log[0].action || '') + (log[0].reason ? ' (' + log[0].reason + ')' : '');
+  }
+}
+
+// ------------------------------------------------------ OUR CHANNELS ------
+// "mana existing running channel ki kuda ottu add cheyagalgali neatga dashboard lo
+// ... oka channel nunchi inko channels suggest cheyali ... more and more advanced."
+// Two verbs on one list: ATTACH (register what already runs, so it can be paused
+// and noted) and SUGGEST (ask the bot what to add next, from a channel we run).
+let ownRows = [], ownCounts = {}, ownQuery = '', sgAnswers = [], ownRevision = '';
+function ownName(row){ return String(row.name || row.username || '').replace(/^@/,''); }
+function ownShown(){
+  const q = ownQuery.trim().toLowerCase();
+  if(!q) return ownRows;
+  return ownRows.filter(row => ownName(row).toLowerCase().includes(q));
+}
+function ownBadges(row){
+  let out = '';
+  for(const origin of (row.origins || [])){
+    const label = origin === 'code' ? 'built in' : (origin === 'dashboard' ? 'added here' : 'attached');
+    out += '<span class="badge ok">' + escapeHTML(label) + '</span> ';
+  }
+  if(!(row.origins || []).length) out += '<span class="badge">candidate</span> ';
+  if(row.role) out += '<span class="badge">' + escapeHTML(String(row.role)) + '</span> ';
+  if(row.paused) out += '<span class="badge warn">paused</span> ';
+  if(row.note) out += '<span class="badge" title="' + escapeHTML(String(row.note)) + '">note</span> ';
+  return out;
+}
+function ownButtons(row){
+  const name = ownName(row);
+  let out = '';
+  if(row.attachable) out += '<button onclick="ownAttach(\'' + escapeHTML(name) + '\')">Attach</button> ';
+  if(row.detachable) out += '<button class="ghost" onclick="ownDetach(\'' + escapeHTML(name) + '\')">Detach</button> ';
+  if(row.attached || (row.origins || []).includes('dashboard')){
+    out += row.paused
+      ? '<button onclick="ownPosting(\'' + escapeHTML(name) + '\',true)">Resume</button> '
+      : '<button class="ghost" onclick="ownPosting(\'' + escapeHTML(name) + '\',false)">Pause</button> ';
+  }
+  if(row.ours) out += '<button class="ghost" onclick="ownSuggest(\'' + escapeHTML(name) + '\')">Suggest</button>';
+  return out;
+}
+function ownRender(){
+  const body = document.getElementById('ownlist');
+  if(!body) return;
+  const shown = ownShown();
+  const count = document.getElementById('owncount');
+  if(count) count.textContent = shown.length + ' shown · ' + (ownCounts.ours || 0) + ' ours · '
+    + (ownCounts.attached || 0) + ' attached · ' + (ownCounts.paused || 0) + ' paused';
+  const summary = document.getElementById('ownsummary');
+  if(summary){
+    summary.innerHTML = '<b>' + (ownCounts.ours || 0) + '</b> channel(s) ours'
+      + ' (' + (ownCounts.code || 0) + ' from code, ' + (ownCounts.dashboard || 0) + ' added here, '
+      + (ownCounts.attached || 0) + ' attached)'
+      + ' · <b>' + (ownCounts.candidates || 0) + '</b> ready to attach'
+      + ((ownCounts.paused || 0) ? ' · <b class="bad">' + ownCounts.paused + ' paused</b>' : '')
+      + (ownRevision ? ' · config ' + escapeHTML(String(ownRevision).slice(0,8)) : '');
+  }
+  body.innerHTML = shown.map(row => {
+    const name = ownName(row);
+    const head = row.link
+      ? '<a href="' + escapeHTML(String(row.link)) + '" target="_blank" rel="noopener">@' + escapeHTML(name) + '</a>'
+      : escapeHTML(name);
+    const detail = [
+      row.kind ? escapeHTML(String(row.kind)) : '',
+      row.members ? Number(row.members).toLocaleString('en-IN') + ' members' : '',
+      row.can_post ? 'can post' : (row.ours ? 'no post right reported' : ''),
+      row.why_not ? escapeHTML(String(row.why_not)) : ''
+    ].filter(Boolean).join(' · ');
+    return '<div class="source-option">'
+      + '<span style="flex:1"><strong>' + head + '</strong>'
+      + '<small>' + detail + '</small></span>'
+      + ownBadges(row)
+      + '<span class="row">' + ownButtons(row) + '</span>'
+      + '</div>';
+  }).join('') || '<p class="muted" style="padding:10px">nothing matches that filter</p>';
+}
+async function loadOwn(){
+  const badge = document.getElementById('ownstate');
+  let data;
+  try{ data = await api('GET','/api/own'); }
+  catch(e){
+    if(badge) badge.textContent = 'not available';
+    const body = document.getElementById('ownlist');
+    if(body) body.innerHTML = '<p class="muted" style="padding:10px">our channels unavailable: '
+      + escapeHTML(String(e.message||e)) + '</p>';
+    return;
+  }
+  ownRows = data.rows || [];
+  ownCounts = data.counts || {};
+  ownRevision = data.revision || '';
+  sgAnswers = data.suggestions || [];
+  if(badge) badge.textContent = (ownCounts.attached || 0) + ' attached';
+  ownRender();
+  renderSuggestions();
+  const msg = document.getElementById('ownmsg');
+  if(msg && !msg.textContent && data.directory_available === false){
+    msg.textContent = 'the bot has not published its channel list yet - attach works from what '
+      + 'the bot already reports; refresh the directory in the source studio for the rest.';
+  }
+}
+async function ownAct(path, body, label){
+  const msg = document.getElementById('ownmsg');
+  try{
+    const data = await api('POST', path, body, ownRevision || configRevision);
+    if(msg) msg.textContent = label + ' ' + String(data.next || 'done');
+    ownRows = (data.view || {}).rows || ownRows;
+    ownCounts = (data.view || {}).counts || ownCounts;
+    ownRevision = (data.view || {}).revision || ownRevision;
+    if((data.warnings || []).length && msg) msg.textContent += ' — ' + data.warnings.join(' · ');
+    ownRender();
+    if(path.indexOf('/suggest') === -1) loadOwn();
+  }catch(e){
+    if(msg) msg.textContent = label + ' refused: ' + String(e.message||e);
+  }
+}
+function ownAttach(name){ return ownAct('/api/own/attach', {name}, '@' + name + ': attached.'); }
+function ownDetach(name){ return ownAct('/api/own/detach', {name}, '@' + name + ': detached.'); }
+function ownPosting(name, posting){
+  return ownAct('/api/own/posting', {name, posting}, posting ? ('@' + name + ': resuming.') : ('@' + name + ': paused.'));
+}
+function ownAttachInput(){
+  const box = document.getElementById('owninput');
+  const value = box ? box.value.trim() : '';
+  if(!value){ document.getElementById('ownmsg').textContent = 'paste the channel link first'; return; }
+  return ownAttach(value.replace(/^@/,'')).then(data=>{ if(box) box.value = '';
+    return data; });
+}
+async function ownSuggest(name){
+  const msg = document.getElementById('sgmsg');
+  if(msg) msg.textContent = 'asking the bot about @' + name + '…';
+  try{
+    const data = await api('POST', '/api/own/suggest', {channel: name});
+    if(msg) msg.textContent = String(data.next || 'queued');
+    pollSuggest(name, 0);
+  }catch(e){
+    if(msg) msg.textContent = 'could not ask: ' + String(e.message||e);
+  }
+}
+async function pollSuggest(name, attempt){
+  if(attempt > 12) return;
+  await new Promise(done => setTimeout(done, 3000));
+  let data;
+  try{ data = await api('GET','/api/own/suggest'); }
+  catch(e){ return; }
+  sgAnswers = data.suggestions || [];
+  const mine = sgAnswers.find(row => String(row.channel||'').toLowerCase() === String(name).toLowerCase().replace(/^@/,''));
+  if(mine){
+    renderSuggestions();
+    const msg = document.getElementById('sgmsg');
+    if(msg) msg.textContent = (mine.error ? ('@' + mine.channel + ': ' + mine.error)
+      : ('@' + mine.channel + ': ' + mine.count + ' candidate(s) — ' + mine.similar_count
+         + ' from Telegram, ' + mine.mentioned_count + ' from its own posts'));
+    return;
+  }
+  const msg = document.getElementById('sgmsg');
+  if(msg && attempt === 0) msg.textContent = 'the bot has not answered yet — it polls every few seconds';
+  pollSuggest(name, attempt + 1);
+}
+function renderSuggestions(){
+  const body = document.getElementById('sglist');
+  if(!body) return;
+  if(!(sgAnswers || []).length){
+    body.innerHTML = '<p class="muted">no suggestion requested yet</p>';
+    return;
+  }
+  body.innerHTML = sgAnswers.slice(0,3).map(answer => {
+    const head = '<p><b>@' + escapeHTML(String(answer.channel)) + '</b> '
+      + '<span class="muted">' + escapeHTML(String(answer.count || 0)) + ' candidate(s) · asked '
+      + escapeHTML(fmtTime(answer.at)) + '</span>'
+      + ((answer.notes || []).length ? '<br><small class="muted">' + answer.notes.map(note => escapeHTML(String(note))).join(' · ') + '</small>' : '')
+      + '</p>';
+    if(answer.error) return head + '<p class="source-error">' + escapeHTML(String(answer.error)) + '</p>';
+    const rows = (answer.suggestions || []).map(row => {
+      const name = String(row.username || '');
+      return '<div class="source-option">'
+        + '<span style="flex:1"><strong><a href="' + escapeHTML(String(row.link || '#')) + '" target="_blank" rel="noopener">@' + escapeHTML(name) + '</a></strong>'
+        + '<small>' + escapeHTML(String(row.why || ''))
+        + (row.members ? ' · ' + Number(row.members).toLocaleString('en-IN') + ' members' : '') + '</small></span>'
+        + '<span class="row">'
+        + '<button onclick="ownAddSource(\'' + escapeHTML(name) + '\')">Add as source</button>'
+        + '<button class="ghost" onclick="ownAttach(\'' + escapeHTML(name) + '\')">Attach as ours</button>'
+        + '</span></div>';
+    }).join('');
+    return head + (rows || '<p class="muted">nothing new to suggest here</p>');
+  }).join('');
+}
+async function ownAddSource(name){
+  const msg = document.getElementById('sgmsg');
+  try{
+    const data = await api('POST','/api/watch',{channel:name, targets:['*'], enabled:true,
+      note:'suggested from a channel we run'}, configRevision);
+    if(msg) msg.textContent = '@' + name + ' queued as a source — ' + String(data.next || '');
+  }catch(e){
+    if(msg) msg.textContent = '@' + name + ' as a source was refused: ' + String(e.message||e);
   }
 }
 

@@ -79,6 +79,8 @@ import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
 import posts  # noqa: E402 - bestgaa/posts.py: shared with the BOT (it drains the queue)
+import channel_suggest  # noqa: E402 - the ask; the BOT answers it
+import channels_attach  # noqa: E402 - attach what already runs, pause it
 from dashboard import (forensics, insight, pipeline as dashboard_pipeline,
                        source_target, trends, vault)  # noqa: E402
 
@@ -1181,6 +1183,179 @@ async def api_repost(request: web.Request) -> web.Response:
         "The bot forwards it within a few seconds (REPOST_POLL_SECONDS, default 5) and "
         "writes the result to the repost log. Nothing is re-sent: each request id is "
         "forwarded once.")})
+
+
+# --------------------------------------------------------------------------- #
+#  OUR CHANNELS: attach what already runs, pause it, suggest the next one
+# --------------------------------------------------------------------------- #
+def own_inputs() -> tuple[list, list, list]:
+    """(directory rows, our target names, dashboard names) - one lookup, three uses."""
+    try:
+        rows = [row for row in directory_rows().get("channels") or [] if isinstance(row, dict)]
+    except Exception:  # noqa: BLE001 - a missing directory must not blank the card
+        rows = []
+    snap = snapshot()
+    targets = [str(name) for name in (snap.get("targets") or [])]
+    dashboard_names = [str(row.get("name")) for row in channels_config.load_channels().get(
+        "channels", []) if row.get("name")]
+    return rows, targets, dashboard_names
+
+
+def own_view() -> dict:
+    """Everything the card renders: our channels, the candidates, the pause state."""
+    rows, targets, dashboard_names = own_inputs()
+    data = channels_config.load_channels()
+    watched = [str(row.get("channel")) for row in channels_config.watch_entries(data)]
+    view = channels_attach.inventory(data=data, targets=targets,
+                                     dashboard_names=dashboard_names, directory_rows=rows,
+                                     watch_channels=watched)
+    snap = snapshot()
+    results = channel_suggest.read_results()
+    answers = list((results.get("requests") or {}).values())
+    answers.sort(key=lambda row: row.get("at") or 0, reverse=True)
+    view.update({
+        "attached": channels_attach.entries(data),
+        "paused": sorted(channels_attach.paused(data)),
+        "suggestions": answers[:5],
+        "suggest_queue": channel_suggest.pending(done=channel_suggest.done_ids()),
+        "directory_available": bool(directory_rows().get("available")),
+        "directory_age_s": directory_rows().get("age_s"),
+        "revision": config_revision(),
+        "pending_restart": pending_restart(),
+        "paths": {"requests": str(channel_suggest.request_path()),
+                  "answers": str(channel_suggest.result_path())},
+        "bot_online": activation_status(snap).get("watcher_online", False),
+    })
+    return view
+
+
+@require_token
+@in_thread
+def api_own(request: web.Request):
+    """Our channels in ONE list: what runs from code, from the dashboard, attached."""
+    return web.json_response(own_view())
+
+
+def _own_name(body) -> str:
+    return channels_attach.handle(body.get("name") or body.get("channel") or body.get("link"))
+
+
+@require_token
+async def api_own_attach(request: web.Request) -> web.Response:
+    """Attach an EXISTING running channel so the dashboard can manage it."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    rows, targets, dashboard_names = own_inputs()
+    catalog = watch_catalog()
+    data = channels_config.load_channels()
+    watched = [str(row.get("channel")) for row in channels_config.watch_entries(data)]
+    result = channels_attach.attach(
+        body, directory_rows=rows,
+        targets=list(dict.fromkeys([*targets, *dashboard_names])),
+        known_sources=set(catalog["targets"]) | set(catalog["main_feed"]),
+        known_categories=set(category_catalog()), watch_channels=watched)
+    if result["errors"]:
+        return web.json_response({"errors": result["errors"], "warnings": result["warnings"],
+                                  "view": own_view()}, status=400)
+    mark_pending()
+    attached = result["attached"]
+    return web.json_response({
+        "attached": attached,
+        "channel": result["channel"],
+        "warnings": result["warnings"],
+        "view": own_view(),
+        "next": (f"@{attached['name']} is attached as {'a dashboard channel' if attached['mode'] == 'new' else 'an existing target'}. "
+                 + ("The bot starts posting there once it picks the config up."
+                    if attached["mode"] == "new" else
+                    "Nothing about its routing changed - pause, note and suggest now apply to it.")),
+    })
+
+
+@require_token
+async def api_own_detach(request: web.Request) -> web.Response:
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    result = channels_attach.detach(_own_name(body))
+    if result["errors"]:
+        return web.json_response({"errors": result["errors"], "view": own_view()}, status=400)
+    mark_pending()
+    return web.json_response({**result, "view": own_view(),
+                              "next": ("Detached. A channel the dashboard created is no longer "
+                                       "a target; a code target keeps posting, because code is "
+                                       "not something a detach can edit.")})
+
+
+@require_token
+async def api_own_posting(request: web.Request) -> web.Response:
+    """Pause / resume one channel - effective on the NEXT post, no restart."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conflict = stale_config(request)
+    if conflict is not None:
+        return conflict
+    posting = body.get("posting")
+    if not isinstance(posting, bool):
+        return web.json_response({"errors": ["posting must be true or false"]}, status=400)
+    result = channels_attach.set_posting(_own_name(body), posting)
+    if result["errors"]:
+        return web.json_response({"errors": result["errors"], "view": own_view()}, status=400)
+    mark_pending()
+    name = (result["row"] or {}).get("name") or _own_name(body)
+    return web.json_response({**result, "view": own_view(),
+                              "next": (f"@{name} is paused: it receives nothing new, and no "
+                                       "delivery row is written for it. Resuming applies to "
+                                       "future posts - nothing is replayed."
+                                       if not posting else
+                                       f"@{name} is posting again from the next post on. "
+                                       "Posts that arrived while it was paused are not replayed.")})
+
+
+@require_token
+async def api_own_suggest(request: web.Request) -> web.Response:
+    """GET: answers so far. POST: ask the bot to suggest channels from one of ours."""
+    if request.method == "GET":
+        view = own_view()
+        return web.json_response({"suggestions": view["suggestions"],
+                                  "queued": view["suggest_queue"],
+                                  "paths": view["paths"],
+                                  "note": ("The BOT answers (it owns the session): Telegram's "
+                                           "similar channels plus the channels this one links "
+                                           "to. Nothing is joined or posted.")})
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    ours = our_channel_names()
+    clean, errors = channel_suggest.submit(body, ours)
+    if errors:
+        return web.json_response({"errors": errors, "ours": ours}, status=400)
+    return web.json_response({
+        "queued": clean,
+        "next": (f"The bot will look at @{clean['channel']} within a few seconds "
+                 "(SUGGEST_POLL_SECONDS, default 6) and write what it finds here. "
+                 "Nothing is joined and nothing is posted."),
+        "poll": "/api/own/suggest",
+    })
 
 
 @require_token
@@ -2669,6 +2844,12 @@ def create_app() -> web.Application:
     app.router.add_post("/api/channels/bulk", api_channels_bulk)
     app.router.add_get("/api/join-requests", api_join_requests)
     app.router.add_post("/api/join-requests", api_join_requests)
+    app.router.add_get("/api/own", api_own)
+    app.router.add_post("/api/own/attach", api_own_attach)
+    app.router.add_post("/api/own/detach", api_own_detach)
+    app.router.add_post("/api/own/posting", api_own_posting)
+    app.router.add_get("/api/own/suggest", api_own_suggest)
+    app.router.add_post("/api/own/suggest", api_own_suggest)
     app.router.add_get("/api/posts", api_posts)
     app.router.add_post("/api/posts/send", api_post_send)
     app.router.add_get("/api/repost", api_repost)

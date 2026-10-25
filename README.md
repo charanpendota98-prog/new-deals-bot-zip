@@ -1773,13 +1773,15 @@ source snapshot:
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `bestgaa/channel_directory.py` | `8cd6c69c273d0d3700c066fbb09defa0561c9c924352f2c7dda3fdfb79835963` |
+| `bestgaa/channel_suggest.py` | `8747d3abba4215bc773d803a027b80a51f723053cce0120fe7a5179ec556cfe5` |
+| `bestgaa/channels_attach.py` | `99fef9da78f8446087cf1f7eac6203f64f60d0a4010b3f018f06b02070d4ac81` |
 | `bestgaa/channels_config.py` | `31662f12640915998058f4bc3375a1830626875efb4c0dfe6d11a0100f62b505` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `8373d1bd316b59f2a97c03c771cc4ad96ffa3e3ee78ef80efb8b7af3e9c24b79` |
+| `bestgaa/deploy_bestgaa.sh` | `b0dd350a3af0ab10ddd281deb48ce1095390f495d5a8f6b1f75ea0d568289a03` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `bbfc6ce1f46af25631222b8672197cbd5931e63f9ecadf84f4ea9bb6546e33b8` |
+| `bestgaa/main_bot_new.py` (v19.0) | `5528adf7025027a3bfda3bbbe55528f0b1b01057e2f907bd28823008cac626f3` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/posts.py` | `212f965c28dce1cf005565a3d3c55c34c1ca231ef2e0d6af8988dbcdaee0fbae` |
@@ -1797,7 +1799,7 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `f31cbd2d97c144bfcd3e63321f8593ae3805ed795723b2f9247e767bd93b4461` |
+| `dashboard/app.py` | `783d04d7a10d0c2f5c45bc3059899fd0033a80cee8c20e845efe7ef8f0de8726` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
@@ -1810,7 +1812,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `6d59a6c6ccddbd91be6e0f214df94d09c9c71537e3fc739d202012104c49a37e` |
+| `ops/build_deploy_zip.py` | `844294b9be0d0138175535576e9910812ff357b7686af4c3645203f3e72b6046` |
 | `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1833,12 +1835,12 @@ source snapshot:
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
 | `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
-| `ops/repack_bundles.sh` | `a18454236df649d895bc07471eabefcbd54391257c6b62b30f64511b72bb2802` |
+| `ops/repack_bundles.sh` | `b90965e5ccab854c4a4c804681888317d616b5dc15fb8a94cc678ff60c7b0415` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `01c83a13a3b500a0c4082109ca453cbe1d71781eac6c2910da99281361daa90f` |
+| `ops/test_all.sh` | `0a6ccef8ae150f457ce03e757bbe8fcd414ea298b26f8a16ab501abde70a9bda` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
@@ -1847,6 +1849,7 @@ source snapshot:
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
+| `test_channel_attach.py` | `f51f87b34bc954ba43ddebf379beffed6ee1c84985c6915f4a9e10f92945d1ae` |
 | `test_channel_control.py` | `fc8237d38c63f79282284a164a227ad56507910c66cf75644285222be9ec1ec2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
@@ -1856,6 +1859,7 @@ source snapshot:
 | `test_dashboard_link.py` | `32c854e3be2997663c7c8b07ed2ae619f5d2d75d376f57a4f0122cfd33083142` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
 | `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
+| `test_dashboard_own.cjs` | `488a91910097598c4903eaa8e6b75db15c69df919c364efc3b5597b28f117acf` |
 | `test_dashboard_pipeline.cjs` | `ebf570e299bdc7c326983b883597a46d12c88fa8eacab9b93ffa22bad11320d6` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
@@ -2943,6 +2947,88 @@ flow. Nothing is joined and no history is replayed — unchanged.
   finished post becomes claimable again), the HTTP feed + press + refusals through
   aiohttp's test client, and the page markup (per-post buttons, `t.me` links, the
   one-line add-source box).
+
+### Attach what already runs, and get told what to add next (2026-10-25)
+
+*"mana existing running channel ki kuda ottu add cheyagalgali neatga dashboard lo
+… oka channel nunchi inko channels suggest cheyali … more and more advanced"* —
+one card (`OUR CHANNELS · ATTACH WHAT ALREADY RUNS`) and two new modules.
+
+**The gap it closes.** Before this, the dashboard had three half-answers about
+"our channels": `code targets` (running, but only in Python), `dashboard
+channels` (in `channels.json`, but only the ones created there) and the
+`directory` (everything the session can read, with Telegram's rights — but
+read-only). An **existing running channel therefore could not be managed**: it
+could not be paused, annotated, or used as the starting point for anything.
+
+**`bestgaa/channels_attach.py`** — the missing verb. `attach` records the intent in
+`channels.json` (section `attach`, preserved like every other section) and does
+exactly one of two things:
+
+- the channel is **already a target** (code or dashboard) → `mode: "existing"`,
+  **no routing change**: attaching only registers it so the dashboard can pause
+  it, note it and suggest sources for it;
+- the channel is one **we admin but do not post to** → `mode: "new"`, and the
+  module also appends a normal dashboard channel (sources from the request,
+  default every main source) through `channels_config.validate_channel`. That is
+  what makes the bot actually post there — never a hand-written file.
+
+`detach` undoes exactly that: the registry row goes, and a `new` row takes its
+dashboard channel with it, so a detach can never leave a channel half-managed. A
+**code** target keeps posting — detaching cannot edit Python, and the answer says
+so instead of pretending. Refusals carry the reason: a channel the bot never saw,
+a channel where the account is only a member, a group, or a channel without the
+post right.
+
+**A source is never a destination.** Attaching refuses a channel that is currently
+one of our *watched sources*: its own posts would be routed back into it (or two
+channels into each other). The row says exactly that and how to fix it — remove
+the watch entry first.
+
+**Pause is real, and needs no restart.** `posting: false` on an attached row (or
+`enabled: false` on a dashboard channel). The bot's fan-out calls
+`channels_attach.paused_targets()` for **every post** (mtime-cached, so a press
+lands on the next post): a paused channel gets **no delivery row at all**, the log
+says `TARGET PAUSED`, and resuming applies to future posts only — **nothing is
+replayed**. A manual `Send to…` aimed at a paused channel is refused with that
+reason instead of silently vanishing.
+
+**`bestgaa/channel_suggest.py`** — "which channel next?", asked from one we run.
+The dashboard appends to `suggest_requests.jsonl`; the bot's
+`channel_suggest_loop` answers into `channel_suggestions.json` from two honest
+sources, both read-only:
+
+1. **Telegram's own opinion** — `channels.GetChannelRecommendations` (MTProto);
+   the row says "Telegram recommends it next to @X";
+2. **the channel's own recent posts** — `t.me/…` links and `@…` mentions, bounded
+   by `SUGGEST_SCAN_LIMIT` (default 60 posts); the row says how many times it was
+   linked.
+
+Everything already ours (targets, watched sources, attached, paused) and the
+channel itself are excluded; invite-only channels and groups are dropped because
+a link cannot add them. Each source can fail independently, and the answer says
+which one was unavailable instead of returning an empty list that looks like
+"there is nothing to add". Each row has **Add as source** (the existing
+`POST /api/watch`) and **Attach as ours**. Nothing is joined, forwarded or posted.
+
+- Proof: `test_channel_attach.py` — attach as `existing` (routing untouched,
+  other sections preserved) and as `new` (a real dashboard channel, enabled, and
+  it says the bot must pick the config up); every refusal (unknown channel,
+  member-only, group, duplicate, empty); detach removing the channel it created
+  and *not* pretending about a code target; pause/resume and the mtime-cached
+  pause list (a disabled dashboard channel counts as paused too); the merged
+  inventory (code vs dashboard vs attached vs candidate, counts, links); mention
+  parsing (t.me post links, one row per @mention, an email is not a channel);
+  Telegram entities filtered to public broadcast channels; ranking and exclusion;
+  the request/answer round-trip (including a corrupt line and the clamped scan
+  limit); the HTTP endpoints through aiohttp's test client (list, attach, refusal,
+  pause, ask, answer-less GET, detach); the page markup; and the bot wiring (the
+  pause in the fan-out, the "every target is paused" reason, the paused manual
+  send, the task started and awaited, `GetChannelRecommendationsRequest`, no
+  join call). `test_dashboard_own.cjs` drives the card itself in jsdom: the list,
+  the attach/pause/post buttons and the exact request bodies, the suggestion
+  panel with its provenance, a hostile channel title staying text, and a missing
+  directory rendering as a sentence instead of a blank card.
 
 ### Channel control: every channel we run, many actions, one press (2026-10-25)
 

@@ -8799,6 +8799,30 @@ def source_message_is_current(source, msg):
     return not cutoff or stamp >= cutoff
 
 
+def paused_for_posting() -> set[str]:
+    """Channels the dashboard paused - read fresh, so the button needs no restart.
+
+    "mana existing running channel ki kuda ottu add cheyagalgali" (2026-10-25):
+    attaching gives the operator a pause, and a pause has to be true. The set is
+    cached by channels.json's mtime, so a post is filtered in microseconds and a
+    press lands on the very next post.
+    """
+    try:
+        try:
+            from . import channels_attach as _attach
+        except ImportError:
+            import channels_attach as _attach
+    except Exception as exc:  # noqa: BLE001 - a missing helper must not stop posting
+        log.warning("DASHBOARD PAUSE | channels_attach unavailable (%s) - nothing is paused",
+                    exc)
+        return set()
+    try:
+        return _attach.paused_targets()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("DASHBOARD PAUSE | could not read the pause list: %s", exc)
+        return set()
+
+
 def scope_dashboard_targets(source, targets):
     if source not in DASHBOARD_SCOPED_SOURCES:
         return targets
@@ -9972,8 +9996,21 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
                  "fit that channel's promise (other channels unaffected)",
                  row["id"], dropped_target, dropped_band,
                  routing_price if routing_price is not None else "unknown")
+    # A channel paused from the dashboard receives nothing NEW: no delivery row is
+    # written for it, so a resume can never replay an old post. Read per post from
+    # channels.json (mtime-cached) - the button works without a restart.
+    paused_targets_now = paused_for_posting()
+    paused_here = [target for target in base_targets
+                   if normalize_channel_target_name(target) in paused_targets_now]
+    if paused_here:
+        for paused_target in paused_here:
+            log.info("TARGET PAUSED | queue=%s target=@%s | paused in the dashboard: no "
+                     "delivery row was written (resuming never replays it)",
+                     row["id"], paused_target)
+        base_targets = [target for target in base_targets if target not in paused_here]
     if not base_targets:
-        raise PermanentSkip("no eligible targets")
+        raise PermanentSkip("every target for this post is paused in the dashboard"
+                            if paused_here else "no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
     # long generated URL (Amazon category/search links with our tag, missed
     # multi-link shortens) before persisting/sending.
@@ -11050,6 +11087,26 @@ async def manual_send_loop(client, store, stop, target_map) -> None:
                         log.warning("MANUAL SEND FAIL | queue=%s unknown channel(s) %s",
                                     queue_id, unknown)
                         continue
+                    paused_now = paused_for_posting()
+                    paused_picked = [target for target in picked
+                                     if normalize_channel_target_name(target) in paused_now]
+                    if paused_picked:
+                        # The operator asked for this channel explicitly, so the
+                        # answer is a refusal with a reason - not a silent drop
+                        # and not a delivery kept for later.
+                        picked = [target for target in picked
+                                  if target not in paused_picked]
+                        if not picked:
+                            _posts.record({"id": row.get("id"), "action": "skipped",
+                                           "queue_id": queue_id, "targets": paused_picked,
+                                           "reason": ("every channel you picked is paused in "
+                                                      "the dashboard - resume it there first"),
+                                           "at": time.time()}, None)
+                            log.info("MANUAL SEND | queue=%s skipped -> every chosen channel is "
+                                     "paused (%s)", queue_id, ", ".join(paused_picked))
+                            continue
+                        log.info("MANUAL SEND | queue=%s dropping paused channel(s): %s",
+                                 queue_id, ", ".join(paused_picked))
                     outcome = await store.manual_targets(queue_id, picked)
                     # "queued", not "sent": this loop only re-opens the post for
                     # those channels. The worker sends it through the normal
@@ -11075,6 +11132,91 @@ async def manual_send_loop(client, store, stop, target_map) -> None:
                     log.info("MANUAL SEND | queue=%s %s -> %s", queue_id, action, reason)
         except Exception as exc:  # noqa: BLE001 - never stop posting over a button
             log.warning("MANUAL SEND | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def channel_suggest_loop(client, stop, target_map=None) -> None:
+    """Answer "which channels should I add next?" from ONE channel we run.
+
+    The dashboard appends one request per press; this resolves the channel with
+    the bot's own session, asks Telegram for its similar channels
+    (`channels.GetChannelRecommendations`) and reads the channel's own recent
+    posts for `t.me/...` / `@...` mentions. Read-only: nothing is joined, nothing
+    is forwarded, and the scan is bounded (SUGGEST_SCAN_LIMIT, default 60 posts).
+
+    Both sources can fail independently (an old layer without the request, a
+    channel with no history) - the answer says which one was unavailable instead
+    of returning an empty list that looks like "there is nothing to add".
+    """
+    try:
+        try:
+            from . import channel_suggest as _suggest
+        except ImportError:
+            import channel_suggest as _suggest
+    except Exception as exc:  # noqa: BLE001 - the button is never worth the bot
+        log.warning("SUGGEST | channel_suggest.py unavailable (%s) - the Suggest button is "
+                    "inert until this file is deployed", exc)
+        return
+    every = max(3, int(os.getenv("SUGGEST_POLL_SECONDS", "6")))
+    scan_limit = max(5, int(os.getenv("SUGGEST_SCAN_LIMIT", "60")))
+
+    async def one(request: dict) -> None:
+        channel = str(request.get("channel") or "")
+        entity = None
+        if target_map:
+            entity = target_map.get(_original_target_name(channel, target_map))
+        if entity is None:
+            try:
+                entity = await client.get_entity(channel)
+            except Exception as exc:  # noqa: BLE001
+                _suggest.record(_suggest.answer(request, error=(
+                    f"cannot resolve @{channel} with this session: {str(exc)[:140]}")), None)
+                log.warning("SUGGEST FAIL | %s: %s", channel, exc)
+                return
+        similar, similar_error = [], ""
+        try:
+            from telethon.tl import functions as tl_functions
+            found = await client(tl_functions.channels.GetChannelRecommendationsRequest(
+                channel=entity))
+            similar = _suggest.from_entities(getattr(found, "chats", None) or [])
+        except Exception as exc:  # noqa: BLE001 - an old layer may not have it
+            similar_error = f"Telegram did not return similar channels: {str(exc)[:140]}"
+        mentions, scan_error = [], ""
+        try:
+            limit = min(scan_limit, int(request.get("limit") or 40))
+            async for message in client.iter_messages(entity, limit=limit):
+                mentions.extend(_suggest.parse_mentions(getattr(message, "message", "") or ""))
+        except Exception as exc:  # noqa: BLE001
+            scan_error = f"could not read recent posts for mentions: {str(exc)[:140]}"
+        # Everything we already have is not a suggestion.
+        exclude = set(str(name) for name in (target_map or {}))
+        try:
+            exclude |= {str(row.get("channel")) for row in
+                        _dashboard_channels.watch_entries(_dashboard_channels.load_channels())}
+            exclude |= {str(row.get("name")) for row in
+                        _dashboard_channels.load_channels().get("channels", [])}
+        except Exception:  # noqa: BLE001 - suggestions still work without the config
+            pass
+        exclude |= paused_for_posting()
+        payload = _suggest.answer(request, similar=similar, mentions=mentions,
+                                  exclude=exclude, similar_error=similar_error,
+                                  scan_error=scan_error)
+        _suggest.record(payload, None)
+        log.info("SUGGEST | %s -> %s candidate(s) (similar=%s mentioned=%s)%s",
+                 channel, payload["count"], payload["similar_count"],
+                 payload["mentioned_count"],
+                 f" | {similar_error}" if similar_error else "")
+
+    while not stop.is_set():
+        try:
+            done = _suggest.done_ids()
+            for request in _suggest.pending(done=done)[:3]:
+                await one(request)
+        except Exception as exc:  # noqa: BLE001 - never stop posting over a button
+            log.warning("SUGGEST | pass failed: %s", exc)
         try:
             await asyncio.wait_for(stop.wait(), timeout=every)
         except asyncio.TimeoutError:
@@ -11242,6 +11384,9 @@ async def main() -> None:
     # "every post ki button": the dashboard queues a press, the bot re-opens the
     # post for those channels and lets the normal, fully verified delivery run.
     manual_send_task = asyncio.create_task(manual_send_loop(client, store, stop, target_map))
+    # "oka channel nunchi inko channels suggest cheyali": the dashboard asks, this
+    # answers with Telegram's similar channels and the channel's own mentions.
+    suggest_task = asyncio.create_task(channel_suggest_loop(client, stop, target_map))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -11260,6 +11405,8 @@ async def main() -> None:
         await maintenance_task
     with contextlib.suppress(asyncio.CancelledError):
         await join_poll_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await suggest_task
     with contextlib.suppress(asyncio.CancelledError):
         await manual_send_task
     with contextlib.suppress(asyncio.CancelledError):

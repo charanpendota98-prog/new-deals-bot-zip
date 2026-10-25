@@ -44,7 +44,7 @@ if [[ "$SOURCE_DIR" != "$APP_DIR" ]]; then
                  category_classifier.py channels_config.py channel_directory.py
                  live_channels.py hypd_policy.py category_rules.json source_catalog.json
                  post_buttons.py migrate_legacy_env.py bot_paths.py
-                 join_gate.py repost.py posts.py requirements.txt .env.example)
+                 join_gate.py repost.py posts.py channels_attach.py channel_suggest.py requirements.txt .env.example)
   # Check EVERY file before copying ANY: copying as we went left a partly
   # replaced app directory when the last helper was missing (found 2026-10-23).
   MISSING=()
@@ -67,7 +67,7 @@ echo "[1/9] Checking uploaded files..."
 # and post_buttons.py is imported in the send path - a host missing either boots
 # into ImportError or fails every send, so the deploy refuses to start without
 # them (DEPLOY GAP found 2026-10-19 while preparing the perfect-deploy pass).
-for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py source_catalog.json deal_facts.py post_buttons.py bot_paths.py join_gate.py repost.py posts.py; do
+for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py source_catalog.json deal_facts.py post_buttons.py bot_paths.py join_gate.py repost.py posts.py channels_attach.py channel_suggest.py; do
   [[ -f "$APP_DIR/$helper" ]] || { echo "ERROR: $helper missing; upload it beside main_bot_new.py"; exit 1; }
 done
 [[ -f "$APP_DIR/category_rules.json" ]] || { echo "ERROR: category_rules.json missing; upload it beside main_bot_new.py"; exit 1; }
@@ -119,7 +119,7 @@ echo "[3/9] Compiling new bot..."
 python3 -m py_compile "$NEW_FILE"
 # A half-uploaded helper used to surface as a runtime crash AFTER the restart;
 # compiling every Python helper here fails the deploy BEFORE anything is moved.
-for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py deal_facts.py post_buttons.py migrate_legacy_env.py bot_paths.py join_gate.py repost.py posts.py; do
+for helper in category_classifier.py channels_config.py channel_directory.py live_channels.py hypd_policy.py deal_facts.py post_buttons.py migrate_legacy_env.py bot_paths.py join_gate.py repost.py posts.py channels_attach.py channel_suggest.py; do
   python3 -m py_compile "$APP_DIR/$helper" || { echo "ERROR: $helper does not compile"; exit 1; }
 done
 
