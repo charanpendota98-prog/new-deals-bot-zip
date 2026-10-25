@@ -490,7 +490,7 @@ def test_page_markup():
 def test_posts_feed():
     print("\n== every post: where it went, where it came from, its links ==")
     sys.path.insert(0, str(ROOT))
-    from dashboard import posts  # noqa: PLC0415
+    import posts  # noqa: PLC0415 - bestgaa/posts.py, shared with the bot
 
     check("a real username becomes a channel link",
           posts.channel_link("LootZoneIndia11") == "https://t.me/LootZoneIndia11", "")

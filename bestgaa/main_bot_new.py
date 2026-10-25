@@ -11002,9 +11002,14 @@ async def manual_send_loop(client, store, stop, target_map) -> None:
     log says so; nothing is ever sent twice by this loop.
     """
     try:
-        from . import posts as _posts
-    except ImportError:
-        import posts as _posts
+        try:
+            from . import posts as _posts
+        except ImportError:
+            import posts as _posts
+    except Exception as exc:  # noqa: BLE001 - the button is never worth the bot
+        log.warning("MANUAL SEND | posts.py unavailable (%s) - the Send-to button is "
+                    "inert until this file is deployed", exc)
+        return
     every = max(2, int(os.getenv("MANUAL_SEND_POLL_SECONDS", "5")))
     while not stop.is_set():
         try:

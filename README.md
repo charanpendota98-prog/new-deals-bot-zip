@@ -1775,13 +1775,14 @@ source snapshot:
 | `bestgaa/channel_directory.py` | `8cd6c69c273d0d3700c066fbb09defa0561c9c924352f2c7dda3fdfb79835963` |
 | `bestgaa/channels_config.py` | `31662f12640915998058f4bc3375a1830626875efb4c0dfe6d11a0100f62b505` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `e447019d5527528d1c064d4a356e8b8c11677e5f53dd312cc8d2f6192ab2c2e3` |
+| `bestgaa/deploy_bestgaa.sh` | `8373d1bd316b59f2a97c03c771cc4ad96ffa3e3ee78ef80efb8b7af3e9c24b79` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `67b07199ace9b9f02f7fe5faf63c027f554f8c24e00036cf14f85c2f34cfd02f` |
+| `bestgaa/main_bot_new.py` (v19.0) | `281bd047d41f0da79d8ca4f1ee672cc4c89bda944e31d105be1d2e1f145b6ee6` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/posts.py` | `4e828279afd95b34f622c699c857f1009f76ba5021d9b165bf0ea590e7a20aed` |
 | `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
@@ -1796,11 +1797,10 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `3caa4c5530ecf1f54d7fe3a35987bd9ddfb68bfdc00dac53a9c57cc0b314f973` |
+| `dashboard/app.py` | `f31cbd2d97c144bfcd3e63321f8593ae3805ed795723b2f9247e767bd93b4461` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
-| `dashboard/posts.py` | `4e828279afd95b34f622c699c857f1009f76ba5021d9b165bf0ea590e7a20aed` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
@@ -1810,7 +1810,7 @@ source snapshot:
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `f6a1c7cbdf7958a617d002de5ddc54faeceadb34fdcf8c5ad056f93f91202130` |
+| `ops/build_deploy_zip.py` | `6d59a6c6ccddbd91be6e0f214df94d09c9c71537e3fc739d202012104c49a37e` |
 | `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
@@ -1833,12 +1833,12 @@ source snapshot:
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
 | `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
-| `ops/repack_bundles.sh` | `8d981e648d9af36b431bbbe5cbc705aa74cb5a3d184b4b655137154a3a57a39d` |
+| `ops/repack_bundles.sh` | `a18454236df649d895bc07471eabefcbd54391257c6b62b30f64511b72bb2802` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `d0c409642621b93acd3aeb5270db7249ce36ebe3e2d9d3a31a46a986fa5ddb2c` |
+| `ops/test_all.sh` | `01c83a13a3b500a0c4082109ca453cbe1d71781eac6c2910da99281361daa90f` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
@@ -1847,7 +1847,7 @@ source snapshot:
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_channel_control.py` | `dbecb9c9a8e7a8e3bb935120d8b049d565d0eedac9171db2c2c67cb2b2b74a50` |
+| `test_channel_control.py` | `a6f4cb45c089512c07fc889aa414e992dc1f31d61aa4ac618bc7bd9a47f7a32d` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
@@ -2904,7 +2904,7 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
 *"every post ki button ravatam leda … channel link kuda … channel easy ga source
 add chesi"* — three things added to the same channel-control card.
 
-**A post is a row you can act on.** `dashboard/posts.py` builds the feed from the
+**A post is a row you can act on.** `bestgaa/posts.py` builds the feed from the
 bot's own queue and delivery ledger: the post's real text, **which channels carry
 it** (each one linked as `https://t.me/<username>` and marked `sent` / `skipped` /
 `held` with its reason), **where it came from** (a link to the exact source

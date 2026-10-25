@@ -78,7 +78,8 @@ import bot_paths  # noqa: E402
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import (forensics, insight, pipeline as dashboard_pipeline, posts,
+import posts  # noqa: E402 - bestgaa/posts.py: shared with the BOT (it drains the queue)
+from dashboard import (forensics, insight, pipeline as dashboard_pipeline,
                        source_target, trends, vault)  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
