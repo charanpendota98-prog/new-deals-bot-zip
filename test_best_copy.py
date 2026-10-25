@@ -299,10 +299,14 @@ def test_link_ownership_is_data_backed():
     check("classify_link buckets our publisher id as our-publisher",
           qa.classify_link(direct_ours, "", publisher) == "our-publisher",
           qa.classify_link(direct_ours, "", publisher))
-    check("network/HYPD short links are ours only when the exact URL has proof",
+    # 2026-10-23: an unproven link on OUR network is "unverified", not
+    # "foreign". Foreign means somebody else is paid; a proof we merely cannot
+    # find offline is a different, honest answer (test_audit_truth.py pins it).
+    check("network/HYPD short links are ours only when the exact URL has proof "
+          "(unproven ones are 'unverified', not someone else's)",
           qa.classify_link(ours_network, "", "", minted) == "our-short"
           and qa.classify_link(ours_hypd, "", "", minted) == "our-short"
-          and qa.classify_link("https://ekaro.in/unverified") == "foreign",
+          and qa.classify_link("https://ekaro.in/unverified") == "unverified",
           f"{qa.classify_link(ours_network, '', '', minted)} / "
           f"{qa.classify_link(ours_hypd, '', '', minted)} / "
           f"{qa.classify_link('https://ekaro.in/unverified')}")

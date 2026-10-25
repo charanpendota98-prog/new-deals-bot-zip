@@ -33,6 +33,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import subprocess
 import time
 from pathlib import Path
@@ -992,13 +993,26 @@ def _csv_cell(value) -> str:
 # CLI (same engine, no server): python3 -m dashboard.insight health
 # --------------------------------------------------------------------------- #
 def _default_paths() -> dict:
+    """The bot's files, resolved by `bestgaa/bot_paths.py` - the same rule the
+    dashboard, the reports and the bot use. Local guesses here used to make
+    `insight health` read a checkout that has no database, so every number it
+    printed was about a bot that does not exist on the server."""
     root = Path(__file__).resolve().parent.parent
-    db = Path(os.getenv("BOT_DB_PATH") or (root / "bestgaa" / "bestgaa.sqlite3"))
-    channels = Path(os.getenv("CHANNELS_JSON_PATH") or (root / "bestgaa" / "channels.json"))
-    snapshot = _json(channels.parent / "routing_snapshot.json")
-    log = Path(os.getenv("BOT_LOG") or (root / "bestgaa" / "logs" / "bot.log"))
+    if str(root / "bestgaa") not in sys.path:
+        sys.path.insert(0, str(root / "bestgaa"))
+    try:
+        import bot_paths  # noqa: PLC0415 - same directory, resolved on demand
+    except ImportError:  # pragma: no cover - a tree without the module
+        db = Path(os.getenv("BOT_DB_PATH") or (root / "bestgaa" / "bestgaa.sqlite3"))
+        channels = Path(os.getenv("CHANNELS_JSON_PATH") or (root / "bestgaa" / "channels.json"))
+        return {"root": root, "db": db, "channels_json": channels,
+                "snapshot": _json(channels.parent / "routing_snapshot.json"),
+                "log_path": Path(os.getenv("BOT_LOG") or (root / "bestgaa" / "logs" / "bot.log"))}
+    db = bot_paths.db_path()
+    channels = bot_paths.channels_json_path()
+    snapshot = _json(bot_paths.snapshot_path())
     return {"root": root, "db": db, "channels_json": channels, "snapshot": snapshot,
-            "log_path": log}
+            "log_path": bot_paths.log_path()}
 
 
 def main(argv: list[str]) -> int:

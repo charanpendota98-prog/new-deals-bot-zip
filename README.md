@@ -1769,17 +1769,24 @@ source snapshot:
 
 | File | SHA-256 |
 |---|---|
+| `bestgaa/bot_paths.py` | `18f587627a06ae4068b999dcd984f5dfa27ab79aa8b343b96f609eb696b7c788` |
+| `bestgaa/button_cadence.py` | `3eda47fc672e7de5b8bd23d1c58a2ffa0a506925f718e6d8f6a3afcd7864080a` |
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
-| `bestgaa/channel_directory.py` | `17623cbb7f98b2c3bcf2a67ee806d2a21a78f3574f8f068acc0e00880660898d` |
-| `bestgaa/channels_config.py` | `4df6dd69a2e67cc5751078cc199dce6cdbfbec6de5d6f4ed528c2b30c85d87df` |
+| `bestgaa/channel_directory.py` | `8cd6c69c273d0d3700c066fbb09defa0561c9c924352f2c7dda3fdfb79835963` |
+| `bestgaa/channel_suggest.py` | `8747d3abba4215bc773d803a027b80a51f723053cce0120fe7a5179ec556cfe5` |
+| `bestgaa/channels_attach.py` | `99fef9da78f8446087cf1f7eac6203f64f60d0a4010b3f018f06b02070d4ac81` |
+| `bestgaa/channels_config.py` | `31662f12640915998058f4bc3375a1830626875efb4c0dfe6d11a0100f62b505` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `6d0c3323123723bd8c0438c4c08ba77b944aed26bde11ab4ede6cf1e292f3906` |
+| `bestgaa/deploy_bestgaa.sh` | `2e396757d93f500c9def033328ae8773b785129b54dcefc1bd49700b5582c1c3` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
+| `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `3df906ef180a1fe3982efffec4427464ea37445a3971fef914b7a4655d1aeb04` |
+| `bestgaa/main_bot_new.py` (v19.0) | `9e7e8e66e5a7e4a81579e257dc727b556f51195f6611855020117186c29a538a` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
-| `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
+| `bestgaa/post_buttons.py` | `ef6ac04b26141cfe45acac24b1965329955bd89aa0ca73191a5bb9487a42b521` |
+| `bestgaa/posts.py` | `212f965c28dce1cf005565a3d3c55c34c1ca231ef2e0d6af8988dbcdaee0fbae` |
+| `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
 | `bestgaa/source_catalog.json` | `77ccba1efc0ea90649fc6a99a75fa4c941e1f3e1c5c20250c409ea334f365ec6` |
@@ -1793,28 +1800,28 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `10a6e44b9ccfe060e6475c6ef599552c9d1544903eed4e05ee39b1e215c88c51` |
+| `dashboard/app.py` | `83dff6c800107ff15fef63b42391d23509a6d174e5b23ff558faa473e1c45e16` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
-| `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
+| `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
-| `dashboard/vault.py` | `1473fee1e3208a001a836121f1c7e27abde908020ec3c626b72ea34da67fdf9d` |
-| `ops/apply_dual_hotfix.sh` | `31175f706f8e0228a9e9abd3b62d664222c7cc52119fc146956bac69f190cb46` |
+| `dashboard/vault.py` | `8a8465c6bb4930c0c4603bc94dc9a6cb3740e4644834322dae008f10035a5c1c` |
+| `ops/apply_dual_hotfix.sh` | `05393508ce4c7bb6b296427b61f12d0420bfd2bfaec2356176c3ac1d1347c776` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `4b39d92a2a44a7e0b2b4ac8377941c1815ab1074b36db81d42e3766820beda07` |
-| `ops/category_report.py` | `e85b0e7bf47ee97d090d2ee77b37bfcd091c102461480d875638685d6b9db53c` |
+| `ops/build_deploy_zip.py` | `20f72191ebc21de50ab64209d1608b201603fd9e18209306dd670487ccb3dbd1` |
+| `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
-| `ops/conversion_report.py` | `8a8ea38ef279d0ff8e64558c20783f4dcfda371b7a97abebc00ec824b1f6a7e6` |
-| `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
-| `ops/dashboard_link.sh` | `360ddc15c38c03cdec757bfb702b58f720eb068f9d7c63bb721fde6623b2048c` |
+| `ops/conversion_report.py` | `85b9ba6bca1db863e723a12f9923f4e314afc2426fffa0f112684ae1131c4bb2` |
+| `ops/coverage_audit.py` | `e55cea2fe9822b0bdbaf11f0a097c41131ac138eb3e1e297bbc91d5665bd4cbc` |
+| `ops/dashboard_link.sh` | `962ad1737e638b5f636a6ffcf69b560ad48f85e9efcd85f8668a74c11ca84306` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
-| `ops/deploy_and_verify.sh` | `83a2e3b216fe3a8cb223cef4297843f7d32f896ed1a495be5cc1088730668013` |
+| `ops/deploy_and_verify.sh` | `885d2ad91b70f271d8e6e2060644c6ada96b16512dc9b02208456fef3367a197` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
@@ -1825,30 +1832,37 @@ source snapshot:
 | `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
-| `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
+| `ops/install_dashboard_secure.sh` | `9a1b6dbce0eacc14048706dbce2df4764165b8df36e7cc709439ddb63e76de31` |
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
-| `ops/quality_audit.py` | `6b9d1533353495f83e0ca5159150d72f399b766b18c03177a23a01522e766afa` |
-| `ops/repack_bundles.sh` | `b7970b1af18e85071aac011773ff953b59fb493eeab1e1f3eb10bb3d18c335fb` |
+| `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
+| `ops/repack_bundles.sh` | `932790a158f891c52105d6d444329e1516bc79ad70fd75fa101a1cf0fca29603` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `9d3e76122c1631d5756191acf3609dad58fbe746bdcfbce73950f704da421f23` |
-| `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
-| `test_best_copy.py` | `856d278ca159d0e07fb0dadea2ae3120c49420515b8d08f13bd2059f0c762581` |
+| `ops/test_all.sh` | `dceed3029be453c291fa4109e127f6ea56306d91cecfdef5defa3079fd9613d6` |
+| `test_api_vault.py` | `21aa05514d31a3ad84b000c73d4152ae69cad8f58cac89f6f2cfe76931f4750b` |
+| `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
+| `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
+| `test_bot_paths.py` | `902e241aca4a1b76032b88df36daff5fb517021f4e40cf0d95e59068c9932f15` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
+| `test_channel_attach.py` | `f51f87b34bc954ba43ddebf379beffed6ee1c84985c6915f4a9e10f92945d1ae` |
+| `test_channel_buttons.py` | `34f66791899d49cb17674dad2246012fe005a99fd54031c153ea90f98ea044c8` |
+| `test_channel_control.py` | `fc8237d38c63f79282284a164a227ad56507910c66cf75644285222be9ec1ec2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
-| `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
+| `test_dashboard.py` | `ca8bca83340c6744039dba0d0cf7855087e6526c512dd7867962c1f8ddd2bf1d` |
+| `test_dashboard_buttons.cjs` | `71fb347649cf445d79d4884dadf1f6f1cdaa6c5546f31e7aa44ec9645663380f` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
 | `test_dashboard_categories.cjs` | `ba0cbf0ab203861baca9a364402ab77de265695f086a5c1b37c8f5082d694410` |
 | `test_dashboard_link.cjs` | `e645c59252b4d61066b7e3a3c0fa2d3addf0f42c99aef917124c2e61120d1a8b` |
 | `test_dashboard_link.py` | `32c854e3be2997663c7c8b07ed2ae619f5d2d75d376f57a4f0122cfd33083142` |
 | `test_dashboard_ops.cjs` | `29295620854a7d0cbc9d0a49d76cf4ca188081ad1abd37ae9f2b1148b877eef6` |
 | `test_dashboard_ops.py` | `8a6e84abe4d43a3489ff514abd5e7d5b817841c2f1ff3d951494c9e08a0545d0` |
+| `test_dashboard_own.cjs` | `488a91910097598c4903eaa8e6b75db15c69df919c364efc3b5597b28f117acf` |
 | `test_dashboard_pipeline.cjs` | `ebf570e299bdc7c326983b883597a46d12c88fa8eacab9b93ffa22bad11320d6` |
 | `test_dashboard_setup.cjs` | `2b328079ba79b305ea2b930fffa08403a366073f707c8aac3925d424c0026694` |
 | `test_dashboard_source_target.cjs` | `4543d4d8fe5d0cab35365f0ea45b9e01985af4ce609b627522cfba5b682702c3` |
@@ -1861,23 +1875,25 @@ source snapshot:
 | `test_deal_forensics.py` | `c8edae9556350f42495e4208de6a76e82251265e30c55792a326cdc19c6ccd32` |
 | `test_deals_dom.cjs` | `55e8db89cb33a71c054f9fbc65ca27ba78e1f518830de6da22c6045ad4783081` |
 | `test_delivery_fences.py` | `75a5ba6455c88f5878cd93f136a75cfae2ef40c93333961bd95b59c31ac94559` |
+| `test_deploy_truth.py` | `abe3732ec4ff4d7d980add0b3cabb009c129060bcb7607e4956d9608d1de4a23` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
-| `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
+| `test_earnkaro_conversion.py` | `ff730c4167c311b17f528838b477dbe7527fb4d80d34523c3197fadc4215b464` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
-| `test_line_fidelity.py` | `29d223fb580eeebeb9ffeaea9b63fe76c89be7f4c5454164301c6cd088f41bf3` |
+| `test_line_fidelity.py` | `c56f7b5e8ed7399c8a1344faeb25cdd3a47a964318abe3368cc6114158efa087` |
 | `test_link_commission.py` | `f5554dbcdf4c69bed33e9d8c71972e79bf28c132f0b3b46c7e90794db8e5e0db` |
 | `test_link_doctor.py` | `f119c3c6defd9a64b2b4566fda92326076f3bb02b53d608c31682ac6d1b7226c` |
 | `test_link_inspector.py` | `e07973326ab04c736c8c80981b822577c01cb58e0d5883e114d7efa1f99a39a2` |
 | `test_live_channels.py` | `498cd6715741af957b43b873f34da0a2a8b6bd2c51c23c1d03d13d2c4d26e30f` |
 | `test_pipeline_fixes.py` | `8c52546491893383f4f7caa7cb06af7a24ed31ae4095aef58a9f6ca8c059ddff` |
 | `test_pipeline_integrity.py` | `2892807d3b64e2d063b91a87f0881630630af01cbb72df9dacabe161cbc22431` |
-| `test_post_buttons.py` | `f098c7f9fafed5cd1a1c6ffaa99c62c2760c931181c5312533fa6c4d94f6a210` |
+| `test_post_buttons.py` | `b078d0cb092a3650108234b05b6c43dd5cdc8928f890c2a5ac0b81c281bb6135` |
 | `test_post_link_guarantee.py` | `680993d87827047e7f53a18bd384ff303e0e054da364f5050d13659fcd50c9b0` |
 | `test_postdeploy_repeats.py` | `34a7ba811f3fe8f6b96ef5d59b525f207feab67b5d370cdc05a9e642695a5556` |
 | `test_render_job.py` | `942fb2c5f307d9e7c0e584bf5c0502a0f0031c65491577cb2bd68c33346edb26` |
 | `test_repo_consistency.py` | `ba2f99e8dce74e3f9aeaf9782e037ef05ef6a3c2932477cd3c99bf2094f3fd69` |
 | `test_rescan.py` | `b66bde020d84afb9b196bd9d6a84882629aa6a306b55b15c9639b8613538fcc6` |
+| `test_routing_bands.py` | `ada1ea788fff0ea186e9b77a8f37adaca425912b7e41df795743216937040b62` |
 | `test_safety_diagnostics.py` | `359e1153c33479e0a1fa529d716b199ac6681e188e6e5380e67c7d941ed06323` |
 | `test_safety_filter.py` | `781eef8c858c30f5987e7b537999d61b1f5dc428e02d4eba1b3fe716c383b04b` |
 | `test_send_guard.mjs` | `6e7646cdef389a7b2dd4f8898c003e514a792f4cabf86a0e549243f6ee89df50` |
@@ -2889,6 +2905,395 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   screen). Both are in the gate; no service is started and no real key is used.
 - After saving, apply with `sudo systemctl restart bestgaa` (the card has the
   button; the panel says when the running bot still has the old values).
+
+### Posts have buttons, channels have links (2026-10-25)
+
+*"every post ki button ravatam leda … channel link kuda … channel easy ga source
+add chesi"* — three things added to the same channel-control card.
+
+**A post is a row you can act on.** `bestgaa/posts.py` builds the feed from the
+bot's own queue and delivery ledger: the post's real text, **which channels carry
+it** (each one linked as `https://t.me/<username>` and marked `sent` / `skipped` /
+`held` with its reason), **where it came from** (a link to the exact source
+message, built from the source handle and the message number), and the buttons:
+`Send to…`, `Links` (the dossier), `Copy`. `Send to…` opens a channel picker for
+that post and queues one request.
+
+**The button is a request, the bot does the sending.** The dashboard stays
+read-only on the bot's database: a press appends one JSON line to
+`manual_send_requests.jsonl`. The bot's `manual_send_loop` re-checks the post, the
+channel (must be in its own routing) and re-opens the job with
+`Store.manual_targets()` — a pending delivery row for the channels that do not
+already carry it, and the queue row back to `pending`. The send then goes through
+the **normal, fully verified path** (ownership, live-link checks, price band,
+per-channel dedup), so a press can never double-post: a channel that already has
+the post is skipped and the log says so. Outcomes land in
+`manual_send_log.json` — the press is logged as **`queued`** (this loop only
+re-opens the post), and the delivery ledger, shown in the same feed, is where
+`sent` becomes true.
+
+**No invented links.** A channel link is produced only from a real @username
+(`posts.channel_link`), a message link only from a handle plus a positive message
+number (`posts.message_link`). A private channel gets `None` and the page shows
+its title — a link that 404s is worse than no link.
+
+**A source in one line.** The same card has a paste-link box with its own
+destination picker and an `Add source` button (`POST /api/watch`, the endpoint the
+watch card already used), plus `Open source studio` for the full multi-select
+flow. Nothing is joined and no history is replayed — unchanged.
+
+- Proof: `test_channel_control.py` — the feed (source message link, per-channel
+  links and verdicts, a post with no stored text not offered), the request
+  validator (unknown post, a channel that is not ours, empty selection), the
+  exactly-once log, the bot's store method replayed on a real SQLite schema (the
+  channel that already has it is left alone, the new channel becomes pending, the
+  finished post becomes claimable again), the HTTP feed + press + refusals through
+  aiohttp's test client, and the page markup (per-post buttons, `t.me` links, the
+  one-line add-source box).
+
+### The "Join …" button under a post is now per channel (2026-10-25)
+
+*"mana existing and new ga chesе channels ki easy ga cheselaga undali dashboard …
+ah channel post inkoka channel buttons add cheyelaga"* — with a screenshot of a
+real post ending in a **Join Shopsy Loots ❤️ →** button.
+
+One global row was not enough: a post in **LootZone** must offer the *other*
+shelves, not LootZone itself. `bestgaa/post_buttons.py` (schema 2) therefore has
+a row **per channel**, with four modes:
+
+| mode | what a reader sees under that channel's post |
+|---|---|
+| `default` | the shared row every channel had before |
+| `auto` | built from **our other channels** (never the channel itself), labelled from the channel title via `auto_label` (`Join {title} ❤️`) |
+| `custom` | an explicit row for that channel |
+| `none` | no buttons there |
+
+The rules did not get looser: at most two buttons, https only, Telegram hosts
+only, 1–40 char labels without control characters, no repeated URL — and **a
+button may never link the channel it is posted in** (dropped on read, refused on
+save). "Auto for every channel" is one press in the dashboard; the page shows the
+**resolved row per channel** (built by the same `effective_row` the bot uses), so
+the preview cannot disagree with what goes out.
+
+Bot side: `deliver()` now takes the `target` it is posting to and resolves
+`post_inline_buttons(target)`; names and titles come from the code targets,
+`channels.json` and the published directory, so a button reads "Join Under 99
+Shelf" instead of "Join under99deals11". WhatsApp still has no inline buttons.
+
+**How often — not under every post.** *"every time ravoddu … every 10th post ki
+ilaga, 5th post ki kuda set cheskogalagam"*: each channel (and the default) also
+carries `every` — `1` = every post, `10` = every 10th, `5` = every 5th, up to 100.
+`bestgaa/button_cadence.py` counts in the bot's own SQLite database
+(`button_cadence` + `button_cadence_decisions`), so the schedule survives
+restarts, and the decision is stored per `(channel, post)`: a retry, a resume or a
+manual re-send of an older post asks the same question again and gets the **same
+answer** — a post is never counted twice and a retry can never conjure a button
+row. The stride is *first post, then every Nth after it* (so a channel you just
+configured shows the row on its next post instead of ten posts later); a send that
+fails still consumes its slot, because it did reach the API. The dashboard shows
+the schedule as dots (`●·········●·`) for the next twelve posts, and the same
+number is written per channel or globally, one press for 5th / 10th / every post.
+
+- Proof: `test_channel_buttons.py` — handle normalisation; the old global row
+  (including dropping a self-link, not the row); auto (self excluded, titles,
+  dedupe, two-button limit, `auto_limit`, invite values skipped); custom and
+  `none`; every refusal (foreign host, self-link, empty custom, unknown mode,
+  non-public key, third button) with **nothing written**; the atomic round-trip;
+  the bug where saving the default row wiped the per-channel modes; which
+  channels a button may point at; the bot's real `post_inline_buttons(target)`
+  (LootZone's post links the other shelf and not itself, and the label is the
+  title); and the HTTP endpoints (preview, auto-all, self-link refusal, empty
+  body refusal, default-row save preserving modes, `none`).
+  `test_dashboard_buttons.cjs` drives the editor in jsdom: three rows, the mode
+  selector, auto-for-everyone, a custom row, a hostile label staying text, and a
+  half-filled row that never reaches the server. The cadence is pinned the same
+  way: the stride (`●·········●·`), a retry of an *older* post staying the same
+  answer (the first version only remembered the last post, so out-of-order
+  retries drifted the count), per-channel independence, `every=1` needing no
+  state, clamping, resume/forget, config inheritance vs override, the bot's real
+  `button_row_for`, and the "no counter available → no row" answer.
+
+### Attach what already runs, and get told what to add next (2026-10-25)
+
+*"mana existing running channel ki kuda ottu add cheyagalgali neatga dashboard lo
+… oka channel nunchi inko channels suggest cheyali … more and more advanced"* —
+one card (`OUR CHANNELS · ATTACH WHAT ALREADY RUNS`) and two new modules.
+
+**The gap it closes.** Before this, the dashboard had three half-answers about
+"our channels": `code targets` (running, but only in Python), `dashboard
+channels` (in `channels.json`, but only the ones created there) and the
+`directory` (everything the session can read, with Telegram's rights — but
+read-only). An **existing running channel therefore could not be managed**: it
+could not be paused, annotated, or used as the starting point for anything.
+
+**`bestgaa/channels_attach.py`** — the missing verb. `attach` records the intent in
+`channels.json` (section `attach`, preserved like every other section) and does
+exactly one of two things:
+
+- the channel is **already a target** (code or dashboard) → `mode: "existing"`,
+  **no routing change**: attaching only registers it so the dashboard can pause
+  it, note it and suggest sources for it;
+- the channel is one **we admin but do not post to** → `mode: "new"`, and the
+  module also appends a normal dashboard channel (sources from the request,
+  default every main source) through `channels_config.validate_channel`. That is
+  what makes the bot actually post there — never a hand-written file.
+
+`detach` undoes exactly that: the registry row goes, and a `new` row takes its
+dashboard channel with it, so a detach can never leave a channel half-managed. A
+**code** target keeps posting — detaching cannot edit Python, and the answer says
+so instead of pretending. Refusals carry the reason: a channel the bot never saw,
+a channel where the account is only a member, a group, or a channel without the
+post right.
+
+**A source is never a destination.** Attaching refuses a channel that is currently
+one of our *watched sources*: its own posts would be routed back into it (or two
+channels into each other). The row says exactly that and how to fix it — remove
+the watch entry first.
+
+**Pause is real, and needs no restart.** `posting: false` on an attached row (or
+`enabled: false` on a dashboard channel). The bot's fan-out calls
+`channels_attach.paused_targets()` for **every post** (mtime-cached, so a press
+lands on the next post): a paused channel gets **no delivery row at all**, the log
+says `TARGET PAUSED`, and resuming applies to future posts only — **nothing is
+replayed**. A manual `Send to…` aimed at a paused channel is refused with that
+reason instead of silently vanishing.
+
+**`bestgaa/channel_suggest.py`** — "which channel next?", asked from one we run.
+The dashboard appends to `suggest_requests.jsonl`; the bot's
+`channel_suggest_loop` answers into `channel_suggestions.json` from two honest
+sources, both read-only:
+
+1. **Telegram's own opinion** — `channels.GetChannelRecommendations` (MTProto);
+   the row says "Telegram recommends it next to @X";
+2. **the channel's own recent posts** — `t.me/…` links and `@…` mentions, bounded
+   by `SUGGEST_SCAN_LIMIT` (default 60 posts); the row says how many times it was
+   linked.
+
+Everything already ours (targets, watched sources, attached, paused) and the
+channel itself are excluded; invite-only channels and groups are dropped because
+a link cannot add them. Each source can fail independently, and the answer says
+which one was unavailable instead of returning an empty list that looks like
+"there is nothing to add". Each row has **Add as source** (the existing
+`POST /api/watch`) and **Attach as ours**. Nothing is joined, forwarded or posted.
+
+- Proof: `test_channel_attach.py` — attach as `existing` (routing untouched,
+  other sections preserved) and as `new` (a real dashboard channel, enabled, and
+  it says the bot must pick the config up); every refusal (unknown channel,
+  member-only, group, duplicate, empty); detach removing the channel it created
+  and *not* pretending about a code target; pause/resume and the mtime-cached
+  pause list (a disabled dashboard channel counts as paused too); the merged
+  inventory (code vs dashboard vs attached vs candidate, counts, links); mention
+  parsing (t.me post links, one row per @mention, an email is not a channel);
+  Telegram entities filtered to public broadcast channels; ranking and exclusion;
+  the request/answer round-trip (including a corrupt line and the clamped scan
+  limit); the HTTP endpoints through aiohttp's test client (list, attach, refusal,
+  pause, ask, answer-less GET, detach); the page markup; and the bot wiring (the
+  pause in the fan-out, the "every target is paused" reason, the paused manual
+  send, the task started and awaited, `GetChannelRecommendationsRequest`, no
+  join call). `test_dashboard_own.cjs` drives the card itself in jsdom: the list,
+  the attach/pause/post buttons and the exact request bodies, the suggestion
+  panel with its provenance, a hostile channel title staying text, and a missing
+  directory rendering as a sentence instead of a blank card.
+
+### Channel control: every channel we run, many actions, one press (2026-10-25)
+
+The operator's request: *"manam admin ga vunna channel anni chupinchali …
+multiple buttons kuda pettelaga undali … oka channel nunchi inkoka channel ki
+easy ga button pettelaga undali … konni channel button nokkagane kakunda bot
+vallani accept cheyali oka 2-3 seconds lo, appudu vallaki official ga
+anipisthadi"*. One card answers all four.
+
+**The inventory is the bot's own.** `bestgaa/channel_directory.py` now reads the
+rights Telegram reports on each dialog (`creator`, `admin_rights`) and publishes
+`role` (`creator`/`admin`/`member`), `can_post` and `can_invite`, plus
+`admin_count`/`creator_count`/`invite_count`. Admin channels sort first, so "is
+this mine, and may I post here?" is answered by data instead of a guess. A group
+with rights is listed as admin but is still not addable as a *source* (only a
+public broadcast channel can be one).
+
+**Many channels, one save.** `POST /api/channels/bulk` takes
+`{action, channels[]}` with `enable`, `disable`, `remove`, `target` (add the
+ticked ones as destinations) or `category` (set/clear the shelf filter). One
+atomic `channels.json` write, one revision bump, and a per-channel refusal list —
+a bad name never throws away the nineteen good ones. The page's buttons are
+`Enable / Disable / Add as destination / Set category / Remove`.
+
+**Join requests, approved in ~2.5 s — off by default.**
+`bestgaa/join_gate.py` is the whole policy, pure and tested: off unless the
+channel is listed *and* the global switch is on (`JOIN_AUTO_APPROVE=0` in the
+environment stops it outright), delay clamped to 1–60 s (default 2.5), a
+per-channel per-minute cap, and every decision written to
+`join_requests_log.json` (who, which channel, what, why). The bot gets the signal
+from `UpdatePendingJoinRequests` — a **user** session has no
+`events.ChatJoinRequest` — and approves with `HideChatJoinRequestRequest`. A
+poll every `JOIN_POLL_SECONDS` (60 s) covers a missed update, and the handler is
+registered only if Telethon has that update type, so an older library cannot
+stop the bot from booting. **It never joins a channel on our own account** — the
+standing rule is unchanged; this only admits people into channels where we are
+already admin.
+
+**Repost, by a button.** `bestgaa/repost.py` owns the queue format and the
+refusals. Paste `https://t.me/OurChannel/1234`, tick destinations,
+press once. The dashboard **appends** to `repost_requests.jsonl` (one line, atomic
+`O_APPEND`); the bot **drains** it and calls `forward_messages`, then writes the
+outcome to `repost_log.json`. Each request id is forwarded exactly once. It is
+deliberately *not* a routing rule: automatic "our channel → our channel" routing
+is how these systems grow loops and duplicate posts, which is why
+`validate_watch` still refuses a destination as its own source. The bot
+re-validates every queued row because the file is on disk: source must be one of
+OUR channels, destinations must be ours, never itself, never a private
+`t.me/c/…` link, at most 10 per press and 50 queued.
+
+**A section is never eaten by the next save.** `channels_config.load_channels`
+and `save_channels` used to keep only `version/channels/whatsapp/watch`, so the
+first save after adding `join_requests` silently discarded the operator's
+auto-approval setting. Unknown top-level sections are now preserved verbatim on
+both read and write (bounded, JSON-serializable only).
+
+- Proof: `test_channel_control.py` — rights and counts from fake dialogs; the
+  config round-trip that used to lose a section; every join-gate rule (off,
+  unlisted, paused, cap, window expiry, delay clamp, env kill switch, the 2.5 s
+  sleep then exactly one approval, a Telegram refusal logged as failed, the
+  bot-never-joins invariant); the repost refusals (stranger, itself, private
+  link, too many destinations, exactly-once) and the bot wiring; and the HTTP
+  API driven through aiohttp's test client against a temporary bot directory
+  (bulk actions, join-request save/read, repost queue, every refusal).
+
+### "Where is the bot?" is asked once (2026-10-23)
+
+The dashboard edits the **running** bot's `.env`, `channels.json` and database
+while it runs from a git checkout, and every component used to answer that
+question with its own guess — mostly `Path(__file__).parent`, which on a server
+is the checkout. Three symptoms, one cause:
+
+- deploy report section 6 printed `state=no_channel` for every shelf (the
+  checkout has no `channels.json`, so no channel appeared to exist);
+- the dashboard saved **watch entries into `<checkout>/bestgaa/channels.json`**
+  while the bot read `.../bestgaa-bot/bestgaa-bot/channels.json`, so a saved
+  source never went live and nothing complained;
+- `insight health`, `quality_audit` and `coverage_audit` read
+  `<checkout>/bestgaa/bestgaa.sqlite3` (a file that does not exist there) — so
+  the API-keys panel showed live keys above an empty pipeline.
+
+`bestgaa/bot_paths.py` now answers it once, in a fixed order, and can explain
+itself: `BESTGAA_DIR` → `BOT_DB_PATH` → `CHANNELS_JSON_PATH` → this module's own
+directory when it *is* a bot directory (the bot itself, unchanged) → the known
+install layouts → the `BOT_DB_PATH` inside the bot's own `.env` → the checkout.
+`channels_config`, the dashboard's `app.py` and `insight.py`, `category_report`,
+`quality_audit`, `coverage_audit`, `conversion_report` and `dashboard_link.sh`
+all ask it. Two commands make it visible instead of inferred:
+
+```bash
+python3 bestgaa/bot_paths.py          # every path, the rule that chose it, exists?
+python3 ops/category_report.py ...    # prints db=/channels.json=/env= on stderr
+```
+
+`ops/install_dashboard_secure.sh` pins `BESTGAA_DIR` into
+`/etc/bestgaa/dashboard.env` and proves the database is there;
+`ops/deploy_and_verify.sh` exports `BESTGAA_DIR` to every Python helper, prints
+the resolver's answer, and section 7 now separates "the dashboard runs another
+checkout" (fine) from "the dashboard edits another bot directory" (not fine).
+
+- Proof: `test_bot_paths.py` (a fake server: app directory with `.env`, database
+  and `channels.json`, plus a separate checkout — every consumer lands on the
+  app directory; the bot inside its own directory is unchanged; a missing
+  `channels.json` is announced with the fix; `--json` stays pure).
+
+### The keys panel warns about problems, not about optional keys (2026-10-23)
+
+The panel said `needs attention | HYPD` on a bot whose required keys were all
+valid. `readiness()` judged four hand-picked keys and then used mere presence
+for the rest, so every *optional* key that is not set (publisher id, HYPD store
+id, HYPD slug) kept the headline at `attention` — and a real warning looked
+exactly like the noise. Now every slot in `vault.SLOTS` is judged by the same
+validator the form uses; an optional key that is not set reports `off`
+("optional, not set") and does not count as a warning; and the HYPD set is
+treated as a set — a token without a store id (or the reverse) **is** a warning
+that says Meesho links cannot be minted. A missing required key still blocks.
+
+- Proof: `test_bot_paths.py` (required keys valid → `ready` with optional keys
+  listed; token-without-store and store-without-token → `attention`;
+  complete set → `ready`; missing `AMAZON_TAG` → `blocked`; every slot judged).
+
+### A deploy that says SUCCESS must have installed the new code (2026-10-23)
+
+On 2026-10-23 `bash bestgaa/deploy_bestgaa.sh` printed
+
+```
+[8/9] Verifying installed code and startup marker...
+       live main_bot.py sha256 = cd99cd37...
+       bundled main_bot_new.py sha256 = cd99cd37...
+[9/9] DEPLOY SUCCESS (verified: live file == shipped code)
+```
+
+and the operator believed the multi-key failover and the "never join a channel by
+itself" fix were live. They were not: the script copied the app directory's own
+`main_bot_new.py` onto itself and then compared the app directory with itself, so
+a four-hour-old build stayed live and the log still printed the `JOIN failed` line
+the fix removed. Three things changed, and each has a failing case in the gate:
+
+- **Install from the checkout, verify against it.** Run from a clone,
+  `deploy_bestgaa.sh` copies that checkout's `bestgaa/` files into the app
+  directory (all files are checked first, so a missing helper refuses the run
+  *before* anything is copied), then compares the live `main_bot.py` with
+  `$SOURCE_DIR/main_bot_new.py` and with `git show HEAD:bestgaa/main_bot_new.py`.
+  Uncommitted edits still deploy, but the log says `UNCOMMITTED changes` loudly;
+  an install that did not take prints `ERROR` and exits non-zero.
+- **The bundle carries what the bot hard-imports.** `channel_directory.py` and
+  `post_buttons.py` were missing from `ops/repack_bundles.sh`, and the bot cannot
+  boot or send without them; both are now in the list, required by the deploy,
+  compiled before anything moves, and asserted to exist inside the built zip.
+- **The hotfix cannot trim the keys the dashboard owns.** `ops/apply_dual_hotfix.sh`
+  no longer rewrites a present `EARNKARO_API_KEY` (the vault keeps several for
+  failover), no longer commits a shortener token, and seeds `WA_BITLY_TOKENS` into
+  the bridge from the bot's own `.env`.
+
+- Proof: `test_deploy_truth.py` (stale app directory replaced by the checkout;
+  a dirty checkout announced and its bytes installed; a blocked install exits
+  non-zero and never prints `DEPLOY SUCCESS`; an incomplete checkout leaves the
+  running bot untouched; bundle list, deploy requirement and compile loop all
+  name both helpers; no vault key can be rewritten; the old Bitly token does not
+  appear anywhere in the tree).
+
+### The audit may only say what can be proven (2026-10-23)
+
+`ops/quality_audit.py` was reading the live post `Flat ₹300 Coupon Off ...
+Starting @39699` as "₹300 sent to the ₹99 channel". Four corrections, each
+pinned by a test:
+
+- **A coupon is not a price.** `deal_prices()` masks `flat/save/upto/coupon/
+  cashback/bank offer/card offer` before reading amounts, and reads `@39699`,
+  `₹`, `Rs.`, `INR` shapes; ASINs, percentages and per-unit figures are not prices.
+- **MISROUTE means "reached a channel", not "was planned".** Findings come from
+  `deliveries` (`sent_targets`) only; a queue row that never sent is not a
+  misroute, and the ₹-amount quoted is the product price, never the coupon.
+- **"Cannot verify" is not "somebody else's commission".** With no publisher id
+  configured, our own `ekaro.in`/HYPD short links are `unverified` (with an
+  honest hint to pass `--env-file`/`--publisher`), never `foreign`.
+- **The skip list is the bot's own.** `policy_skip_markers()` reads every
+  `PermanentSkip("...")` reason out of `bestgaa/main_bot_new.py` (33 of them),
+  so a policy skip is not reported as a lost deal and a hand-copied list cannot
+  drift. `--env-file` / `--$AMAZON_TAG` make the audit judge links with the same
+  facts the bot uses; `ops/deploy_and_verify.sh` passes the bot's `.env`.
+
+- Proof: `test_audit_truth.py` (prices vs coupon/bank/percentage/ASIN, MISROUTE
+  from deliveries, unverified vs foreign, skip reasons read from source, and the
+  deploy report's own audit command).
+
+### Price bands are enforced where the fan-out happens (2026-10-23)
+
+A ₹39,699 product was queued to `Under99Deals11` and `under499loots`. The band
+check existed only in the dashboard's planner; `enforce_price_bands()` now runs
+after `scope_dashboard_targets()` in the post path, drops only tiered channels
+whose ceiling is below the product's price, keeps the main feed and service
+channels, and logs `PRICE BAND DROP | ...` per target. A "list" is a post the bot
+itself treats as one — three or more distinct product links, the same rule as
+`multi_product_list = len(converted) >= 3` — not "three lines that carry a number",
+which is how a two-product post with a coupon header bought itself an exemption.
+
+- Proof: `test_routing_bands.py` (live post price 39,699 drops the ₹99 and ₹499
+  shelves and keeps the main feed; ₹79 reaches the ₹99 shelf; a roundup and a
+  service channel are exempt).
 
 ### Source-selection verification (2026-10-14)
 

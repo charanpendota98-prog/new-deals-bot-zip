@@ -112,6 +112,10 @@ from urllib.parse import parse_qs, parse_qsl, unquote, urlencode, urlparse
 
 import aiohttp
 from telethon import TelegramClient, events, utils as tl_utils
+try:  # the join-request update: optional, so an older Telethon cannot break boot
+    from telethon.tl.types import UpdatePendingJoinRequests as _UpdatePendingJoinRequests
+except ImportError:  # pragma: no cover - only on a Telethon without join requests
+    _UpdatePendingJoinRequests = None
 from telethon.helpers import add_surrogate, del_surrogate
 from telethon.errors import (
     ChannelPrivateError,
@@ -2876,6 +2880,55 @@ SERVICE_OFFER_RE = re.compile(
 
 def has_service_offer(text: str) -> bool:
     return bool(SERVICE_OFFER_RE.search(text or ""))
+
+
+# A price channel is a promise printed in its own name. Anything that lands in
+# one has to be checked against that promise, whoever added it.
+PRICE_BANDS = ((UNDER99_TARGET, 99), (UNDER499_TARGET, 499))
+
+
+def price_band_of(target: str) -> int | None:
+    for name, band in PRICE_BANDS:
+        if str(target or "").lower() == name.lower():
+            return band
+    return None
+
+
+def enforce_price_bands(targets, price: int | None, *, listy: bool = False,
+                        service: bool = False) -> tuple[list[str], list[tuple[str, int]]]:
+    """Drop a price channel the post does not belong in. Returns (kept, dropped).
+
+    USER REPORT (2026-10-23): a Dreame robot vacuum advertised at ₹39,699 was
+    DELIVERED to Under99Deals11 (queue 448354). No code "decided" that: the
+    ICICI bank-offer fan-out (`card_offer` -> ALL_OWNED_TARGETS) appends every
+    owned channel, and the price channels rode along without anyone asking
+    whether the item fits. The same hole sat under every other fan-out.
+
+    So the band is checked once, on the FINAL target list, for every route, and
+    an UNKNOWN price counts as a miss: "@39699" with no ₹ figure is not evidence
+    of an under-₹99 deal (a coupon line is not a price either - deal_facts masks
+    "Flat ₹300 Coupon Off" and "Upto ₹5000 Off" before anything reads a price).
+
+    Two documented exceptions keep the operator's own rules intact:
+      * a multi-product LIST roundup belongs in both price channels whatever the
+        item prices are - "under 99 channel lo under 99 products mariyu list of
+        products undali";
+      * a service offer (Zomato/Swiggy/movies/app promos) has no product price at
+        all and must reach every owned channel - "user must not miss them".
+    """
+    if listy or service:
+        return list(targets), []
+    kept: list[str] = []
+    dropped: list[tuple[str, int]] = []
+    for target in targets:
+        band = price_band_of(target)
+        if band is None:
+            kept.append(target)
+        elif price is not None and price <= band:
+            kept.append(target)
+        else:
+            dropped.append((target, band))
+    return kept, dropped
 
 
 def automatic_price_targets(price: int | None) -> list[str]:
@@ -6577,6 +6630,77 @@ class Store:
             self.conn.execute("UPDATE queue SET rendered_text=? WHERE id=?", (text, queue_id))
             await self._commit()
 
+    async def manual_targets(self, queue_id: int, targets: list[str]) -> dict:
+        """Re-open a finished post for the channels an operator picked.
+
+        The dashboard's "Send to…" button is a HUMAN decision, and this is where
+        it becomes work: add a pending delivery row for each target that does not
+        already carry the post, and put the job back in the queue so the normal
+        (fully verified) delivery path runs for exactly those targets. Nothing is
+        sent from here - the send still goes through every gate: ownership,
+        live-link checks, price bands, per-channel dedup.
+
+        Returns {"added": [...], "already": [...], "unknown": [...]}.
+        """
+        wanted = [str(t) for t in (targets or []) if str(t).strip()]
+        added, already = [], []
+        # Terminal for THIS purpose: the post is already out, already queued to
+        # go out, or was refused there by policy. Only a missing or failed row is
+        # new work.
+        settled = ("sent", "skipped", "held", "pending")
+        async with self.lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.conn.execute(
+                    "SELECT id,status FROM queue WHERE id=?", (queue_id,)).fetchone()
+                if row is None:
+                    self.conn.rollback()
+                    return {"added": [], "already": [], "unknown": wanted, "missing": True,
+                            "busy": False}
+                if str(row[1]) == "processing":
+                    # A worker is delivering this post RIGHT NOW. Re-opening it
+                    # here would flip it back to 'pending' while another worker
+                    # still owns it - two workers, one post, a duplicate. Refuse
+                    # and let the operator press again when it has finished.
+                    self.conn.rollback()
+                    return {"added": [], "already": wanted, "unknown": [], "missing": False,
+                            "busy": True}
+                for target in wanted:
+                    existing = self.conn.execute(
+                        "SELECT status FROM deliveries WHERE queue_id=? AND target=?",
+                        (queue_id, target)).fetchone()
+                    if existing and str(existing[0]) in settled:
+                        already.append(target)
+                        continue
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO deliveries(queue_id,target,status) "
+                        "VALUES(?,?,'pending')", (queue_id, target))
+                    self.conn.execute(
+                        "UPDATE deliveries SET status='pending',last_error=NULL "
+                        "WHERE queue_id=? AND target=? AND status NOT IN "
+                        "('sent','skipped','held')", (queue_id, target))
+                    added.append(target)
+                if added:
+                    # A finished row must be claimable again; the claim tables are
+                    # keyed by deal content and allow the SAME queue id back in.
+                    self.conn.execute(
+                        "UPDATE queue SET status='pending', next_at=0, last_error=NULL "
+                        "WHERE id=?", (queue_id,))
+                await self._commit(patient=True)
+            except BaseException:
+                self.conn.rollback()
+                raise
+        if added:
+            notify_queue()
+        return {"added": added, "already": already, "unknown": [], "missing": False,
+                "busy": False}
+
+    async def delivery_targets(self, queue_id: int) -> dict[str, str]:
+        """target -> status, for the operator-facing answer."""
+        async with self.lock:
+            return {str(row[0]): str(row[1]) for row in self.conn.execute(
+                "SELECT target,status FROM deliveries WHERE queue_id=?", (queue_id,))}
+
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
             # Terminal states: sent (posted), skipped (policy), held (uncertain;
@@ -8675,6 +8799,30 @@ def source_message_is_current(source, msg):
     return not cutoff or stamp >= cutoff
 
 
+def paused_for_posting() -> set[str]:
+    """Channels the dashboard paused - read fresh, so the button needs no restart.
+
+    "mana existing running channel ki kuda ottu add cheyagalgali" (2026-10-25):
+    attaching gives the operator a pause, and a pause has to be true. The set is
+    cached by channels.json's mtime, so a post is filtered in microseconds and a
+    press lands on the very next post.
+    """
+    try:
+        try:
+            from . import channels_attach as _attach
+        except ImportError:
+            import channels_attach as _attach
+    except Exception as exc:  # noqa: BLE001 - a missing helper must not stop posting
+        log.warning("DASHBOARD PAUSE | channels_attach unavailable (%s) - nothing is paused",
+                    exc)
+        return set()
+    try:
+        return _attach.paused_targets()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("DASHBOARD PAUSE | could not read the pause list: %s", exc)
+        return set()
+
+
 def scope_dashboard_targets(source, targets):
     if source not in DASHBOARD_SCOPED_SOURCES:
         return targets
@@ -9044,20 +9192,117 @@ async def send_media_item(client, entity, media, caption: str, refs: list | None
             await client.send_file(entity, extra, parse_mode=None)
 
 
-def post_inline_buttons():
-    """The dashboard-configured URL button row, ready for Telethon, or [].
+def _our_channels_for_buttons() -> tuple[list[str], dict[str, str]]:
+    """(names, titles) an AUTO button row may point at: everything we post to.
+
+    Code targets first (they are ours even before the dashboard has heard of
+    them), then the dashboard channels, then the directory the bot itself
+    published. Titles come from the directory, so a button reads "Join Under 99
+    Shelf" instead of "Join under99deals11" when Telegram knows the name.
+    """
+    names: list[str] = []
+    titles: dict[str, str] = {}
+    for name in sorted(str(item) for item in _dashboard_targets):
+        key = normalize_channel_target_name(name)
+        if key:
+            names.append(name)
+    try:
+        data = _dashboard_channels.load_channels()
+        for entry in data.get("channels") or []:
+            if isinstance(entry, dict) and entry.get("enabled") is not False:
+                name = str(entry.get("name") or "")
+                if name and normalize_channel_target_name(name) not in {
+                        normalize_channel_target_name(item) for item in names}:
+                    names.append(name)
+    except Exception:  # noqa: BLE001 - a broken config must not lose the row
+        pass
+    try:
+        payload = json.loads(_dashboard_channels.directory_path().read_text(encoding="utf-8"))
+        for entry in payload.get("channels") or []:
+            if not isinstance(entry, dict):
+                continue
+            handle = str(entry.get("username") or "")
+            if not handle:
+                continue
+            title = " ".join(str(entry.get("title") or handle).split())[:40]
+            titles[handle.lower()] = title or handle
+            if (entry.get("admin") or entry.get("creator")) and normalize_channel_target_name(
+                    handle) not in {normalize_channel_target_name(item) for item in names}:
+                names.append(handle)
+    except Exception:  # noqa: BLE001 - no directory yet is normal on a fresh install
+        pass
+    return names, titles
+
+
+def button_row_for(target, queue_id=None, conn=None):
+    """The button row this post should carry, honouring "every Nth post".
+
+    Two questions, in order: WHICH row (post_buttons.resolve - default/auto/
+    custom/none) and HOW OFTEN (post_buttons.cadence + button_cadence). The
+    counter lives in the bot's own database and remembers the decision per
+    `(target, queue_id)`, so a retry or a resume asks the same question and gets
+    the same answer - a post is never counted twice. Without a database handle
+    (an old caller, a dry run) the schedule cannot be advanced, and the honest
+    answer is "no row on this pass" rather than double counting.
+    """
+    rows = post_inline_buttons(target)
+    if not rows:
+        return []
+    try:
+        try:
+            from . import button_cadence as _cadence
+        except ImportError:
+            import button_cadence as _cadence
+        try:
+            from . import post_buttons as _buttons
+        except ImportError:
+            import post_buttons as _buttons
+        every = _buttons.cadence(target)
+    except Exception as exc:  # noqa: BLE001 - a button must never cost a post
+        log.warning("POST BUTTONS | could not read the cadence for %s (%s) - showing the row",
+                    target, exc)
+        return rows
+    if every <= 1:
+        return rows
+    if conn is None:
+        # No ledger to count in: do not guess a position in the schedule.
+        log.info("POST BUTTONS | @%s set to every %sth post but no counter is available - "
+                 "this post goes without the row", target, every)
+        return []
+    try:
+        show = _cadence.should_show(conn, target, queue_id, every)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("POST BUTTONS | cadence failed for %s (%s) - showing the row", target, exc)
+        return rows
+    if not show:
+        log.info("POST BUTTONS | @%s is on every %sth post - this one goes without the row",
+                 target, every)
+        return []
+    return rows
+
+
+def post_inline_buttons(target=None):
+    """The dashboard-configured URL button row for ONE channel, or [].
 
     Telegram draws inline URL buttons below the message - the "Join … ❤️" row a
-    big channel ends every post with. Empty config (the default, and every
-    deployment until an operator saves buttons) returns [], and `deliver` then
-    passes buttons=None, so nothing about today's posts changes. WhatsApp has no
-    inline buttons, so this is a Telegram-only surface.
+    big channel ends every post with. The dashboard configures it PER CHANNEL
+    (default row / auto row made of our other channels / a custom row / none), so
+    a post in one shelf offers the others and never itself. Empty config (the
+    default, and every deployment until an operator saves something) returns [],
+    and `deliver` then passes buttons=None, so nothing about today's posts
+    changes. WhatsApp has no inline buttons, so this is a Telegram-only surface.
     """
     try:
         import post_buttons
     except ImportError:  # imported as bestgaa.main_bot_new
         from bestgaa import post_buttons
-    rows = post_buttons.load_buttons()
+    try:
+        names, titles = _our_channels_for_buttons()
+        rows = post_buttons.resolve(target, ours=names, titles=titles)
+    except Exception as exc:  # noqa: BLE001 - a button must never cost a post
+        log.warning("POST BUTTONS | could not resolve the row for %s (%s) - posting without "
+                    "buttons", target, exc)
+        return []
     if not rows:
         return []
     from telethon import Button
@@ -9114,7 +9359,8 @@ class AmbiguousDelivery(Exception):
 
 async def deliver(client, entity, text: str, media_path: str | None, start_chunk: int = 0,
                   progress_callback=None, link_preview: bool = True,
-                  media_refs: list | None = None, attempt_callback=None) -> tuple[bool, str]:
+                  media_refs: list | None = None, attempt_callback=None,
+                  target: str | None = None, button_rows=None) -> tuple[bool, str]:
     # LAST GATE: markdown debris, glued random tokens and empty bullet lines are
     # removed here - after cleaning, after shortening, after chunking decisions -
     # so whatever produced them can never reach a subscriber's screen.
@@ -9129,7 +9375,15 @@ async def deliver(client, entity, text: str, media_path: str | None, start_chunk
     # The button row opens the post, exactly once: the first message actually sent
     # (which is the photo when there is one). A resumed job puts it on the message
     # that resumes, so a post never shows zero rows because of a retry.
-    button_row = post_inline_buttons() or None
+    # PER CHANNEL: the row is resolved for the channel this copy is going to, so
+    # a post in one shelf offers the others and never links itself. `button_rows`
+    # is the caller's pre-computed answer (it may be [] because this post is not
+    # one of the "every Nth" ones) - passing it here keeps the counting in ONE
+    # place, next to the delivery ledger, instead of inside the send loop.
+    if button_rows is None:
+        button_row = post_inline_buttons(target) or None
+    else:
+        button_row = button_rows or None
     for index in range(start_chunk, len(parts)):
         kind, content = parts[index]
         chunk_buttons = button_row if index == start_chunk else None
@@ -9706,6 +9960,8 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
     # owned channel, force the premium channel, and rank them as premium.
     premium_rank = None
     if card_offer:
+        log.info("CARD FANOUT | queue=%s a bank/card offer fans out to every owned channel "
+                 "(the price channels in that list are still band-checked below)", row["id"])
         for target in ALL_OWNED_TARGETS:
             if target not in base_targets:
                 base_targets.append(target)
@@ -9835,8 +10091,32 @@ async def render_job(client, affiliate: AffiliateClient, row: sqlite3.Row):
         base_targets.append(SHOPPING_TARGET)
     # Custom intake is channel-local: never fan it into built-in/global routes.
     base_targets = scope_dashboard_targets(row["source"], base_targets)
+    # Last word on the price channels: whatever route added them (card-offer
+    # fan-out, dashboard channel, watched source), a post that does not fit the
+    # band does not go there. The main feed is untouched by this - the deal is
+    # never lost, only kept out of the channel whose name it would break.
+    base_targets, band_drops = enforce_price_bands(
+        base_targets, routing_price, listy=multi_product_list, service=bool(service_pairs))
+    for dropped_target, dropped_band in band_drops:
+        log.info("PRICE BAND DROP | queue=%s target=@%s band=%s price=%s | the post does not "
+                 "fit that channel's promise (other channels unaffected)",
+                 row["id"], dropped_target, dropped_band,
+                 routing_price if routing_price is not None else "unknown")
+    # A channel paused from the dashboard receives nothing NEW: no delivery row is
+    # written for it, so a resume can never replay an old post. Read per post from
+    # channels.json (mtime-cached) - the button works without a restart.
+    paused_targets_now = paused_for_posting()
+    paused_here = [target for target in base_targets
+                   if normalize_channel_target_name(target) in paused_targets_now]
+    if paused_here:
+        for paused_target in paused_here:
+            log.info("TARGET PAUSED | queue=%s target=@%s | paused in the dashboard: no "
+                     "delivery row was written (resuming never replays it)",
+                     row["id"], paused_target)
+        base_targets = [target for target in base_targets if target not in paused_here]
     if not base_targets:
-        raise PermanentSkip("no eligible targets")
+        raise PermanentSkip("every target for this post is paused in the dashboard"
+                            if paused_here else "no eligible targets")
     # FINAL safety net: no affiliate link may leave the post long — shorten any
     # long generated URL (Amazon category/search links with our tag, missed
     # multi-link shortens) before persisting/sending.
@@ -10516,11 +10796,16 @@ async def process_job(client, affiliate: AffiliateClient, target_map, row: sqlit
 
             chunks_before_target = confirmed_chunks
             try:
+                # One decision per (post, channel), taken here under the store's
+                # lock so the counter is never raced by two workers.
+                async with store.lock:
+                    chunk_button_rows = button_row_for(target, row["id"], store.conn)
                 ok, error = await deliver(
                     client, entity, target_text, target_media,
                     start_chunk=start_chunk, progress_callback=checkpoint,
                     link_preview=allow_preview, media_refs=media_refs,
-                    attempt_callback=send_attempt,
+                    attempt_callback=send_attempt, target=target,
+                    button_rows=chunk_button_rows,
                 )
             except AmbiguousDelivery as exc:
                 held_targets += 1
@@ -10690,6 +10975,365 @@ async def channel_directory_loop(client, stop, target_map=None):
             continue
 
 
+# --------------------------------------------------------------------------- #
+# "Official ga anipisthadi": approve join requests to OUR channels in ~2.5s
+# --------------------------------------------------------------------------- #
+# The bot is a USER session, so Telegram does not hand it a "join request" event:
+# it sends UpdatePendingJoinRequests to the channel's admins. That update names
+# the peer and its recent requesters - enough to approve without polling - and a
+# slow poll covers anything the update missed (a restart, a flood-wait). Every
+# decision goes through bestgaa/join_gate.py, which is pure and tested offline,
+# and nothing here touches our OWN membership: no channel is ever joined.
+_JOIN_GATE = None
+_JOIN_SEEN: "set[tuple[str, int]]" = set()
+
+
+def join_gate():
+    global _JOIN_GATE
+    if _JOIN_GATE is None:
+        try:
+            from . import join_gate as _module
+        except ImportError:
+            import join_gate as _module
+        _JOIN_GATE = _module.JoinGate(
+            log_path=_dashboard_channels.pending_path().parent / "join_requests_log.json",
+            data_provider=lambda: _dashboard_channels.load_channels())
+    return _JOIN_GATE
+
+
+def join_channel_name(entity) -> str:
+    """Our channel as the operator named it: @username, else the title."""
+    username = str(getattr(entity, "username", "") or "").strip()
+    title = str(getattr(entity, "title", "") or getattr(entity, "name", "") or "").strip()
+    return username or title
+
+
+async def approve_join_request(client, entity, user_id: int) -> dict:
+    """One request, through the gate (delay, cap, log)."""
+    from telethon.tl.functions.messages import HideChatJoinRequestRequest
+    gate = join_gate()
+    name = join_channel_name(entity)
+    key = (name.lower(), int(user_id))
+    # One decision path only: the gate (which is the tested module). A channel that
+    # is not on the list, a paused channel or a hit cap all come back as "skip"
+    # with a reason that is written to the log the dashboard shows.
+    if key in _JOIN_SEEN:
+        return {"action": "skip", "reason": "already handled in this run"}
+
+    async def approve():
+        await client(HideChatJoinRequestRequest(peer=entity, user_id=user_id, approved=True))
+
+    outcome = await gate.handle(name, user_id, approve, sleep=asyncio.sleep, name=name)
+    if outcome.get("action") in ("approved", "failed"):
+        # Bounded: a busy channel must not grow this set for the life of the bot.
+        if len(_JOIN_SEEN) > 5000:
+            _JOIN_SEEN.clear()
+        _JOIN_SEEN.add(key)
+        log.info("JOIN APPROVE | channel=%s user=%s -> %s (%s)", name, user_id,
+                 outcome.get("action"), outcome.get("reason"))
+    else:
+        log.info("JOIN SKIP | channel=%s user=%s -> %s", name, user_id, outcome.get("reason"))
+    return outcome
+
+
+async def join_request_poll_loop(client, stop) -> None:
+    """Safety net: every JOIN_POLL_SECONDS, approve pending requests we missed.
+
+    The raw update below is the fast path (~2.5s). This loop exists because a
+    missed update (restart, flood wait, a channel added while the bot was down)
+    would otherwise leave people waiting forever - the one thing the operator
+    asked not to happen. It asks Telegram only for channels that actually have
+    auto-approval enabled, and only for their PENDING (not yet approved) list.
+    """
+    try:
+        from telethon.tl.functions.messages import GetChatInviteImportersRequest
+    except Exception:
+        return
+    every = max(20, int(os.getenv("JOIN_POLL_SECONDS", "60")))
+    while not stop.is_set():
+        try:
+            gate = join_gate()
+            setting = gate.setting()
+            if setting.get("enabled"):
+                for name, entry in (setting.get("channels") or {}).items():
+                    if not entry.get("enabled", True):
+                        continue
+                    try:
+                        entity = await client.get_entity(entry.get("name") or name)
+                    except Exception:
+                        continue
+                    try:
+                        importers = await client(GetChatInviteImportersRequest(
+                            peer=entity, offset_date=None, offset_user=None,
+                            limit=50, requested=True))
+                    except Exception as exc:  # noqa: BLE001 - one channel, not the loop
+                        log.warning("JOIN POLL | %s: %s", name, exc)
+                        continue
+                    for importer in getattr(importers, "importers", []) or []:
+                        user_id = int(getattr(importer, "user_id", 0) or 0)
+                        if user_id:
+                            await approve_join_request(client, entity, user_id)
+        except Exception as exc:  # noqa: BLE001 - never take the bot down
+            log.warning("JOIN POLL | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def repost_loop(client, stop, target_map) -> None:
+    """Drain the dashboard's repost queue: OUR post -> our other channels.
+
+    The dashboard appends one JSON line per button press; this forwards it once
+    and writes the outcome. Re-validated here because the file is on disk.
+    """
+    try:
+        from . import repost as _repost
+    except ImportError:
+        import repost as _repost
+    every = max(3, int(os.getenv("REPOST_POLL_SECONDS", "5")))
+    while not stop.is_set():
+        try:
+            queue = _repost.request_path()
+            if queue.exists():
+                ours = list(target_map) or [str(t) for t in _dashboard_targets]
+                done = _repost.done_ids()
+                for row in _repost.queued(queue, done)[:5]:
+                    clean, errors = _repost.validate(row, ours)
+                    if errors:
+                        _repost.record({"id": row.get("id"), "action": "failed",
+                                        "reason": "; ".join(errors)[:300],
+                                        "at": time.time()}, None)
+                        log.warning("REPOST FAIL | id=%s %s", row.get("id"), errors)
+                        continue
+                    source = target_map.get(_original_target_name(clean["from"], target_map))
+                    if source is None:
+                        try:
+                            source = await client.get_entity(clean["from"])
+                        except Exception as exc:  # noqa: BLE001
+                            _repost.record({"id": clean["id"], "action": "failed",
+                                            "reason": f"cannot resolve {clean['from']}: {exc}"[:300],
+                                            "at": time.time()}, None)
+                            log.warning("REPOST FAIL | %s: %s", clean["from"], exc)
+                            continue
+                    sent, failed = [], []
+                    for target in clean["targets"]:
+                        entity = target_map.get(_original_target_name(target, target_map))
+                        if entity is None:
+                            try:
+                                entity = await client.get_entity(target)
+                            except Exception:
+                                failed.append(target)
+                                continue
+                        try:
+                            await client.forward_messages(entity, clean["message_id"],
+                                                          from_peer=source)
+                            sent.append(target)
+                        except Exception as exc:  # noqa: BLE001
+                            failed.append(f"{target}: {exc}"[:120])
+                        await asyncio.sleep(0.6)
+                    _repost.record({"id": clean["id"], "action": "sent" if sent else "failed",
+                                    "from": clean["from"], "message_id": clean["message_id"],
+                                    "sent": sent, "failed": failed,
+                                    "at": time.time()}, None)
+                    log.info("REPOST | %s/%s -> %s%s", clean["from"], clean["message_id"],
+                             ",".join(sent) or "-",
+                             f" (failed: {failed})" if failed else "")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("REPOST | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+def _original_target_name(name: str, target_map) -> str:
+    """target_map keys keep the operator's spelling; match case-insensitively."""
+    for key in target_map:
+        if str(key).lower() == str(name or "").lower():
+            return key
+    return str(name or "")
+
+
+async def manual_send_loop(client, store, stop, target_map) -> None:
+    """Drain the dashboard's "Send to…" presses: re-open a post for our channels.
+
+    A press is a human decision, so it is honoured - but only through the normal
+    delivery path, which re-verifies the links, the price band and the
+    per-channel dedup. A channel that already carries the post is skipped and the
+    log says so; nothing is ever sent twice by this loop.
+    """
+    try:
+        try:
+            from . import posts as _posts
+        except ImportError:
+            import posts as _posts
+    except Exception as exc:  # noqa: BLE001 - the button is never worth the bot
+        log.warning("MANUAL SEND | posts.py unavailable (%s) - the Send-to button is "
+                    "inert until this file is deployed", exc)
+        return
+    every = max(2, int(os.getenv("MANUAL_SEND_POLL_SECONDS", "5")))
+    while not stop.is_set():
+        try:
+            queue = _posts.request_path()
+            if queue.exists():
+                ours = list(target_map)
+                by_key = {str(name).lower(): name for name in ours}
+                for row in _posts.pending(queue, done=_posts.finished_ids())[:10]:
+                    queue_id = int(row.get("queue_id") or 0)
+                    picked = []
+                    unknown = []
+                    for value in row.get("targets") or []:
+                        name = by_key.get(str(value).lower())
+                        if name:
+                            picked.append(name)
+                        else:
+                            unknown.append(str(value))
+                    if not picked:
+                        _posts.record({"id": row.get("id"), "action": "failed",
+                                       "queue_id": queue_id,
+                                       "reason": ("no such channel in this bot's routing: "
+                                                  + ", ".join(unknown[:5]))[:300],
+                                       "at": time.time()}, None)
+                        log.warning("MANUAL SEND FAIL | queue=%s unknown channel(s) %s",
+                                    queue_id, unknown)
+                        continue
+                    paused_now = paused_for_posting()
+                    paused_picked = [target for target in picked
+                                     if normalize_channel_target_name(target) in paused_now]
+                    if paused_picked:
+                        # The operator asked for this channel explicitly, so the
+                        # answer is a refusal with a reason - not a silent drop
+                        # and not a delivery kept for later.
+                        picked = [target for target in picked
+                                  if target not in paused_picked]
+                        if not picked:
+                            _posts.record({"id": row.get("id"), "action": "skipped",
+                                           "queue_id": queue_id, "targets": paused_picked,
+                                           "reason": ("every channel you picked is paused in "
+                                                      "the dashboard - resume it there first"),
+                                           "at": time.time()}, None)
+                            log.info("MANUAL SEND | queue=%s skipped -> every chosen channel is "
+                                     "paused (%s)", queue_id, ", ".join(paused_picked))
+                            continue
+                        log.info("MANUAL SEND | queue=%s dropping paused channel(s): %s",
+                                 queue_id, ", ".join(paused_picked))
+                    outcome = await store.manual_targets(queue_id, picked)
+                    # "queued", not "sent": this loop only re-opens the post for
+                    # those channels. The worker sends it through the normal
+                    # verified path, and the delivery ledger (the Posts feed) is
+                    # where "sent" becomes true. Naming it "sent" here would be
+                    # the kind of claim this repo keeps getting bitten by.
+                    action = "queued" if outcome.get("added") else "skipped"
+                    reason = ("queued for " + ", ".join(outcome["added"])
+                              if outcome.get("added") else
+                              "already carried by " + ", ".join(outcome.get("already") or []))
+                    if outcome.get("busy"):
+                        action = "skipped"
+                        reason = ("this post is being delivered right now - press again when "
+                                  "it finishes (nothing was changed)")
+                    if outcome.get("missing"):
+                        action, reason = "failed", f"post {queue_id} is no longer in the queue"
+                    _posts.record({"id": row.get("id"), "action": action,
+                                   "queue_id": queue_id, "targets": picked,
+                                   "added": outcome.get("added") or [],
+                                   "already": outcome.get("already") or [],
+                                   "unknown": unknown, "reason": reason,
+                                   "at": time.time()}, None)
+                    log.info("MANUAL SEND | queue=%s %s -> %s", queue_id, action, reason)
+        except Exception as exc:  # noqa: BLE001 - never stop posting over a button
+            log.warning("MANUAL SEND | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
+async def channel_suggest_loop(client, stop, target_map=None) -> None:
+    """Answer "which channels should I add next?" from ONE channel we run.
+
+    The dashboard appends one request per press; this resolves the channel with
+    the bot's own session, asks Telegram for its similar channels
+    (`channels.GetChannelRecommendations`) and reads the channel's own recent
+    posts for `t.me/...` / `@...` mentions. Read-only: nothing is joined, nothing
+    is forwarded, and the scan is bounded (SUGGEST_SCAN_LIMIT, default 60 posts).
+
+    Both sources can fail independently (an old layer without the request, a
+    channel with no history) - the answer says which one was unavailable instead
+    of returning an empty list that looks like "there is nothing to add".
+    """
+    try:
+        try:
+            from . import channel_suggest as _suggest
+        except ImportError:
+            import channel_suggest as _suggest
+    except Exception as exc:  # noqa: BLE001 - the button is never worth the bot
+        log.warning("SUGGEST | channel_suggest.py unavailable (%s) - the Suggest button is "
+                    "inert until this file is deployed", exc)
+        return
+    every = max(3, int(os.getenv("SUGGEST_POLL_SECONDS", "6")))
+    scan_limit = max(5, int(os.getenv("SUGGEST_SCAN_LIMIT", "60")))
+
+    async def one(request: dict) -> None:
+        channel = str(request.get("channel") or "")
+        entity = None
+        if target_map:
+            entity = target_map.get(_original_target_name(channel, target_map))
+        if entity is None:
+            try:
+                entity = await client.get_entity(channel)
+            except Exception as exc:  # noqa: BLE001
+                _suggest.record(_suggest.answer(request, error=(
+                    f"cannot resolve @{channel} with this session: {str(exc)[:140]}")), None)
+                log.warning("SUGGEST FAIL | %s: %s", channel, exc)
+                return
+        similar, similar_error = [], ""
+        try:
+            from telethon.tl import functions as tl_functions
+            found = await client(tl_functions.channels.GetChannelRecommendationsRequest(
+                channel=entity))
+            similar = _suggest.from_entities(getattr(found, "chats", None) or [])
+        except Exception as exc:  # noqa: BLE001 - an old layer may not have it
+            similar_error = f"Telegram did not return similar channels: {str(exc)[:140]}"
+        mentions, scan_error = [], ""
+        try:
+            limit = min(scan_limit, int(request.get("limit") or 40))
+            async for message in client.iter_messages(entity, limit=limit):
+                mentions.extend(_suggest.parse_mentions(getattr(message, "message", "") or ""))
+        except Exception as exc:  # noqa: BLE001
+            scan_error = f"could not read recent posts for mentions: {str(exc)[:140]}"
+        # Everything we already have is not a suggestion.
+        exclude = set(str(name) for name in (target_map or {}))
+        try:
+            exclude |= {str(row.get("channel")) for row in
+                        _dashboard_channels.watch_entries(_dashboard_channels.load_channels())}
+            exclude |= {str(row.get("name")) for row in
+                        _dashboard_channels.load_channels().get("channels", [])}
+        except Exception:  # noqa: BLE001 - suggestions still work without the config
+            pass
+        exclude |= paused_for_posting()
+        payload = _suggest.answer(request, similar=similar, mentions=mentions,
+                                  exclude=exclude, similar_error=similar_error,
+                                  scan_error=scan_error)
+        _suggest.record(payload, None)
+        log.info("SUGGEST | %s -> %s candidate(s) (similar=%s mentioned=%s)%s",
+                 channel, payload["count"], payload["similar_count"],
+                 payload["mentioned_count"],
+                 f" | {similar_error}" if similar_error else "")
+
+    while not stop.is_set():
+        try:
+            done = _suggest.done_ids()
+            for request in _suggest.pending(done=done)[:3]:
+                await one(request)
+        except Exception as exc:  # noqa: BLE001 - never stop posting over a button
+            log.warning("SUGGEST | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def main() -> None:
     global QUEUE_WAKE
     log.info("BestGAA Production Bot v19.0 starting "
@@ -10747,6 +11391,28 @@ async def main() -> None:
                       entry[0], event.chat_id,
                       event.message.id if event.message is not None else "?", exc)
 
+    async def on_pending_join_requests(update):
+        """A request just arrived in a channel we run - approve it in ~2.5s.
+
+        `events.ChatJoinRequest` is not available to a USER session, so the raw
+        update is the signal. `recent_requesters` names the users; if Telegram
+        sends none, the poll below picks them up within a minute.
+        """
+        try:
+            peer = getattr(update, "peer", None)
+            entity = None
+            if peer is not None:
+                try:
+                    entity = await client.get_entity(peer)
+                except Exception:
+                    entity = None
+            if entity is None:
+                return
+            for user_id in list(getattr(update, "recent_requesters", []) or [])[:20]:
+                await approve_join_request(client, entity, int(user_id))
+        except Exception as exc:  # noqa: BLE001 - one request, never the loop
+            log.warning("JOIN | update handling failed: %s", exc)
+
     @client.on(events.MessageEdited())
     async def on_message_edited(event):
         """An edit of a source post must not be lost (see revive_edited_job)."""
@@ -10761,6 +11427,12 @@ async def main() -> None:
         except Exception as exc:
             log.error("EDIT FAIL source=%s chat=%s msg=%s: %s", entry[0], event.chat_id,
                       event.message.id if event.message is not None else "?", exc)
+
+    if _UpdatePendingJoinRequests is not None:
+        # Registered by hand (not with @client.on) so a Telethon without the
+        # update type can never stop the bot from booting.
+        client.add_event_handler(on_pending_join_requests,
+                                 events.Raw(types=[_UpdatePendingJoinRequests]))
 
     async def worker(index: int):
         # NEVER-DIE worker: any unexpected error (SQLite busy, disk hiccup,
@@ -10815,6 +11487,17 @@ async def main() -> None:
     dashboard_reload_task = asyncio.create_task(dashboard_live_loop(client, source_map, target_map, stop))
     # The channel picker's source of truth: what this session can actually read.
     directory_task = asyncio.create_task(channel_directory_loop(client, stop, target_map))
+    # "official ga anipisthadi": join requests to our channels, and the dashboard's
+    # one-click repost queue. Both are independent tasks: a failure never stops
+    # posting, and neither ever joins a channel on our own account.
+    join_poll_task = asyncio.create_task(join_request_poll_loop(client, stop))
+    repost_task = asyncio.create_task(repost_loop(client, stop, target_map))
+    # "every post ki button": the dashboard queues a press, the bot re-opens the
+    # post for those channels and lets the normal, fully verified delivery run.
+    manual_send_task = asyncio.create_task(manual_send_loop(client, store, stop, target_map))
+    # "oka channel nunchi inko channels suggest cheyali": the dashboard asks, this
+    # answers with Telegram's similar channels and the channel's own mentions.
+    suggest_task = asyncio.create_task(channel_suggest_loop(client, stop, target_map))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -10831,6 +11514,14 @@ async def main() -> None:
         await source_rescan_task
     with contextlib.suppress(asyncio.CancelledError):
         await maintenance_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await join_poll_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await suggest_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await manual_send_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await repost_task
     with contextlib.suppress(asyncio.CancelledError):
         await directory_task
     with contextlib.suppress(asyncio.CancelledError):

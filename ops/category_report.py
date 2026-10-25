@@ -153,8 +153,10 @@ def load_env(files: list[str] | None = None) -> dict[str, str]:
               "WA_CHANNEL_", "WA_AMAZON_TAG_CATEGORY_TARGETS")
     candidates = [Path(f) for f in (files or [])]
     if not candidates:
-        default = ROOT / "bestgaa" / ".env"
-        candidates = [default] if default.exists() else []
+        # The bot's own .env, resolved by bot_paths: env-declared shelf targets
+        # (TG_CATEGORY_*_TARGET) live there, and looking in the checkout lost
+        # every one of them - which reads as "this shelf has no channel".
+        candidates = [_bot_paths().env_path()]
     env: dict[str, str] = {}
     # The process environment first, then the files over it: a deployed bot's
     # truth is its .env / unit file, but an operator (and the dashboard) also
@@ -1228,29 +1230,53 @@ def ist_text(stamp: float) -> str:
     return time.strftime("%Y-%m-%d %H:%M IST", time.gmtime(stamp + IST_OFFSET))
 
 
+def _bot_paths():
+    """`bestgaa/bot_paths.py` - the one resolver every process shares."""
+    sys.path.insert(0, str(ROOT / "bestgaa"))
+    import bot_paths  # noqa: PLC0415 - imported here so the report works anywhere
+    return bot_paths
+
+
 def default_db() -> Path:
+    """The RUNNING bot's database (never a checkout's leftover test file).
+
+    This used to prefer `<checkout>/bestgaa/state/bot_state.sqlite3`, which on a
+    server does not exist - so the report answered questions about a database
+    that was not there and every shelf came out `no_channel`/`silent`.
+    """
     env = os.getenv("BOT_DB_PATH", "").strip()
     if env:
         return Path(env)
-    for candidate in (ROOT / "bestgaa" / "state" / "bot_state.sqlite3",
-                      ROOT / "bestgaa" / "bestgaa.sqlite3"):
-        if candidate.exists():
-            return candidate
-    return ROOT / "bestgaa" / "state" / "bot_state.sqlite3"
+    return _bot_paths().db_path()
 
 
 def default_log() -> Path:
     env = os.getenv("BOT_LOG", "").strip()
     if env:
         return Path(env)
-    log_dir = os.getenv("BOT_LOG_DIR", "").strip()
-    if log_dir:
-        return Path(log_dir) / "bot.log"
-    for candidate in (ROOT / "bestgaa" / "logs" / "bot.log",
-                      Path(os.path.expanduser("~/bestgaa-bot/bestgaa-bot/logs/bot.log"))):
-        if candidate.exists():
-            return candidate
-    return ROOT / "bestgaa" / "logs" / "bot.log"
+    return _bot_paths().log_path()
+
+
+def default_channels_json() -> Path:
+    return _bot_paths().channels_json_path()
+
+
+def default_env_file() -> Path:
+    return _bot_paths().env_path()
+
+
+def load_env_path(files: list[str] | None) -> str:
+    """Which .env the report actually read shelf targets from."""
+    if files:
+        return ", ".join(str(f) for f in files)
+    return str(default_env_file())
+
+
+def _size(path) -> str:
+    try:
+        return f"{Path(path).stat().st_size} bytes"
+    except OSError:
+        return "missing"
 
 
 def load_snapshot() -> dict:
@@ -1262,15 +1288,9 @@ def load_snapshot() -> dict:
     silently report "bot never reported" forever, so it is resolved exactly the
     way bestgaa/channels_config.py resolves it.
     """
-    channels_env = os.getenv("CHANNELS_JSON_PATH", "").strip()
-    if channels_env:
-        base = Path(channels_env).parent
-    else:
-        db_env = os.getenv("BOT_DB_PATH", "").strip()
-        base = Path(db_env).parent if db_env else ROOT / "bestgaa"
-    candidates = [base / "routing_snapshot.json",
-                  default_db().parent / "routing_snapshot.json",
-                  Path(os.path.expanduser("~/bestgaa-bot/bestgaa-bot/routing_snapshot.json"))]
+    paths = _bot_paths()
+    candidates = [paths.snapshot_path(),
+                  default_db().parent / "routing_snapshot.json"]
     for candidate in candidates:
         try:
             data = json.loads(candidate.read_text(encoding="utf-8"))
@@ -2243,6 +2263,10 @@ def main(argv: list[str] | None = None) -> int:
                              "external asset) to PATH, or to stdout with '-'")
     parser.add_argument("--strict", action="store_true",
                         help="exit 1 when any error/warn finding exists")
+    parser.add_argument("--channels-json", type=Path, default=None,
+                        help="the bot's channels.json (default: resolved by bestgaa/bot_paths.py). "
+                             "A shelf with no channel is a real finding, so which file was read "
+                             "must be answerable without guessing")
     parser.add_argument("--strict-errors", action="store_true",
                         help="exit 1 only on error findings (rules parity/version, routing "
                              "disabled, target collision). This is what a deploy gate uses: an "
@@ -2250,11 +2274,31 @@ def main(argv: list[str] | None = None) -> int:
                              "the other four have no channel")
     args = parser.parse_args(argv)
 
+    channels_path = args.channels_json or default_channels_json()
+    channels_data = None
+    if args.channels_json:
+        try:
+            channels_data = json.loads(Path(args.channels_json).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            channels_data = {"version": 1, "channels": []}
     report = build_report(db=args.db, log=args.log, hours=args.hours,
                           rules=load_rules(args.rules) if args.rules else None,
                           env=load_env(args.env_file), days=args.days,
+                          channels_data=channels_data,
                           expand=args.expand, expand_limit=args.expand_limit,
                           max_posts=args.max_posts)
+    # WHERE the report read from, printed every time: a `no_channel` shelf is
+    # either a real gap or the wrong channels.json, and the difference has to be
+    # visible in the output rather than reconstructed over SSH.
+    read_from = (f"CATEGORY REPORT | db={args.db} "
+                 f"({_size(args.db)}) channels.json={channels_path} "
+                 f"({'present' if Path(channels_path).exists() else 'MISSING'}) "
+                 f"env={load_env_path(args.env_file)}")
+    print(read_from, file=sys.stderr)
+    if not Path(channels_path).exists():
+        print("CATEGORY REPORT | no channels.json there: every shelf without an env-declared "
+              "target will read `no_channel`. Pass --channels-json or BESTGAA_DIR.",
+              file=sys.stderr)
     if args.html == "-":
         # stdout carries the document only, so it can be redirected or piped
         # straight into a mail; every human summary line goes to stderr.

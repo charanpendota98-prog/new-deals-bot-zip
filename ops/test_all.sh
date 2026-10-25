@@ -225,6 +225,9 @@ run 'category batch dry-run' "$PYTHON" test_category_preview.py
 run 'category-wise shelf reporting (DB + log + config)' "$PYTHON" test_category_report.py
 run 'deal card studio (parsers shared, PNG, captions, plan)' "$PYTHON" test_deal_card.py
 run 'post buttons (validation, atomic config, send-path no-op)' "$PYTHON" test_post_buttons.py
+# "ah channel post inkoka channel buttons add cheyelaga": the row is per channel -
+# a post in one shelf offers the others and never itself.
+run 'per-channel post buttons (auto/custom/none, never itself)' "$PYTHON" test_channel_buttons.py
 run 'channel-local source setup' "$PYTHON" test_source_setup.py
 run 'source runtime membership and replay guards' "$PYTHON" test_source_runtime.py
 run 'live dashboard additions' "$PYTHON" test_live_channels.py
@@ -263,6 +266,10 @@ if node -e "require('jsdom')" >/dev/null 2>&1; then
   run 'dashboard DOM: deal dossier (links + rewrites)' node test_deal_dossier.cjs
   run 'dashboard DOM: API keys vault' node test_dashboard_vault.cjs
   run 'dashboard DOM: pipeline integrity' node test_dashboard_pipeline.cjs
+  # "existing running channel ki kuda ottu add cheyagalgali ... oka channel nunchi
+  # inko channels suggest cheyali": the card the operator clicks, in a real DOM.
+  run 'dashboard DOM: our channels + suggestions' node test_dashboard_own.cjs
+  run 'dashboard DOM: per-channel post buttons' node test_dashboard_buttons.cjs
   run 'dashboard DOM: tunnel link + token' node test_dashboard_link.cjs
 else
   printf '\n===== dashboard DOM suites SKIPPED (jsdom not reachable) =====\n'
@@ -289,11 +296,39 @@ run 'bridge syntax check (dependency-free)' node --check tg-wa-bridge/bridge.js
 run 'bridge safety gate syntax' node --check tg-wa-bridge/safety_filter.js
 run 'shell script syntax (bash -n)' shell_syntax_check
 run 'deploy bundle ships the tree (bot + bridge)' "$PYTHON" test_deploy_zip.py
-run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py dashboard/pipeline.py dashboard/trends.py bestgaa/migrate_legacy_env.py ops/*.py
+run 'Python syntax checks' "$PYTHON" -m py_compile bestgaa/posts.py bestgaa/channels_attach.py bestgaa/channel_suggest.py bestgaa/button_cadence.py bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/channel_directory.py bestgaa/bot_paths.py bestgaa/join_gate.py bestgaa/repost.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py dashboard/pipeline.py dashboard/trends.py bestgaa/migrate_legacy_env.py ops/*.py
 if "$PYTHON" -c 'import pyflakes' >/dev/null 2>&1; then
-  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
+  run 'Python lint (pyflakes)' "$PYTHON" -m pyflakes bestgaa/main_bot_new.py bestgaa/channels_attach.py bestgaa/channel_suggest.py bestgaa/button_cadence.py bestgaa/deal_facts.py bestgaa/safety_filter.py bestgaa/category_classifier.py bestgaa/channels_config.py bestgaa/live_channels.py bestgaa/hypd_policy.py dashboard/app.py dashboard/preview.py dashboard/source_target.py dashboard/insight.py bestgaa/migrate_legacy_env.py ops/*.py test_*.py
 fi
 
+# "idi manadenaa": the audit may only say what the database and the bot's own
+# source can prove - real product prices, MISROUTE from deliveries only,
+# "unverified" instead of "someone else's commission", and the bot's own skip
+# reasons read from its code rather than a hand-copied list.
+# "where is the bot?" - asked ONCE. The dashboard, the deploy report, the
+# category/money reports and the audit all resolve the bot's .env, database,
+# channels.json and log through bestgaa/bot_paths.py, so the page cannot edit one
+# directory while the reports read another.
+run 'bot paths: one resolver for the dashboard, the reports and the bot' "$PYTHON" test_bot_paths.py
+# "manam admin ga vunna channel anni chupinchali ... multiple buttons ... oka
+# channel nunchi inkoka channel ki button ... 2-3 seconds lo accept cheyali": the
+# admin inventory, bulk actions, join-request approval (opt-in, capped, logged)
+# and the one-press repost between our own channels.
+run 'channel control: admin inventory, bulk actions, join requests, repost' "$PYTHON" test_channel_control.py
+# "mana existing running channel ki kuda ottu add cheyagalgali neatga dashboard lo
+# ... oka channel nunchi inko channels suggest cheyali": attach what already runs
+# (code target, dashboard channel, or admin-only) so it can be paused and noted,
+# and ask the BOT for similar channels from one of ours.
+run 'attach existing channels + suggest the next one' "$PYTHON" test_channel_attach.py
+
+run 'audit truth: prices, routes, ownership, skip reasons' "$PYTHON" test_audit_truth.py
+# The 2026-10-23 deploy that printed SUCCESS while a four-hour-old build stayed
+# live: installing from the checkout, verifying against git HEAD, a bundle that
+# carries every hard-imported helper, and a hotfix that never trims the vault.
+run 'deploy truth: install from checkout, verify, bundle, vault' "$PYTHON" test_deploy_truth.py
+# "chala perfectga ravali": the price band is enforced where the fan-out happens,
+# so a Rs.39,699 product can never be queued to a Rs.99 channel.
+run 'price bands: a deal only goes where its price belongs' "$PYTHON" test_routing_bands.py
 run 'repo self-consistency (gate coverage + README proof tables)' "$PYTHON" test_repo_consistency.py
 
 printf '\nALL OFFLINE CHECKS PASSED\n'

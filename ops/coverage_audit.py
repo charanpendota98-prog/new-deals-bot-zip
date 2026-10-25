@@ -65,20 +65,18 @@ RECOVERABLE_MARKERS = (
 
 
 def default_db() -> Path:
+    """The running bot's database, by the shared rule (`bestgaa/bot_paths.py`).
+
+    The old search started at `Path.cwd()` and `ops/`, so a stray copy in the
+    checkout could be reported as the live bot's data.
+    """
     env = os.getenv("BOT_DB_PATH", "").strip()
     if env:
         return Path(env)
     here = Path(__file__).resolve().parent
-    for candidate in (
-        Path.cwd() / "bestgaa.sqlite3",
-        here / "bestgaa.sqlite3",
-        here.parent / "bestgaa" / "bestgaa.sqlite3",
-        Path.home() / "bestgaa-bot" / "bestgaa-bot" / "bestgaa.sqlite3",
-        Path.home() / "bestgaa" / "bestgaa.sqlite3",
-    ):
-        if candidate.exists():
-            return candidate
-    return here.parent / "bestgaa" / "bestgaa.sqlite3"
+    sys.path.insert(0, str(here.parent / "bestgaa"))
+    import bot_paths  # noqa: PLC0415
+    return bot_paths.db_path()
 
 
 def classify(last_error: str, status: str, sent: int, skip_reason: str = "") -> str:

@@ -88,6 +88,18 @@ fi
 [[ -z "$CHECKOUT" || "$CHECKOUT" == "-" ]] && CHECKOUT="$ROOT"
 BOT_ENV="${BESTGAA_BOT_ENV:-}"
 BOT_DB="${BOT_DB_PATH:-}"
+# Ask the same resolver the dashboard uses (bestgaa/bot_paths.py). This script
+# used to fall back to a hardcoded directory, so it could report one bot while
+# the page edited another - the exact confusion it exists to prevent.
+if [[ -z "$BOT_DB" && -f "$ROOT/bestgaa/bot_paths.py" ]]; then
+  BOT_DB="$(BESTGAA_DIR="${BESTGAA_DIR:-}" python3 "$ROOT/bestgaa/bot_paths.py" --json 2>/dev/null \
+    | python3 -c 'import json,sys
+try:
+    rows = json.load(sys.stdin)
+except Exception:
+    rows = []
+print(next((r["path"] for r in rows if r["name"] == "database"), ""))' 2>/dev/null || true)"
+fi
 if [[ -z "$BOT_ENV" || -z "$BOT_DB" ]]; then
   # The dashboard's own env file is the only place that knows; read it without
   # ever printing anything but the two PATHS.

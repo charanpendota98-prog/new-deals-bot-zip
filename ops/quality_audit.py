@@ -79,7 +79,9 @@ AFFILIATE_ID_RE = re.compile(
 FOREIGN_PROMO = re.compile(r"join\s+(?:this\s+)?channel|subscribe\s+to|t\.me/\+|startapp\.bot", re.I)
 PRICE_RE = re.compile(rf"{RUPEE}\s*(\d[\d,]*)")
 LIST_MARKER_RE = re.compile(r"(?im)^\s*(?:deal\s*\d+|\d+\s*[.)])")
-POLICY_SKIPS = (
+BOT_SOURCE = Path(__file__).resolve().parent.parent / "bestgaa" / "main_bot_new.py"
+_PERMANENT_SKIP_RE = re.compile(r'PermanentSkip\(\s*\n?\s*f?"([^"]+)"')
+_STATIC_POLICY_SKIPS = (
     "already posted", "duplicate deal", "duplicate product", "night window",
     "STALE DROP", "already covered", "no monetizable", "no eligible targets",
     "not a deal", "skip list", "superseded", "not worth", "confirmed dead merchant",
@@ -87,6 +89,71 @@ POLICY_SKIPS = (
     # purpose ("asalu link yeh ledu") - it is policy, not a lost post.
     "nothing buyable to post", "not programme-safe", "shopping target unresolved",
 )
+
+
+def policy_skip_markers(bot_source: Path | None = None) -> tuple[str, ...]:
+    """Every reason the BOT itself records for a deliberate non-post.
+
+    The list above is a hand-written copy, and on 2026-10-23 it recognised 5 of
+    the bot's 19 `PermanentSkip(...)` reasons: 75 posts that the bot had skipped
+    on purpose ("no trustworthy product identity for dl.flipkart.com - skipping
+    rather than risking a mis-posted duplicate") were reported as
+    "done with no send and no policy reason", i.e. as lost deals. A copy of a
+    list drifts; reading the source cannot. Literals `%s`-style are cut at the
+    placeholder so the marker is the prefix the runtime message starts with.
+    """
+    markers = list(_STATIC_POLICY_SKIPS)
+    source = Path(bot_source) if bot_source else BOT_SOURCE
+    try:
+        text = source.read_text(encoding="utf-8")
+    except OSError:
+        return tuple(markers)
+    for literal in _PERMANENT_SKIP_RE.findall(text):
+        marker = literal.split("%s")[0].strip(" -:")
+        if len(marker) >= 8 and marker not in markers:
+            markers.append(marker)
+    return tuple(markers)
+
+
+POLICY_SKIPS = policy_skip_markers()
+
+
+# A DISCOUNT is not a price (2026-10-23). The live post "GRAB : Flat ₹300 Coupon
+# Off ... Starting @39699" was filed as "₹300 sent to the ₹99 channel": the only
+# ₹-amount in it is the coupon, while the product costs ₹39,699. The bot's own
+# reader (deal_facts.parse_price) masks these labels before reading a price; the
+# audit has to draw the same line or its verdicts are fiction.
+DISCOUNT_AMOUNT_RE = re.compile(
+    r"(?i)\b(?:save|flat|upto|up\s*to|extra|discount|coupon|cashback|off|instant|"
+    r"bank\s*offer|card\s*offer)\b[^\d\n₹@]{0,14}(?:rs\.?|₹|inr)?\s*[\d,]+")
+# "@39699" / "Starting @ 39,699" is how Indian deal channels print the price, and
+# it is the shape in the post above. It is read here as a price, never as a handle.
+AT_PRICE_RE = re.compile(r"@\s*(\d{2,7})(?![\d,]|\w)")
+CURRENCY_PRICE_RE = re.compile(r"(?:₹|\brs\.?|\binr)\s*(\d[\d,]*)", re.I)
+
+# The tag we own. The bot's .env is the ONE owner of this value; this constant is
+# the last resort so a bare run on a fresh checkout still judges links against us
+# instead of against a stranger (or against nothing at all).
+OUR_DEFAULT_TAG = "mama086-21"
+
+
+def default_tag() -> str:
+    """Our Amazon tag: $AMAZON_TAG when set, otherwise the tag we own."""
+    return (os.getenv("AMAZON_TAG", "").strip() or OUR_DEFAULT_TAG)
+
+
+def deal_prices(text: str) -> list[int]:
+    """The prices a reader would pay, ignoring coupon/cashback/bank amounts."""
+    value = DISCOUNT_AMOUNT_RE.sub(" ", text or "")
+    values: list[int] = []
+    for raw in CURRENCY_PRICE_RE.findall(value) + AT_PRICE_RE.findall(value):
+        try:
+            amount = int(str(raw).replace(",", ""))
+        except (TypeError, ValueError):
+            continue
+        if 1 <= amount <= 1_000_000:
+            values.append(amount)
+    return values
 
 
 def link_host(url: str) -> str:
@@ -300,6 +367,15 @@ def classify_link(url: str, our_tag: str = "", our_publisher: str = "",
         return "foreign"
     if any(host == domain or host.endswith("." + domain) for domain in known_merchants):
         return "clean-merchant"
+    # USER REPORT (2026-10-23): with no publisher id configured the audit called
+    # OUR OWN EarnKaro shorteners (bitli.in/fktr.in, 52,811 rows of
+    # proof_type='earnkaro_api', publisher 5478322) FOREIGN - six alarming
+    # findings per run, on links that were minted for us. "I cannot check this"
+    # is a missing fact, not a commission leak, so it gets its own bucket and the
+    # operator is told to configure the publisher instead of chasing a phantom.
+    if not our_publisher and (OUR_NETWORK_SHORT.match(url) or OUR_HOSTS.match(url)
+                              or OUR_SHORTENER.match(url)):
+        return "unverified"
     return "foreign"
 
 
@@ -715,6 +791,54 @@ def _token_claims(token: str) -> dict:
         return {}
 
 
+def load_env_file(path: Path) -> None:
+    """Read KEY=value lines from the bot's .env without overriding the real env.
+
+    The deploy report runs the audit as a plain shell command, so the bot's
+    EARNKARO_PUBLISHER_ID never reached it: every one of our own EarnKaro links
+    then looked unverifiable and the run reported FOREIGN=6. Reading the same
+    file the bot reads (comments skipped, quotes stripped) is what makes the
+    audit and the bot agree by construction.
+    """
+    try:
+        lines = Path(path).read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _bot_paths():
+    """`bestgaa/bot_paths.py` - one resolver for the DB, the .env and channels.json."""
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "bestgaa"))
+    import bot_paths  # noqa: PLC0415
+
+    return bot_paths
+
+
+def bot_env_candidates(db_path: Path | None) -> list[Path]:
+    """Where the bot's .env could be, most specific first."""
+    found: list[Path] = []
+    explicit = os.getenv("BESTGAA_BOT_ENV", "").strip()
+    if explicit:
+        found.append(Path(explicit))
+    if db_path is not None:
+        found.append(Path(db_path).parent / ".env")
+    found.append(_bot_paths().env_path())
+    seen: list[Path] = []
+    for path in found:
+        if path not in seen:
+            seen.append(path)
+    return seen
+
+
 def ours_publisher_from_env() -> str:
     """"The EarnKaro account OUR links must pay, read the same way the bot reads it.
 
@@ -876,7 +1000,19 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
         held_rows = []
     our_links = our_minted_links(conn, our_tag, our_publisher)
     link_counts = {"links": 0, "our-short": 0, "our-publisher": 0, "unattributed": 0,
-                   "clean-merchant": 0, "foreign": 0}
+                   "clean-merchant": 0, "unverified": 0, "foreign": 0}
+    # What actually reached a channel, per post. "Sent" is decided by deliveries,
+    # never by the plan in targets_json (2026-10-23: a still-pending row was
+    # reported as "₹300 sent to the ₹99 channel" - the plan said the channel, the
+    # row had not been sent there at all).
+    sent_targets: dict[int, set[str]] = {}
+    try:
+        for sent_row in conn.execute(
+                "SELECT queue_id, target FROM deliveries WHERE %s" % real_send_predicate):
+            sent_targets.setdefault(int(sent_row["queue_id"]), set()).add(
+                str(sent_row["target"] or ""))
+    except sqlite3.OperationalError:
+        sent_targets = {}
 
     findings: list[dict] = [flag("DELIVERY_HELD",
         f"@{item['target']}: {item['last_error'] or 'send outcome uncertain; manual review required'}",
@@ -925,9 +1061,13 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
             findings.append(flag("LINKS", "published with no link at all", row["id"]))
         for url in links:
             link_counts["links"] += 1
-            link_counts[classify_link(url, our_tag, our_publisher, our_links)] += 1
+            bucket = classify_link(url, our_tag, our_publisher, our_links)
+            link_counts[bucket] = link_counts.get(bucket, 0) + 1
             why = why_not_our_link(url, our_tag, our_publisher, our_links)
-            if why:
+            # A link we cannot judge (no publisher id configured) is reported in
+            # the summary, not as a defect: "unverified" must never be dressed up
+            # as "somebody else's commission".
+            if why and bucket != "unverified":
                 findings.append(flag("LINKS", f"{why}: {url[:80]}", row["id"]))
 
         # 3) a post must carry the deal, not only links
@@ -939,9 +1079,14 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
         # 4) price-tier channels must not receive a post outside their band. Only
         #    single-product posts are judged (a list is a roundup by design) and the
         #    figure that matters is the CHEAPEST one, i.e. what a shopper pays.
-        prices = [int(p.replace(",", "")) for p in PRICE_RE.findall(text)]
-        priced_lines = sum(1 for line in lines if PRICE_RE.search(line))
-        listy = priced_lines >= 3 or bool(LIST_MARKER_RE.search(text))
+        prices = deal_prices(text)
+        # A "list" means the BOT treated it as one: three or more distinct
+        # product links (main_bot_new.py: multi_product_list = len(converted) >= 3).
+        # Counting priced LINES instead classified a two-product post with a
+        # coupon header as a roundup - and a roundup is exempt from the band
+        # check, which is how the ₹39,699 misroute stayed invisible on 2026-10-23.
+        distinct_links = {u.rstrip(")】.,;'\"") for u in ANY_LINK.findall(text)}
+        listy = len(distinct_links) >= 3 or bool(LIST_MARKER_RE.search(text))
         # 3b) the two text defects the user named: text that was CUT away, and a
         #     figure printed twice inside one post (our old price badge did that).
         if "\u2026" in text:
@@ -960,7 +1105,8 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
 
         if prices and not listy:
             cheapest = min(prices)
-            for target in targets:
+            judge_targets = sorted(sent_targets.get(int(row["id"]), set()) or set(targets))
+            for target in judge_targets:
                 band = None
                 lowered = str(target).lower()
                 if lowered.startswith(("under99", "under-99")):
@@ -968,9 +1114,10 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
                 elif lowered.startswith(("under499", "under-499")):
                     band = 499
                 if band is not None and cheapest > band:
-                    findings.append(flag("MISROUTE",
-                                         f"{RUPEE}{cheapest} sent to the {RUPEE}{band} channel",
-                                         row["id"], target))
+                    findings.append(flag(
+                        "MISROUTE",
+                        f"{RUPEE}{cheapest} product delivered to the {RUPEE}{band} channel",
+                        row["id"], target))
 
     # 6) duplicates on the way out: the same content - or the same product at the
     #    same price - delivered by two different posts within six hours.
@@ -1047,13 +1194,20 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="audit posted-deal quality (read-only)")
-    default_db = Path(__file__).resolve().parent.parent / "bestgaa" / "state" / "bot_state.sqlite3"
+    # The shared resolver: the bot's real DB, not a path inside this checkout
+    # (`bestgaa/state/bot_state.sqlite3` does not exist on the server, so the
+    # audit used to report "no database" for a bot that was posting all day).
+    default_db = _bot_paths().db_path() if _bot_paths() else (
+        Path(__file__).resolve().parent.parent / "bestgaa" / "state" / "bot_state.sqlite3")
     parser.add_argument("--db", type=Path, default=default_db)
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="machine-readable output")
     parser.add_argument("--strict", action="store_true", help="exit 1 when anything is found")
-    parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", "mama086-21"),
+    parser.add_argument("--tag", default=os.getenv("AMAZON_TAG", ""),
                         help="our Amazon affiliate tag (default: $AMAZON_TAG or mama086-21)")
+    parser.add_argument("--env-file", type=Path, default=None,
+                        help="read AMAZON_TAG / EARNKARO_PUBLISHER_ID from this file "
+                             "(default: the .env beside --db, then the bot's own)")
     parser.add_argument("--publisher", default="",
                         help="our EarnKaro publisher id (default: read from "
                              "$EARNKARO_PUBLISHER_ID, the token, or ops/.earnkaro_key)")
@@ -1062,16 +1216,29 @@ def main(argv=None) -> int:
                              "URL (repeatable, no database needed) and exit - the answer to "
                              "'idi manadenaa link'")
     args = parser.parse_args(argv)
+    # The bot's own .env is the source of truth for "which account do our links
+    # pay": load it first, so the audit judges with the same facts the bot uses.
+    env_candidates = ([args.env_file] if args.env_file else bot_env_candidates(args.db))
+    for candidate in env_candidates:
+        if candidate and Path(candidate).exists():
+            load_env_file(Path(candidate))
+            break
     publisher = (args.publisher or "").strip() or ours_publisher_from_env()
+    # The tag has ONE owner: the bot's .env. A hardcoded default stays only as a
+    # last resort so a bare run on a checkout still answers something sensible.
+    tag = (args.tag or default_tag()).strip()
 
     if args.check_url:
-        tag = (args.tag or "").strip()
         worst = 0
         for url in args.check_url:
             bucket = classify_link(url, tag, publisher)
             reason = why_not_our_link(url, tag, publisher) or why_unattributed(url, publisher)
             print(f"{bucket.upper():14s} {url}")
-            if reason:
+            if bucket == "unverified":
+                print("               reason: this looks like one of OUR network's short links, "
+                      "but no publisher id was available to prove it - pass --publisher <id> "
+                      "or --env-file <bot .env>")
+            elif reason:
                 print(f"               reason: {reason}")
             elif bucket == "clean-merchant":
                 print("               reason: a clean merchant page kept on purpose "
@@ -1088,7 +1255,7 @@ def main(argv=None) -> int:
     conn = sqlite3.connect(f"file:{args.db}?mode=ro", uri=True)
     try:
         findings, posts, link_counts, delivery_summary = audit(
-            conn, args.limit, (args.tag or "").strip(), publisher)
+            conn, args.limit, tag, publisher)
     except sqlite3.OperationalError as exc:  # a schema too old to judge
         print(f"QUALITY AUDIT: database not readable yet ({exc})")
         return 0
@@ -1103,6 +1270,7 @@ def main(argv=None) -> int:
                f"our-publisher={link_counts['our-publisher']} "
                f"unattributed={link_counts['unattributed']} "
                f"clean-merchant={link_counts['clean-merchant']} "
+               f"unverified={link_counts['unverified']} "
                f"FOREIGN={link_counts['foreign']}")
     sends_line = (f"SENDS vs SKIPS | real_sends={delivery_summary['real_sends']} "
                   f"skipped={delivery_summary['skipped']} open={delivery_summary['open']}")
@@ -1116,6 +1284,10 @@ def main(argv=None) -> int:
         print(f"  {sends_line}")
         for reason, count in delivery_summary["skip_reasons"].items():
             print(f"    skip: {count}x {reason[:70]}")
+        if link_counts["unverified"]:
+            print(f"  -> {link_counts['unverified']} link(s) could NOT be verified because no "
+                  "publisher id was available: pass --publisher <id> or --env-file <bot .env> "
+                  "(they are not counted as foreign - the audit simply could not look)")
         if (link_counts["foreign"] == 0 and link_counts["unattributed"] == 0
                 and link_counts["clean-merchant"] == 0 and link_counts["links"]):
             print("  every published link has verified owned attribution; no unmonetized or "
