@@ -74,6 +74,7 @@ from aiohttp import web
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "bestgaa"))
+import bot_paths  # noqa: E402
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
@@ -84,10 +85,14 @@ SERVICE_DEFAULT = "bestgaa"
 
 
 def db_path() -> Path:
-    env = os.getenv("BOT_DB_PATH", "").strip()
-    if env:
-        return Path(env)
-    return ROOT / "bestgaa" / "bestgaa.sqlite3"
+    """The bot's database, resolved by ONE rule (`bestgaa/bot_paths.py`).
+
+    This used to fall back to `<checkout>/bestgaa/bestgaa.sqlite3`, a file that
+    does not exist on the server, while the same process read the `.env` from
+    the real bot directory. The panel then showed live API keys above an empty
+    pipeline and looked like "the bot stopped posting".
+    """
+    return bot_paths.db_path()
 
 
 def ist_day_start(exact: float | None = None) -> float:
@@ -265,30 +270,22 @@ def bot_app_dir() -> Path:
     list"). Resolving the app dir here, in one place, and SHOWING it in the vault
     panel is what makes "which keys is the bot actually reading?" answerable
     without SSH.
+
+    The rule itself lives in `bestgaa/bot_paths.py`, shared with the DB, the
+    channels file, the ops reports and the bot - so the panel cannot show live
+    keys next to another directory's empty database.
     """
-    explicit = os.getenv("BESTGAA_DIR", "").strip()
-    if explicit:
-        return Path(explicit)
-    db = os.getenv("BOT_DB_PATH", "").strip()
-    if db:
-        return Path(db).parent
-    installed = Path("/home/ubuntu/bestgaa-bot/bestgaa-bot")
-    if installed.exists():
-        return installed
-    return ROOT
+    return bot_paths.bot_dir()
 
 
 def bot_env_path() -> Path:
     """The bot's `.env`. Never the dashboard's own /etc/bestgaa/dashboard.env."""
-    explicit = os.getenv("BESTGAA_BOT_ENV", "").strip()
-    if explicit:
-        return Path(explicit)
-    return bot_app_dir() / ".env"
+    return bot_paths.env_path()
 
 
 def bot_log_paths() -> list[Path]:
     app = bot_app_dir()
-    log_dir = Path(os.getenv("BOT_LOG_DIR", "").strip() or (app / "logs"))
+    log_dir = Path(os.getenv("BOT_LOG_DIR", "").strip() or bot_paths.log_path().parent)
     # The app's own logs directory is scanned even when BOT_LOG_DIR points
     # somewhere else: a key pasted into the deployed log is still a key on disk.
     candidates = [log_dir / "bot.log", app / "logs" / "bot.log", app / "bot.log",

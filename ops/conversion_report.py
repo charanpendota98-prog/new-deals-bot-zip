@@ -50,14 +50,21 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # default DB there, and this report read those TEST lines as if they were live -
 # "AMAZON DIRECT 4" from a build that was not even deployed. A file inside the
 # checkout is never evidence about the running bot unless the operator asks for it.
+def _bot_paths():
+    """The one resolver (`bestgaa/bot_paths.py`) shared with the bot and the UI."""
+    sys.path.insert(0, str(REPO_ROOT / "bestgaa"))
+    import bot_paths  # noqa: PLC0415
+    return bot_paths
+
+
 DEFAULT_DB_CANDIDATES = (
     Path(os.getenv("BOT_DB_PATH", "")) if os.getenv("BOT_DB_PATH") else None,
-    Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3"),
+    _bot_paths().db_path(),
     REPO_ROOT / "bestgaa" / "bestgaa.sqlite3",
 )
 DEFAULT_LOG_CANDIDATES = (
     Path(os.getenv("BOT_LOG", "")) if os.getenv("BOT_LOG") else None,
-    Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/logs/bot.log"),
+    _bot_paths().log_path(),
     REPO_ROOT / "bestgaa" / "logs" / "bot.log",
 )
 
@@ -80,8 +87,8 @@ def pick_candidate(candidates, explicit=None):
             return Path(path), ""
     return None, ""
 ENV_CANDIDATES = (
+    _bot_paths().env_path(),
     REPO_ROOT / "bestgaa" / ".env",
-    Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"),
     Path.cwd() / ".env",
 )
 

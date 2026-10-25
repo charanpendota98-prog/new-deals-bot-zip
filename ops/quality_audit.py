@@ -812,6 +812,17 @@ def load_env_file(path: Path) -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _bot_paths():
+    """`bestgaa/bot_paths.py` - one resolver for the DB, the .env and channels.json."""
+    import sys
+
+    root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(root / "bestgaa"))
+    import bot_paths  # noqa: PLC0415
+
+    return bot_paths
+
+
 def bot_env_candidates(db_path: Path | None) -> list[Path]:
     """Where the bot's .env could be, most specific first."""
     found: list[Path] = []
@@ -820,7 +831,7 @@ def bot_env_candidates(db_path: Path | None) -> list[Path]:
         found.append(Path(explicit))
     if db_path is not None:
         found.append(Path(db_path).parent / ".env")
-    found.append(Path("/home/ubuntu/bestgaa-bot/bestgaa-bot/.env"))
+    found.append(_bot_paths().env_path())
     seen: list[Path] = []
     for path in found:
         if path not in seen:
@@ -1183,7 +1194,11 @@ def audit(conn: sqlite3.Connection, limit: int, our_tag: str = "",
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="audit posted-deal quality (read-only)")
-    default_db = Path(__file__).resolve().parent.parent / "bestgaa" / "state" / "bot_state.sqlite3"
+    # The shared resolver: the bot's real DB, not a path inside this checkout
+    # (`bestgaa/state/bot_state.sqlite3` does not exist on the server, so the
+    # audit used to report "no database" for a bot that was posting all day).
+    default_db = _bot_paths().db_path() if _bot_paths() else (
+        Path(__file__).resolve().parent.parent / "bestgaa" / "state" / "bot_state.sqlite3")
     parser.add_argument("--db", type=Path, default=default_db)
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--json", action="store_true", help="machine-readable output")

@@ -1998,10 +1998,28 @@ def test_deploy_flow_cannot_silently_skip_again():
               f"{(proc.stderr or '')[-160:]} | repo log mtime {before} -> {after}")
 
     report = (repo / "ops" / "conversion_report.py").read_text(encoding="utf-8")
+    # 2026-10-23: the deployed path is no longer a literal here - it is whatever
+    # bestgaa/bot_paths.py resolves, which is stronger (it follows BESTGAA_DIR,
+    # BOT_DB_PATH and the bot's own .env). What must not regress is the ORDER:
+    # the resolved bot database before the checkout's copy.
     check("the live report reads the DEPLOYED files first, never the checkout's",
-          report.index("/home/ubuntu/bestgaa-bot/bestgaa-bot/bestgaa.sqlite3")
+          report.index("_bot_paths().db_path()")
           < report.index('REPO_ROOT / "bestgaa" / "bestgaa.sqlite3"')
           and "pick_candidate" in report, "candidate order regressed")
+    with tempfile.TemporaryDirectory() as td:
+        bot = Path(td) / "bestgaa-bot"
+        bot.mkdir()
+        (bot / ".env").write_text("AMAZON_TAG=mama086-21\n", encoding="utf-8")
+        (bot / "bestgaa.sqlite3").write_text("", encoding="utf-8")
+        env = dict(os.environ, BESTGAA_DIR=str(bot))
+        env.pop("BOT_DB_PATH", None)
+        proc = sp.run([sys.executable, "-c",
+                       "import conversion_report as c\n"
+                       "print(c.DEFAULT_DB_CANDIDATES[1])"],
+                      cwd=str(repo / "ops"), env=env, capture_output=True, text=True)
+        check("and with a bot directory it names that database, not the checkout's",
+              proc.stdout.strip() == str(bot / "bestgaa.sqlite3"),
+              (proc.stdout + proc.stderr)[-200:])
     hypd = (repo / "ops" / "hypd_links.py").read_text(encoding="utf-8")
     check("hypd_links reads the deployed .env (it crashed on a bare checkout)",
           "APP_DIR" in hypd and 'BESTGAA_DIR' in hypd, "hypd env fix missing")

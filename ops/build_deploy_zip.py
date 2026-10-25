@@ -52,6 +52,10 @@ BOT_FILES = [
     "category_rules.json",
     "source_catalog.json",
     "post_buttons.py",
+    # The ONE resolver for "where is the bot": the dashboard, the ops reports and
+    # the bot all read their DB / channels.json / .env through it. A bundle
+    # without it does not boot (channels_config imports it).
+    "bot_paths.py",
     "deploy_bestgaa.sh",
     "migrate_legacy_env.py",
     "requirements.txt",
@@ -91,6 +95,7 @@ REQUIRED = {
     "category_classifier.py",
     "category_rules.json",
     "channels_config.py",
+    "bot_paths.py",
     "live_channels.py",
     "hypd_policy.py",
     "source_catalog.json",

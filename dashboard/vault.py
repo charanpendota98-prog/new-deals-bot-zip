@@ -614,28 +614,45 @@ def readiness(values: dict[str, str], *, bot_running: bool, bot_has_it: bool,
         return split_values(slot, values.get(key, "")) if slot else []
 
     def slot_verdict(key: str) -> tuple[str, str]:
+        """One slot, judged by the SAME validator the form uses.
+
+        `off` means "optional and not set": the bot works without it, so it must
+        not turn the headline into a warning. Before this, three optional keys
+        (publisher id, HYPD store id, HYPD slug) were permanently unset, so the
+        panel always said "needs attention" - and a real warning (a missing HYPD
+        token, an expiring EarnKaro token) looked exactly like the noise.
+        """
         slot = SLOT_BY_KEY[key]
         found = slot_values(key)
         if not found:
-            return ("fail" if slot.required else "warn",
+            return ("fail" if slot.required else "off",
                     "not set" if slot.required else "not set (optional)")
         verdict = validate_slot(slot, found, all_values={k: slot_values(k) for k in SLOT_BY_KEY})
         if verdict["errors"]:
             return "fail", verdict["errors"][0]
+        if verdict["warnings"]:
+            return "warn", verdict["warnings"][0]
         return "ok", f"{len(found)} value(s), format verified"
 
-    for key, label in (("TELEGRAM_API_ID", "Telegram api_id"),
-                       ("TELEGRAM_API_HASH", "Telegram api_hash"),
-                       ("EARNKARO_API_KEY", "EarnKaro token"),
-                       ("AMAZON_TAG", "Amazon tag")):
-        state, detail = slot_verdict(key)
-        check(label, state, detail)
-    bitly = slot_values("BITLY_TOKENS")
-    check("Bitly tokens", "ok" if bitly else "warn",
-          f"{len(bitly)} token(s)" if bitly else "none - links stay long, commission unaffected")
-    hypd = slot_values("HYPD_API_TOKEN")
-    check("HYPD", "ok" if hypd else "warn",
-          "configured" if hypd else "not configured - Meesho links are not minted")
+    # EVERY slot, not a hand-picked four: a new key added to SLOTS must appear
+    # here by existing, never by somebody remembering to add a line.
+    for slot in SLOTS:
+        state, detail = slot_verdict(slot.key)
+        if slot.key == "BITLY_TOKENS" and state == "off":
+            check(slot.label, "off", "none - links stay long, commission unaffected")
+            continue
+        check(slot.label, state, detail)
+
+    # ---- the HYPD set is a SET: a token without a store id cannot mint ------- #
+    hypd_token = slot_values("HYPD_API_TOKEN")
+    hypd_store = slot_values("HYPD_STORE_ID")
+    if hypd_token and not hypd_store:
+        check("HYPD minting", "warn",
+              "the API token is set but the store id is not - Meesho links cannot be "
+              "minted, so those deals go out untagged")
+    elif hypd_store and not hypd_token:
+        check("HYPD minting", "warn",
+              "the store id is set but the API token is not - same outcome: no minted links")
     check("bot", "ok" if bot_running else "warn",
           "running" if bot_running else "not confirmed running (no heartbeat)")
     check("saved keys are live", "ok" if bot_has_it else "warn",
@@ -649,6 +666,7 @@ def readiness(values: dict[str, str], *, bot_running: bool, bot_has_it: bool,
 
     fails = [c for c in checks if c["state"] == "fail"]
     warns = [c for c in checks if c["state"] == "warn"]
+    off = [c for c in checks if c["state"] == "off"]
     if fails:
         state = "blocked"
         headline = ("Blocked: " + "; ".join(c["name"] for c in fails)
@@ -660,5 +678,8 @@ def readiness(values: dict[str, str], *, bot_running: bool, bot_has_it: bool,
     else:
         state = "ready"
         headline = "Ready: every key the bot needs is set, valid, and live in the running bot."
+        if off:
+            headline += (" Optional, not set: "
+                         + ", ".join(c["name"] for c in off) + ".")
     return {"state": state, "headline": headline, "checks": checks,
-            "fail": len(fails), "warn": len(warns)}
+            "fail": len(fails), "warn": len(warns), "optional_off": len(off)}

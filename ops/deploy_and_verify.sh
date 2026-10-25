@@ -17,6 +17,13 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 BESTGAA_DIR="${BESTGAA_DIR:-$HOME/bestgaa-bot/bestgaa-bot}"
 BRIDGE_DIR="${BRIDGE_DIR:-$HOME/tg-wa-bridge}"
+# EXPORTED on purpose: every Python helper this script runs (category_report,
+# quality_audit, coverage_audit, insight) resolves the bot's files through
+# bestgaa/bot_paths.py, which honours BESTGAA_DIR first. Without the export they
+# fell back to THIS checkout - no channels.json, no .env - so section 6 printed
+# `no_channel` for every shelf and the audit judged a database that was not
+# there. One directory, named once, used by everything.
+export BESTGAA_DIR
 BOT_LOG="${BOT_LOG:-$BESTGAA_DIR/logs/bot.log}"
 SERVICE_BOT="${SERVICE_BOT:-bestgaa}"
 SERVICE_BRIDGE="${SERVICE_BRIDGE:-tg-wa-bridge}"
@@ -43,6 +50,14 @@ echo "==== 0. WHAT SHOULD BE LIVE ===="
 info "repo commit : $(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo '?')  ($WANT_VERSION)"
 info "bot dir     : $BESTGAA_DIR"
 info "bridge dir  : $BRIDGE_DIR"
+# Print what the shared resolver actually chose, so "the report looked at the
+# wrong file" is impossible to reach silently.
+if [[ -f "$REPO/bestgaa/bot_paths.py" ]]; then
+  RESOLVED="$(BESTGAA_DIR="$BESTGAA_DIR" python3 "$REPO/bestgaa/bot_paths.py" 2>/dev/null || true)"
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && info "resolver: ${line#  }"
+  done <<< "$RESOLVED"
+fi
 
 if [[ "$DO_TESTS" == "1" ]]; then
   echo "==== 0.5 THE REPO PROVES ITSELF (suites must be green before shipping) ===="
@@ -369,6 +384,27 @@ except Exception:
     print('unreadable'); raise SystemExit
 print(d.get('readiness',{}).get('state','?') + ' | ' + d.get('readiness',{}).get('headline','')[:90])
 print('bot_has_it=' + str(d.get('bot_has_it')) + ' leaks=' + d.get('leaks',{}).get('state','?'))" 2>/dev/null || echo "unreadable")"
+    # Code version and BOT directory are two different questions. A dashboard on
+    # another checkout is fine (it resolves the bot through bestgaa/bot_paths.py);
+    # a dashboard pointed at another BOT DIRECTORY is not - it would edit a .env
+    # nobody reads and show a database nobody writes. The page reports the
+    # directory it resolved, so ask the page instead of guessing from systemd.
+    DASH_APP_DIR="$(printf '%s' "$VAULT" | python3 -c \
+      "import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+print(d.get('app_dir') or '')" 2>/dev/null || true)"
+    if [[ -z "$DASH_APP_DIR" ]]; then
+      info "the dashboard did not report its bot directory (older build?)"
+    elif [[ ! -d "$BESTGAA_DIR" ]]; then
+      info "BESTGAA_DIR $BESTGAA_DIR does not exist here - not comparing"
+    elif [[ "$(cd "$DASH_APP_DIR" 2>/dev/null && pwd)" == "$(cd "$BESTGAA_DIR" 2>/dev/null && pwd)" ]]; then
+      ok "the dashboard edits the bot directory this deploy installed ($BESTGAA_DIR)"
+    else
+      warn "the dashboard edits $DASH_APP_DIR, but this deploy installed $BESTGAA_DIR - the panel will show another bot"
+    fi
     first="$(printf '%s' "$VERDICT" | head -n 1)"
     case "$first" in
       ready*) ok "API keys: $first" ;;

@@ -1769,12 +1769,13 @@ source snapshot:
 
 | File | SHA-256 |
 |---|---|
+| `bestgaa/bot_paths.py` | `18f587627a06ae4068b999dcd984f5dfa27ab79aa8b343b96f609eb696b7c788` |
 | `bestgaa/category_classifier.py` | `787619669c8081fa4addd0d4977c38e90d0e36c138a3418846cf6f77d105c1af` |
 | `bestgaa/category_rules.json` | `7a1600bfce590ac4dec53f8397297d6ba02ca3933d9e52ea211a8915d0f8c1bf` |
 | `bestgaa/channel_directory.py` | `17623cbb7f98b2c3bcf2a67ee806d2a21a78f3574f8f068acc0e00880660898d` |
-| `bestgaa/channels_config.py` | `4df6dd69a2e67cc5751078cc199dce6cdbfbec6de5d6f4ed528c2b30c85d87df` |
+| `bestgaa/channels_config.py` | `286a8f61e123e6e281092e238533f081e0e0a31819017cee2b46c8e0cc96e98e` |
 | `bestgaa/deal_facts.py` | `50fffa9fa52aecf4cca795ff89810778a2e9de7fe0381826e74e6694453f0efe` |
-| `bestgaa/deploy_bestgaa.sh` | `045ed6dde6de39d215aff727e68f2dca9c10131fb894070cad03f4d108fa0a6c` |
+| `bestgaa/deploy_bestgaa.sh` | `8890b7aef3daeff4cd8729e729fb7c6cde6c7d677a07c0b01c01d84291bebfc5` |
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
 | `bestgaa/main_bot_new.py` (v19.0) | `088a6e3e29958952fc0f21b67fb7ee0e030ebb7a133db17cc126f20fd71858f7` |
@@ -1793,28 +1794,28 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `10a6e44b9ccfe060e6475c6ef599552c9d1544903eed4e05ee39b1e215c88c51` |
+| `dashboard/app.py` | `85b6f1d6a8b2e89eb468f916caf9db7e247326a13f9223228aa7e38577691bbf` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
-| `dashboard/insight.py` | `9ef54e333e98ebdfc545b34dabea0f08ce09fadaac2fdb7d5e760539c89d01b5` |
+| `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
-| `dashboard/vault.py` | `1473fee1e3208a001a836121f1c7e27abde908020ec3c626b72ea34da67fdf9d` |
+| `dashboard/vault.py` | `8a8465c6bb4930c0c4603bc94dc9a6cb3740e4644834322dae008f10035a5c1c` |
 | `ops/apply_dual_hotfix.sh` | `05393508ce4c7bb6b296427b61f12d0420bfd2bfaec2356176c3ac1d1347c776` |
 | `ops/apply_nightfix.sh` | `02646f0b21064dab94675188899a5ce6520deab6582e772c38d8a29e71bd6dbc` |
 | `ops/approve_posting.sh` | `d1b5530f4c851a165b59828162a0bd4a27b48812e887602d137f7a6e192d4239` |
 | `ops/backup_live_state.sh` | `d9cecadbacec0701c06016c4e2572069051a8b06e40a09e4b68f8d5c1ff51488` |
 | `ops/bestgaa_restart_gate.sh` | `30ffbaff68c80b7a7a7d416d82777cd487e4056c35170d67e2a1d9ff1ca1e651` |
-| `ops/build_deploy_zip.py` | `4b39d92a2a44a7e0b2b4ac8377941c1815ab1074b36db81d42e3766820beda07` |
-| `ops/category_report.py` | `e85b0e7bf47ee97d090d2ee77b37bfcd091c102461480d875638685d6b9db53c` |
+| `ops/build_deploy_zip.py` | `6f7b689499498f7597c07e712b0a267d89fb35c5fcea318e3f66806d1762b083` |
+| `ops/category_report.py` | `2760339dc3efe2869d3ef222100787fcb6a2943ac7dbb67a27af71318086e437` |
 | `ops/category_watch.py` | `5e70696032df0076fcd2efc95ec1df8518411bd458c1914af68e7c1d8506eb50` |
 | `ops/ci/offline-gate.yml` | `8fda1275bb7b67e19903836682c41df617747cf1b40513785b8272b45c244c82` |
-| `ops/conversion_report.py` | `8a8ea38ef279d0ff8e64558c20783f4dcfda371b7a97abebc00ec824b1f6a7e6` |
-| `ops/coverage_audit.py` | `00518c023baa6765d5dd4454a7c8f9c47c3e7dbf9ae7c1a54e5e4742e05c0d84` |
-| `ops/dashboard_link.sh` | `360ddc15c38c03cdec757bfb702b58f720eb068f9d7c63bb721fde6623b2048c` |
+| `ops/conversion_report.py` | `85b9ba6bca1db863e723a12f9923f4e314afc2426fffa0f112684ae1131c4bb2` |
+| `ops/coverage_audit.py` | `e55cea2fe9822b0bdbaf11f0a097c41131ac138eb3e1e297bbc91d5665bd4cbc` |
+| `ops/dashboard_link.sh` | `962ad1737e638b5f636a6ffcf69b560ad48f85e9efcd85f8668a74c11ca84306` |
 | `ops/deal_card.py` | `7528cce41ec922b91b30b974e747a915539d048598edf8edb9057a5e71b93b8b` |
-| `ops/deploy_and_verify.sh` | `3994cccf510d4171dfca36fbfe3fa3b04e9d818b9d7bc01823941a8d33587d2e` |
+| `ops/deploy_and_verify.sh` | `885d2ad91b70f271d8e6e2060644c6ada96b16512dc9b02208456fef3367a197` |
 | `ops/deploy_fresh.sh` | `8ea86ca2d2fdfb6b98e6aca58c078c547f189d39f590f901e646219b283c6b1f` |
 | `ops/deploy_r15_keep_off.sh` | `a29bf93bb68a21052e7c3eda56eb7f7fe5832283c1f4bd205f61b72e4b4a01ec` |
 | `ops/deploy_stable.sh` | `00458362b29214c52ef06cfc595faf81a6ffb499abdfc677bd070e877aeb0fac` |
@@ -1825,19 +1826,20 @@ source snapshot:
 | `ops/identity_probe.py` | `dc5c94e3fa7d40351bed0d2c6a7008ed0cd14f58965d0d2059780bd540a37d10` |
 | `ops/install_bestgaa.sh` | `3f2bd897de0acd145eea47c57b7cc7b8d3e0b22de474c039911ddfae33391b3d` |
 | `ops/install_ci_workflow.sh` | `6c0278174116d0549311a3738749a51856f0409f406c246ec9598012b32c8d4d` |
-| `ops/install_dashboard_secure.sh` | `cbae8c9bdb4839b2aadce77e387fcded813694b982bda69410881b8c3855c604` |
+| `ops/install_dashboard_secure.sh` | `9a1b6dbce0eacc14048706dbce2df4764165b8df36e7cc709439ddb63e76de31` |
 | `ops/link_doctor.py` | `fc260764663a4ac361bd9e0e2a1c252e79b6f7f821d9fd04618d3eff9f4ff12e` |
 | `ops/pipeline_check.py` | `b865254f3c56a67cddd24ce75bf425977caa3f775ef32eb6b5c523c25d6b4f88` |
-| `ops/quality_audit.py` | `7af7cdd78b33fae16ac4474e31d14e15480c0d060ea3aa2022d854293e7e8499` |
-| `ops/repack_bundles.sh` | `ac4112e1e65c677a4e5ad198371a0f6c67b4e15c341ee380d3a7baec8bc0038d` |
+| `ops/quality_audit.py` | `ecbae4494c188d27ecccacb6e880a7559f868252b8df5b28a4ac8898d06a0d95` |
+| `ops/repack_bundles.sh` | `8434ef25b7fb106cb6b644d815ace10847a1304eed80d41d0971019ef0626abe` |
 | `ops/set_earnkaro_key.sh` | `8056001f2774d6427674106b5564a8de0a311602800718856732aa11d6d71f2c` |
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `9e362ba0d5089c27375bd0ebc41e8569e45e37f582b6be0ff404b85e116a8b44` |
+| `ops/test_all.sh` | `54c41cabde1fb53790d6e68203c038b81a4baaac50758f64c05b67861563e469` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
+| `test_bot_paths.py` | `902e241aca4a1b76032b88df36daff5fb517021f4e40cf0d95e59068c9932f15` |
 | `test_category_classifier.py` | `0872692febc8df3cc1c777fb3056d245a51e9f797ebad76d663b4cfe31c63679` |
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
@@ -1865,7 +1867,7 @@ source snapshot:
 | `test_deploy_truth.py` | `abe3732ec4ff4d7d980add0b3cabb009c129060bcb7607e4956d9608d1de4a23` |
 | `test_deploy_zip.py` | `155f68298622d51459cbc0da289fc8ea2bf4e9feefd525b195d0c881de7ffe94` |
 | `test_duplicate_sim.py` | `1220b8ae195744d794be0a1990dacf480e5e9711b77fc4716e363544ddd59eb4` |
-| `test_earnkaro_conversion.py` | `091e97d22bc5960e8b7d6d0db92d70d5aae47cee382af37552aa13a27c15a474` |
+| `test_earnkaro_conversion.py` | `ff730c4167c311b17f528838b477dbe7527fb4d80d34523c3197fadc4215b464` |
 | `test_hypd_links.py` | `ef14ad8463a830e70966deb434c2041bb24defce4aa170a179cc4be0011fae68` |
 | `test_line_fidelity.py` | `c56f7b5e8ed7399c8a1344faeb25cdd3a47a964318abe3368cc6114158efa087` |
 | `test_link_commission.py` | `f5554dbcdf4c69bed33e9d8c71972e79bf28c132f0b3b46c7e90794db8e5e0db` |
@@ -2892,6 +2894,62 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   screen). Both are in the gate; no service is started and no real key is used.
 - After saving, apply with `sudo systemctl restart bestgaa` (the card has the
   button; the panel says when the running bot still has the old values).
+
+### "Where is the bot?" is asked once (2026-10-23)
+
+The dashboard edits the **running** bot's `.env`, `channels.json` and database
+while it runs from a git checkout, and every component used to answer that
+question with its own guess — mostly `Path(__file__).parent`, which on a server
+is the checkout. Three symptoms, one cause:
+
+- deploy report section 6 printed `state=no_channel` for every shelf (the
+  checkout has no `channels.json`, so no channel appeared to exist);
+- the dashboard saved **watch entries into `<checkout>/bestgaa/channels.json`**
+  while the bot read `.../bestgaa-bot/bestgaa-bot/channels.json`, so a saved
+  source never went live and nothing complained;
+- `insight health`, `quality_audit` and `coverage_audit` read
+  `<checkout>/bestgaa/bestgaa.sqlite3` (a file that does not exist there) — so
+  the API-keys panel showed live keys above an empty pipeline.
+
+`bestgaa/bot_paths.py` now answers it once, in a fixed order, and can explain
+itself: `BESTGAA_DIR` → `BOT_DB_PATH` → `CHANNELS_JSON_PATH` → this module's own
+directory when it *is* a bot directory (the bot itself, unchanged) → the known
+install layouts → the `BOT_DB_PATH` inside the bot's own `.env` → the checkout.
+`channels_config`, the dashboard's `app.py` and `insight.py`, `category_report`,
+`quality_audit`, `coverage_audit`, `conversion_report` and `dashboard_link.sh`
+all ask it. Two commands make it visible instead of inferred:
+
+```bash
+python3 bestgaa/bot_paths.py          # every path, the rule that chose it, exists?
+python3 ops/category_report.py ...    # prints db=/channels.json=/env= on stderr
+```
+
+`ops/install_dashboard_secure.sh` pins `BESTGAA_DIR` into
+`/etc/bestgaa/dashboard.env` and proves the database is there;
+`ops/deploy_and_verify.sh` exports `BESTGAA_DIR` to every Python helper, prints
+the resolver's answer, and section 7 now separates "the dashboard runs another
+checkout" (fine) from "the dashboard edits another bot directory" (not fine).
+
+- Proof: `test_bot_paths.py` (a fake server: app directory with `.env`, database
+  and `channels.json`, plus a separate checkout — every consumer lands on the
+  app directory; the bot inside its own directory is unchanged; a missing
+  `channels.json` is announced with the fix; `--json` stays pure).
+
+### The keys panel warns about problems, not about optional keys (2026-10-23)
+
+The panel said `needs attention | HYPD` on a bot whose required keys were all
+valid. `readiness()` judged four hand-picked keys and then used mere presence
+for the rest, so every *optional* key that is not set (publisher id, HYPD store
+id, HYPD slug) kept the headline at `attention` — and a real warning looked
+exactly like the noise. Now every slot in `vault.SLOTS` is judged by the same
+validator the form uses; an optional key that is not set reports `off`
+("optional, not set") and does not count as a warning; and the HYPD set is
+treated as a set — a token without a store id (or the reverse) **is** a warning
+that says Meesho links cannot be minted. A missing required key still blocks.
+
+- Proof: `test_bot_paths.py` (required keys valid → `ready` with optional keys
+  listed; token-without-store and store-without-token → `attention`;
+  complete set → `ready`; missing `AMAZON_TAG` → `blocked`; every slot judged).
 
 ### A deploy that says SUCCESS must have installed the new code (2026-10-23)
 

@@ -60,6 +60,34 @@ $SUDO chmod 640 "$ENV_FILE"
 ok "token file locked down: root-readable group, mode 640"
 
 echo
+echo "==== 1b. WHICH BOT THIS DASHBOARD SERVES ===="
+# The dashboard edits the RUNNING bot's .env, channels.json and database while it
+# runs from this checkout. Left to guess, it wrote channels.json into the
+# checkout and read a database that was not there - the panel looked empty while
+# the bot posted all day. Resolve once with bestgaa/bot_paths.py, pin the answer
+# in dashboard.env, and print what it resolved to.
+BOT_DIR="${BESTGAA_DIR:-$(REPO_ROOT="$REPO_ROOT" python3 -c '
+import os, sys
+sys.path.insert(0, os.environ["REPO_ROOT"] + "/bestgaa")
+import bot_paths
+print(bot_paths.bot_dir())
+' 2>/dev/null || true)}"
+BOT_DIR="${BOT_DIR:-/home/ubuntu/bestgaa-bot/bestgaa-bot}"
+if [[ ! -d "$BOT_DIR" ]]; then
+  warn "bot directory $BOT_DIR does not exist - the dashboard will show no channels and no posts"
+elif [[ ! -f "$BOT_DIR/.env" ]]; then
+  warn "bot directory $BOT_DIR has no .env - the API-keys panel will refuse to save"
+else
+  ok "this dashboard serves the bot at $BOT_DIR"
+fi
+if $SUDO grep -q '^BESTGAA_DIR=' "$ENV_FILE" 2>/dev/null; then
+  $SUDO sed -i "s|^BESTGAA_DIR=.*|BESTGAA_DIR=$BOT_DIR|" "$ENV_FILE"
+else
+  printf 'BESTGAA_DIR=%s\n' "$BOT_DIR" | $SUDO tee -a "$ENV_FILE" >/dev/null
+fi
+ok "BESTGAA_DIR pinned in $ENV_FILE (the dashboard resolves its files from it)"
+
+echo
 echo "==== 2. RESTART GATE (dashboard button cannot start posting early) ===="
 if [[ -f "$HERE/bestgaa_restart_gate.sh" ]]; then
   $SUDO cp "$HERE/bestgaa_restart_gate.sh" "$GATE_DST"
@@ -106,6 +134,23 @@ elif [[ "$CODE_NO_TOKEN" == "000" ]]; then
   warn "dashboard did not answer on 127.0.0.1:$DASHBOARD_PORT yet"
 else
   warn "unexpected auth behaviour: no-token=$CODE_NO_TOKEN with-token=$CODE_TOKEN (want 401/200)"
+fi
+
+echo
+echo "==== 5. THE DASHBOARD AND THE BOT AGREE ON THEIR FILES ===="
+RESOLVED="$(BESTGAA_DIR="$(sed -n 's/^BESTGAA_DIR=//p' "$ENV_FILE" | tail -n1)" \
+  python3 "$REPO_ROOT/bestgaa/bot_paths.py" 2>/dev/null || true)"
+if [[ -n "$RESOLVED" ]]; then
+  while IFS= read -r line; do [[ -n "$line" ]] && info "${line#  }"; done <<< "$RESOLVED"
+fi
+DB_PATH="$(sed -n 's/^BESTGAA_DIR=//p' "$ENV_FILE" | tail -n1)/bestgaa.sqlite3"
+[[ -f "$DB_PATH" ]] && ok "database present: $DB_PATH" \
+  || warn "no database at $DB_PATH - set BOT_DB_PATH in $ENV_FILE"
+CH_PATH="$(sed -n 's/^BESTGAA_DIR=//p' "$ENV_FILE" | tail -n1)/channels.json"
+if [[ -f "$CH_PATH" ]]; then
+  ok "channels.json present: $CH_PATH"
+else
+  info "no channels.json yet at $CH_PATH (the bot writes it on the first save)"
 fi
 
 echo

@@ -298,6 +298,11 @@ fi
 # source can prove - real product prices, MISROUTE from deliveries only,
 # "unverified" instead of "someone else's commission", and the bot's own skip
 # reasons read from its code rather than a hand-copied list.
+# "where is the bot?" - asked ONCE. The dashboard, the deploy report, the
+# category/money reports and the audit all resolve the bot's .env, database,
+# channels.json and log through bestgaa/bot_paths.py, so the page cannot edit one
+# directory while the reports read another.
+run 'bot paths: one resolver for the dashboard, the reports and the bot' "$PYTHON" test_bot_paths.py
 run 'audit truth: prices, routes, ownership, skip reasons' "$PYTHON" test_audit_truth.py
 # The 2026-10-23 deploy that printed SUCCESS while a four-hour-old build stayed
 # live: installing from the checkout, verifying against git HEAD, a bundle that

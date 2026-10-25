@@ -49,6 +49,11 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
+try:
+    import bot_paths           # beside this file on the server, and on sys.path
+except ImportError:            # pragma: no cover - imported as a package
+    from . import bot_paths    # type: ignore[no-redef]
+
 SCHEMA_VERSION = 1
 HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{5,64}$")
 # Invite links (t.me/+...) are valid sources even though they are not handles.
@@ -56,19 +61,19 @@ INVITE_RE = re.compile(r"^https?://(t(elegram)?\.me|telegram\.org)/\+\S+$", re.I
 
 
 def channels_json_path() -> Path:
-    """Where channels.json lives: CHANNELS_JSON_PATH, else next to the bot DB."""
-    env = os.getenv("CHANNELS_JSON_PATH", "").strip()
-    if env:
-        return Path(env)
-    db = os.getenv("BOT_DB_PATH", "").strip()
-    if db:
-        return Path(db).parent / "channels.json"
-    return Path(__file__).resolve().parent / "channels.json"
+    """Where channels.json lives: CHANNELS_JSON_PATH, else the bot's directory.
+
+    Resolved by `bot_paths` (one answer for every process). It used to fall back
+    to the directory of THIS FILE, which on a server is the git checkout - so the
+    dashboard saved watch entries into `<checkout>/bestgaa/channels.json` while
+    the running bot read its own file, and nothing complained.
+    """
+    return bot_paths.channels_json_path()
 
 
 def snapshot_path() -> Path:
     """Where the bot drops its routing snapshot for the dashboard to read."""
-    return channels_json_path().parent / "routing_snapshot.json"
+    return bot_paths.snapshot_path()
 
 
 def directory_path() -> Path:
@@ -78,15 +83,12 @@ def directory_path() -> Path:
     Telegram, so it writes one small file and the dashboard reads it. Never
     written by the dashboard.
     """
-    env = os.getenv("CHANNEL_DIRECTORY_PATH", "").strip()
-    if env:
-        return Path(env)
-    return channels_json_path().parent / "telegram_channels.json"
+    return bot_paths.directory_path()
 
 
 def pending_path() -> Path:
     """Sidecar the dashboard writes on every change; cleared once applied."""
-    return channels_json_path().parent / ".channels_pending"
+    return bot_paths.pending_path()
 
 
 def empty_config() -> dict:

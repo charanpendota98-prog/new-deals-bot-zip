@@ -15,7 +15,7 @@ command -v zip >/dev/null 2>&1 || { echo "ERROR: zip is required (apt-get instal
 echo "[1/3] Packing bestgaa_final_bundle.zip ..."
 cd "$REPO_ROOT/bestgaa"
 zip -X -q "$HERE/bestgaa_final_bundle.zip" \
-  main_bot_new.py deal_facts.py safety_filter.py safety_rules.json category_classifier.py channels_config.py channel_directory.py post_buttons.py live_channels.py hypd_policy.py category_rules.json source_catalog.json deploy_bestgaa.sh migrate_legacy_env.py \
+  main_bot_new.py deal_facts.py safety_filter.py safety_rules.json category_classifier.py channels_config.py channel_directory.py post_buttons.py live_channels.py hypd_policy.py category_rules.json source_catalog.json deploy_bestgaa.sh migrate_legacy_env.py bot_paths.py \
   requirements.txt bestgaa.service README_FIRST.txt .env.example \
   -j "$HERE/coverage_audit.py" -j "$HERE/quality_audit.py"
 

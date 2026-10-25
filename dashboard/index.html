@@ -2058,7 +2058,7 @@ function renderVault(){
   document.getElementById('vaultready').innerHTML =
     `<p class="${ready.state==='ready'?'ok':ready.state==='blocked'?'bad':'warn'}"><b>${escapeHTML(ready.headline||'')}</b></p>`
     + `<div class="row">`+((ready.checks||[]).map(c=>
-        `<div class="stat"><b style="font-size:13px"><span class="pill ${c.state==='ok'?'ok':c.state==='fail'?'fail':'warn'}">${escapeHTML(c.state)}</span> ${escapeHTML(c.name)}</b>`
+        `<div class="stat"><b style="font-size:13px"><span class="pill ${c.state==='ok'?'ok':c.state==='fail'?'fail':c.state==='off'?'':'warn'}">${escapeHTML(c.state==='off'?'optional':c.state)}</span> ${escapeHTML(c.name)}</b>`
         + `<span>${escapeHTML(c.detail||'')}</span></div>`).join(''))+`</div>`;
   document.getElementById('vaultwhere').innerHTML =
     `<tr><td>bot app dir</td><td class="muted" style="word-break:break-all">${escapeHTML(vaultData.app_dir||'')}</td>`
