@@ -6644,6 +6644,10 @@ class Store:
         """
         wanted = [str(t) for t in (targets or []) if str(t).strip()]
         added, already = [], []
+        # Terminal for THIS purpose: the post is already out, already queued to
+        # go out, or was refused there by policy. Only a missing or failed row is
+        # new work.
+        settled = ("sent", "skipped", "held", "pending")
         async with self.lock:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
@@ -6651,12 +6655,21 @@ class Store:
                     "SELECT id,status FROM queue WHERE id=?", (queue_id,)).fetchone()
                 if row is None:
                     self.conn.rollback()
-                    return {"added": [], "already": [], "unknown": wanted, "missing": True}
+                    return {"added": [], "already": [], "unknown": wanted, "missing": True,
+                            "busy": False}
+                if str(row[1]) == "processing":
+                    # A worker is delivering this post RIGHT NOW. Re-opening it
+                    # here would flip it back to 'pending' while another worker
+                    # still owns it - two workers, one post, a duplicate. Refuse
+                    # and let the operator press again when it has finished.
+                    self.conn.rollback()
+                    return {"added": [], "already": wanted, "unknown": [], "missing": False,
+                            "busy": True}
                 for target in wanted:
                     existing = self.conn.execute(
                         "SELECT status FROM deliveries WHERE queue_id=? AND target=?",
                         (queue_id, target)).fetchone()
-                    if existing and str(existing[0]) in ("sent", "skipped", "held"):
+                    if existing and str(existing[0]) in settled:
                         already.append(target)
                         continue
                     self.conn.execute(
@@ -6679,7 +6692,8 @@ class Store:
                 raise
         if added:
             notify_queue()
-        return {"added": added, "already": already, "unknown": [], "missing": False}
+        return {"added": added, "already": already, "unknown": [], "missing": False,
+                "busy": False}
 
     async def delivery_targets(self, queue_id: int) -> dict[str, str]:
         """target -> status, for the operator-facing answer."""
@@ -11037,10 +11051,19 @@ async def manual_send_loop(client, store, stop, target_map) -> None:
                                     queue_id, unknown)
                         continue
                     outcome = await store.manual_targets(queue_id, picked)
-                    action = "sent" if outcome.get("added") else "skipped"
+                    # "queued", not "sent": this loop only re-opens the post for
+                    # those channels. The worker sends it through the normal
+                    # verified path, and the delivery ledger (the Posts feed) is
+                    # where "sent" becomes true. Naming it "sent" here would be
+                    # the kind of claim this repo keeps getting bitten by.
+                    action = "queued" if outcome.get("added") else "skipped"
                     reason = ("queued for " + ", ".join(outcome["added"])
                               if outcome.get("added") else
                               "already carried by " + ", ".join(outcome.get("already") or []))
+                    if outcome.get("busy"):
+                        action = "skipped"
+                        reason = ("this post is being delivered right now - press again when "
+                                  "it finishes (nothing was changed)")
                     if outcome.get("missing"):
                         action, reason = "failed", f"post {queue_id} is no longer in the queue"
                     _posts.record({"id": row.get("id"), "action": action,

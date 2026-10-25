@@ -277,5 +277,11 @@ def record(row: dict, path: Path | None = None) -> dict:
 
 
 def finished_ids(path: Path | None = None) -> set[str]:
+    """Requests the bot has already handled.
+
+    `queued` is final for THIS request: it means the post was re-opened for those
+    channels. Whether the post then reached them is the delivery ledger's
+    answer, and that is what the feed shows.
+    """
     return {str(row.get("id")) for row in read_log(path)
-            if row.get("action") in ("sent", "skipped", "failed")}
+            if row.get("action") in ("queued", "sent", "skipped", "failed")}

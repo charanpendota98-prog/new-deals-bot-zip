@@ -1779,10 +1779,10 @@ source snapshot:
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `281bd047d41f0da79d8ca4f1ee672cc4c89bda944e31d105be1d2e1f145b6ee6` |
+| `bestgaa/main_bot_new.py` (v19.0) | `bbfc6ce1f46af25631222b8672197cbd5931e63f9ecadf84f4ea9bb6546e33b8` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
-| `bestgaa/posts.py` | `4e828279afd95b34f622c699c857f1009f76ba5021d9b165bf0ea590e7a20aed` |
+| `bestgaa/posts.py` | `212f965c28dce1cf005565a3d3c55c34c1ca231ef2e0d6af8988dbcdaee0fbae` |
 | `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
 | `bestgaa/safety_filter.py` | `22af40023235ee6c727c70b200683f59ddb08cb535623a068a8ee4e6fd05787d` |
 | `bestgaa/safety_rules.json` | `aa46f729d0e162ea842f8294f923c9a37475b007d3622c1e52d28eb06db3bfef` |
@@ -1847,7 +1847,7 @@ source snapshot:
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_channel_control.py` | `a6f4cb45c089512c07fc889aa414e992dc1f31d61aa4ac618bc7bd9a47f7a32d` |
+| `test_channel_control.py` | `fc8237d38c63f79282284a164a227ad56507910c66cf75644285222be9ec1ec2` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
@@ -2921,7 +2921,9 @@ already carry it, and the queue row back to `pending`. The send then goes throug
 the **normal, fully verified path** (ownership, live-link checks, price band,
 per-channel dedup), so a press can never double-post: a channel that already has
 the post is skipped and the log says so. Outcomes land in
-`manual_send_log.json`.
+`manual_send_log.json` — the press is logged as **`queued`** (this loop only
+re-opens the post), and the delivery ledger, shown in the same feed, is where
+`sent` becomes true.
 
 **No invented links.** A channel link is produced only from a real @username
 (`posts.channel_link`), a message link only from a handle plus a positive message

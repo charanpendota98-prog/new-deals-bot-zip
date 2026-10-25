@@ -555,7 +555,7 @@ def test_posts_feed():
                                   job_ids={7}, ours=ours, path=td / "req.jsonl")
     check("a valid press is queued on disk",
           not errors and len(posts.pending(td / "req.jsonl")) == 1, errors)
-    posts.record({"id": queued["id"], "action": "sent", "queue_id": 7}, td / "log.json")
+    posts.record({"id": queued["id"], "action": "queued", "queue_id": 7}, td / "log.json")
     check("a finished press is never repeated",
           posts.pending(td / "req.jsonl", done=posts.finished_ids(td / "log.json")) == [], "")
 
@@ -576,6 +576,8 @@ def test_manual_send_wiring():
           "manual_send_task = asyncio.create_task" in bot and "await manual_send_task" in bot, "")
     check("every press is written to the send log",
           "_posts.record(" in bot and "MANUAL SEND" in bot, "")
+    check("the log says 'queued', not 'sent' - the ledger decides 'sent'",
+          'action = "queued"' in bot and 'action = "sent"' not in bot, "")
 
     # The store method itself: replay it against a real SQLite schema. The bot
     # module needs its environment to import (it is a bot), so this test provides
@@ -608,6 +610,27 @@ def test_manual_send_wiring():
         return outcome, status
 
     outcome, pending = asyncio.run(scenario())
+
+    async def safety():
+        again = await store.manual_targets(11, ["Main"])          # already queued
+        settled = await store.manual_targets(11, ["Shelf"])        # already sent
+        store.conn.execute("UPDATE queue SET status='processing' WHERE id=11")
+        store.conn.commit()
+        busy = await store.manual_targets(11, ["Main"])            # a worker owns it
+        state = store.conn.execute("SELECT status FROM queue WHERE id=11").fetchone()[0]
+        store.conn.execute("UPDATE queue SET status='pending' WHERE id=11")
+        store.conn.commit()
+        return again, settled, busy, state
+
+    again, settled, busy, state = asyncio.run(safety())
+    check("a second press for a channel that is already queued adds nothing",
+          again["added"] == [] and [t.lower() for t in again["already"]] == ["main"], again)
+    check("and a channel that already has the post is left alone",
+          settled["added"] == [] and [t.lower() for t in settled["already"]] == ["shelf"], settled)
+    check("a post being delivered RIGHT NOW is refused, not re-opened",
+          busy["busy"] is True and busy["added"] == [], busy)
+    check("so the mid-flight queue row keeps its owner",
+          state == "processing", state)
     check("a channel that already has it is left alone",
           outcome["already"] == ["Shelf"], outcome)
     check("the new channel becomes pending", "Main" in pending, pending)
