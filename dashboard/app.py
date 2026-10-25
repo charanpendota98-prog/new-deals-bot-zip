@@ -78,7 +78,8 @@ import bot_paths  # noqa: E402
 import channels_config  # noqa: E402
 from category_classifier import load_rules  # noqa: E402
 from dashboard.preview import preview_batch, inspect_product_link  # noqa: E402
-from dashboard import forensics, insight, pipeline as dashboard_pipeline, source_target, trends, vault  # noqa: E402
+from dashboard import (forensics, insight, pipeline as dashboard_pipeline, posts,
+                       source_target, trends, vault)  # noqa: E402
 
 IST_OFFSET = 5 * 3600 + 30 * 60  # Asia/Kolkata, no tzdata needed
 SERVICE_DEFAULT = "bestgaa"
@@ -870,6 +871,9 @@ def directory_view() -> dict:
             "is_our_target": bool(username) and key in our_targets,
             # "manam admin ga vunna channel anni chupinchali": the rights the bot
             # read off the dialog, so the page can show (and filter) them.
+            # "channel link kuda": a link only when there is a real @username -
+            # a made-up URL that 404s is worse than the title.
+            "link": posts.channel_link(username, username),
             "role": str(row.get("role") or "member"),
             "admin": bool(row.get("admin")),
             "creator": bool(row.get("creator")),
@@ -1042,6 +1046,97 @@ async def api_join_requests(request: web.Request) -> web.Response:
 # --------------------------------------------------------------------------- #
 #  one click: OUR post -> our other channels
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+#  every post, with the buttons that act on it
+# --------------------------------------------------------------------------- #
+def our_channel_names() -> list[str]:
+    """Every channel this account may post to, for the "Send to…" picker."""
+    names: list[str] = []
+    snap = snapshot()
+    names.extend(str(name) for name in (snap.get("targets") or []))
+    names.extend(str(row.get("name")) for row in channels_config.load_channels().get(
+        "channels", []) if row.get("name"))
+    try:
+        for row in directory_rows().get("channels") or []:
+            if row.get("can_post") or row.get("admin"):
+                handle = row.get("username") or row.get("title")
+                if handle:
+                    names.append(str(handle))
+    except Exception:  # noqa: BLE001 - a missing directory must not blank the panel
+        pass
+    seen: list[str] = []
+    for name in names:
+        handle = posts.clean_handle(name)
+        if handle and handle.lower() not in {item.lower() for item in seen}:
+            seen.append(handle)
+    return seen
+
+
+def job_ids(conn: sqlite3.Connection) -> set[int]:
+    try:
+        return {int(row[0]) for row in conn.execute("SELECT id FROM queue")}
+    except sqlite3.OperationalError:
+        return set()
+
+
+@require_token
+@in_thread
+def api_posts(request: web.Request) -> web.Response:
+    """The posts feed: where each post went, where it came from, what it can do."""
+    try:
+        limit = max(1, min(100, int(request.query.get("limit", "40"))))
+    except ValueError:
+        limit = 40
+    conn = read_only_db()
+    rows: list[dict] = []
+    if conn is not None:
+        try:
+            rows = posts.feed(conn, limit=limit, ours=our_channel_names())
+        except sqlite3.OperationalError as exc:
+            return web.json_response({"posts": [], "errors": [f"queue unreadable: {exc}"]})
+        finally:
+            conn.close()
+    return web.json_response({
+        "posts": rows,
+        "ours": our_channel_names(),
+        "queued": posts.pending(done=posts.finished_ids()),
+        "log": posts.read_log()[-10:][::-1],
+        "paths": {"requests": str(posts.request_path()), "log": str(posts.log_path())},
+        "note": ("'Send to…' queues one request; the BOT re-checks the post, the channel "
+                 "and whether that channel already carries it, then sends and records the "
+                 "outcome. The dashboard never writes the bot's database."),
+    })
+
+
+@require_token
+async def api_post_send(request: web.Request) -> web.Response:
+    """One press: put this post into another of our channels."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, ValueError):
+        return web.json_response({"errors": ["body must be JSON"]}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"errors": ["body must be a JSON object"]}, status=400)
+    conn = read_only_db()
+    known: set[int] = set()
+    if conn is not None:
+        try:
+            known = job_ids(conn)
+        finally:
+            conn.close()
+    if conn is None:
+        return web.json_response(
+            {"errors": ["the bot's database is not readable - nothing was queued. "
+                        "Check BOT_DB_PATH / BESTGAA_DIR."]}, status=409)
+    clean, errors = posts.submit(body, job_ids=known, ours=our_channel_names())
+    if errors:
+        return web.json_response({"errors": errors, "request": clean}, status=400)
+    return web.json_response({"queued": clean, "next": (
+        "The bot sends it within a few seconds (MANUAL_SEND_POLL_SECONDS, default 5) "
+        "and records the result in the send log. A channel that already carries this "
+        "post is skipped, and the log says so.")})
+
+
 @require_token
 async def api_repost(request: web.Request) -> web.Response:
     """Queue a forward of one of our posts. The BOT does the forwarding."""
@@ -2573,6 +2668,8 @@ def create_app() -> web.Application:
     app.router.add_post("/api/channels/bulk", api_channels_bulk)
     app.router.add_get("/api/join-requests", api_join_requests)
     app.router.add_post("/api/join-requests", api_join_requests)
+    app.router.add_get("/api/posts", api_posts)
+    app.router.add_post("/api/posts/send", api_post_send)
     app.router.add_get("/api/repost", api_repost)
     app.router.add_post("/api/repost", api_repost)
     app.router.add_patch("/api/channels/{name}", api_edit_channel)

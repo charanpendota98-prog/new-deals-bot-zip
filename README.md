@@ -1779,7 +1779,7 @@ source snapshot:
 | `bestgaa/hypd_policy.py` | `a8ae012c2155ce96da0e32106374e3998baae9b394930ad15d338f702975f87d` |
 | `bestgaa/join_gate.py` | `1e156935e6bd6d0c335833ddfcbb6b70d88117190b705ddeb9cef9e8690b0a53` |
 | `bestgaa/live_channels.py` | `2b7ff08c4783868d110cb9cad02d50f33b184c4531ba396abd9db742a95eb114` |
-| `bestgaa/main_bot_new.py` (v19.0) | `89c502f9d80dd2a731ca573943603b619fc8b444a044589f26800f53bee8c7c9` |
+| `bestgaa/main_bot_new.py` (v19.0) | `67b07199ace9b9f02f7fe5faf63c027f554f8c24e00036cf14f85c2f34cfd02f` |
 | `bestgaa/migrate_legacy_env.py` | `9b1c1c75ef2437e018a1f8f904c3189f7a4272bc93cf65aa907eb707b7f9fb41` |
 | `bestgaa/post_buttons.py` | `0ff85af620327e451172ca20e3c0825c31d5bc3fc227779dac32bc7c56e27b7c` |
 | `bestgaa/repost.py` | `13d74e46b45c2b028304ba56c6b00fe2c3b0d4fab0f954b06de7d09cd41b544f` |
@@ -1796,10 +1796,11 @@ source snapshot:
 | `tg-wa-bridge/send_guard.js` | `f36123443734ef7a8772e3df4becf2cee7042ddfd4ddfb2fc218408fde0e2fc4` |
 | `tg-wa-bridge/switch_whatsapp_number.sh` | `979d6e6a6a4cba57377a51ef62947829eae1562918c103cdde821e8f45c25488` |
 | `dashboard/__init__.py` | `20af863f4cdb9d6ece4fb82623ae7e82b9fc83ccd3a8822d54699a8b1b7484ff` |
-| `dashboard/app.py` | `f973c4edb1731cad93edd99ba439a5ec288f46f468ec70782b0ce4cca3a80f33` |
+| `dashboard/app.py` | `3caa4c5530ecf1f54d7fe3a35987bd9ddfb68bfdc00dac53a9c57cc0b314f973` |
 | `dashboard/forensics.py` | `f1f79f9dc9c4fe107c6c7e9a06e2e0d675fd556cc012d3dc9202102847656855` |
 | `dashboard/insight.py` | `13ee84aace5e7e6e068dd47c564f0d8623dbb77d61295ebfab7180fff1862ffd` |
 | `dashboard/pipeline.py` | `2db94d4c96c3b2cda5226864f81f2919626cd7247a3c683f642b29850b702500` |
+| `dashboard/posts.py` | `4e828279afd95b34f622c699c857f1009f76ba5021d9b165bf0ea590e7a20aed` |
 | `dashboard/preview.py` | `d333c601cc29b007860f675063fb0250295c612c9e05391fd88931a0a16e1117` |
 | `dashboard/source_target.py` | `770f01f8dce2fb4ec4d19d3229c8daa7f1386133a68187c852ccd2dbf68f0092` |
 | `dashboard/trends.py` | `ac13613edd214e8a636b61914c207c6bf76849b3550ff8dcedc09c1bfc9996b6` |
@@ -1837,7 +1838,7 @@ source snapshot:
 | `ops/source_to_target.py` | `17ef635671da678674b33fa458cc4da4676410dca43f029c96875dd99e17029d` |
 | `ops/sync_identity.py` | `c26dbbf19a0673bba01ce0547972f5ab2150eea4b2fa1057c083bb561da172cd` |
 | `ops/telegram_check.sh` | `d4ac8abdfd92c2890343f4940c4e561ee4eb817889c9b0a18b0c73e84b1d384f` |
-| `ops/test_all.sh` | `9f5a5fe46690fbbf4c271fd1eded9ba72de65fdb464d6ec6abdeceb45dd3c570` |
+| `ops/test_all.sh` | `d0c409642621b93acd3aeb5270db7249ce36ebe3e2d9d3a31a46a986fa5ddb2c` |
 | `test_api_vault.py` | `4d72c700d9539de9a1ab50d468539f3a04e957462010ba2b06710c9138b3441c` |
 | `test_audit_truth.py` | `47789df5f67af593b645271cf6ae498750321b641f9ee9fd46301ff1fa0f76a2` |
 | `test_best_copy.py` | `d90cd45e43bcf6108830440047ffc00b98bb7481813e8d8b9c160931174fb217` |
@@ -1846,7 +1847,7 @@ source snapshot:
 | `test_category_invariants.py` | `090f0360488d054f4d2bde6274e1d0622f64a8565e9ce9715fc12f0e59a90752` |
 | `test_category_preview.py` | `568dd4811d100c97d4f4c63be87c95bb5130650290bfb61634faec28c6547a03` |
 | `test_category_report.py` | `6ac3602197d30635c96c94011e28f461441f6afa61e925470f568e0f0302c3b2` |
-| `test_channel_control.py` | `760e6818045389195da8603387774f46d3d57318fc97b4ee30590fe0fe86f714` |
+| `test_channel_control.py` | `dbecb9c9a8e7a8e3bb935120d8b049d565d0eedac9171db2c2c67cb2b2b74a50` |
 | `test_channel_directory.py` | `c039c07a9ed9803346c19ff1aeda335d9d1f929795c82f366e90add9dd827241` |
 | `test_dashboard.py` | `7107641bde1cce4b6462a8e765389687036b8e9f519f1d8af64bc1e05c768a5b` |
 | `test_dashboard_card_studio.cjs` | `40da6aa10a01f658635acc9a73f832d5aa4a54bc2ed678a5b73e9fe43756be29` |
@@ -2897,6 +2898,49 @@ to the next, publisher-guarded), Bitly tokens are rotated per link.
   screen). Both are in the gate; no service is started and no real key is used.
 - After saving, apply with `sudo systemctl restart bestgaa` (the card has the
   button; the panel says when the running bot still has the old values).
+
+### Posts have buttons, channels have links (2026-10-25)
+
+*"every post ki button ravatam leda … channel link kuda … channel easy ga source
+add chesi"* — three things added to the same channel-control card.
+
+**A post is a row you can act on.** `dashboard/posts.py` builds the feed from the
+bot's own queue and delivery ledger: the post's real text, **which channels carry
+it** (each one linked as `https://t.me/<username>` and marked `sent` / `skipped` /
+`held` with its reason), **where it came from** (a link to the exact source
+message, built from the source handle and the message number), and the buttons:
+`Send to…`, `Links` (the dossier), `Copy`. `Send to…` opens a channel picker for
+that post and queues one request.
+
+**The button is a request, the bot does the sending.** The dashboard stays
+read-only on the bot's database: a press appends one JSON line to
+`manual_send_requests.jsonl`. The bot's `manual_send_loop` re-checks the post, the
+channel (must be in its own routing) and re-opens the job with
+`Store.manual_targets()` — a pending delivery row for the channels that do not
+already carry it, and the queue row back to `pending`. The send then goes through
+the **normal, fully verified path** (ownership, live-link checks, price band,
+per-channel dedup), so a press can never double-post: a channel that already has
+the post is skipped and the log says so. Outcomes land in
+`manual_send_log.json`.
+
+**No invented links.** A channel link is produced only from a real @username
+(`posts.channel_link`), a message link only from a handle plus a positive message
+number (`posts.message_link`). A private channel gets `None` and the page shows
+its title — a link that 404s is worse than no link.
+
+**A source in one line.** The same card has a paste-link box with its own
+destination picker and an `Add source` button (`POST /api/watch`, the endpoint the
+watch card already used), plus `Open source studio` for the full multi-select
+flow. Nothing is joined and no history is replayed — unchanged.
+
+- Proof: `test_channel_control.py` — the feed (source message link, per-channel
+  links and verdicts, a post with no stored text not offered), the request
+  validator (unknown post, a channel that is not ours, empty selection), the
+  exactly-once log, the bot's store method replayed on a real SQLite schema (the
+  channel that already has it is left alone, the new channel becomes pending, the
+  finished post becomes claimable again), the HTTP feed + press + refusals through
+  aiohttp's test client, and the page markup (per-post buttons, `t.me` links, the
+  one-line add-source box).
 
 ### Channel control: every channel we run, many actions, one press (2026-10-25)
 

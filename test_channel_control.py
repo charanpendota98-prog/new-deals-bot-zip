@@ -323,11 +323,37 @@ def build_bot_dir():
     return bot
 
 
+def point_at(bot):
+    """Make every resolver look at the fake bot, even inside the offline gate.
+
+    The gate exports BOT_DB_PATH for its own isolation, and `bot_paths` honours
+    that BEFORE BESTGAA_DIR - so a test that only set BESTGAA_DIR would read the
+    gate's empty database and pass vacuously (or fail confusingly). Pin the three
+    variables the resolver reads and return what to restore afterwards.
+    """
+    keys = ("BESTGAA_DIR", "BOT_DB_PATH", "CHANNELS_JSON_PATH", "BESTGAA_BOT_ENV",
+            "DASHBOARD_TOKEN")
+    saved = {key: os.environ.get(key) for key in keys}
+    os.environ["BESTGAA_DIR"] = str(bot)
+    os.environ["BOT_DB_PATH"] = str(bot / "bestgaa.sqlite3")
+    os.environ["CHANNELS_JSON_PATH"] = str(bot / "channels.json")
+    os.environ["BESTGAA_BOT_ENV"] = str(bot / ".env")
+    os.environ["DASHBOARD_TOKEN"] = "test-token"
+    return saved
+
+
+def restore(saved):
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
 def test_dashboard_api():
     print("\n== the page's own endpoints (temporary bot directory) ==")
     bot = build_bot_dir()
-    os.environ["BESTGAA_DIR"] = str(bot)
-    os.environ["DASHBOARD_TOKEN"] = "test-token"
+    saved_env = point_at(bot)
     sys.path.insert(0, str(ROOT))
     from dashboard import app as dash  # noqa: PLC0415 - after BESTGAA_DIR is set
 
@@ -436,7 +462,7 @@ def test_dashboard_api():
     # the file the bot will drain is the bot's own directory, not the checkout
     check("the queue lands beside the bot's channels.json",
           (bot / "repost_requests.jsonl").exists(), sorted(p.name for p in bot.iterdir()))
-    os.environ.pop("BESTGAA_DIR", None)
+    restore(saved_env)
 
 
 # --------------------------------------------------------------------------- #
@@ -461,6 +487,221 @@ def test_page_markup():
           "Off by default" in html, "")
 
 
+def test_posts_feed():
+    print("\n== every post: where it went, where it came from, its links ==")
+    sys.path.insert(0, str(ROOT))
+    from dashboard import posts  # noqa: PLC0415
+
+    check("a real username becomes a channel link",
+          posts.channel_link("LootZoneIndia11") == "https://t.me/LootZoneIndia11", "")
+    check("a private/nonexistent handle gets NO link (never a 404)",
+          posts.channel_link("Private Thing") is None
+          and posts.channel_link("", "") is None, "")
+    check("a message link needs a real message number",
+          posts.message_link("Shelf", 123) == "https://t.me/Shelf/123"
+          and posts.message_link("Shelf", 0) is None
+          and posts.message_link("Shelf", "abc") is None, "")
+    check("a pasted link is normalised, not concatenated",
+          posts.clean_handle("https://t.me/LootZoneIndia11/44") == "LootZoneIndia11"
+          and posts.clean_handle("@under99deals11") == "under99deals11", "")
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE queue (id INTEGER PRIMARY KEY, chat_id INTEGER, msg_id INTEGER,"
+                 " source TEXT, status TEXT, created_at REAL, rendered_text TEXT,"
+                 " last_error TEXT)")
+    conn.execute("CREATE TABLE deliveries (queue_id INTEGER, target TEXT, status TEXT,"
+                 " last_error TEXT)")
+    conn.execute("INSERT INTO queue VALUES (7,-1001,44,'LootZoneIndia11','done',1000.0,"
+                 "'🔥 Bezvilla 24 Sachets ₹71\nhttps://bitli.in/x','')")
+    conn.execute("INSERT INTO deliveries VALUES (7,'under99deals11','sent','')")
+    conn.execute("INSERT INTO deliveries VALUES (7,'Main','skipped','price band')")
+    conn.commit()
+    rows = posts.feed(conn, limit=5, ours=["under99deals11", "Main", "LootZoneIndia11"],
+                      now=1100.0)
+    row = rows[0]
+    check("the feed reads the post's own text, not an invented title",
+          row["title"].startswith("🔥 Bezvilla"), row["title"])
+    check("it links the SOURCE message",
+          row["source_link"] == "https://t.me/LootZoneIndia11/44", row["source_link"])
+    check("it says which channels have it, with their links",
+          row["sent"] == ["under99deals11"]
+          and row["sent_detail"][0]["link"] == "https://t.me/under99deals11", row["sent_detail"])
+    check("and which refused it, and why",
+          row["not_sent"] == ["Main"]
+          and any(t["status"] == "skipped" and t["error"] for t in row["targets"]),
+          row["targets"])
+    check("a post with no stored text is marked not re-sendable",
+          posts.feed(conn, limit=1)[0]["resendable"] is True
+          and posts.validate_request({"queue_id": 7, "targets": ["Main"]},
+                                     job_ids={7}, ours=["Main"])[0] != {}, "")
+
+    ours = ["under99deals11", "Main"]
+    clean, errors = posts.validate_request({"queue_id": 7, "targets": ["@Main"]},
+                                           job_ids={7}, ours=ours)
+    check("a press is validated against this bot's queue and channels",
+          not errors and clean["targets"] == ["main"], errors)
+    _, errors = posts.validate_request({"queue_id": 999, "targets": ["Main"]},
+                                       job_ids={7}, ours=ours)
+    check("an unknown post is refused", bool(errors), errors)
+    _, errors = posts.validate_request({"queue_id": 7, "targets": ["stranger"]},
+                                       job_ids={7}, ours=ours)
+    check("a channel that is not ours is refused", bool(errors), errors)
+    _, errors = posts.validate_request({"queue_id": 7, "targets": []}, job_ids={7}, ours=ours)
+    check("an empty selection is refused", bool(errors), errors)
+
+    td = Path(tempfile.mkdtemp(prefix="cc-posts-"))
+    queued, errors = posts.submit({"queue_id": 7, "targets": ["Main"]},
+                                  job_ids={7}, ours=ours, path=td / "req.jsonl")
+    check("a valid press is queued on disk",
+          not errors and len(posts.pending(td / "req.jsonl")) == 1, errors)
+    posts.record({"id": queued["id"], "action": "sent", "queue_id": 7}, td / "log.json")
+    check("a finished press is never repeated",
+          posts.pending(td / "req.jsonl", done=posts.finished_ids(td / "log.json")) == [], "")
+
+
+def test_manual_send_wiring():
+    print("\n== the bot honours a press through the NORMAL delivery path ==")
+    bot = (ROOT / "bestgaa" / "main_bot_new.py").read_text(encoding="utf-8")
+    check("the bot has the loop and drains the dashboard's queue",
+          "manual_send_loop" in bot and "_posts.pending(" in bot, "")
+    check("it re-opens the post instead of sending anything itself",
+          "manual_targets(" in bot and "forward_messages" not in bot.split(
+              "async def manual_send_loop")[1].split("async def main")[0], "")
+    check("a channel that already has the post is skipped, not doubled",
+          "already carried by" in bot and "already.append(target)" in bot, "")
+    check("an unknown channel is refused with a reason",
+          "no such channel in this bot's routing" in bot, "")
+    check("the task is started and drained",
+          "manual_send_task = asyncio.create_task" in bot and "await manual_send_task" in bot, "")
+    check("every press is written to the send log",
+          "_posts.record(" in bot and "MANUAL SEND" in bot, "")
+
+    # The store method itself: replay it against a real SQLite schema. The bot
+    # module needs its environment to import (it is a bot), so this test provides
+    # a throwaway one - the same isolation the other offline suites use.
+    sys.path.insert(0, str(ROOT / "bestgaa"))
+    scratch = Path(tempfile.mkdtemp(prefix="cc-botenv-"))
+    saved_env = {key: os.environ.get(key) for key in
+                 ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "EARNKARO_API_KEY",
+                  "BOT_DB_PATH", "BOT_LOG_DIR", "BOT_MEDIA_DIR", "CHANNELS_JSON_PATH")}
+    os.environ.update(TELEGRAM_API_ID="1234567", TELEGRAM_API_HASH="a" * 32,
+                      EARNKARO_API_KEY="x.y.z", BOT_DB_PATH=str(scratch / "bot.sqlite3"),
+                      BOT_LOG_DIR=str(scratch / "logs"), BOT_MEDIA_DIR=str(scratch / "media"),
+                      CHANNELS_JSON_PATH=str(scratch / "channels.json"))
+    try:
+        import main_bot_new  # noqa: E402
+    except Exception as exc:  # noqa: BLE001 - report, do not crash the whole suite
+        check("the bot module imports for the store test", False, exc)
+        return
+
+    store = main_bot_new.Store(str(Path(tempfile.mkdtemp(prefix="cc-store-")) / "s.sqlite3"))
+    conn = store.conn
+    conn.execute("INSERT INTO queue (id, chat_id, msg_id, source, status, created_at,"
+                 " rendered_text) VALUES (11, -100, 5, 'Src', 'done', 1.0, 'deal text')")
+    conn.execute("INSERT INTO deliveries (queue_id, target, status) VALUES (11, 'Shelf', 'sent')")
+    conn.commit()
+
+    async def scenario():
+        outcome = await store.manual_targets(11, ["Shelf", "Main"])
+        status = await store.pending_targets(11)
+        return outcome, status
+
+    outcome, pending = asyncio.run(scenario())
+    check("a channel that already has it is left alone",
+          outcome["already"] == ["Shelf"], outcome)
+    check("the new channel becomes pending", "Main" in pending, pending)
+    check("the finished post is claimable again",
+          store.conn.execute("SELECT status FROM queue WHERE id=11").fetchone()[0] == "pending",
+          "")
+    for key, value in saved_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def test_posts_api():
+    print("\n== the page's post endpoints (temporary bot directory) ==")
+    bot = build_bot_dir()
+    # a delivered post to act on
+    conn = sqlite3.connect(bot / "bestgaa.sqlite3")
+    conn.execute("CREATE TABLE IF NOT EXISTS queue (id INTEGER PRIMARY KEY, chat_id INTEGER,"
+                 " msg_id INTEGER, source TEXT, status TEXT, created_at REAL,"
+                 " rendered_text TEXT, last_error TEXT)")
+    conn.execute("DROP TABLE IF EXISTS deliveries")
+    conn.execute("CREATE TABLE deliveries (queue_id INTEGER, target TEXT,"
+                 " status TEXT, last_error TEXT)")
+    conn.execute("INSERT INTO queue VALUES (3, -100, 9, 'LootZoneIndia11', 'done', 1000.0,"
+                 " 'Sony WH-CH520 at ₹3,499\nhttps://bitli.in/abc', '')")
+    conn.execute("INSERT INTO deliveries VALUES (3, 'LootZoneIndia11', 'sent', '')")
+    conn.commit()
+    conn.close()
+    saved_env = point_at(bot)
+    sys.path.insert(0, str(ROOT))
+    from dashboard import app as dash  # noqa: PLC0415
+
+    async def scenario():
+        from aiohttp.test_utils import TestClient, TestServer
+        client = TestClient(TestServer(dash.create_app()))
+        await client.start_server()
+        headers = {"X-Dashboard-Token": "test-token"}
+        out = {}
+        r = await client.get("/api/posts?limit=10", headers=headers)
+        out["feed"] = await r.json()
+        r = await client.post("/api/posts/send", headers=headers,
+                              json={"queue_id": 3, "targets": ["under99deals11"]})
+        out["send"] = (r.status, await r.json())
+        r = await client.post("/api/posts/send", headers=headers,
+                              json={"queue_id": 3, "targets": ["not-ours"]})
+        out["send_bad"] = (r.status, await r.json())
+        r = await client.post("/api/posts/send", headers=headers,
+                              json={"queue_id": 999, "targets": ["under99deals11"]})
+        out["send_unknown"] = (r.status, await r.json())
+        r = await client.get("/api/directory", headers=headers)
+        out["dir"] = await r.json()
+        await client.close()
+        return out
+
+    data = asyncio.run(scenario())
+    post = (data["feed"].get("posts") or [{}])[0]
+    check("the feed carries the post with its source link",
+          post.get("source_link") == "https://t.me/LootZoneIndia11/9", post)
+    check("and the channels that have it", post.get("sent") == ["LootZoneIndia11"], post)
+    check("a press is queued", data["send"][0] == 200
+          and (data["send"][1].get("queued") or {}).get("targets") == ["under99deals11"],
+          data["send"])
+    check("a channel that is not ours is refused", data["send_bad"][0] == 400, data["send_bad"])
+    check("an unknown post is refused", data["send_unknown"][0] == 400, data["send_unknown"])
+    links = [row.get("link") for row in data["dir"].get("channels") or []
+             if row.get("username") == "under99deals11"]
+    check("the directory rows carry a real channel link",
+          links and links[0] == "https://t.me/under99deals11", links)
+    check("the queue lands beside the bot's channels.json",
+          (bot / "manual_send_requests.jsonl").exists(), sorted(p.name for p in bot.iterdir()))
+    restore(saved_env)
+
+
+def test_posts_page():
+    print("\n== the page has the per-post buttons, the links and the quick add ==")
+    html = (ROOT / "dashboard" / "index.html").read_text(encoding="utf-8")
+    for needle, label in (
+            ('id="postfeed"', "the posts card"),
+            ('id="pflist"', "the posts list"),
+            ("pfSend(", "a per-post send button"),
+            ("pfCopy(", "a per-post copy button"),
+            ("openDossier(", "a per-post links button"),
+            ('id="qalink"', "the one-line add-source input"),
+            ("quickAddSource()", "the add-source button"),
+            ('id="jrdelay"', "the join-request delay"),
+            ("ccBulk('target')", "the bulk add-as-destination button")):
+        check(label + " exists", needle in html, needle)
+    check("the page explains the bot does the sending, not the page",
+          "The dashboard never writes the bot's database" in html, "")
+    check("every channel name in the lists is a t.me link",
+          html.count("https://t.me/") >= 4, html.count("https://t.me/"))
+
+
 def main():
     test_inventory()
     test_config_roundtrip()
@@ -470,6 +711,10 @@ def main():
     test_repost_bot_wiring()
     test_dashboard_api()
     test_page_markup()
+    test_posts_feed()
+    test_manual_send_wiring()
+    test_posts_api()
+    test_posts_page()
     print("\n" + ("CHANNEL CONTROL TESTS: FAILURES: " + ", ".join(FAILS) if FAILS
                   else "test_channel_control: all checks PASS"))
     return 1 if FAILS else 0

@@ -6630,6 +6630,63 @@ class Store:
             self.conn.execute("UPDATE queue SET rendered_text=? WHERE id=?", (text, queue_id))
             await self._commit()
 
+    async def manual_targets(self, queue_id: int, targets: list[str]) -> dict:
+        """Re-open a finished post for the channels an operator picked.
+
+        The dashboard's "Send to…" button is a HUMAN decision, and this is where
+        it becomes work: add a pending delivery row for each target that does not
+        already carry the post, and put the job back in the queue so the normal
+        (fully verified) delivery path runs for exactly those targets. Nothing is
+        sent from here - the send still goes through every gate: ownership,
+        live-link checks, price bands, per-channel dedup.
+
+        Returns {"added": [...], "already": [...], "unknown": [...]}.
+        """
+        wanted = [str(t) for t in (targets or []) if str(t).strip()]
+        added, already = [], []
+        async with self.lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = self.conn.execute(
+                    "SELECT id,status FROM queue WHERE id=?", (queue_id,)).fetchone()
+                if row is None:
+                    self.conn.rollback()
+                    return {"added": [], "already": [], "unknown": wanted, "missing": True}
+                for target in wanted:
+                    existing = self.conn.execute(
+                        "SELECT status FROM deliveries WHERE queue_id=? AND target=?",
+                        (queue_id, target)).fetchone()
+                    if existing and str(existing[0]) in ("sent", "skipped", "held"):
+                        already.append(target)
+                        continue
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO deliveries(queue_id,target,status) "
+                        "VALUES(?,?,'pending')", (queue_id, target))
+                    self.conn.execute(
+                        "UPDATE deliveries SET status='pending',last_error=NULL "
+                        "WHERE queue_id=? AND target=? AND status NOT IN "
+                        "('sent','skipped','held')", (queue_id, target))
+                    added.append(target)
+                if added:
+                    # A finished row must be claimable again; the claim tables are
+                    # keyed by deal content and allow the SAME queue id back in.
+                    self.conn.execute(
+                        "UPDATE queue SET status='pending', next_at=0, last_error=NULL "
+                        "WHERE id=?", (queue_id,))
+                await self._commit(patient=True)
+            except BaseException:
+                self.conn.rollback()
+                raise
+        if added:
+            notify_queue()
+        return {"added": added, "already": already, "unknown": [], "missing": False}
+
+    async def delivery_targets(self, queue_id: int) -> dict[str, str]:
+        """target -> status, for the operator-facing answer."""
+        async with self.lock:
+            return {str(row[0]): str(row[1]) for row in self.conn.execute(
+                "SELECT target,status FROM deliveries WHERE queue_id=?", (queue_id,))}
+
     async def pending_targets(self, queue_id: int) -> list[str]:
         async with self.lock:
             # Terminal states: sent (posted), skipped (policy), held (uncertain;
@@ -10936,6 +10993,66 @@ def _original_target_name(name: str, target_map) -> str:
     return str(name or "")
 
 
+async def manual_send_loop(client, store, stop, target_map) -> None:
+    """Drain the dashboard's "Send to…" presses: re-open a post for our channels.
+
+    A press is a human decision, so it is honoured - but only through the normal
+    delivery path, which re-verifies the links, the price band and the
+    per-channel dedup. A channel that already carries the post is skipped and the
+    log says so; nothing is ever sent twice by this loop.
+    """
+    try:
+        from . import posts as _posts
+    except ImportError:
+        import posts as _posts
+    every = max(2, int(os.getenv("MANUAL_SEND_POLL_SECONDS", "5")))
+    while not stop.is_set():
+        try:
+            queue = _posts.request_path()
+            if queue.exists():
+                ours = list(target_map)
+                by_key = {str(name).lower(): name for name in ours}
+                for row in _posts.pending(queue, done=_posts.finished_ids())[:10]:
+                    queue_id = int(row.get("queue_id") or 0)
+                    picked = []
+                    unknown = []
+                    for value in row.get("targets") or []:
+                        name = by_key.get(str(value).lower())
+                        if name:
+                            picked.append(name)
+                        else:
+                            unknown.append(str(value))
+                    if not picked:
+                        _posts.record({"id": row.get("id"), "action": "failed",
+                                       "queue_id": queue_id,
+                                       "reason": ("no such channel in this bot's routing: "
+                                                  + ", ".join(unknown[:5]))[:300],
+                                       "at": time.time()}, None)
+                        log.warning("MANUAL SEND FAIL | queue=%s unknown channel(s) %s",
+                                    queue_id, unknown)
+                        continue
+                    outcome = await store.manual_targets(queue_id, picked)
+                    action = "sent" if outcome.get("added") else "skipped"
+                    reason = ("queued for " + ", ".join(outcome["added"])
+                              if outcome.get("added") else
+                              "already carried by " + ", ".join(outcome.get("already") or []))
+                    if outcome.get("missing"):
+                        action, reason = "failed", f"post {queue_id} is no longer in the queue"
+                    _posts.record({"id": row.get("id"), "action": action,
+                                   "queue_id": queue_id, "targets": picked,
+                                   "added": outcome.get("added") or [],
+                                   "already": outcome.get("already") or [],
+                                   "unknown": unknown, "reason": reason,
+                                   "at": time.time()}, None)
+                    log.info("MANUAL SEND | queue=%s %s -> %s", queue_id, action, reason)
+        except Exception as exc:  # noqa: BLE001 - never stop posting over a button
+            log.warning("MANUAL SEND | pass failed: %s", exc)
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=every)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def main() -> None:
     global QUEUE_WAKE
     log.info("BestGAA Production Bot v19.0 starting "
@@ -11094,6 +11211,9 @@ async def main() -> None:
     # posting, and neither ever joins a channel on our own account.
     join_poll_task = asyncio.create_task(join_request_poll_loop(client, stop))
     repost_task = asyncio.create_task(repost_loop(client, stop, target_map))
+    # "every post ki button": the dashboard queues a press, the bot re-opens the
+    # post for those channels and lets the normal, fully verified delivery run.
+    manual_send_task = asyncio.create_task(manual_send_loop(client, store, stop, target_map))
     source_refresh_task = asyncio.create_task(refresh_missing_sources(client, source_map, stop, target_map))
     source_rescan_task = asyncio.create_task(source_rescan_loop(client, source_map, stop))
     maintenance_task = asyncio.create_task(maintenance_loop(stop))
@@ -11112,6 +11232,8 @@ async def main() -> None:
         await maintenance_task
     with contextlib.suppress(asyncio.CancelledError):
         await join_poll_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await manual_send_task
     with contextlib.suppress(asyncio.CancelledError):
         await repost_task
     with contextlib.suppress(asyncio.CancelledError):

@@ -145,7 +145,7 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 </head>
 <body>
 <main>
-<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#vault">API keys</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#dossier">Dossier</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
+<header class="topbar"><a class="brand" href="#setup"><span class="brand-icon">B</span> BestGAA <span class="muted">/ channel studio</span></a><nav><a href="#overview">Overview</a><a href="#vault">API keys</a><a href="#sourcestudio">Add sources</a><a href="#watchsource">Watch source</a><a href="#console">Console</a><a href="#setup">Setup</a><a href="#channel-list">Channels</a><a href="#postfeed">Posts</a><a href="#wachannels">WhatsApp</a><a href="#categories">Categories</a><a href="#srctarget">Source → Target</a><a href="#conversion">Conversion</a><a href="#safety">Safety</a><a href="#trace">Trace</a><a href="#dossier">Dossier</a><a href="#scorecard">Scorecard</a><a href="#pipeline">Integrity</a><a href="#cardstudio">Card studio</a><a href="#test-lab">Test lab</a></nav></header>
 <div id="tokenbar" class="card">
 <input id="token" type="password" placeholder="Dashboard token (DASHBOARD_TOKEN)" autocomplete="off">
 <button onclick="saveToken()">Use</button>
@@ -264,6 +264,13 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <h3>Change journal <span class="muted">— key names and last four characters only</span></h3>
 <div id="vaultjournal"></div>
 </div>
+<div class="card" id="postfeed">
+<div class="section-heading"><div><span class="eyebrow">POSTS · EVERY POST, WITH ITS BUTTONS</span><h2>See where each post went — and put it in another channel with one press</h2></div><span class="badge" id="pfstate">loading</span></div>
+<p class="muted">Every row is a real queue row: <b>which channels have it</b> (with their public link), <b>where it came from</b> (a link to the exact source message), and the buttons that act on it. <b>Send to…</b> asks the <b>bot</b> to deliver this same post to the channels you tick — the bot re-checks the links, the price band and whether that channel already has it, so a press can never double-post. The dashboard never writes the bot's database.</p>
+<div class="row"><input id="pfsearch" type="search" maxlength="80" placeholder="filter by title, source or channel" autocomplete="off" oninput="renderPosts()"><button class="ghost" onclick="loadPosts()">Refresh</button><span class="source-count" id="pfcount">loading…</span></div>
+<p id="pfmsg" role="status" aria-live="polite" class="muted"></p>
+<div id="pflist"><p class="muted">loading the posts…</p></div>
+</div>
 <div class="card" id="sourcestudio">
 <div class="section-heading"><div><span class="eyebrow">SOURCE STUDIO · EVERY CHANNEL IN YOUR TELEGRAM</span><h2>Pick channels from a list, not from memory</h2></div><span class="badge" id="dirstate">loading</span></div>
 <p class="muted">The list below is <b>published by the bot's own session</b> (<code>ops/…/telegram_channels.json</code>): every channel it can already read, refreshed in the background. Search it, tick one or many, choose where their deals should post and which categories to keep, then save once. A ticked channel becomes a <b>watched source</b>: each new post is taken exactly as written, every link converted to <b>ours</b>, and posted to the channels you pick. Nothing is joined, nothing is replayed, and a channel that is not public (no @username) or is one of our own posting channels stays disabled with the reason.</p>
@@ -293,6 +300,16 @@ li.attn a.ghost,button.tiny{font-size:11px;padding:3px 8px;background:transparen
 <div class="section-heading"><div><span class="eyebrow">CHANNEL CONTROL · EVERY CHANNEL WHERE YOU ARE ADMIN</span><h2>Select many, act once — and see what the bot is doing in each</h2></div><span class="badge" id="ccstate">loading</span></div>
 <p class="muted">This list is the <b>bot's own inventory</b>: every channel where the session account is <b>creator or admin</b>, with the rights Telegram reported (<code>can post</code>, <code>can approve join requests</code>). Tick several rows and use the buttons — enable, disable, remove, add as a destination, or set the category — in ONE save. Nothing here joins a channel, and a destination the bot has not seen stays disabled with the reason.</p>
 <p class="muted" id="ccsummary"></p>
+<h3>Add a source in one line <span class="muted">— paste the channel link, press once</span></h3>
+<p class="muted">A <b>source</b> is a channel we READ. Paste its link (or @name, or a private <code>t.me/+</code> invite the account is already in), choose where its deals should post, and press Add. The bot checks access with its own session and activates it live — nothing is joined, no old post is replayed.</p>
+<div class="row">
+<input id="qalink" maxlength="200" placeholder="https://t.me/DealSource  ·  @DealSource  ·  https://t.me/+invite" autocomplete="off" aria-label="Source channel link">
+<select id="qatargets" multiple size="3" aria-label="Post its deals to"></select>
+<button onclick="quickAddSource()">Add source</button>
+<button class="ghost" onclick="document.getElementById('sourcestudio').scrollIntoView({behavior:'smooth'})">Open source studio</button>
+</div>
+<p id="qamsg" role="status" aria-live="polite" class="muted"></p>
+
 <div class="source-tools">
 <button class="ghost" onclick="ccSelectAll()">Select all shown</button>
 <button class="ghost" onclick="ccClear()">Clear</button>
@@ -703,6 +720,7 @@ async function refresh(full=true){
     await loadDirectory();                // every channel the bot session can read
     await loadVault();                    // the keys the bot actually reads
     await loadControl();                  // admin inventory, bulk actions, join requests, repost
+    await loadPosts();                    // every post: where it went + its buttons
     await loadBrief();        // ranked attention list + the health it used
     await loadPulse();        // merged timeline
     if(full){
@@ -721,6 +739,111 @@ async function refresh(full=true){
     }
   } catch(e){ document.getElementById('authstate').textContent = 'error: '+e.message; }
   finally { refreshBusy=false; }
+}
+
+// ------------------------------------------------------------- POST FEED --
+// "every post ki button" + "channel link kuda": each row shows the channels
+// that carry it (linked), the source message (linked), and buttons that act on
+// THIS post. Send-to queues one request; the bot does the sending.
+let pfPosts = [], pfOurs = [], pfOpen = null;
+function pfMatches(row){
+  const q = ((document.getElementById('pfsearch')||{}).value||'').trim().toLowerCase();
+  if(!q) return true;
+  const hay = [row.title, row.source, (row.sent||[]).join(' '), (row.targets||[]).map(t=>t.target).join(' ')]
+    .join(' ').toLowerCase();
+  return hay.includes(q);
+}
+function pfChannel(target){
+  const row = (pfOurs.find(name => String(name).toLowerCase() === String(target).toLowerCase()));
+  const handle = String(row || target || '').replace(/^@/,'');
+  return handle ? '<a href="https://t.me/'+encodeURIComponent(handle)+'" target="_blank" rel="noopener">@'+escapeHTML(handle)+'</a>' : escapeHTML(String(target));
+}
+function pfTargets(row){
+  const shown = (row.targets||[]);
+  if(!shown.length) return '<span class="muted">no delivery row yet</span>';
+  return shown.map(t => {
+    const cls = t.status === 'sent' ? 'ok' : (t.status === 'skipped' || t.status === 'held') ? 'warn' : '';
+    return '<span class="badge '+cls+'" title="'+escapeHTML(String(t.error||t.status))+'">'
+      + pfChannel(t.target) + ' · ' + escapeHTML(String(t.status)) + '</span>';
+  }).join(' ');
+}
+function renderPosts(){
+  const box = document.getElementById('pflist');
+  if(!box) return;
+  const rows = pfPosts.filter(pfMatches);
+  const count = document.getElementById('pfcount');
+  if(count) count.textContent = rows.length + ' of ' + pfPosts.length + ' post(s) shown';
+  box.innerHTML = '<div class="tablewrap"><table><thead><tr><th>When</th><th>Post</th><th>Source</th><th>Went to</th><th>Actions</th></tr></thead><tbody>'
+    + rows.map(row => {
+      const when = row.created_at ? new Date(row.created_at*1000).toLocaleString('en-IN') : '—';
+      const src = row.source_link
+        ? '<a href="'+escapeHTML(row.source_link)+'" target="_blank" rel="noopener">@'+escapeHTML(row.source)+'</a>'
+        : (row.source ? '@'+escapeHTML(row.source) : '<span class="muted">—</span>');
+      const picker = pfOpen === row.id ? '<tr><td colspan="5">'
+        + '<label>Send this post to <span class="muted">— Ctrl/⌘ click for several</span></label>'
+        + '<select id="pfsendtargets" multiple size="5" aria-label="Channels">'
+        + pfOurs.map(name => '<option value="'+escapeHTML(name)+'">@'+escapeHTML(name)+'</option>').join('')
+        + '</select>'
+        + '<div class="row"><button onclick="pfSend('+row.id+')">Send it</button>'
+        + '<button class="ghost" onclick="pfClose()">Cancel</button></div></td></tr>' : '';
+      return '<tr><td class="muted">'+escapeHTML(when)+'</td>'
+        + '<td><strong>'+escapeHTML(String(row.title||'(no text)'))+'</strong>'
+        + '<small class="muted"> #'+row.id+' · '+escapeHTML(String(row.status))
+        + (row.urls ? ' · '+row.urls+' link(s)' : '') + '</small></td>'
+        + '<td>'+src+'</td><td>'+pfTargets(row)+'</td>'
+        + '<td><button ' + (row.resendable ? '' : 'disabled title="this post has no stored text"')
+        + ' onclick="pfOpenSend('+row.id+')">Send to…</button> '
+        + '<button class="ghost" onclick="openDossier('+row.id+')">Links</button> '
+        + '<button class="ghost" onclick="pfCopy('+row.id+')">Copy</button></td></tr>'
+        + picker;
+    }).join('') + '</tbody></table></div>'
+    + (rows.length ? '' : '<p class="muted">no post matches that filter</p>');
+}
+function pfOpenSend(id){ pfOpen = id; renderPosts(); }
+function pfClose(){ pfOpen = null; renderPosts(); }
+function pfCopy(id){
+  const row = pfPosts.find(item => item.id === id);
+  if(!row) return;
+  const text = row.snippet || '';
+  if(navigator.clipboard) navigator.clipboard.writeText(text);
+  const msg = document.getElementById('pfmsg');
+  if(msg) msg.textContent = 'post #' + id + ' text copied';
+}
+async function pfSend(id){
+  const sel = document.getElementById('pfsendtargets');
+  const targets = sel ? [...sel.selectedOptions].map(o => o.value) : [];
+  const msg = document.getElementById('pfmsg');
+  if(!targets.length){ if(msg) msg.textContent = 'tick at least one channel'; return; }
+  if(msg) msg.textContent = 'queueing…';
+  try{
+    const out = await api('POST','/api/posts/send', {queue_id: id, targets: targets});
+    if(msg) msg.textContent = 'queued — ' + (out.next || '');
+    pfOpen = null;
+    await loadPosts();
+  }catch(e){
+    if(msg) msg.textContent = 'not queued: ' + (e.message || e);
+  }
+}
+async function loadPosts(){
+  const badge = document.getElementById('pfstate');
+  let data;
+  try{ data = await api('GET','/api/posts?limit=60'); }
+  catch(e){
+    if(badge) badge.textContent = 'not available';
+    const box = document.getElementById('pflist');
+    if(box) box.innerHTML = '<p class="muted">posts unavailable: '+escapeHTML(String(e.message||e))+'</p>';
+    return;
+  }
+  pfPosts = data.posts || [];
+  pfOurs = data.ours || [];
+  if(badge) badge.textContent = pfPosts.length + ' posts';
+  renderPosts();
+  const log = (data.log || []);
+  if(log.length){
+    const msg = document.getElementById('pfmsg');
+    if(msg && !msg.textContent) msg.textContent = 'last send: #' + (log[0].queue_id || '?')
+      + ' → ' + String(log[0].action || '') + (log[0].reason ? ' (' + log[0].reason + ')' : '');
+  }
 }
 
 // ------------------------------------------------------- CHANNEL CONTROL --
@@ -763,7 +886,8 @@ function renderCC(){
       + '<input type="checkbox" value="' + escapeHTML(name.toLowerCase()) + '"'
       + (ccPicked.has(name.toLowerCase()) ? ' checked' : '') + ' onchange="ccToggle(this)">'
       + '<span><strong>' + escapeHTML(String(row.title || name)) + '</strong>'
-      + '<small>' + (row.username ? '@' + escapeHTML(String(row.username)) : 'no public username')
+      + '<small>' + (row.link ? '<a href="' + escapeHTML(String(row.link)) + '" target="_blank" rel="noopener">@' + escapeHTML(String(row.username)) + '</a>'
+        : (row.username ? '@' + escapeHTML(String(row.username)) : 'no public username'))
       + ' · ' + escapeHTML(String(row.kind || ''))
       + (row.members ? ' · ' + Number(row.members).toLocaleString('en-IN') + ' members' : '')
       + ' · last post ' + escapeHTML(String(row.last_message || '—')) + '</small></span>'
@@ -788,6 +912,28 @@ function renderJR(){
       + '<small>' + (tickable ? 'can approve join requests' : 'no invite right — Telegram would refuse')
       + '</small></span></label>';
   }).join('') || '<p class="muted" style="padding:10px">no channel to offer</p>';
+}
+async function quickAddSource(){
+  const msg = document.getElementById('qamsg');
+  const link = ((document.getElementById('qalink') || {}).value || '').trim();
+  const sel = document.getElementById('qatargets');
+  const chosen = sel ? [...sel.selectedOptions].map(o => o.value) : [];
+  if(!link){ if(msg) msg.textContent = 'paste the source channel link first'; return; }
+  const targets = chosen.length ? chosen : ['*'];
+  if(msg) msg.textContent = 'saving…';
+  try{
+    const out = await api('POST','/api/watch',
+      {channel: link, targets: targets, enabled: true}, configRevision);
+    if(msg) msg.textContent = 'saved. ' + (out.next || '')
+      + ((out.warnings||[]).length ? ' · ' + out.warnings.join(' · ') : '');
+    const input = document.getElementById('qalink');
+    if(input) input.value = '';
+    await loadControl();
+    if(typeof loadWatch === 'function') await loadWatch();
+    if(typeof refresh === 'function') await refresh(false);
+  }catch(e){
+    if(msg) msg.textContent = 'not saved: ' + (e.message || e);
+  }
 }
 function ccToggle(input){
   const key = String(input.value || '').toLowerCase();
@@ -833,6 +979,13 @@ async function loadControl(){
     for(const [key,label] of Object.entries(data.categories || {})){
       const option = document.createElement('option'); option.value = key;
       option.textContent = label; cats.append(option);
+    }
+  }
+  const qa = document.getElementById('qatargets');
+  if(qa && !qa.options.length){
+    for(const name of ((data.catalog || {}).targets || [])){
+      const option = document.createElement('option'); option.value = name;
+      option.textContent = '@' + name; qa.append(option);
     }
   }
   const jr = data.join_requests || {};
@@ -2508,7 +2661,7 @@ function renderDirList(){
       + (disabled ? ' disabled' : '') + (dirPicked.has(name.toLowerCase()) ? ' checked' : '')
       + ' onchange="dirToggle(this)">'
       + '<span><strong>'+escapeHTML(String(row.title||name))+'</strong>'
-      + '<small>'+(name ? '@'+name : 'no public username')+' · '+(row.kind||'')+' · '
+      + '<small>'+(name ? '<a href="https://t.me/'+encodeURIComponent(name)+'" target="_blank" rel="noopener">@'+name+'</a>' : 'no public username')+' · '+(row.kind||'')+' · '
       + (row.members ? row.members.toLocaleString('en-IN')+' members · ' : '')
       + 'last post '+escapeHTML(String(row.last_message||'—'))+'</small>'
       + (disabled && why ? '<small class="source-error">'+escapeHTML(why)+'</small>' : '')
